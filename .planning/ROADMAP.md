@@ -6,7 +6,7 @@
 
 ## Phases
 
-- [ ] **Phase 1: Foundations** — Storage engines, GraphStore ABC, environment lock. Everything else is blocked on this.
+- [x] **Phase 1: Foundations** — Storage engines, GraphStore ABC, environment lock. Everything else is blocked on this. (completed 2026-04-04)
 - [ ] **Phase 2: Node.js Parser Pool + MCP Skeleton** — Prove the Python↔Node.js IPC boundary; establish stdout discipline before any tool handler is written.
 - [ ] **Phase 3: Ingestion Pipeline Core** — Apex, Objects, Flows parsers + two-phase ingest orchestration. First queryable graph.
 - [ ] **Phase 4: Remaining Parsers** — LWC and Vlocity parsers. Completes metadata coverage for a credible v1.
@@ -101,7 +101,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundations | 3/4 | In Progress|  |
+| 1. Foundations | 4/4 | Complete   | 2026-04-04 |
 | 2. Node.js Parser Pool + MCP Skeleton | 0/? | Not started | - |
 | 3. Ingestion Pipeline Core | 0/? | Not started | - |
 | 4. Remaining Parsers | 0/? | Not started | - |
