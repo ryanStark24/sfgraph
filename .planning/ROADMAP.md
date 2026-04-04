@@ -16,7 +16,7 @@
 ## Phase Details
 
 ### Phase 1: Foundations
-**Goal**: The three embedded storage engines initialize, pass smoke tests, and are accessible only through abstraction layers — no downstream code ever touches a storage API directly.
+**Goal**: The three storage engines initialize, pass smoke tests, and are accessible only through abstraction layers — no downstream code ever touches a storage API directly. (FalkorDB operates in server mode via the Redis protocol; ManifestStore and VectorStore are embedded/local.)
 **Depends on**: Nothing
 **Requirements**: FOUND-01, FOUND-02, FOUND-03, FOUND-04, FOUND-05, FOUND-06, FOUND-07, FOUND-08
 **Success Criteria** (what must be TRUE):
@@ -25,13 +25,14 @@
   3. Qdrant VectorStore upserts a source code chunk and retrieves it by vector similarity.
   4. ManifestStore records a file path with SHA-256, ingestion phase (PENDING/NODES_WRITTEN/EDGES_WRITTEN/FAILED), and run status; CRUD operations work correctly.
   5. A Python process running the MCP entry point emits zero bytes to stdout when only logging calls are made (verified by CI assertion).
-**Plans**: 4 plans
+**Plans**: 5 plans
 
 Plans:
 - [ ] 01-01-PLAN.md — Project scaffold: pyproject.toml, Python 3.12 lock, src-layout package skeleton
 - [ ] 01-02-PLAN.md — Stderr discipline + CI stdout assertion + ManifestStore (SQLite state machine)
 - [ ] 01-03-PLAN.md — GraphStore ABC + DuckPGQStore stub (Protocol boundary validation)
 - [ ] 01-04-PLAN.md — FalkorDBStore (asyncio write queue) + VectorStore (Qdrant local + fastembed)
+- [ ] 01-05-PLAN.md — FalkorDB live integration smoke tests + gap closure (docker-compose.test.yml)
 
 ### Phase 2: Node.js Parser Pool + MCP Skeleton
 **Goal**: The Python↔Node.js IPC boundary is proven to work end-to-end with a real Apex file, and the FastMCP server skeleton enforces stdout discipline from the first line of code.
@@ -43,7 +44,12 @@ Plans:
   3. ParseDispatcher routes a `.cls` file to the Node.js pool and a Flow XML file to the Python parser path; incorrect routing is rejected at dispatch time.
   4. The FastMCP server starts with a lifespan context manager that owns all storage handles; `curl` to the MCP endpoint returns a valid JSON-RPC response with zero stdout pollution in the server process.
   5. An Apex file with tree-sitter parse errors is detected via the `has_error` guard, logged to stderr, and returns `{ok:false}` — it does not silently produce incomplete edges.
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — npm setup + worker.js (WASM grammar, readline IPC, ping/pong, has_error guard, 200-file restart)
+- [ ] 02-02-PLAN.md — NodeParserPool (asyncio subprocess management, health checks, per-file timeout) + integration tests
+- [ ] 02-03-PLAN.md — ParseDispatcher (extension routing) + FastMCP server lifespan wiring + stdout discipline validation
 
 ### Phase 3: Ingestion Pipeline Core
 **Goal**: A developer can point the tool at a Salesforce metadata export containing Apex classes, SObjects, and Flows and get a populated, queryable property graph with correct two-phase write order and source attribution on every node and edge.
@@ -101,8 +107,8 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundations | 4/4 | Complete   | 2026-04-04 |
-| 2. Node.js Parser Pool + MCP Skeleton | 0/? | Not started | - |
+| 1. Foundations | 5/5 | Complete | 2026-04-04 |
+| 2. Node.js Parser Pool + MCP Skeleton | 0/3 | Planned | - |
 | 3. Ingestion Pipeline Core | 0/? | Not started | - |
 | 4. Remaining Parsers | 0/? | Not started | - |
 | 5. MCP Tools + Query Pipeline | 0/? | Not started | - |
@@ -110,4 +116,4 @@ Plans:
 
 ---
 *Roadmap created: 2026-04-04*
-*Last updated: 2026-04-04 — Phase 1 plans created (4 plans, 3 waves)*
+*Last updated: 2026-04-04 — Phase 2 planned: 3 plans (02-01 through 02-03)*
