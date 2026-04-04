@@ -25,7 +25,13 @@
   3. Qdrant VectorStore upserts a source code chunk and retrieves it by vector similarity.
   4. ManifestStore records a file path with SHA-256, ingestion phase (PENDING/NODES_WRITTEN/EDGES_WRITTEN/FAILED), and run status; CRUD operations work correctly.
   5. A Python process running the MCP entry point emits zero bytes to stdout when only logging calls are made (verified by CI assertion).
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Project scaffold: pyproject.toml, Python 3.12 lock, src-layout package skeleton
+- [ ] 01-02-PLAN.md — Stderr discipline + CI stdout assertion + ManifestStore (SQLite state machine)
+- [ ] 01-03-PLAN.md — GraphStore ABC + DuckPGQStore stub (Protocol boundary validation)
+- [ ] 01-04-PLAN.md — FalkorDBStore (asyncio write queue) + VectorStore (Qdrant local + fastembed)
 
 ### Phase 2: Node.js Parser Pool + MCP Skeleton
 **Goal**: The Python↔Node.js IPC boundary is proven to work end-to-end with a real Apex file, and the FastMCP server skeleton enforces stdout discipline from the first line of code.
@@ -95,7 +101,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundations | 0/? | Not started | - |
+| 1. Foundations | 0/4 | In progress | - |
 | 2. Node.js Parser Pool + MCP Skeleton | 0/? | Not started | - |
 | 3. Ingestion Pipeline Core | 0/? | Not started | - |
 | 4. Remaining Parsers | 0/? | Not started | - |
@@ -104,4 +110,4 @@
 
 ---
 *Roadmap created: 2026-04-04*
-*Last updated: 2026-04-04 after initial creation*
+*Last updated: 2026-04-04 — Phase 1 plans created (4 plans, 3 waves)*
