@@ -12,8 +12,8 @@
 - [ ] **FOUND-03**: GraphStore Protocol (ABC) decouples all ingestion and query logic from FalkorDB-specific API
 - [ ] **FOUND-04**: FalkorDB writes are serialized through a single asyncio queue (prevents graph corruption on concurrent writes)
 - [ ] **FOUND-05**: Qdrant local vector index initializes and supports upsert + query operations via VectorStore abstraction
-- [ ] **FOUND-06**: SQLite manifest store tracks per-file SHA-256, ingestion phase (PENDING/NODES_WRITTEN/EDGES_WRITTEN/FAILED), and run status
-- [ ] **FOUND-07**: All logging routes to stderr only — stdout is reserved exclusively for MCP transport (CI-enforced)
+- [x] **FOUND-06**: SQLite manifest store tracks per-file SHA-256, ingestion phase (PENDING/NODES_WRITTEN/EDGES_WRITTEN/FAILED), and run status
+- [x] **FOUND-07**: All logging routes to stderr only — stdout is reserved exclusively for MCP transport (CI-enforced)
 - [x] **FOUND-08**: `uv` is the package manager; `pyproject.toml` defines all dependencies with pinned versions
 
 ### Node.js Parser Pool

@@ -101,7 +101,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundations | 1/4 | In Progress|  |
+| 1. Foundations | 2/4 | In Progress|  |
 | 2. Node.js Parser Pool + MCP Skeleton | 0/? | Not started | - |
 | 3. Ingestion Pipeline Core | 0/? | Not started | - |
 | 4. Remaining Parsers | 0/? | Not started | - |
