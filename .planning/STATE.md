@@ -3,21 +3,21 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_phase: 2 — Node.js Parser Pool + MCP Skeleton
-current_plan: 02 (completed) — NodeParserPool asyncio subprocess pool
-status: in_progress
-last_updated: "2026-04-04T10:33:00Z"
+current_plan: 03 (completed) — ParseDispatcher + FastMCP lifespan skeleton
+status: phase_complete
+last_updated: "2026-04-04T10:27:00Z"
 progress:
   total_phases: 2
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 8
-  completed_plans: 7
-  percent: 88
+  completed_plans: 8
+  percent: 100
 ---
 
 # Project State: Salesforce Org Graph Analyzer
 
 **Last updated:** 2026-04-04
-**Session:** Plan 02-02 execution (NodeParserPool asyncio subprocess pool)
+**Session:** Plan 02-03 execution (ParseDispatcher + FastMCP lifespan skeleton)
 
 ---
 
@@ -33,14 +33,14 @@ progress:
 
 ## Current Position
 
-**Current phase:** 2 — Node.js Parser Pool + MCP Skeleton
-**Current plan:** 02 (completed) — NodeParserPool asyncio subprocess pool
-**Status:** In progress (Phase 2, Plan 2 of 3 complete)
+**Current phase:** 2 — Node.js Parser Pool + MCP Skeleton (COMPLETE)
+**Current plan:** 03 (completed) — ParseDispatcher + FastMCP lifespan skeleton
+**Status:** Phase 2 complete (3/3 plans done)
 
 **Progress:**
-[█████████░] 88%
+[██████████] 100%
 Phase 1 [██████████] 100% (5/5 plans — COMPLETE)
-Phase 2 [██████    ] 66%  (2/3 plans complete)
+Phase 2 [██████████] 100% (3/3 plans — COMPLETE)
 Phase 3 [          ] 0%
 Phase 4 [          ] 0%
 Phase 5 [          ] 0%
@@ -71,6 +71,7 @@ Overall [██████░░░░] ~25%
 | 02-nodejs-parser-pool | P01 | 12 min | 2 | 9 |
 | 02-nodejs-parser-pool | P02 | 15 min | 2 | 2 |
 | Phase 02-nodejs-parser-pool-mcp-skeleton P02 | 15 | 2 tasks | 2 files |
+| Phase 02-nodejs-parser-pool-mcp-skeleton PP03 | 2 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -106,6 +107,8 @@ Overall [██████░░░░] ~25%
 | All 6 GraphStore methods are async | Supports both in-process and networked backends uniformly; callers never need to know which they use |
 | DuckPGQStore.close() is a no-op (not NotImplementedError) | Nothing to release; no-op is correct behavior, not a placeholder |
 | FalkorDB live integration tests added in Plan 05 | docker-compose.test.yml provides test server; @pytest.mark.integration tests skip without server; socket probe pattern avoids pytest-asyncio skip-in-except bug |
+| FalkorDBStore(host/port/graph_name) used in server.py lifespan | Plan stub had incorrect path= kwarg; actual Phase 1 constructor takes host, port, graph_name |
+| ManifestStore(db_path=) used in server.py | Plan stub had path= kwarg; actual Phase 1 constructor uses db_path parameter |
 
 ### Critical Pitfalls to Remember
 
@@ -147,17 +150,18 @@ None currently.
 
 ### Last Session (2026-04-04)
 
-- Executed Plan 02-02: NodeParserPool asyncio subprocess pool
-- Created src/sfgraph/parser/pool.py: full async pool with spawn, dispatch, health check, replace, shutdown
-- Created tests/parser/test_pool.py: 4 integration tests, all passing
-- TDD: 4 tests RED → GREEN; 40/40 non-integration tests still pass after addition
-- Timeout triggers worker replacement (not just error return) to prevent stale response contamination
-- Plan 02-02 COMPLETE
+- Executed Plan 02-03: ParseDispatcher + FastMCP lifespan skeleton
+- Created src/sfgraph/parser/dispatcher.py: route_file() with all 6 extension mappings and ValueError for unrecognized
+- Created tests/parser/test_dispatcher.py: 11 unit tests, 100% coverage on dispatcher
+- Updated src/sfgraph/server.py: Phase 1 stub replaced with full FastMCP lifespan + AppContext + ping tool
+- Auto-fixed constructor mismatches: FalkorDBStore uses host/port/graph_name; ManifestStore uses db_path
+- TDD: 11 tests RED → GREEN; 56/56 non-integration tests pass (no regressions)
+- PHASE 2 COMPLETE (3/3 plans done)
 
 ### Next Session
 
-- Phase 2, Plan 03 next: ParseDispatcher (extension-based routing to pool or Python parsers)
-- NodeParserPool is ready and verified end-to-end
+- Phase 3 begins: ingestion pipeline (ParseDispatcher is the entry point, Phase 2 fully wired)
+- All Phase 2 requirements complete: POOL-01 through POOL-07 and MCP-01
 - Note: export PATH="/Users/anshulmehta/.local/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 - Use /opt/homebrew/bin/git for all commits (Xcode license blocks /usr/bin/git)
 - Live tests require Docker: `docker compose -f docker-compose.test.yml up -d`

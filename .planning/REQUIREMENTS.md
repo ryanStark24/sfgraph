@@ -24,7 +24,7 @@
 - [x] **POOL-04**: Worker health check: Python sends `{type:"ping"}` every 30s; no `{type:"pong"}` within 5s → replace worker
 - [x] **POOL-05**: Workers restart after processing 200 files (prevents Node.js heap accumulation on large orgs)
 - [x] **POOL-06**: Per-file timeout of 10s; timeout returns `{ok:false, error:"timeout"}` without killing the worker
-- [ ] **POOL-07**: ParseDispatcher routes `.cls`/`.trigger`/`.js` files to Node.js pool; all other file types to Python parsers
+- [x] **POOL-07**: ParseDispatcher routes `.cls`/`.trigger`/`.js` files to Node.js pool; all other file types to Python parsers
 
 ### Ingestion Pipeline
 
@@ -129,7 +129,7 @@
 
 ### MCP Server & Tools
 
-- [ ] **MCP-01**: FastMCP server initializes with lifespan context manager owning all storage engines (FalkorDB, Qdrant, SQLite, Node.js pool)
+- [x] **MCP-01**: FastMCP server initializes with lifespan context manager owning all storage engines (FalkorDB, Qdrant, SQLite, Node.js pool)
 - [ ] **MCP-02**: `ingest_org(export_dir)` tool: runs full ingestion pipeline, returns summary (node count, edge count, warnings, duration)
 - [ ] **MCP-03**: `refresh(export_dir?)` tool: runs incremental refresh, returns changed files count, affected nodes, duration
 - [ ] **MCP-04**: `query(question)` tool: runs three-agent NL→Cypher pipeline, returns confidence-tiered structured answer with source snippets
