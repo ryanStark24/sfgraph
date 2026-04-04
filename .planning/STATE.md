@@ -2,22 +2,22 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 1 — Foundations
-current_plan: "04 (completed) — Phase 1 complete"
-status: phase_complete
-last_updated: "2026-04-04T09:14:00Z"
+current_phase: 2 — Node.js Parser Pool + MCP Skeleton
+current_plan: "01 (completed) — Node.js WASM IPC worker foundation"
+status: in_progress
+last_updated: "2026-04-04T09:42:00Z"
 progress:
-  total_phases: 1
+  total_phases: 6
   completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
-  percent: 100
+  total_plans: 8
+  completed_plans: 6
+  percent: 25
 ---
 
 # Project State: Salesforce Org Graph Analyzer
 
 **Last updated:** 2026-04-04
-**Session:** Plan 01-04 execution (Phase 1 complete)
+**Session:** Plan 02-01 execution (Node.js WASM IPC worker foundation)
 
 ---
 
@@ -33,20 +33,20 @@ progress:
 
 ## Current Position
 
-**Current phase:** 1 — Foundations
-**Current plan:** 04 (completed) — Phase 1 complete
-**Status:** Phase complete
+**Current phase:** 2 — Node.js Parser Pool + MCP Skeleton
+**Current plan:** 01 (completed) — Node.js WASM IPC worker foundation
+**Status:** In progress (Phase 2, Plan 1 of 3 complete)
 
 **Progress:**
 ```
-Phase 1 [██████████] 100% (4/4 plans — COMPLETE)
-Phase 2 [          ] 0%
+Phase 1 [██████████] 100% (5/5 plans — COMPLETE)
+Phase 2 [███       ] 33%  (1/3 plans complete)
 Phase 3 [          ] 0%
 Phase 4 [          ] 0%
 Phase 5 [          ] 0%
 Phase 6 [          ] 0%
 
-Overall [████░░░░░░] ~17%
+Overall [██████░░░░] ~25%
 ```
 
 ---
@@ -57,8 +57,8 @@ Overall [████░░░░░░] ~17%
 |--------|-------|
 | Phases defined | 6 |
 | Requirements mapped | 99/99 |
-| Plans created | 4 |
-| Plans completed | 3 |
+| Plans created | 5 |
+| Plans completed | 5 |
 | Phases completed | 0 |
 
 | Phase | Plan | Duration | Tasks | Files |
@@ -67,6 +67,8 @@ Overall [████░░░░░░] ~17%
 | 01-foundations | P02 | 2 min | 2 | 5 |
 | 01-foundations | P03 | 2 min | 1 | 4 |
 | 01-foundations | P04 | 18 min | 2 | 5 |
+| 01-foundations | P05 | 8 min | 3 | 4 |
+| 02-nodejs-parser-pool | P01 | 12 min | 2 | 9 |
 
 ## Accumulated Context
 
@@ -83,6 +85,10 @@ Overall [████░░░░░░] ~17%
 | GraphStore ABC before any FalkorDB code | Decouples all logic from FalkorDB API; enables DuckPGQ fallback; enforced at project start |
 | Two-phase ingestion (nodes first, then edges) | Eliminates forward-reference ordering; every node exists before any edge is attempted |
 | Node.js subprocess pool for tree-sitter | tree-sitter-sfapex runs in Node.js only; pool amortizes grammar load across 2k+ files |
+| web-tree-sitter-sfapex (WASM) over tree-sitter-sfapex (native) | No Xcode license agreement or node-gyp required; WASM works on Node 22/25; maintained by same author |
+| root.hasError is a PROPERTY not a method in WASM API | Calling root.hasError() throws TypeError; root.hasError (no parens) returns boolean — APEX-10 guard |
+| extractRawFacts stub in Phase 2 returns class_declaration count only | Full CST traversal deferred to Phase 3; Phase 2 validates IPC protocol correctness first |
+| Node.js 22 LTS (/opt/homebrew/opt/node@22/bin/node) pinned as worker runtime | WASM compatibility guaranteed on LTS; system node (v25) also works but LTS is documented support target |
 | Three-agent query pipeline | Schema Filter reduces token cost 20-40x vs full schema injection |
 | Python 3.12 hard requirement | FalkorDBLite 0.9.0 hard dependency; enforced in pyproject.toml |
 | All logging to stderr only | MCP stdio transport is fatally corrupted by any stdout output |
@@ -95,6 +101,7 @@ Overall [████░░░░░░] ~17%
 | GraphStore ABC zero backend imports (enforced by test) | inspect.getsource scans full source including docstrings; backend names must not appear in base.py |
 | All 6 GraphStore methods are async | Supports both in-process and networked backends uniformly; callers never need to know which they use |
 | DuckPGQStore.close() is a no-op (not NotImplementedError) | Nothing to release; no-op is correct behavior, not a placeholder |
+| FalkorDB live integration tests added in Plan 05 | docker-compose.test.yml provides test server; @pytest.mark.integration tests skip without server; socket probe pattern avoids pytest-asyncio skip-in-except bug |
 
 ### Critical Pitfalls to Remember
 
@@ -136,21 +143,21 @@ None currently.
 
 ### Last Session (2026-04-04)
 
-- Executed Plan 01-04: FalkorDBStore + VectorStore + final storage exports
-- Created src/sfgraph/storage/falkordb_store.py (FalkorDBStore, asyncio write queue, all 6 GraphStore methods)
-- Created src/sfgraph/storage/vector_store.py (VectorStore, Qdrant local/memory/server, fastembed BAAI/bge-small-en-v1.5)
-- Updated src/sfgraph/storage/__init__.py (exports all 5 stores)
-- Created tests/test_falkordb_store.py (9 tests) and tests/test_vector_store.py (7 tests)
-- 40/40 Phase 1 tests passing; 93% coverage; Phase 1 ROADMAP criterion met
-- Phase 1 COMPLETE: `from sfgraph.storage import GraphStore, FalkorDBStore, VectorStore, ManifestStore` succeeds
-- Stopped at: Completed 01-foundations-04-PLAN.md
+- Executed Plan 02-01: Node.js WASM IPC worker foundation
+- Created package.json with web-tree-sitter-sfapex@2.4.1 (WASM, no native compilation)
+- Created src/sfgraph/parser/worker/worker.js: readline NDJSON IPC, ping/pong, parse, memory ceiling
+- Created test fixtures simple.cls (valid Apex) and broken.cls (parse errors)
+- TDD: 5 tests RED → GREEN; 45/45 non-integration tests passing after addition
+- WASM API critical: root.hasError is PROPERTY not method (TypeError if called as function)
+- Plan 02-01 COMPLETE
 
 ### Next Session
 
-- Phase 1 is complete — ready for Phase 2 (ingestion pipeline)
-- Note: export PATH="/Users/anshulmehta/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" for uv/git access
-- FalkorDBStore requires a running FalkorDB server (Docker or native) for production use
-- FalkorDB tests use mock injection — no live server needed for tests
+- Phase 2, Plan 02 next: NodeParserPool (Python asyncio subprocess pool using worker.js)
+- worker.js is ready and verified; IPC protocol proven end-to-end
+- Note: export PATH="/Users/anshulmehta/.local/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+- Live tests require Docker: `docker compose -f docker-compose.test.yml up -d`
+- FalkorDB mock tests run without Docker: `uv run pytest -m "not integration"`
 
 ---
 
