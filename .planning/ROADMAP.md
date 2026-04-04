@@ -108,7 +108,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete | 2026-04-04 |
-| 2. Node.js Parser Pool + MCP Skeleton | 0/3 | Planned | - |
+| 2. Node.js Parser Pool + MCP Skeleton | 2/3 | In Progress|  |
 | 3. Ingestion Pipeline Core | 0/? | Not started | - |
 | 4. Remaining Parsers | 0/? | Not started | - |
 | 5. MCP Tools + Query Pipeline | 0/? | Not started | - |

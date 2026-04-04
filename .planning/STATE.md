@@ -3,21 +3,21 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_phase: 2 — Node.js Parser Pool + MCP Skeleton
-current_plan: "01 (completed) — Node.js WASM IPC worker foundation"
+current_plan: 02 (completed) — NodeParserPool asyncio subprocess pool
 status: in_progress
-last_updated: "2026-04-04T09:42:00Z"
+last_updated: "2026-04-04T10:33:00Z"
 progress:
-  total_phases: 6
+  total_phases: 2
   completed_phases: 1
   total_plans: 8
-  completed_plans: 6
-  percent: 25
+  completed_plans: 7
+  percent: 88
 ---
 
 # Project State: Salesforce Org Graph Analyzer
 
 **Last updated:** 2026-04-04
-**Session:** Plan 02-01 execution (Node.js WASM IPC worker foundation)
+**Session:** Plan 02-02 execution (NodeParserPool asyncio subprocess pool)
 
 ---
 
@@ -34,13 +34,13 @@ progress:
 ## Current Position
 
 **Current phase:** 2 — Node.js Parser Pool + MCP Skeleton
-**Current plan:** 01 (completed) — Node.js WASM IPC worker foundation
-**Status:** In progress (Phase 2, Plan 1 of 3 complete)
+**Current plan:** 02 (completed) — NodeParserPool asyncio subprocess pool
+**Status:** In progress (Phase 2, Plan 2 of 3 complete)
 
 **Progress:**
-```
+[█████████░] 88%
 Phase 1 [██████████] 100% (5/5 plans — COMPLETE)
-Phase 2 [███       ] 33%  (1/3 plans complete)
+Phase 2 [██████    ] 66%  (2/3 plans complete)
 Phase 3 [          ] 0%
 Phase 4 [          ] 0%
 Phase 5 [          ] 0%
@@ -69,6 +69,8 @@ Overall [██████░░░░] ~25%
 | 01-foundations | P04 | 18 min | 2 | 5 |
 | 01-foundations | P05 | 8 min | 3 | 4 |
 | 02-nodejs-parser-pool | P01 | 12 min | 2 | 9 |
+| 02-nodejs-parser-pool | P02 | 15 min | 2 | 2 |
+| Phase 02-nodejs-parser-pool-mcp-skeleton P02 | 15 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -88,6 +90,8 @@ Overall [██████░░░░] ~25%
 | web-tree-sitter-sfapex (WASM) over tree-sitter-sfapex (native) | No Xcode license agreement or node-gyp required; WASM works on Node 22/25; maintained by same author |
 | root.hasError is a PROPERTY not a method in WASM API | Calling root.hasError() throws TypeError; root.hasError (no parens) returns boolean — APEX-10 guard |
 | extractRawFacts stub in Phase 2 returns class_declaration count only | Full CST traversal deferred to Phase 3; Phase 2 validates IPC protocol correctness first |
+| Timeout in NodeParserPool triggers worker replacement (not just error return) | Avoids stale IPC response contamination — timed-out response would corrupt next request's JSON parsing |
+| Per-worker asyncio.Semaphore(1) for parse serialization | Simpler than global asyncio.Queue; correct per-worker access serialization with fallback to first worker if all busy |
 | Node.js 22 LTS (/opt/homebrew/opt/node@22/bin/node) pinned as worker runtime | WASM compatibility guaranteed on LTS; system node (v25) also works but LTS is documented support target |
 | Three-agent query pipeline | Schema Filter reduces token cost 20-40x vs full schema injection |
 | Python 3.12 hard requirement | FalkorDBLite 0.9.0 hard dependency; enforced in pyproject.toml |
@@ -143,19 +147,19 @@ None currently.
 
 ### Last Session (2026-04-04)
 
-- Executed Plan 02-01: Node.js WASM IPC worker foundation
-- Created package.json with web-tree-sitter-sfapex@2.4.1 (WASM, no native compilation)
-- Created src/sfgraph/parser/worker/worker.js: readline NDJSON IPC, ping/pong, parse, memory ceiling
-- Created test fixtures simple.cls (valid Apex) and broken.cls (parse errors)
-- TDD: 5 tests RED → GREEN; 45/45 non-integration tests passing after addition
-- WASM API critical: root.hasError is PROPERTY not method (TypeError if called as function)
-- Plan 02-01 COMPLETE
+- Executed Plan 02-02: NodeParserPool asyncio subprocess pool
+- Created src/sfgraph/parser/pool.py: full async pool with spawn, dispatch, health check, replace, shutdown
+- Created tests/parser/test_pool.py: 4 integration tests, all passing
+- TDD: 4 tests RED → GREEN; 40/40 non-integration tests still pass after addition
+- Timeout triggers worker replacement (not just error return) to prevent stale response contamination
+- Plan 02-02 COMPLETE
 
 ### Next Session
 
-- Phase 2, Plan 02 next: NodeParserPool (Python asyncio subprocess pool using worker.js)
-- worker.js is ready and verified; IPC protocol proven end-to-end
+- Phase 2, Plan 03 next: ParseDispatcher (extension-based routing to pool or Python parsers)
+- NodeParserPool is ready and verified end-to-end
 - Note: export PATH="/Users/anshulmehta/.local/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+- Use /opt/homebrew/bin/git for all commits (Xcode license blocks /usr/bin/git)
 - Live tests require Docker: `docker compose -f docker-compose.test.yml up -d`
 - FalkorDB mock tests run without Docker: `uv run pytest -m "not integration"`
 

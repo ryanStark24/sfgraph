@@ -20,10 +20,10 @@
 
 - [x] **POOL-01**: Persistent Node.js subprocess pool loads tree-sitter-sfapex and tree-sitter-javascript grammars once at startup
 - [x] **POOL-02**: Python↔Node.js IPC uses newline-delimited JSON over stdin/stdout (request: `{requestId, grammar, filePath, fileContent}`, response: `{requestId, ok, payload, error}`)
-- [ ] **POOL-03**: Pool scales to min(cpu_count, 8) workers; each worker stays alive across files (no per-file spawn)
-- [ ] **POOL-04**: Worker health check: Python sends `{type:"ping"}` every 30s; no `{type:"pong"}` within 5s → replace worker
+- [x] **POOL-03**: Pool scales to min(cpu_count, 8) workers; each worker stays alive across files (no per-file spawn)
+- [x] **POOL-04**: Worker health check: Python sends `{type:"ping"}` every 30s; no `{type:"pong"}` within 5s → replace worker
 - [x] **POOL-05**: Workers restart after processing 200 files (prevents Node.js heap accumulation on large orgs)
-- [ ] **POOL-06**: Per-file timeout of 10s; timeout returns `{ok:false, error:"timeout"}` without killing the worker
+- [x] **POOL-06**: Per-file timeout of 10s; timeout returns `{ok:false, error:"timeout"}` without killing the worker
 - [ ] **POOL-07**: ParseDispatcher routes `.cls`/`.trigger`/`.js` files to Node.js pool; all other file types to Python parsers
 
 ### Ingestion Pipeline
