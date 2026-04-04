@@ -9,7 +9,7 @@
 
 - [x] **FOUND-01**: Project runs on Python 3.12+ with `requires-python = ">=3.12"` enforced in pyproject.toml (FalkorDBLite hard requirement)
 - [ ] **FOUND-02**: FalkorDBLite 0.9.0 initializes and accepts Cypher read/write via GraphStore abstraction layer
-- [ ] **FOUND-03**: GraphStore Protocol (ABC) decouples all ingestion and query logic from FalkorDB-specific API
+- [x] **FOUND-03**: GraphStore Protocol (ABC) decouples all ingestion and query logic from FalkorDB-specific API
 - [ ] **FOUND-04**: FalkorDB writes are serialized through a single asyncio queue (prevents graph corruption on concurrent writes)
 - [ ] **FOUND-05**: Qdrant local vector index initializes and supports upsert + query operations via VectorStore abstraction
 - [x] **FOUND-06**: SQLite manifest store tracks per-file SHA-256, ingestion phase (PENDING/NODES_WRITTEN/EDGES_WRITTEN/FAILED), and run status
