@@ -202,10 +202,10 @@
 | OSS-01 – OSS-04 | Phase 6 | Pending |
 
 **Coverage:**
-- v1 requirements: 77 total
-- Mapped to phases: 77
+- v1 requirements: 99 total
+- Mapped to phases: 99
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-04*
-*Last updated: 2026-04-04 after initial definition*
+*Last updated: 2026-04-04 after roadmap creation (coverage count corrected to 99)*
