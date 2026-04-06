@@ -120,6 +120,7 @@ class NodeParserPool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(Path(WORKER_JS).parent.parent.parent.parent.parent),
+            env=os.environ.copy(),
         )
         worker = _Worker(proc=proc)
         worker.stderr_task = asyncio.create_task(self._capture_stderr(worker))

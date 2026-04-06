@@ -81,6 +81,25 @@ function run(command, args, options = {}) {
   return result;
 }
 
+function resolveNodeModulesDir() {
+  const candidates = [];
+  try {
+    const pkgPath = require.resolve("web-tree-sitter-sfapex/package.json");
+    candidates.push(path.dirname(path.dirname(pkgPath)));
+  } catch (_error) {
+    // Ignore and fall back to common layouts below.
+  }
+  candidates.push(path.join(__dirname, "..", "node_modules"));
+  candidates.push(path.join(process.cwd(), "node_modules"));
+
+  for (const candidate of candidates) {
+    if (candidate && fileExists(path.join(candidate, "web-tree-sitter-sfapex", "package.json"))) {
+      return candidate;
+    }
+  }
+  throw new Error("Unable to resolve node_modules path for web-tree-sitter-sfapex.");
+}
+
 function resolvePythonBootstrapCommand() {
   const candidates = [
     { command: "python3.12", args: ["--version"] },
@@ -183,7 +202,7 @@ function bootstrapRuntime(runtimeDir, packageSpec, reinstall) {
 }
 
 function startServer(pythonPath) {
-  const nodePath = path.join(__dirname, "..", "node_modules");
+  const nodePath = resolveNodeModulesDir();
   const workspaceRoot = process.cwd();
   const workspaceHash = crypto.createHash("sha1").update(workspaceRoot).digest("hex").slice(0, 12);
   const dataDir = path.join(DEFAULT_RUNTIME_DIR, "workspaces", workspaceHash, "data");
