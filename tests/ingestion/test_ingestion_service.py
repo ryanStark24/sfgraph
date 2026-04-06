@@ -360,6 +360,20 @@ def test_discover_files_skips_tooling_dirs(svc, tmp_path):
     assert str(bad) not in discovered
 
 
+def test_discover_files_skips_non_vlocity_json(svc, tmp_path):
+    service, _, _, _ = svc
+    included = tmp_path / "vlocity" / "DataRaptor" / "AccountExtract_DataPack.json"
+    skipped = tmp_path / "files" / "ProductChildItems.json"
+    included.parent.mkdir(parents=True, exist_ok=True)
+    skipped.parent.mkdir(parents=True, exist_ok=True)
+    included.write_text('{"VlocityDataPackType":"DataRaptor"}', encoding="utf-8")
+    skipped.write_text('{"arbitrary": true}', encoding="utf-8")
+
+    discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
+    assert str(included) in discovered
+    assert str(skipped) not in discovered
+
+
 @pytest.mark.asyncio
 async def test_refresh_includes_affected_neighbor_files(svc):
     service, _, manifest, _ = svc

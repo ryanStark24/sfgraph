@@ -9,24 +9,24 @@ from sfgraph.ingestion.models import NodeFact, EdgeFact, IngestionSummary
 
 
 def test_node_types_count():
-    """GRAPH-01: exactly 23 node types."""
-    assert len(NODE_TYPES) == 23
+    """GRAPH-01: canonical node type count."""
+    assert len(NODE_TYPES) == 24
 
 def test_node_types_contains_all_required():
     required = {
         "SFObject", "SFField", "ApexClass", "ApexMethod", "ApexTrigger",
         "LWCComponent", "LWCProperty", "Flow", "FlowElement",
         "IntegrationProcedure", "IPElement", "IPVariable", "OmniScript",
-        "DataRaptor", "CustomLabel", "CustomSetting", "CustomMetadataType",
+        "DataRaptor", "VlocityDataPack", "CustomLabel", "CustomSetting", "CustomMetadataType",
         "CustomMetadataRecord", "CustomMetadataField", "SFPicklistValue",
         "GlobalValueSet", "PlatformEvent", "ExternalNamespace",
     }
     assert required == set(NODE_TYPES)
 
 def test_node_write_order_contains_all_node_types():
-    """INGEST-02: write order must include all 23 node types."""
+    """INGEST-02: write order must include all node types."""
     assert set(NODE_WRITE_ORDER) == set(NODE_TYPES)
-    assert len(NODE_WRITE_ORDER) == 23
+    assert len(NODE_WRITE_ORDER) == 24
 
 def test_node_write_order_sfobject_first():
     """SFObject must be first so fields can reference it."""

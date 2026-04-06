@@ -21,7 +21,7 @@ from sfgraph.parser.flow_parser import parse_flow_xml
 from sfgraph.parser.lwc_parser import parse_lwc_file
 from sfgraph.parser.object_parser import parse_labels_xml, parse_object_dir
 from sfgraph.parser.pool import NodeParserPool
-from sfgraph.parser.vlocity_parser import parse_vlocity_json
+from sfgraph.parser.vlocity_parser import is_vlocity_datapack_file, parse_vlocity_json
 from sfgraph.storage.base import GraphStore
 from sfgraph.storage.manifest_store import ManifestStore
 from sfgraph.storage.vector_store import VectorStore
@@ -649,24 +649,29 @@ class IngestionService:
     def _discover_files(self, export_path: Path) -> dict[str, str]:
         """Discover ingestion targets and compute their SHA-256 digest."""
         files: dict[str, str] = {}
-        suffixes = (
-            ".cls",
-            ".trigger",
-            ".js",
-            ".html",
-            ".json",
-            ".object-meta.xml",
-            ".flow-meta.xml",
-            ".labels-meta.xml",
-            ".label-meta.xml",
-        )
         for path in sorted(export_path.rglob("*")):
             if not path.is_file():
                 continue
             if any(part in self.SKIP_DIR_NAMES for part in path.parts):
                 continue
-            if any(path.name.endswith(sfx) for sfx in suffixes):
-                files[str(path)] = _sha256(str(path))
+            if path.suffix == ".json":
+                if not is_vlocity_datapack_file(path):
+                    continue
+            elif not any(
+                path.name.endswith(sfx)
+                for sfx in (
+                    ".cls",
+                    ".trigger",
+                    ".js",
+                    ".html",
+                    ".object-meta.xml",
+                    ".flow-meta.xml",
+                    ".labels-meta.xml",
+                    ".label-meta.xml",
+                )
+            ):
+                continue
+            files[str(path)] = _sha256(str(path))
         return files
 
     @staticmethod
@@ -694,7 +699,7 @@ class IngestionService:
             return "object"
         if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
             return "labels"
-        if path.suffix == ".json":
+        if path.suffix == ".json" and is_vlocity_datapack_file(path):
             return "vlocity"
         return "unknown"
 
@@ -1094,12 +1099,11 @@ class IngestionService:
         path = Path(fpath)
 
         if path.suffix in {".cls", ".trigger"}:
-            content = path.read_text(encoding="utf-8", errors="replace")
-            result = await self._pool.parse(fpath, "apex", content)
+            result = await self._pool.parse(fpath, "apex")
             if not result.get("ok") and str(result.get("error", "")) in TRANSIENT_WORKER_ERRORS:
                 # One retry for transient parser worker lifecycle events.
                 await asyncio.sleep(0.05)
-                result = await self._pool.parse(fpath, "apex", content)
+                result = await self._pool.parse(fpath, "apex")
             if not result.get("ok"):
                 error = str(result.get("error") or "worker_parse_failed")
                 payload = result.get("payload")
@@ -1145,7 +1149,7 @@ class IngestionService:
         if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
             return parse_labels_xml(fpath)
 
-        if path.suffix == ".json":
+        if path.suffix == ".json" and is_vlocity_datapack_file(path):
             return parse_vlocity_json(fpath)
 
         return [], []

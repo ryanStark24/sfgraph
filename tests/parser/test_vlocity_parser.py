@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from sfgraph.ingestion.constants import EDGE_CATEGORIES
-from sfgraph.parser.vlocity_parser import VlocityParser, parse_vlocity_json
+from sfgraph.parser.vlocity_registry import SUPPORTED_VLOCITY_DATAPACK_TYPES
+from sfgraph.parser.vlocity_parser import VlocityParser, is_vlocity_datapack_file, parse_vlocity_json
 
 
 def _write_json(path: Path, payload: dict):
@@ -183,3 +184,41 @@ def test_all_edge_categories_valid(tmp_path):
     _, edges = parse_vlocity_json(str(file))
     for edge in edges:
         assert edge.edgeCategory in EDGE_CATEGORIES
+
+
+def test_unknown_vlocity_pack_type_still_emits_generic_node(tmp_path):
+    file = tmp_path / "ProductChildItems_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "ProductChildItems",
+            "Name": "FacultyAddon",
+            "ApexClassName": "CatalogService",
+            "IntegrationProcedureName": "SyncCatalog",
+        },
+    )
+
+    nodes, edges = parse_vlocity_json(str(file))
+    assert any(n.label == "VlocityDataPack" for n in nodes)
+    assert any(n.all_props.get("dataPackType") == "ProductChildItems" for n in nodes)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "ApexClass" and e.dst_qualified_name == "CatalogService" for e in edges)
+    assert any(
+        e.rel_type == "CALLS"
+        and e.dst_label == "IntegrationProcedure"
+        and e.dst_qualified_name == "SyncCatalog"
+        for e in edges
+    )
+
+
+def test_vlocity_candidate_detection_accepts_generic_datapack_names(tmp_path):
+    candidate = tmp_path / "files" / "ProductChildItems_DataPack.json"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("{}", encoding="utf-8")
+    assert is_vlocity_datapack_file(candidate) is True
+
+
+def test_supported_vlocity_registry_matches_upstream_inventory_size():
+    assert len(SUPPORTED_VLOCITY_DATAPACK_TYPES) == 55
+    assert "DataRaptor" in SUPPORTED_VLOCITY_DATAPACK_TYPES
+    assert "OmniScript" in SUPPORTED_VLOCITY_DATAPACK_TYPES
+    assert "VlocityUITemplate" in SUPPORTED_VLOCITY_DATAPACK_TYPES

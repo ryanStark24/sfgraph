@@ -6,7 +6,7 @@ import from this module — never hardcode strings elsewhere.
 """
 from __future__ import annotations
 
-# GRAPH-01: All 23 node types from design doc §7.1
+# GRAPH-01: Canonical node types used by the graph.
 NODE_TYPES: list[str] = [
     "SFObject",
     "SFField",
@@ -22,6 +22,7 @@ NODE_TYPES: list[str] = [
     "IPVariable",
     "OmniScript",
     "DataRaptor",
+    "VlocityDataPack",
     "CustomLabel",
     "CustomSetting",
     "CustomMetadataType",
@@ -54,6 +55,7 @@ NODE_WRITE_ORDER: list[str] = [
     "IPVariable",
     "OmniScript",
     "DataRaptor",
+    "VlocityDataPack",
     "SFPicklistValue",
     "GlobalValueSet",
     "PlatformEvent",
@@ -122,6 +124,7 @@ NODE_TYPE_DESCRIPTIONS: dict[str, str] = {
     "IPVariable": "A variable within an IntegrationProcedure",
     "OmniScript": "A Vlocity OmniScript",
     "DataRaptor": "A Vlocity DataRaptor (Extract, Load, or Transform)",
+    "VlocityDataPack": "A generic Vlocity/OmniStudio DataPack with baseline metadata extraction",
     "CustomLabel": "A Salesforce Custom Label",
     "CustomSetting": "A Salesforce Custom Setting object",
     "CustomMetadataType": "A Custom Metadata Type (__mdt) definition",

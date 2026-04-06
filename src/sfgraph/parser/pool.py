@@ -166,7 +166,7 @@ class NodeParserPool:
         return worker
 
     async def parse(
-        self, file_path: str, grammar: str, file_content: str
+        self, file_path: str, grammar: str, file_content: str | None = None
     ) -> dict:
         """Dispatch a parse request to an available worker.
 
@@ -199,7 +199,7 @@ class NodeParserPool:
             return await self._dispatch(chosen, file_path, grammar, file_content)
 
     async def _dispatch(
-        self, worker: _Worker, file_path: str, grammar: str, content: str
+        self, worker: _Worker, file_path: str, grammar: str, content: str | None
     ) -> dict:
         """Send a parse request to a specific worker and await its response.
 
@@ -220,8 +220,11 @@ class NodeParserPool:
             "requestId": request_id,
             "grammar": grammar,
             "filePath": file_path,
-            "fileContent": content,
         }
+        # Large Apex files can exceed the pipe's record limit if we inline content.
+        # Prefer disk reads in worker.js when the source file exists locally.
+        if content is not None and not Path(file_path).exists():
+            request["fileContent"] = content
         line = json.dumps(request) + "\n"
         try:
             if worker.proc.stdin is None or worker.proc.stdout is None:

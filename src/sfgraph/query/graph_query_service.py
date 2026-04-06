@@ -567,7 +567,7 @@ class GraphQueryService:
             return "UI"
         if label in {"Flow", "FlowElement", "OmniScript"}:
             return "FLOW"
-        if label in {"IntegrationProcedure", "IPElement", "IPVariable", "DataRaptor"}:
+        if label in {"IntegrationProcedure", "IPElement", "IPVariable", "DataRaptor", "VlocityDataPack"}:
             return "DATA_PIPELINE"
         if label in {"ApexClass", "ApexMethod", "ApexTrigger"}:
             return "APEX"

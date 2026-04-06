@@ -60,8 +60,7 @@ def test_parse_valid_apex_returns_ok_true():
     req = {
         "requestId": "test-parse-1",
         "grammar": "apex",
-        "filePath": "simple.cls",
-        "fileContent": SIMPLE_CLS_CONTENT,
+        "filePath": str(FIXTURES / "simple.cls"),
     }
     responses = _send_request([req])
     assert len(responses) == 1
@@ -77,8 +76,7 @@ def test_parse_broken_apex_returns_parse_error():
     req = {
         "requestId": "test-broken-1",
         "grammar": "apex",
-        "filePath": "broken.cls",
-        "fileContent": BROKEN_CLS_CONTENT,
+        "filePath": str(FIXTURES / "broken.cls"),
     }
     responses = _send_request([req])
     assert len(responses) == 1
@@ -96,8 +94,7 @@ def test_multiple_requests_correlated_by_request_id():
         {
             "requestId": "multi-2",
             "grammar": "apex",
-            "filePath": "simple.cls",
-            "fileContent": SIMPLE_CLS_CONTENT,
+            "filePath": str(FIXTURES / "simple.cls"),
         },
     ]
     responses = _send_request(requests)
@@ -105,3 +102,16 @@ def test_multiple_requests_correlated_by_request_id():
     by_id = {r["requestId"]: r for r in responses}
     assert by_id["multi-1"]["type"] == "pong"
     assert by_id["multi-2"]["ok"] is True
+
+
+def test_parse_valid_apex_still_supports_inline_content():
+    """Worker remains backward compatible with inline fileContent callers."""
+    req = {
+        "requestId": "test-inline-1",
+        "grammar": "apex",
+        "filePath": "simple.cls",
+        "fileContent": SIMPLE_CLS_CONTENT,
+    }
+    responses = _send_request([req])
+    assert len(responses) == 1
+    assert responses[0]["ok"] is True

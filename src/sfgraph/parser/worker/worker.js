@@ -6,6 +6,7 @@
 
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('readline');
 
@@ -274,7 +275,9 @@ function handleLine(line) {
       process.exit(0);
     }
 
-    const content = msg.fileContent || '';
+    const content = typeof msg.fileContent === 'string'
+      ? msg.fileContent
+      : fs.readFileSync(msg.filePath, 'utf8');
     const tree = apexParser.parse(content);
     const root = tree.rootNode;
 

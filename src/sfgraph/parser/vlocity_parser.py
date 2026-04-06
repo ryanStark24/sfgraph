@@ -11,8 +11,55 @@ from pathlib import Path
 from typing import Any
 
 from sfgraph.ingestion.models import EdgeFact, NodeFact
+from sfgraph.parser.vlocity_registry import (
+    SUPPORTED_VLOCITY_DATAPACK_TYPE_HINTS,
+    SUPPORTED_VLOCITY_DATAPACK_TYPE_SET,
+)
 
 _MERGE_FIELD_RE = re.compile(r"%([A-Za-z0-9_]+):([A-Za-z0-9_]+)%")
+_VLOCITY_NAME_HINTS = SUPPORTED_VLOCITY_DATAPACK_TYPE_HINTS + (
+    "datapack",
+    "datapacks",
+    "vlocity",
+    "omnistudio",
+)
+
+
+def is_vlocity_datapack_file(file_path: str | Path) -> bool:
+    path = Path(file_path)
+    lower_name = path.name.lower()
+    lower_parts = [part.lower() for part in path.parts]
+    if lower_name.endswith("_datapack.json"):
+        return True
+    if any(hint in lower_name for hint in _VLOCITY_NAME_HINTS):
+        return True
+    return any(hint in part for part in lower_parts for hint in _VLOCITY_NAME_HINTS)
+
+
+def _first_string(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _safe_pack_type_for_qname(pack_type: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", pack_type.strip())
+    return cleaned or "Unknown"
+
+
+def _iter_keyed_strings(value: Any, key_path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], str]]:
+    hits: list[tuple[tuple[str, ...], str]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str):
+                hits.extend(_iter_keyed_strings(item, key_path + (key,)))
+    elif isinstance(value, list):
+        for item in value:
+            hits.extend(_iter_keyed_strings(item, key_path))
+    elif isinstance(value, str) and value.strip():
+        hits.append((key_path, value.strip()))
+    return hits
 
 
 def _normalize_namespace(value: str, namespace: str) -> str:
@@ -31,12 +78,9 @@ def _pack_type(data: dict[str, Any], file_path: str) -> str:
             return item
 
     lower_name = Path(file_path).name.lower()
-    if "integrationprocedure" in lower_name:
-        return "IntegrationProcedure"
-    if "dataraptor" in lower_name:
-        return "DataRaptor"
-    if "omniscript" in lower_name:
-        return "OmniScript"
+    for supported in SUPPORTED_VLOCITY_DATAPACK_TYPE_SET:
+        if supported.lower() in lower_name:
+            return supported
     return ""
 
 
@@ -301,6 +345,86 @@ def _parse_omniscript(
     return nodes, edges
 
 
+def _parse_generic_datapack(
+    data: dict[str, Any],
+    source_file: str,
+    namespace: str,
+    pack_type: str,
+) -> tuple[list[NodeFact], list[EdgeFact]]:
+    nodes: list[NodeFact] = []
+    edges: list[EdgeFact] = []
+
+    name = _first_string(
+        data.get("Name"),
+        data.get("DeveloperName"),
+        data.get("MasterLabel"),
+        data.get("GlobalKey"),
+        data.get("Id"),
+        Path(source_file).stem,
+    )
+    safe_pack_type = _safe_pack_type_for_qname(pack_type)
+    qualified_name = f"{safe_pack_type}.{name}"
+
+    nodes.append(
+        _node(
+            "VlocityDataPack",
+            qualified_name,
+            {
+                "name": name,
+                "dataPackType": pack_type,
+                "subType": _first_string(data.get("SubType"), data.get("subType")),
+                "sobjectType": _first_string(
+                    data.get("VlocityRecordSObjectType"),
+                    data.get("SObjectType"),
+                    data.get("sObjectType"),
+                    data.get("ObjectType"),
+                    data.get("objectType"),
+                ),
+                "globalKey": _first_string(data.get("GlobalKey")),
+                "namespace": namespace,
+            },
+            source_file,
+        )
+    )
+
+    seen_edges: set[tuple[str, str, str]] = set()
+    for key_path, raw_value in _iter_keyed_strings(data):
+        normalized = _normalize_namespace(raw_value, namespace)
+        lower_path = [part.lower() for part in key_path]
+        if not lower_path:
+            continue
+        dest_label = ""
+        if any("integrationprocedure" in part for part in lower_path):
+            dest_label = "IntegrationProcedure"
+        elif any("dataraptor" in part for part in lower_path):
+            dest_label = "DataRaptor"
+        elif any("omniscript" in part for part in lower_path):
+            dest_label = "OmniScript"
+        elif any("apex" in part or part == "classname" or part == "class" for part in lower_path):
+            dest_label = "ApexClass"
+        if not dest_label:
+            continue
+        edge_key = ("CALLS", dest_label, normalized)
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        edges.append(
+            _edge(
+                qualified_name,
+                "VlocityDataPack",
+                "CALLS",
+                normalized,
+                dest_label,
+                0.65,
+                "heuristic",
+                "CONFIG",
+                ".".join(key_path[-3:]) or pack_type,
+            )
+        )
+
+    return nodes, edges
+
+
 def parse_vlocity_json(file_path: str, namespace: str = "vlocity_cmt") -> tuple[list[NodeFact], list[EdgeFact]]:
     """Parse one Vlocity JSON DataPack file."""
     path = Path(file_path)
@@ -312,14 +436,15 @@ def parse_vlocity_json(file_path: str, namespace: str = "vlocity_cmt") -> tuple[
     if not isinstance(data, dict):
         return [], []
 
-    ptype = _pack_type(data, file_path).lower()
+    raw_pack_type = _pack_type(data, file_path)
+    ptype = raw_pack_type.lower()
     if ptype == "integrationprocedure":
         return _parse_integration_procedure(data, file_path, namespace)
     if ptype == "dataraptor":
         return _parse_data_raptor(data, file_path, namespace)
     if ptype == "omniscript":
         return _parse_omniscript(data, file_path)
-    return [], []
+    return _parse_generic_datapack(data, file_path, namespace, raw_pack_type or "Unknown")
 
 
 class VlocityParser:

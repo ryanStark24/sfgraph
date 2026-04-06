@@ -16,6 +16,8 @@ import pytest
 from sfgraph.parser.pool import NodeParserPool
 
 FIXTURES = Path(__file__).parent / "fixtures"
+SIMPLE_CLS_PATH = str((FIXTURES / "simple.cls").resolve())
+BROKEN_CLS_PATH = str((FIXTURES / "broken.cls").resolve())
 SIMPLE_CLS = (FIXTURES / "simple.cls").read_text()
 BROKEN_CLS = (FIXTURES / "broken.cls").read_text()
 
@@ -27,7 +29,7 @@ async def test_pool_starts_and_parses_apex_file():
     pool = NodeParserPool(size=1)
     await pool.start()
     try:
-        result = await pool.parse("simple.cls", "apex", SIMPLE_CLS)
+        result = await pool.parse(SIMPLE_CLS_PATH, "apex")
         assert result["ok"] is True
         assert result["payload"] is not None
     finally:
@@ -41,7 +43,7 @@ async def test_pool_parse_error_returns_ok_false():
     pool = NodeParserPool(size=1)
     await pool.start()
     try:
-        result = await pool.parse("broken.cls", "apex", BROKEN_CLS)
+        result = await pool.parse(BROKEN_CLS_PATH, "apex")
         assert result["ok"] is False
         assert result["error"] == "parse_error"
     finally:
