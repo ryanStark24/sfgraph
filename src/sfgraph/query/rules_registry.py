@@ -17,6 +17,8 @@ class RulesRegistry:
         path = Path(config_path) if config_path else self.DEFAULT_PATH
         self._path = path
         self._raw: dict[str, Any] = {}
+        self._semantic_rules: list[dict[str, str]] = []
+        self._aliases: dict[str, str] = {}
         if not path.exists():
             return
 
@@ -28,7 +30,6 @@ class RulesRegistry:
         self._raw = payload if isinstance(payload, dict) else {}
 
         semantic_rules = self._raw.get("semantic_overrides", [])
-        self._semantic_rules: list[dict[str, str]] = []
         if isinstance(semantic_rules, list):
             for rule in semantic_rules:
                 if not isinstance(rule, dict):
@@ -46,7 +47,6 @@ class RulesRegistry:
                 )
 
         aliases = self._raw.get("aliases", {})
-        self._aliases: dict[str, str] = {}
         if isinstance(aliases, dict):
             for key, value in aliases.items():
                 key_str = str(key).strip().lower()
