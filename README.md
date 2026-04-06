@@ -162,6 +162,18 @@ This MCP works with IDEs and MCP clients that support `stdio` servers. The most 
 
 Detailed setup examples for Cursor, VS Code MCP clients, Claude Desktop, and other `stdio`-based clients are in [`docs/IDE_SETUP.md`](docs/IDE_SETUP.md).
 
+## VS Code Extension
+
+A companion VS Code extension now lives in [`extensions/vscode-sfgraph`](extensions/vscode-sfgraph).
+
+It provides:
+
+- a status bar control to start and stop the MCP server
+- a command to run `uv sync` and `npm install`
+- a command to write `.cursor/mcp.json` for the active workspace
+
+This is the right place to add UI for server lifecycle inside VS Code. For other IDEs, we can generate config files when the IDE stores MCP settings on disk, but we cannot directly inject tools into every IDE unless it exposes a supported config or extension API.
+
 ## Typical Workflow
 
 1. Export Salesforce metadata into a local project folder.

@@ -1,0 +1,55 @@
+{
+  "name": "sfgraph-vscode",
+  "displayName": "sfgraph",
+  "description": "VS Code companion for the sfgraph MCP server.",
+  "version": "0.0.1",
+  "publisher": "ryanstark24",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onCommand:sfgraph.installDependencies",
+    "onCommand:sfgraph.startServer",
+    "onCommand:sfgraph.stopServer",
+    "onCommand:sfgraph.writeCursorMcpConfig"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "sfgraph.installDependencies",
+        "title": "sfgraph: Install Dependencies"
+      },
+      {
+        "command": "sfgraph.startServer",
+        "title": "sfgraph: Start MCP Server"
+      },
+      {
+        "command": "sfgraph.stopServer",
+        "title": "sfgraph: Stop MCP Server"
+      },
+      {
+        "command": "sfgraph.writeCursorMcpConfig",
+        "title": "sfgraph: Write Cursor MCP Config"
+      }
+    ],
+    "configuration": {
+      "title": "sfgraph",
+      "properties": {
+        "sfgraph.repoPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the local sfgraph repository. Leave blank to auto-detect from the current workspace."
+        },
+        "sfgraph.serverName": {
+          "type": "string",
+          "default": "salesforce-lineage",
+          "description": "Client-facing MCP server name to write into generated config."
+        }
+      }
+    }
+  }
+}

@@ -68,6 +68,21 @@ If you are using a VS Code MCP client such as Cline or Roo Code, the config shap
 
 If the extension expects a JSON server block, reuse the same structure shown in the Cursor example.
 
+### VS Code Extension Option
+
+This repo also includes a companion VS Code extension at [`extensions/vscode-sfgraph`](../extensions/vscode-sfgraph/README.md).
+
+Use it when you want:
+
+- a one-click dependency install flow
+- a start/stop button for the local MCP server
+- automatic writing of `.cursor/mcp.json` for the current workspace
+
+Boundary:
+
+- the extension can manage local setup and write workspace config files
+- it cannot directly register MCP tools into arbitrary IDE extensions unless those extensions expose a writable config or API
+
 ## Claude Desktop
 
 Config file:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -84,7 +85,7 @@ async def _close_runtime(runtime: dict[str, Any]) -> None:
     await runtime["graph"].close()
 
 
-async def _cmd_serve(_args: argparse.Namespace) -> int:
+def _cmd_serve(_args: argparse.Namespace) -> int:
     from sfgraph.server import mcp
 
     mcp.run()
@@ -194,7 +195,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     func = args.func
-    return asyncio.run(func(args))
+    result = func(args)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return int(result)
 
 
 if __name__ == "__main__":
