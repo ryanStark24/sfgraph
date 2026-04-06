@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import subprocess
 import time
 from collections import defaultdict
@@ -649,29 +650,37 @@ class IngestionService:
     def _discover_files(self, export_path: Path) -> dict[str, str]:
         """Discover ingestion targets and compute their SHA-256 digest."""
         files: dict[str, str] = {}
-        for path in sorted(export_path.rglob("*")):
-            if not path.is_file():
+        root = export_path.resolve()
+        for current_root, dirs, filenames in os.walk(root, topdown=True):
+            current_path = Path(current_root)
+            dirs[:] = [d for d in dirs if d not in self.SKIP_DIR_NAMES]
+
+            # Skip nested repositories entirely. Export roots are allowed to be repos,
+            # but cloned repos inside the export tree should not be indexed.
+            if current_path != root and any((current_path / marker).exists() for marker in (".git", ".hg", ".svn")):
+                dirs[:] = []
                 continue
-            if any(part in self.SKIP_DIR_NAMES for part in path.parts):
-                continue
-            if path.suffix == ".json":
-                if not is_vlocity_datapack_file(path):
+
+            for filename in sorted(filenames):
+                path = current_path / filename
+                if path.suffix == ".json":
+                    if not is_vlocity_datapack_file(path):
+                        continue
+                elif not any(
+                    path.name.endswith(sfx)
+                    for sfx in (
+                        ".cls",
+                        ".trigger",
+                        ".js",
+                        ".html",
+                        ".object-meta.xml",
+                        ".flow-meta.xml",
+                        ".labels-meta.xml",
+                        ".label-meta.xml",
+                    )
+                ):
                     continue
-            elif not any(
-                path.name.endswith(sfx)
-                for sfx in (
-                    ".cls",
-                    ".trigger",
-                    ".js",
-                    ".html",
-                    ".object-meta.xml",
-                    ".flow-meta.xml",
-                    ".labels-meta.xml",
-                    ".label-meta.xml",
-                )
-            ):
-                continue
-            files[str(path)] = _sha256(str(path))
+                files[str(path)] = _sha256(str(path))
         return files
 
     @staticmethod

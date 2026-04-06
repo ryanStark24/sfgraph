@@ -88,7 +88,7 @@ What it does:
 - creates a cached Python virtual environment
 - installs the Python package into that environment
 - reuses the cached environment on later runs
-- injects the Apex parser Node dependency through `NODE_PATH`
+- injects the Apex parser Node dependency for the worker runtime
 
 Optional flags:
 
@@ -100,10 +100,17 @@ npx -y @ryanstark24/sfgraph-mcp --runtime-dir /custom/path
 
 ### Optional environment variables
 
-- `OPENAI_API_KEY`: optional, only for LLM-assisted query-agent behavior
+- `SFGRAPH_ALLOW_NETWORK=1`: explicitly allow outbound network access for optional features
+- `OPENAI_API_KEY`: optional, only for LLM-assisted query-agent behavior when `SFGRAPH_ALLOW_NETWORK=1`
 - `OPENAI_BASE_URL`: optional custom OpenAI-compatible base URL
 - `SFGRAPH_AGENT_MODEL`: optional model override, defaults to `gpt-4.1-mini`
 - `SFGRAPH_DISABLE_LLM_AGENTS=1`: force heuristic-only query behavior
+
+By default, `sfgraph` runs in local-only mode:
+
+- metadata parsing and graph storage stay on the local machine
+- LLM query-agent calls are disabled unless `SFGRAPH_ALLOW_NETWORK=1`
+- embedding model downloads are disabled unless `SFGRAPH_ALLOW_NETWORK=1`
 
 If no `OPENAI_API_KEY` is set, the core product still works. Ingest, trace, diff, impact analysis, and MCP tools do not depend on it.
 

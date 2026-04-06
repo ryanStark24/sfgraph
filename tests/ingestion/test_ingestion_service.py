@@ -374,6 +374,23 @@ def test_discover_files_skips_non_vlocity_json(svc, tmp_path):
     assert str(skipped) not in discovered
 
 
+def test_discover_files_skips_nested_git_repos(svc, tmp_path):
+    service, _, _, _ = svc
+    outer = tmp_path / "force-app" / "main" / "default" / "classes" / "Outer.cls"
+    nested_repo_root = tmp_path / "vendor" / "nested-repo"
+    nested_git = nested_repo_root / ".git"
+    nested_cls = nested_repo_root / "force-app" / "main" / "default" / "classes" / "Nested.cls"
+    outer.parent.mkdir(parents=True, exist_ok=True)
+    nested_git.mkdir(parents=True, exist_ok=True)
+    nested_cls.parent.mkdir(parents=True, exist_ok=True)
+    outer.write_text("public class Outer {}", encoding="utf-8")
+    nested_cls.write_text("public class Nested {}", encoding="utf-8")
+
+    discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
+    assert str(outer) in discovered
+    assert str(nested_cls) not in discovered
+
+
 @pytest.mark.asyncio
 async def test_refresh_includes_affected_neighbor_files(svc):
     service, _, manifest, _ = svc

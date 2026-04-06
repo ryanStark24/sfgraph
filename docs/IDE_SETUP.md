@@ -26,7 +26,12 @@ Then verify the server starts:
 PYTHONPATH=src .venv/bin/python -m sfgraph.server
 ```
 
-If you want optional LLM-assisted query behavior, also set `OPENAI_API_KEY`. It is not required for normal MCP usage.
+If you want optional LLM-assisted query behavior, set both:
+
+- `SFGRAPH_ALLOW_NETWORK=1`
+- `OPENAI_API_KEY`
+
+Neither is required for normal MCP usage.
 
 ## Cursor
 
@@ -53,7 +58,7 @@ Example:
 
 Notes:
 
-- Add `OPENAI_API_KEY` under `env` only if you want optional LLM query-agent support.
+- Add `SFGRAPH_ALLOW_NETWORK=1` and `OPENAI_API_KEY` under `env` only if you want optional LLM query-agent support.
 - The export directory you ingest must live inside the active workspace root because the MCP server enforces workspace-local paths.
 
 If you publish the npm bootstrap package, an `npx`-based config can be used instead:
