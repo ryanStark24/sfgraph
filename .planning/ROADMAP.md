@@ -63,7 +63,14 @@ Plans:
   5. A Flow fixture with a record operation, an Apex action call, and a `$Label` reference produces FLOW_CALLS_APEX, FLOW_READS_FIELD, and FLOW_RESOLVES_LABEL edges in the graph.
   6. The schema_index.json file is materialized after ingest and contains all node type names, property names, and connected edge type names present in the graph.
   7. All 23 node table types from design doc §7.1 exist as labeled nodes in FalkorDB; all edge category values are constrained to DATA_FLOW / CONTROL_FLOW / CONFIG / STRUCTURAL.
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — Graph schema constants (23 node types, edge catalog, EDGE_CATEGORIES) + NodeFact/EdgeFact Pydantic models + synthetic fixture tree (Account object, picklist field, formula field, flow, Apex class)
+- [ ] 03-02-PLAN.md — Object/Field XML parser: SFObject, SFField, SFPicklistValue, GlobalValueSet, PlatformEvent, CustomLabel, CustomSetting, CustomMetadataType nodes + FIELD_HAS_VALUE/FORMULA_DEPENDS_ON edges
+- [ ] 03-03-PLAN.md — Apex CST full traversal: expand worker.js extractRawFacts() + Python apex_extractor.py + DynamicAccessorRegistry (config/dynamic_accessors.yaml with fflib patterns)
+- [ ] 03-04-PLAN.md — Flow XML parser: Flow + FlowElement nodes + FLOW_CALLS_APEX/FLOW_READS_FIELD/FLOW_RESOLVES_LABEL/SUBSCRIBES_TO_EVENT/PUBLISHES_EVENT edges
+- [ ] 03-05-PLAN.md — IngestionService two-phase orchestrator + schema_index.py + ingest_org MCP tool wired into server.py
 
 ### Phase 4: Remaining Parsers
 **Goal**: LWC and Vlocity metadata is fully ingested into the graph, making the tool credible for enterprise orgs that depend on OmniStudio and LWC components.
@@ -108,12 +115,13 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete | 2026-04-04 |
-| 2. Node.js Parser Pool + MCP Skeleton | 3/3 | Complete   | 2026-04-04 |
-| 3. Ingestion Pipeline Core | 0/? | Not started | - |
+| 2. Node.js Parser Pool + MCP Skeleton | 3/3 | Complete | 2026-04-04 |
+| 2.1 DuckPGQ Migration | 1/1 | Complete | 2026-04-06 |
+| 3. Ingestion Pipeline Core | 2/5 | In Progress|  |
 | 4. Remaining Parsers | 0/? | Not started | - |
 | 5. MCP Tools + Query Pipeline | 0/? | Not started | - |
 | 6. Hardening + OSS Readiness | 0/? | Not started | - |
 
 ---
 *Roadmap created: 2026-04-04*
-*Last updated: 2026-04-04 — Phase 2 planned: 3 plans (02-01 through 02-03)*
+*Last updated: 2026-04-04 — Phase 3 planned: 5 plans (03-01 through 03-05) in 3 waves*
