@@ -298,6 +298,38 @@ async def test_ingest_retries_transient_worker_restarting(svc):
     assert summary.parse_failures == []
 
 
+@pytest.mark.asyncio
+async def test_ingest_retries_transient_worker_exited(svc):
+    service, _, _, pool = svc
+    ok_payload = {
+        "ok": True,
+        "payload": {
+            "filePath": "AccountService.cls",
+            "hasError": False,
+            "nodes": [
+                {
+                    "nodeType": "ApexClass",
+                    "name": "AccountService",
+                    "superclass": None,
+                    "interfaces": [],
+                    "annotations": [],
+                    "isTest": False,
+                    "startLine": 1,
+                }
+            ],
+            "potential_refs": [],
+        },
+    }
+    pool.parse = AsyncMock(
+        side_effect=[
+            {"ok": False, "error": "worker_exited", "payload": None},
+            ok_payload,
+        ]
+    )
+    summary = await service.ingest(FIXTURE_EXPORT)
+    assert summary.parse_failures == []
+
+
 def test_discover_files_skips_tooling_dirs(svc, tmp_path):
     service, _, _, _ = svc
     good = tmp_path / "force-app" / "main" / "default" / "classes" / "Good.cls"

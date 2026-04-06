@@ -27,6 +27,7 @@ from sfgraph.storage.manifest_store import ManifestStore
 from sfgraph.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
+TRANSIENT_WORKER_ERRORS = frozenset({"worker_restarting", "worker_exited", "timeout", "no_workers"})
 
 
 def _sha256(path: str) -> str:
@@ -1095,7 +1096,7 @@ class IngestionService:
         if path.suffix in {".cls", ".trigger"}:
             content = path.read_text(encoding="utf-8", errors="replace")
             result = await self._pool.parse(fpath, "apex", content)
-            if not result.get("ok") and str(result.get("error", "")) in {"worker_restarting", "timeout"}:
+            if not result.get("ok") and str(result.get("error", "")) in TRANSIENT_WORKER_ERRORS:
                 # One retry for transient parser worker lifecycle events.
                 await asyncio.sleep(0.05)
                 result = await self._pool.parse(fpath, "apex", content)

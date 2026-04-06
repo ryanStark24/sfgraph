@@ -43,3 +43,13 @@ def test_cli_serve_runs_without_asyncio_wrapping(monkeypatch):
 
     assert result == 0
     assert called["run"] == 1
+
+
+def test_cli_progress_help_exits_zero():
+    result = subprocess.run(
+        [sys.executable, "-m", "sfgraph.cli", "progress", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--data-dir" in result.stdout

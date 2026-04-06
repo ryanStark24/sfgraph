@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import logging
 import os
 import shutil
 import sys
@@ -21,6 +22,7 @@ from uuid import uuid4
 # Module-level constants
 NODE_BINARY = "/opt/homebrew/opt/node@22/bin/node"
 WORKER_JS = str(Path(__file__).parent / "worker" / "worker.js")
+logger = logging.getLogger(__name__)
 
 
 def _resolve_node() -> str:
@@ -172,8 +174,20 @@ class NodeParserPool:
             "fileContent": content,
         }
         line = json.dumps(request) + "\n"
-        worker.proc.stdin.write(line.encode())
-        await worker.proc.stdin.drain()
+        try:
+            if worker.proc.stdin is None or worker.proc.stdout is None:
+                asyncio.create_task(self._replace_worker(worker))
+                return {"ok": False, "error": "worker_exited", "payload": None}
+            worker.proc.stdin.write(line.encode())
+            await worker.proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            logger.warning("Worker IPC write failed for %s: %s", file_path, exc)
+            asyncio.create_task(self._replace_worker(worker))
+            return {"ok": False, "error": "worker_restarting", "payload": None}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Worker IPC unexpected write failure for %s: %s", file_path, exc)
+            asyncio.create_task(self._replace_worker(worker))
+            return {"ok": False, "error": "worker_restarting", "payload": None}
 
         try:
             raw = await asyncio.wait_for(
