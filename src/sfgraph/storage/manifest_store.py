@@ -9,7 +9,7 @@ Also tracks ingestion runs with phase completion flags for safe resume.
 import hashlib
 import time
 import uuid
-from typing import Dict
+from typing import Any, Dict
 
 import aiosqlite
 
@@ -153,6 +153,72 @@ class ManifestStore:
             (time.time(), int(phase_1_complete), int(phase_2_complete), run_id),
         )
         await self._conn.commit()
+
+    async def get_status_counts(self) -> dict[str, int]:
+        """Return counts of files by ingestion status."""
+        cursor = await self._conn.execute(
+            "SELECT status, COUNT(*) FROM files GROUP BY status"
+        )
+        rows = await cursor.fetchall()
+        counts = {status: count for status, count in rows}
+        for status in VALID_STATUSES:
+            counts.setdefault(status, 0)
+        return counts
+
+    async def get_pending_files(self, limit: int = 200) -> list[str]:
+        """Return files that are not yet fully ingested (status != EDGES_WRITTEN)."""
+        cursor = await self._conn.execute(
+            """
+            SELECT path
+            FROM files
+            WHERE status != 'EDGES_WRITTEN'
+            ORDER BY path
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+    async def get_latest_completed_run(self) -> dict[str, Any] | None:
+        """Return metadata for the most recently completed run, if any."""
+        cursor = await self._conn.execute(
+            """
+            SELECT run_id, started_at, completed_at, phase_1_complete, phase_2_complete, status
+            FROM runs
+            WHERE completed_at IS NOT NULL
+            ORDER BY completed_at DESC
+            LIMIT 1
+            """
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": row[0],
+            "started_at": row[1],
+            "completed_at": row[2],
+            "phase_1_complete": bool(row[3]),
+            "phase_2_complete": bool(row[4]),
+            "status": row[5],
+        }
+
+    async def delete_files(self, paths: list[str]) -> int:
+        """Delete file manifest entries. Returns deleted row count."""
+        if not paths:
+            return 0
+        cursor = await self._conn.executemany(
+            "DELETE FROM files WHERE path = ?",
+            [(path,) for path in paths],
+        )
+        await self._conn.commit()
+        # sqlite3 cursor.rowcount can be -1 for executemany; compute explicitly.
+        verify = await self._conn.execute(
+            "SELECT COUNT(*) FROM files WHERE path IN (%s)" % ",".join("?" * len(paths)),
+            paths,
+        )
+        remaining = (await verify.fetchone())[0]
+        return len(paths) - int(remaining)
 
     @staticmethod
     def compute_sha256(path: str) -> str:

@@ -15,20 +15,199 @@ let apexParser = null;
 let fileCount = 0;
 
 /**
- * extractRawFacts — Phase 2 stub. Phase 3 expands CST traversal.
+ * extractRawFacts — Full CST traversal for APEX-01 through APEX-09.
  * @param {object} root - tree-sitter root node
  * @param {string} filePath - source file path for context
  * @returns {object} raw facts payload
  */
 function extractRawFacts(root, filePath) {
-  const classes = root.descendantsOfType('class_declaration');
-  return {
-    filePath,
-    hasError: root.hasError,
-    nodeCount: classes.length,
-    nodes: [],
-    potential_refs: [],
-  };
+  // APEX-10 guard: hasError is a PROPERTY (boolean) NOT a method
+  if (root.hasError) {
+    return { filePath, hasError: true, nodes: [], potential_refs: [] };
+  }
+  const facts = { filePath, hasError: false, nodes: [], potential_refs: [] };
+
+  // APEX-01: class_declaration nodes
+  for (const cls of root.descendantsOfType('class_declaration')) {
+    const mods = cls.childForFieldName('modifiers');
+    const modsText = mods?.text ?? '';
+    const annotations = (mods?.descendantsOfType('annotation') ?? []).map(a => ({
+      name: a.descendantsOfType('identifier')[0]?.text ?? '',
+    }));
+    const isTest = annotations.some(a => a.name.toLowerCase() === 'istest')
+                   || modsText.toLowerCase().includes('testmethod');
+    const ifaceList = cls.childForFieldName('interfaces');
+    const interfaces = (ifaceList?.descendantsOfType('type_identifier') ?? []).map(t => t.text)
+      .concat((ifaceList?.descendantsOfType('scoped_type_identifier') ?? []).map(t => t.text));
+    facts.nodes.push({
+      nodeType: 'ApexClass',
+      name: cls.childForFieldName('name')?.text ?? '',
+      superclass: cls.childForFieldName('superclass')?.descendantsOfType('type_identifier')[0]?.text ?? null,
+      interfaces,
+      annotations: annotations.map(a => a.name),
+      isTest,
+      startLine: cls.startPosition.row + 1,
+    });
+    // APEX-02: methods inside class body
+    const body = cls.childForFieldName('body');
+    for (const method of (body?.descendantsOfType('method_declaration') ?? [])) {
+      const mMods = method.childForFieldName('modifiers');
+      const signatureHead = (method.text ?? '').split('(')[0].toLowerCase();
+      const modsNorm = ((mMods?.text ?? '') + ' ' + signatureHead).toLowerCase();
+      const modChildren = (mMods?.descendantsOfType('modifier') ?? []).map(m => m.text.toLowerCase());
+      const mAnnotations = (mMods?.descendantsOfType('annotation') ?? []).map(a =>
+        a.descendantsOfType('identifier')[0]?.text ?? '');
+      const visibility = modChildren.find(m => ['public', 'private', 'protected', 'global'].includes(m))
+        ?? (modsNorm.includes('public') ? 'public'
+          : modsNorm.includes('private') ? 'private'
+            : modsNorm.includes('protected') ? 'protected'
+              : modsNorm.includes('global') ? 'global'
+                : 'package');
+      const isStatic = modChildren.includes('static') || modsNorm.includes('static');
+      const params = [];
+      for (const p of (method.childForFieldName('parameters')?.descendantsOfType('formal_parameter') ?? [])) {
+        params.push({ type: p.childForFieldName('type')?.text ?? '', name: p.childForFieldName('name')?.text ?? '' });
+      }
+      facts.nodes.push({
+        nodeType: 'ApexMethod',
+        name: method.childForFieldName('name')?.text ?? '',
+        visibility, isStatic,
+        returnType: method.childForFieldName('type')?.text ?? method.childForFieldName('void_type')?.text ?? 'void',
+        parameters: params, annotations: mAnnotations,
+        startLine: method.startPosition.row + 1,
+      });
+    }
+  }
+
+  // APEX-03: SOQL — query_expression → soql_query_body (NOT soql_query)
+  for (const q of root.descendantsOfType('query_expression')) {
+    const outerBody = q.descendantsOfType('soql_query_body')[0];
+    if (!outerBody) continue;
+    const fromObjects = outerBody.descendantsOfType('from_clause')
+      .flatMap(f => f.descendantsOfType('storage_identifier').map(s => s.text));
+    const selectFields = (outerBody.descendantsOfType('select_clause')[0]
+      ?.descendantsOfType('field_identifier') ?? []).map(f => f.text);
+    const whereFields = (outerBody.descendantsOfType('where_clause')[0]
+      ?.descendantsOfType('field_identifier') ?? []).map(f => f.text);
+    const subqueryBodies = q.descendantsOfType('soql_query_body').slice(1);
+    const subqueryObjects = subqueryBodies.flatMap(b =>
+      b.descendantsOfType('from_clause').flatMap(f =>
+        f.descendantsOfType('storage_identifier').map(s => s.text)));
+    facts.potential_refs.push({
+      refType: 'SOQL', fromObjects, selectFields, whereFields, subqueryObjects,
+      startLine: q.startPosition.row + 1, contextSnippet: q.text.substring(0, 120),
+    });
+  }
+
+  // APEX-04: DML — namedChildren[0] NOT childForFieldName('dml_type')
+  for (const dml of root.descendantsOfType('dml_expression')) {
+    const dmlType = dml.namedChildren[0]?.text ?? 'unknown';
+    const secondChild = dml.namedChildren[1];
+    let targetType = null;
+    if (secondChild?.type === 'object_creation_expression') {
+      targetType = secondChild.childForFieldName('type')?.text;
+    }
+    facts.potential_refs.push({
+      refType: 'DML', dmlType, targetType,
+      startLine: dml.startPosition.row + 1, contextSnippet: dml.text.substring(0, 80),
+    });
+  }
+
+  // APEX-05/06/07/08: method_invocation
+  const systemClasses = new Set(['Database', 'Schema', 'System', 'Math', 'String', 'Date',
+    'DateTime', 'Limits', 'Test', 'UserInfo', 'ApexPages', 'PageReference']);
+  for (const mi of root.descendantsOfType('method_invocation')) {
+    const objNode = mi.childForFieldName('object');
+    const nameNode = mi.childForFieldName('name');
+    if (!objNode || !nameNode) continue;
+    const objText = objNode.text;
+    const methodName = nameNode.text;
+    const snippet = mi.text.substring(0, 100);
+    const line = mi.startPosition.row + 1;
+
+    // APEX-07: EventBus.publish
+    if (objText === 'EventBus' && methodName === 'publish') {
+      const args = mi.descendantsOfType('object_creation_expression');
+      const eventType = args[0]?.childForFieldName('type')?.text ?? 'unknown';
+      facts.potential_refs.push({ refType: 'PUBLISHES_EVENT', eventType, startLine: line, contextSnippet: snippet });
+      continue;
+    }
+
+    // APEX-08: external namespace calls
+    if (objText.includes('__') || objText.includes('.')) {
+      facts.potential_refs.push({
+        refType: 'CALLS_EXTERNAL',
+        namespace: objText.split('.')[0],
+        startLine: line,
+        contextSnippet: snippet,
+      });
+      continue;
+    }
+
+    // APEX-06: Custom Setting accessors
+    if (objText.endsWith('__c')) {
+      facts.potential_refs.push({
+        refType: 'READS_CUSTOM_SETTING',
+        settingType: objText,
+        method: methodName,
+        startLine: line,
+        contextSnippet: snippet,
+      });
+      continue;
+    }
+
+    // APEX-06: Custom Metadata accessors
+    if (objText.endsWith('__mdt')) {
+      facts.potential_refs.push({
+        refType: 'READS_CUSTOM_METADATA',
+        metadataType: objText,
+        method: methodName,
+        startLine: line,
+        contextSnippet: snippet,
+      });
+      continue;
+    }
+
+    // Skip known system classes for CALLS detection
+    if (!systemClasses.has(objText) && objNode.type === 'identifier') {
+      // APEX-05: cross-class call
+      facts.potential_refs.push({ refType: 'CALLS_CLASS_METHOD', targetClass: objText, method: methodName, startLine: line, contextSnippet: snippet });
+    }
+  }
+
+  // APEX-06: Custom Label — field_access (separate loop)
+  for (const fa of root.descendantsOfType('field_access')) {
+    const faObj = fa.childForFieldName('object');
+    const faField = fa.childForFieldName('field')?.text;
+    if (!faField) continue;
+    // System.Label.XXX: object is field_access where inner field == 'Label'
+    if (faObj?.type === 'field_access' && faObj.childForFieldName('field')?.text === 'Label') {
+      facts.potential_refs.push({ refType: 'READS_LABEL', labelName: faField, startLine: fa.startPosition.row + 1 });
+    }
+    // Label.XXX: object is identifier 'Label'
+    if (faObj?.type === 'identifier' && faObj?.text === 'Label') {
+      facts.potential_refs.push({ refType: 'READS_LABEL', labelName: faField, startLine: fa.startPosition.row + 1 });
+    }
+  }
+
+  // APEX-09: picklist comparison — binary_expression
+  for (const be of root.descendantsOfType('binary_expression')) {
+    const left = be.childForFieldName('left');
+    const right = be.childForFieldName('right');
+    if (!left || !right) continue;
+    if (left.type !== 'field_access' || right.type !== 'string_literal') continue;
+    const fieldName = left.childForFieldName('field')?.text;
+    const varName = left.childForFieldName('object')?.text;
+    const comparand = right.text.replace(/^'|'$/g, '');
+    if (fieldName) {
+      facts.potential_refs.push({
+        refType: 'PICKLIST_COMPARISON', varName, fieldName, comparand,
+        startLine: be.startPosition.row + 1, contextSnippet: be.text.substring(0, 80),
+      });
+    }
+  }
+
+  return facts;
 }
 
 /**

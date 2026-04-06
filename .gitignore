@@ -7,16 +7,21 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
+.uv-cache/
 
 # Distribution / packaging
 dist/
 build/
 *.egg-info/
+data/
+node_modules/
 
 # IDE
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo
 
@@ -28,3 +33,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# OpenMemory - IDE/Assistant specific rules
+.cursor/rules/openmemory.mdc
+CODEX_HANDOFF.md

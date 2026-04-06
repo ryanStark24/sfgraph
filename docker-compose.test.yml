@@ -1,0 +1,15 @@
+# docker-compose.test.yml
+# Spins up a FalkorDB server for @pytest.mark.integration live tests.
+# Usage: docker compose -f docker-compose.test.yml up -d
+#        uv run pytest -m integration
+#        docker compose -f docker-compose.test.yml down
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10

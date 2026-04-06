@@ -3,13 +3,26 @@ name = "sfgraph"
 version = "0.1.0"
 description = "Salesforce Org Graph Analyzer — static analysis via property graph"
 requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "sfgraph maintainers" },
+]
+keywords = ["salesforce", "mcp", "graph", "apex", "impact-analysis"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "qdrant-client==1.17.1",
     "fastembed==0.8.0",
     "aiosqlite==0.22.1",
     "pydantic>=2.0,<3.0",
     "mcp[cli]==1.27.0",
-    "falkordb>=1.6.0",
+    "duckdb>=1.0.0",
+    "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +46,9 @@ packages = ["src/sfgraph"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--cov=sfgraph --cov-report=term-missing"
+markers = [
+    "integration: marks tests that require an external service (FalkorDB server on localhost:6379). Deselect with -m 'not integration'.",
+]
 
 [tool.coverage.run]
 source = ["src/sfgraph"]

@@ -54,12 +54,12 @@
 
 ### Parsers — LWC
 
-- [ ] **LWC-01**: LWC JS parser extracts `@salesforce/apex/ClassName.methodName` wire imports → IMPORTS_APEX edge (callType=wire)
-- [ ] **LWC-02**: LWC JS parser detects imperative calls to imported Apex methods inside function bodies → IMPORTS_APEX edge (callType=imperative)
-- [ ] **LWC-03**: LWC JS parser extracts `@salesforce/label/c.LabelName` imports → LWC_RESOLVES_LABEL edge
-- [ ] **LWC-04**: LWC JS parser extracts `@wire(getRecord)` adapters: target SObject and fields array → WIRES_ADAPTER edges
-- [ ] **LWC-05**: LWC HTML parser extracts `<c-child-component>` tag usage → CONTAINS_CHILD edge
-- [ ] **LWC-06**: LWC HTML parser extracts `lightning-record-form` field references → WIRES_ADAPTER edges
+- [x] **LWC-01**: LWC JS parser extracts `@salesforce/apex/ClassName.methodName` wire imports → IMPORTS_APEX edge (callType=wire)
+- [x] **LWC-02**: LWC JS parser detects imperative calls to imported Apex methods inside function bodies → IMPORTS_APEX edge (callType=imperative)
+- [x] **LWC-03**: LWC JS parser extracts `@salesforce/label/c.LabelName` imports → LWC_RESOLVES_LABEL edge
+- [x] **LWC-04**: LWC JS parser extracts `@wire(getRecord)` adapters: target SObject and fields array → WIRES_ADAPTER edges
+- [x] **LWC-05**: LWC HTML parser extracts `<c-child-component>` tag usage → CONTAINS_CHILD edge
+- [x] **LWC-06**: LWC HTML parser extracts `lightning-record-form` field references → WIRES_ADAPTER edges
 
 ### Parsers — Flow
 
@@ -74,13 +74,13 @@
 
 ### Parsers — Vlocity
 
-- [ ] **VLO-01**: IntegrationProcedure parser extracts name, version, isActive, all step elements (name, type, connector graph)
-- [ ] **VLO-02**: IntegrationProcedure parser extracts merge field references (`%StepName:FieldName%`) → REFERENCES_STEP_OUTPUT edges
-- [ ] **VLO-03**: DataRaptor Extract parser extracts SourceObject and all SourceFields → DR_READS edges (DataRaptor → SFField)
-- [ ] **VLO-04**: DataRaptor Load parser extracts DestinationObject and all DestinationFields → DR_WRITES edges (DataRaptor → SFField)
-- [ ] **VLO-05**: DataRaptor Transform parser extracts input DataRaptor reference → DR_TRANSFORMS edge, plus field mappings for DR_READS and DR_WRITES
-- [ ] **VLO-06**: Vlocity namespace normalizer resolves `%vlocity_namespace%` placeholder to the org's actual namespace prefix before relationship extraction
-- [ ] **VLO-07**: OmniScript parser extracts name, type, subType, isActive, and Apex/IP action references
+- [x] **VLO-01**: IntegrationProcedure parser extracts name, version, isActive, all step elements (name, type, connector graph)
+- [x] **VLO-02**: IntegrationProcedure parser extracts merge field references (`%StepName:FieldName%`) → REFERENCES_STEP_OUTPUT edges
+- [x] **VLO-03**: DataRaptor Extract parser extracts SourceObject and all SourceFields → DR_READS edges (DataRaptor → SFField)
+- [x] **VLO-04**: DataRaptor Load parser extracts DestinationObject and all DestinationFields → DR_WRITES edges (DataRaptor → SFField)
+- [x] **VLO-05**: DataRaptor Transform parser extracts input DataRaptor reference → DR_TRANSFORMS edge, plus field mappings for DR_READS and DR_WRITES
+- [x] **VLO-06**: Vlocity namespace normalizer resolves `%vlocity_namespace%` placeholder to the org's actual namespace prefix before relationship extraction
+- [x] **VLO-07**: OmniScript parser extracts name, type, subType, isActive, and Apex/IP action references
 
 ### Parsers — Object Model & Configuration
 
@@ -107,44 +107,59 @@
 
 ### Incremental Refresh
 
-- [ ] **REFRESH-01**: File manifest diff (SHA-256) identifies added, changed, and deleted files since last ingest
-- [ ] **REFRESH-02**: Deleted files: nodes and edges from that file removed from graph and vector index; manifest entry deleted
-- [ ] **REFRESH-03**: Changed files: old nodes/edges deleted, re-parsed, new nodes/edges written
-- [ ] **REFRESH-04**: Affected-node re-discovery: matchers re-run for nodes sourced from dirty files AND nodes that had edges pointing to dirty nodes
-- [ ] **REFRESH-05**: Incremental refresh completes in < 5 seconds for 1-5 changed files
-- [ ] **REFRESH-06**: File watcher (watchdog) triggers incremental refresh with 2-second debounce in real-time mode
+- [x] **REFRESH-01**: File manifest diff (SHA-256) identifies added, changed, and deleted files since last ingest
+- [x] **REFRESH-02**: Deleted files: nodes and edges from that file removed from graph and vector index; manifest entry deleted
+- [x] **REFRESH-03**: Changed files: old nodes/edges deleted, re-parsed, new nodes/edges written
+- [x] **REFRESH-04**: Affected-node re-discovery: matchers re-run for nodes sourced from dirty files AND nodes that had edges pointing to dirty nodes
+- [x] **REFRESH-05**: Incremental refresh completes in < 5 seconds for 1-5 changed files
+- [x] **REFRESH-06**: File watcher (watchdog) triggers incremental refresh with 2-second debounce in real-time mode
 
 ### Query Pipeline
 
-- [ ] **QUERY-01**: Schema Filter Agent (Claude Haiku 4.5) receives question + schema_index.json and returns 5-10 relevant node/edge type names
+- [x] **QUERY-01**: Schema Filter Agent (Claude Haiku 4.5) receives question + schema_index.json and returns 5-10 relevant node/edge type names
 - [ ] **QUERY-02**: Query Generator Agent (Claude Sonnet 4.6) receives question + FalkorDB introspection of filtered types and generates a Cypher query
 - [ ] **QUERY-03**: Cypher label validation pre-filters generated queries against `CALL db.labels()` before execution; FalkorDB dialect warnings (no `=~`, no label expressions) injected into agent system prompt
-- [ ] **QUERY-04**: Iterative Cypher correction loop: max 4 attempts; zero-result queries generate hint-enriched error feedback (not just "no results")
+- [x] **QUERY-04**: Iterative Cypher correction loop: max 4 attempts; zero-result queries generate hint-enriched error feedback (not just "no results")
 - [ ] **QUERY-05**: Result Formatter Agent (Claude Sonnet 4.6) uses structured output contract (`{action: ANSWER|TRAVERSE, cypher?, answer?, findings}`) to separate hop decisions from prose formatting
 - [ ] **QUERY-06**: Multi-hop traversal: hop budget starts at 3, decrements per TRAVERSE decision; at 0 the agent is forced to ANSWER
-- [ ] **QUERY-07**: Query results structured into three confidence tiers: Definite (≥0.9), Probable (0.5–0.9), Review manually (<0.5)
+- [x] **QUERY-07**: Query results structured into three confidence tiers: Definite (≥0.9), Probable (0.5–0.9), Review manually (<0.5)
 - [ ] **QUERY-08**: TRACE_LIMIT_HIT results use exact prescribed UX language: "exceeded the static analysis depth limit (5 hops)" — not "low confidence"
 - [ ] **QUERY-09**: Qdrant retrieves source code chunks for result node IDs and passes them to Result Formatter for contextual answers
-- [ ] **QUERY-10**: Hard result size limits enforced: max 50 nodes / 100 edges per tool response (prevents context overflow)
+- [x] **QUERY-10**: Hard result size limits enforced: max 50 nodes / 100 edges per tool response (prevents context overflow)
 
 ### MCP Server & Tools
 
 - [x] **MCP-01**: FastMCP server initializes with lifespan context manager owning all storage engines (FalkorDB, Qdrant, SQLite, Node.js pool)
-- [ ] **MCP-02**: `ingest_org(export_dir)` tool: runs full ingestion pipeline, returns summary (node count, edge count, warnings, duration)
-- [ ] **MCP-03**: `refresh(export_dir?)` tool: runs incremental refresh, returns changed files count, affected nodes, duration
-- [ ] **MCP-04**: `query(question)` tool: runs three-agent NL→Cypher pipeline, returns confidence-tiered structured answer with source snippets
-- [ ] **MCP-05**: `get_node(node_id)` tool: returns node properties + all connected edges + source code for a specific qualified name
-- [ ] **MCP-06**: `explain_field(field_qualified_name)` tool: returns complete field biography — all readers, writers, formula dependents, flow references, Vlocity references, LWC bindings — tiered by confidence
-- [ ] **MCP-07**: `get_ingestion_status()` tool: returns node counts by type, edge counts by type, last ingestion timestamp, pending warnings
+- [x] **MCP-02**: `ingest_org(export_dir)` tool: runs full ingestion pipeline, returns summary (node count, edge count, warnings, duration)
+- [x] **MCP-03**: `refresh(export_dir?)` tool: runs incremental refresh, returns changed files count, affected nodes, duration
+- [x] **MCP-04**: `query(question)` tool: runs three-agent NL→Cypher pipeline, returns confidence-tiered structured answer with source snippets
+- [x] **MCP-05**: `get_node(node_id)` tool: returns node properties + all connected edges + source code for a specific qualified name
+- [x] **MCP-06**: `explain_field(field_qualified_name)` tool: returns complete field biography — all readers, writers, formula dependents, flow references, Vlocity references, LWC bindings — tiered by confidence
+- [x] **MCP-07**: `get_ingestion_status()` tool: returns node counts by type, edge counts by type, last ingestion timestamp, pending warnings
 - [ ] **MCP-08**: Full ingestion pipeline completes in < 3 minutes for a large org (2k classes, 800 LWC, 300 Flows, 200 Vlocity IPs)
 - [ ] **MCP-09**: Complete NL query pipeline (question → answer) completes in < 5 seconds
 
 ### OSS Readiness
 
-- [ ] **OSS-01**: PyPI-publishable package via `pyproject.toml` with `uv build`; CLI entrypoint `sfgraph` (with subcommands: `serve`, `ingest`, `query`, `refresh`)
-- [ ] **OSS-02**: README covers: what it is, installation (including `brew install libomp` for macOS), quickstart, all 6 MCP tools with examples
+- [x] **OSS-01**: PyPI-publishable package via `pyproject.toml` with `uv build`; CLI entrypoint `sfgraph` (with subcommands: `serve`, `ingest`, `query`, `refresh`)
+- [x] **OSS-02**: README covers: what it is, installation (including `brew install libomp` for macOS), quickstart, all 6 MCP tools with examples
 - [ ] **OSS-03**: `config/dynamic_accessors.yaml` ships with common Salesforce utility patterns (fflib selector pattern, generic DML helpers) pre-configured
 - [ ] **OSS-04**: Schema reference document covers all node types, edge types, confidence scoring taxonomy, and resolutionMethod values
+
+### Product Must-Haves (2026-04-06 Update)
+
+- [x] **TRUST-01**: Evidence-first answers — every user-facing result includes supporting edge path(s), source file(s), line(s), snippet(s), and confidence score per finding
+- [x] **TRUST-02**: Freshness contract — every result includes `indexed_commit`, `indexed_at`, `dirty_files_pending`, and `partial_results` indicators
+- [ ] **SEM-01**: Typed edge semantics beyond generic read/write, including at least: `soql_select`, `soql_where`, `dml_insert`, `dml_update`, `dml_delete`, `flow_filter`, `dr_output`, `ui_bind`
+- [x] **TRACE-01**: Bidirectional lineage tools — `trace_upstream` (origin tracing) and `trace_downstream` (blast radius) with explicit hop/time/result limits
+- [x] **TRACE-02**: Traversal guardrails — enforce depth/time/path budgets, cycle detection, pagination, and `TRACE_LIMIT_HIT` semantics in responses
+- [x] **IMPACT-01**: Change-aware impact mode — ingest a git diff and return impacted components, tests, flows, and computed risk level
+- [x] **IMPACT-02**: Unknown/dynamic edge tracking — unresolved dynamic references are surfaced explicitly, not silently discarded
+- [x] **MAP-01**: Cross-layer flow map tool — one call to show `UI -> Flow/OmniScript -> DataRaptor/IP -> Apex -> Object/Field` path(s)
+- [x] **OBS-01**: Incremental ingest observability — per-parser counts for parsed/skipped/error files, unresolved symbols, and ingest duration
+- [x] **EXT-PLUG-01**: Rules/plugins system — YAML/JSON extensibility for org-specific conventions, aliases, wrappers, and dynamic accessors
+- [x] **TEST-INTEL-01**: Test-gap intelligence — for impacted nodes, show covering tests and explicit missing-test areas
+- [x] **SNAP-01**: Graph snapshot diff — compare branch-vs-branch or before-vs-after deploy graph states
 
 ## v2 Requirements
 
@@ -193,19 +208,28 @@
 | OBJ-01 – OBJ-07 | Phase 3 | Pending |
 | FLOW-01 – FLOW-08 | Phase 3 | Pending |
 | GRAPH-01 – GRAPH-04 | Phase 3 | Pending |
-| LWC-01 – LWC-06 | Phase 4 | Pending |
-| VLO-01 – VLO-07 | Phase 4 | Pending |
-| QUERY-01 – QUERY-10 | Phase 5 | Pending |
-| MCP-02 – MCP-09 | Phase 5 | Pending |
+| LWC-01 – LWC-06 | Phase 4 | Complete |
+| VLO-01 – VLO-07 | Phase 4 | Complete |
+| QUERY-01 – QUERY-10 | Phase 5 | In Progress |
+| MCP-02 – MCP-09 | Phase 5 | In Progress |
 | DYN-01 – DYN-03 | Phase 6 | Pending |
-| REFRESH-01 – REFRESH-06 | Phase 6 | Pending |
-| OSS-01 – OSS-04 | Phase 6 | Pending |
+| REFRESH-01 – REFRESH-06 | Phase 6 | Complete |
+| OSS-01 – OSS-04 | Phase 6 | In Progress |
+| TRUST-01 – TRUST-02 | Phase 5 | In Progress |
+| SEM-01 | Phase 4 | Pending |
+| TRACE-01 – TRACE-02 | Phase 5 | In Progress |
+| IMPACT-01 – IMPACT-02 | Phase 6 | Complete |
+| MAP-01 | Phase 5 | Complete |
+| OBS-01 | Phase 6 | Complete |
+| EXT-PLUG-01 | Phase 6 | Complete |
+| TEST-INTEL-01 | Phase 6 | Complete |
+| SNAP-01 | Phase 6 | Complete |
 
 **Coverage:**
-- v1 requirements: 99 total
-- Mapped to phases: 99
+- v1 requirements: 111 total
+- Mapped to phases: 111
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-04*
-*Last updated: 2026-04-04 after roadmap creation (coverage count corrected to 99)*
+*Last updated: 2026-04-06 after must-have feature expansion (coverage count updated to 111)*

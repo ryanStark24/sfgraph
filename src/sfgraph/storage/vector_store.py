@@ -15,10 +15,19 @@ fastembed model: BAAI/bge-small-en-v1.5 (384 dimensions)
   - Lazy-loaded to defer download until upsert/search is first called
 """
 import logging
+import hashlib
 from typing import Any
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointIdsList,
+    PointStruct,
+    VectorParams,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +74,12 @@ class VectorStore:
             self._embedder = TextEmbedding("BAAI/bge-small-en-v1.5")
         return self._embedder
 
+    @staticmethod
+    def _point_id(node_id: str) -> int:
+        """Deterministic point id derived from node_id."""
+        digest = hashlib.sha256(node_id.encode("utf-8")).hexdigest()[:16]
+        return int(digest, 16)
+
     async def initialize(self) -> None:
         """Create the source_chunks collection if it does not already exist.
 
@@ -80,7 +95,13 @@ class VectorStore:
         else:
             logger.debug("Qdrant collection already exists: %s", COLLECTION_NAME)
 
-    async def upsert(self, node_id: str, text: str, payload: dict[str, Any]) -> None:
+    async def upsert(
+        self,
+        node_id: str,
+        text: str,
+        payload: dict[str, Any],
+        project_scope: str | None = None,
+    ) -> None:
         """Embed text and upsert a point for node_id.
 
         Args:
@@ -94,15 +115,20 @@ class VectorStore:
             collection_name=COLLECTION_NAME,
             points=[
                 PointStruct(
-                    id=abs(hash(node_id)) % (2**63),
+                    id=self._point_id(node_id),
                     vector=vectors[0].tolist(),
-                    payload=payload | {"node_id": node_id},
+                    payload=payload | {"node_id": node_id, "project_scope": project_scope},
                 )
             ],
         )
         logger.debug("Upserted vector for node_id=%s", node_id)
 
-    async def search(self, query_text: str, limit: int = 10) -> list[dict[str, Any]]:
+    async def search(
+        self,
+        query_text: str,
+        limit: int = 10,
+        project_scope: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Find the top-k most similar source code chunks to query_text.
 
         Args:
@@ -119,6 +145,11 @@ class VectorStore:
             collection_name=COLLECTION_NAME,
             query=vectors[0].tolist(),
             limit=limit,
+            query_filter=Filter(
+                must=[FieldCondition(key="project_scope", match=MatchValue(value=project_scope))]
+            )
+            if project_scope
+            else None,
         )
         return [
             {
@@ -128,3 +159,39 @@ class VectorStore:
             }
             for r in response.points
         ]
+
+    async def delete_by_node_ids(self, node_ids: list[str]) -> int:
+        """Delete points for the provided node_ids. Returns attempted delete count."""
+        if not node_ids:
+            return 0
+        ids = [self._point_id(node_id) for node_id in node_ids]
+        self._client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=PointIdsList(points=ids),
+            wait=True,
+        )
+        return len(ids)
+
+    async def delete_by_project_scope(self, project_scope: str) -> int:
+        """Delete all points for a project scope. Returns attempted delete count."""
+        if not project_scope:
+            return 0
+        # Fetch ids first for deterministic return count.
+        points, _ = self._client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=Filter(
+                must=[FieldCondition(key="project_scope", match=MatchValue(value=project_scope))]
+            ),
+            limit=10000,
+            with_payload=False,
+            with_vectors=False,
+        )
+        point_ids = [p.id for p in points]
+        if not point_ids:
+            return 0
+        self._client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=PointIdsList(points=point_ids),
+            wait=True,
+        )
+        return len(point_ids)

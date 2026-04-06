@@ -1,0 +1,49 @@
+# Dynamic Accessor Registry — APEX-11
+accessors:
+  - class: "fflib_SObjectSelector"
+    method: "selectById"
+    edge_type: "READS_FIELD"
+    edge_category: "DATA_FLOW"
+    confidence: 0.7
+    resolution_method: "dynamic_accessor_registry"
+    description: "fflib selector selectById reads from SObject by Id field"
+
+  - class: "fflib_SObjectSelector"
+    method: "selectSObjectsById"
+    edge_type: "READS_FIELD"
+    edge_category: "DATA_FLOW"
+    confidence: 0.7
+    resolution_method: "dynamic_accessor_registry"
+    description: "fflib selector selectSObjectsById reads from SObject"
+
+  - class: "fflib_SObjectUnitOfWork"
+    method: "registerNew"
+    edge_type: "WRITES_FIELD"
+    edge_category: "DATA_FLOW"
+    confidence: 0.6
+    resolution_method: "dynamic_accessor_registry"
+    description: "fflib UoW registerNew will write to SObject on commitWork()"
+
+  - class: "fflib_SObjectUnitOfWork"
+    method: "registerDirty"
+    edge_type: "WRITES_FIELD"
+    edge_category: "DATA_FLOW"
+    confidence: 0.6
+    resolution_method: "dynamic_accessor_registry"
+    description: "fflib UoW registerDirty will update SObject on commitWork()"
+
+  - class: "Database"
+    method: "query"
+    edge_type: "READS_FIELD"
+    edge_category: "DATA_FLOW"
+    confidence: 0.5
+    resolution_method: "dynamic_accessor_registry"
+    description: "Dynamic SOQL via Database.query — field unknown at parse time"
+
+  - class: "Schema"
+    method: "getGlobalDescribe"
+    edge_type: "READS_FIELD"
+    edge_category: "DATA_FLOW"
+    confidence: 0.4
+    resolution_method: "dynamic_accessor_registry"
+    description: "Dynamic schema access — relationship target unknown at parse time"

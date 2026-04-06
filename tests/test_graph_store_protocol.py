@@ -60,39 +60,44 @@ def test_graphstore_importable_from_storage():
     assert GraphStoreExport is GraphStore
 
 
-async def test_duckpgq_close_is_noop():
+async def test_duckpgq_close_does_not_raise():
     store = DuckPGQStore()
     await store.close()  # must not raise
 
 
-async def test_duckpgq_merge_node_raises():
+async def test_duckpgq_is_graphstore():
     store = DuckPGQStore()
-    with pytest.raises(NotImplementedError):
-        await store.merge_node("ApexClass", {}, {})
+    assert isinstance(store, GraphStore)
+    await store.close()
 
 
-async def test_duckpgq_merge_edge_raises():
+async def test_duckpgq_merge_node_returns_qualified_name():
     store = DuckPGQStore()
-    with pytest.raises(NotImplementedError):
-        await store.merge_edge("a", "A", "CALLS", "b", "B", {})
+    qn = await store.merge_node(
+        "ApexClass",
+        {"qualifiedName": "Foo"},
+        {"qualifiedName": "Foo", "name": "Foo"},
+    )
+    assert qn == "Foo"
+    await store.close()
 
 
-async def test_duckpgq_query_raises():
+async def test_duckpgq_get_labels_after_merge():
     store = DuckPGQStore()
-    with pytest.raises(NotImplementedError):
-        await store.query("MATCH (n) RETURN n")
+    await store.merge_node("ApexClass", {"qualifiedName": "X"}, {"qualifiedName": "X"})
+    labels = await store.get_labels()
+    assert "ApexClass" in labels
+    await store.close()
 
 
-async def test_duckpgq_get_labels_raises():
+async def test_duckpgq_get_relationship_types_after_merge():
     store = DuckPGQStore()
-    with pytest.raises(NotImplementedError):
-        await store.get_labels()
-
-
-async def test_duckpgq_get_relationship_types_raises():
-    store = DuckPGQStore()
-    with pytest.raises(NotImplementedError):
-        await store.get_relationship_types()
+    await store.merge_node("ApexClass", {"qualifiedName": "A"}, {"qualifiedName": "A"})
+    await store.merge_node("ApexClass", {"qualifiedName": "B"}, {"qualifiedName": "B"})
+    await store.merge_edge("A", "ApexClass", "CALLS", "B", "ApexClass", {})
+    rel_types = await store.get_relationship_types()
+    assert "CALLS" in rel_types
+    await store.close()
 
 
 def test_no_falkordb_import_in_base():

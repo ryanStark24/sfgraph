@@ -72,6 +72,59 @@ async def test_search_returns_node_id(store: VectorStore):
     assert "CustomField:Account.Status__c" in node_ids
 
 
+async def test_search_can_filter_project_scope(store: VectorStore):
+    await store.upsert(
+        node_id="scopeA::ApexClass:AccountService",
+        text="Account service class",
+        payload={"label": "ApexClass"},
+        project_scope="scopeA",
+    )
+    await store.upsert(
+        node_id="scopeB::ApexClass:OtherService",
+        text="Other service class",
+        payload={"label": "ApexClass"},
+        project_scope="scopeB",
+    )
+    results = await store.search("service class", limit=10, project_scope="scopeA")
+    node_ids = {r["node_id"] for r in results}
+    assert "scopeA::ApexClass:AccountService" in node_ids
+    assert "scopeB::ApexClass:OtherService" not in node_ids
+
+
+async def test_delete_by_node_ids(store: VectorStore):
+    await store.upsert(
+        node_id="scopeA::CustomField:Account.Status__c",
+        text="status field",
+        payload={"label": "CustomField"},
+        project_scope="scopeA",
+    )
+    deleted = await store.delete_by_node_ids(["scopeA::CustomField:Account.Status__c"])
+    assert deleted == 1
+    results = await store.search("status field", limit=5, project_scope="scopeA")
+    assert all(r["node_id"] != "scopeA::CustomField:Account.Status__c" for r in results)
+
+
+async def test_delete_by_project_scope(store: VectorStore):
+    await store.upsert(
+        node_id="scopeA::ApexClass:A",
+        text="class a",
+        payload={"label": "ApexClass"},
+        project_scope="scopeA",
+    )
+    await store.upsert(
+        node_id="scopeB::ApexClass:B",
+        text="class b",
+        payload={"label": "ApexClass"},
+        project_scope="scopeB",
+    )
+    deleted = await store.delete_by_project_scope("scopeA")
+    assert deleted >= 1
+    results_a = await store.search("class", limit=10, project_scope="scopeA")
+    results_b = await store.search("class", limit=10, project_scope="scopeB")
+    assert results_a == []
+    assert results_b
+
+
 def test_vector_store_requires_path_or_url():
     """VectorStore must raise ValueError if neither path nor url is provided."""
     try:

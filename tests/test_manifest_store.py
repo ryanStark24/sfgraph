@@ -110,3 +110,40 @@ async def test_run_lifecycle(store: ManifestStore):
     assert row[0] is not None, "completed_at must be set after mark_run_complete()"
     assert row[1] == 1, "phase_1_complete must be 1 when phase_1_complete=True"
     assert row[2] == 0, "phase_2_complete must remain 0 when not explicitly set"
+
+
+async def test_get_status_counts(store: ManifestStore, tmp_path):
+    p1 = str(tmp_path / "a.cls")
+    p2 = str(tmp_path / "b.cls")
+    open(p1, "w").write("class A {}")
+    open(p2, "w").write("class B {}")
+    await store.upsert_file(p1, ManifestStore.compute_sha256(p1), "run-1")
+    await store.upsert_file(p2, ManifestStore.compute_sha256(p2), "run-1")
+    await store.set_status(p1, "EDGES_WRITTEN")
+
+    counts = await store.get_status_counts()
+    assert counts["EDGES_WRITTEN"] == 1
+    assert counts["PENDING"] >= 1
+
+
+async def test_get_pending_files_and_latest_completed_run(store: ManifestStore, tmp_path):
+    p1 = str(tmp_path / "x.cls")
+    p2 = str(tmp_path / "y.cls")
+    open(p1, "w").write("class X {}")
+    open(p2, "w").write("class Y {}")
+
+    await store.upsert_file(p1, ManifestStore.compute_sha256(p1), "run-1")
+    await store.upsert_file(p2, ManifestStore.compute_sha256(p2), "run-1")
+    await store.set_status(p1, "EDGES_WRITTEN")
+    await store.set_status(p2, "NODES_WRITTEN")
+
+    pending = await store.get_pending_files()
+    assert p2 in pending
+    assert p1 not in pending
+
+    run_id = await store.create_run()
+    await store.mark_run_complete(run_id, phase_1_complete=True, phase_2_complete=True)
+    latest = await store.get_latest_completed_run()
+    assert latest is not None
+    assert latest["run_id"] == run_id
+    assert latest["phase_2_complete"] is True

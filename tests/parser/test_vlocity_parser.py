@@ -1,0 +1,185 @@
+"""Tests for Vlocity/OmniStudio parser (VLO-01 through VLO-07 baseline)."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from sfgraph.ingestion.constants import EDGE_CATEGORIES
+from sfgraph.parser.vlocity_parser import VlocityParser, parse_vlocity_json
+
+
+def _write_json(path: Path, payload: dict):
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def test_integration_procedure_nodes_and_merge_field_edges(tmp_path):
+    file = tmp_path / "AccountIntegrationProcedure_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "IntegrationProcedure",
+            "Name": "AccountIP",
+            "Version": 1,
+            "IsActive": True,
+            "Steps": [
+                {"Name": "FetchAccount", "Type": "DataRaptor Extract"},
+                {"Name": "TransformData", "Type": "DataRaptor Transform"},
+            ],
+            "Template": "Use %FetchAccount:Status__c% to decide",
+        },
+    )
+
+    nodes, edges = parse_vlocity_json(str(file))
+    assert any(n.label == "IntegrationProcedure" and n.key_props["qualifiedName"] == "AccountIP" for n in nodes)
+    assert any(n.label == "IPElement" and n.key_props["qualifiedName"] == "AccountIP.FetchAccount" for n in nodes)
+    assert any(e.rel_type == "REFERENCES_STEP_OUTPUT" for e in edges)
+
+
+def test_dataraptor_extract_reads_fields(tmp_path):
+    file = tmp_path / "AccountExtract_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "DataRaptor",
+            "DataRaptorType": "Extract",
+            "Name": "AccountExtract",
+            "SourceObject": "Account",
+            "SourceFields": ["Id", "Name", "Status__c"],
+        },
+    )
+
+    nodes, edges = parse_vlocity_json(str(file))
+    assert any(n.label == "DataRaptor" for n in nodes)
+    reads = [e for e in edges if e.rel_type == "DR_READS"]
+    assert reads
+    dst = {e.dst_qualified_name for e in reads}
+    assert "Account.Name" in dst
+    assert "Account.Status__c" in dst
+
+
+def test_dataraptor_load_writes_fields(tmp_path):
+    file = tmp_path / "AccountLoad_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "DataRaptor",
+            "DataRaptorType": "Load",
+            "Name": "AccountLoad",
+            "DestinationObject": "Account",
+            "DestinationFields": ["Status__c"],
+        },
+    )
+
+    _, edges = parse_vlocity_json(str(file))
+    writes = [e for e in edges if e.rel_type == "DR_WRITES"]
+    assert writes
+    assert any(e.dst_qualified_name == "Account.Status__c" for e in writes)
+
+
+def test_dataraptor_transform_edges(tmp_path):
+    file = tmp_path / "AccountTransform_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "DataRaptor",
+            "DataRaptorType": "Transform",
+            "Name": "AccountTransform",
+            "InputDataRaptor": "AccountExtract",
+            "Mappings": [
+                {
+                    "SourceObject": "Account",
+                    "SourceField": "Status__c",
+                    "DestinationObject": "Case",
+                    "DestinationField": "Status__c",
+                }
+            ],
+        },
+    )
+
+    _, edges = parse_vlocity_json(str(file))
+    assert any(e.rel_type == "DR_TRANSFORMS" and e.dst_qualified_name == "AccountExtract" for e in edges)
+    assert any(e.rel_type == "DR_READS" and "Account.Status__c" in e.dst_qualified_name for e in edges)
+    assert any(e.rel_type == "DR_WRITES" and "Case.Status__c" in e.dst_qualified_name for e in edges)
+
+
+def test_namespace_normalizer_replaces_placeholder(tmp_path):
+    file = tmp_path / "NsLoad_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "DataRaptor",
+            "DataRaptorType": "Load",
+            "Name": "NsLoad",
+            "DestinationObject": "%vlocity_namespace%__Cart__c",
+            "DestinationFields": ["%vlocity_namespace%__Status__c"],
+        },
+    )
+
+    _, edges = parse_vlocity_json(str(file), namespace="omnistudio")
+    writes = [e for e in edges if e.rel_type == "DR_WRITES"]
+    assert writes
+    assert any("omnistudio__Cart__c.omnistudio__Status__c" == e.dst_qualified_name for e in writes)
+
+
+def test_omniscript_calls_apex_and_ip(tmp_path):
+    file = tmp_path / "AccountOmniScript_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "OmniScript",
+            "Name": "AccountOS",
+            "Type": "Service",
+            "SubType": "Account",
+            "IsActive": True,
+            "ApexActions": [{"ClassName": "AccountService"}],
+            "IntegrationProcedures": ["AccountIP"],
+        },
+    )
+
+    nodes, edges = parse_vlocity_json(str(file))
+    assert any(n.label == "OmniScript" and n.key_props["qualifiedName"] == "AccountOS" for n in nodes)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "ApexClass" and e.dst_qualified_name == "AccountService" for e in edges)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "IntegrationProcedure" and e.dst_qualified_name == "AccountIP" for e in edges)
+
+
+def test_parse_datapacks_dir(tmp_path):
+    _write_json(
+        tmp_path / "IP.json",
+        {"VlocityDataPackType": "IntegrationProcedure", "Name": "IP1", "Steps": []},
+    )
+    _write_json(
+        tmp_path / "DR.json",
+        {
+            "VlocityDataPackType": "DataRaptor",
+            "DataRaptorType": "Extract",
+            "Name": "DR1",
+            "SourceObject": "Account",
+            "SourceFields": ["Name"],
+        },
+    )
+
+    parser = VlocityParser(namespace="vlocity_cmt")
+    nodes, edges = parser.parse_datapacks_dir(str(tmp_path))
+    assert any(n.label == "IntegrationProcedure" for n in nodes)
+    assert any(n.label == "DataRaptor" for n in nodes)
+    assert edges
+
+
+def test_all_edge_categories_valid(tmp_path):
+    file = tmp_path / "DR2.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "DataRaptor",
+            "DataRaptorType": "Extract",
+            "Name": "DR2",
+            "SourceObject": "Account",
+            "SourceFields": ["Name"],
+        },
+    )
+
+    _, edges = parse_vlocity_json(str(file))
+    for edge in edges:
+        assert edge.edgeCategory in EDGE_CATEGORIES

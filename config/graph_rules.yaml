@@ -1,0 +1,12 @@
+# Org-specific rules/plugins for query behavior.
+# Teams can override semantic mapping and common aliases without code changes.
+
+aliases:
+  acct_status: "Account.Status__c"
+  account_status: "Account.Status__c"
+
+semantic_overrides:
+  - rel_type: "FLOW_CALLS_APEX"
+    semantic: "flow_action"
+  - rel_type: "CALLS_EXTERNAL"
+    semantic: "external_call"

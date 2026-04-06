@@ -101,7 +101,27 @@ class IngestionSummary(BaseModel):
     parse_failures: list[str]        # file paths that failed parsing
     orphaned_edges: int              # edges whose src or dst could not be found
     warnings: list[str]
+    parser_stats: dict[str, dict[str, int]] = {}
+    unresolved_symbols: int = 0
 
     @property
     def total_nodes(self) -> int:
         return sum(self.node_counts_by_type.values())
+
+
+class RefreshSummary(BaseModel):
+    """Returned by IngestionService.refresh() incremental update runs."""
+
+    run_id: str
+    export_dir: str
+    duration_seconds: float
+    processed_files: int
+    changed_files: list[str]
+    deleted_files: list[str]
+    affected_neighbor_files: list[str] = []
+    node_count: int
+    edge_count: int
+    orphaned_edges: int
+    warnings: list[str]
+    parser_stats: dict[str, dict[str, int]] = {}
+    unresolved_symbols: int = 0

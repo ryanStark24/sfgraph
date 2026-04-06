@@ -1,27 +1,118 @@
-"""DuckPGQStore — GraphStore stub for DuckDB/PGQ backend.
+"""DuckPGQStore — GraphStore implementation backed by DuckDB (embedded, no server).
 
-Validates the GraphStore Protocol boundary (GRAPH-04) by providing a concrete
-class that fully implements the ABC without any real storage logic.
+Stores nodes in per-label tables and edges in per-relationship-type tables.
+Uses DuckDB's property graph extension (PGQ) syntax for MATCH queries.
+Runs fully in-process — no Docker, no external server, no network port.
 
-Not implemented in v1. All write/query methods raise NotImplementedError to
-signal that this backend is reserved for a future release. The close() method
-is intentionally a no-op (nothing to shut down).
+Package: duckdb>=1.0.0
 
-This stub serves two architectural purposes:
-1. Proves the GraphStore ABC can be implemented by a non-FalkorDB backend.
-2. Acts as a safe default that fails loudly if accidentally used in production.
+Node tables schema:
+    CREATE TABLE "{Label}" (qualified_name VARCHAR PRIMARY KEY, props JSON)
+
+Edge tables schema:
+    CREATE TABLE "{REL_TYPE}" (
+        src_qualified_name VARCHAR NOT NULL,
+        dst_qualified_name VARCHAR NOT NULL,
+        props JSON,
+        PRIMARY KEY (src_qualified_name, dst_qualified_name)
+    )
+
+Schema registry:
+    CREATE TABLE _sfgraph_schema (table_name VARCHAR PRIMARY KEY, kind VARCHAR)
+    kind is 'node' or 'edge' — loaded on init to restore state across sessions.
+
+Query method accepts DuckDB SQL or PGQ SQL (FROM GRAPH_TABLE syntax).
 """
+import asyncio
+import json
+import logging
 from typing import Any
+
+import duckdb
 
 from sfgraph.storage.base import GraphStore
 
+logger = logging.getLogger(__name__)
+
 
 class DuckPGQStore(GraphStore):
-    """Stub implementation of GraphStore using DuckDB/PGQ.
+    """Fully-embedded GraphStore backed by DuckDB.
 
-    All methods except close() raise NotImplementedError.
-    close() is a no-op since there are no resources to release.
+    No server required. All data lives in a local DuckDB file (or :memory: for tests).
+    All methods are async; DuckDB calls are synchronous but run in the single-threaded
+    asyncio event loop — acceptable for ingestion workloads (no parallelism needed).
+
+    Usage:
+        store = DuckPGQStore(db_path="./data/sfgraph.duckdb")
+        await store.merge_node("ApexClass", {"qualifiedName": "Foo"}, {...})
+        await store.close()
     """
+
+    def __init__(self, db_path: str = ":memory:") -> None:
+        self._db_path = db_path
+        self._conn = duckdb.connect(db_path)
+        self._node_labels: set[str] = set()
+        self._edge_types: set[str] = set()
+        self._lock = asyncio.Lock()
+        self._init_schema_registry()
+
+    # ------------------------------------------------------------------
+    # Initialisation
+    # ------------------------------------------------------------------
+
+    def _init_schema_registry(self) -> None:
+        """Create the schema registry table and reload any tables from a prior session."""
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS _sfgraph_schema "
+            "(table_name VARCHAR PRIMARY KEY, kind VARCHAR)"
+        )
+        rows = self._conn.execute(
+            "SELECT table_name, kind FROM _sfgraph_schema"
+        ).fetchall()
+        for table_name, kind in rows:
+            if kind == "node":
+                self._node_labels.add(table_name)
+            elif kind == "edge":
+                self._edge_types.add(table_name)
+
+    # ------------------------------------------------------------------
+    # Schema helpers (synchronous — called inside async lock)
+    # ------------------------------------------------------------------
+
+    def _ensure_node_table(self, label: str) -> None:
+        if label in self._node_labels:
+            return
+        self._conn.execute(
+            f'CREATE TABLE IF NOT EXISTS "{label}" '
+            f"(qualified_name VARCHAR PRIMARY KEY, props JSON)"
+        )
+        self._conn.execute(
+            "INSERT OR IGNORE INTO _sfgraph_schema (table_name, kind) VALUES (?, ?)",
+            [label, "node"],
+        )
+        self._node_labels.add(label)
+        logger.debug("Created node table: %s", label)
+
+    def _ensure_edge_table(self, rel_type: str) -> None:
+        if rel_type in self._edge_types:
+            return
+        self._conn.execute(
+            f'CREATE TABLE IF NOT EXISTS "{rel_type}" ('
+            f"src_qualified_name VARCHAR NOT NULL, "
+            f"dst_qualified_name VARCHAR NOT NULL, "
+            f"props JSON, "
+            f"PRIMARY KEY (src_qualified_name, dst_qualified_name))"
+        )
+        self._conn.execute(
+            "INSERT OR IGNORE INTO _sfgraph_schema (table_name, kind) VALUES (?, ?)",
+            [rel_type, "edge"],
+        )
+        self._edge_types.add(rel_type)
+        logger.debug("Created edge table: %s", rel_type)
+
+    # ------------------------------------------------------------------
+    # GraphStore ABC implementation
+    # ------------------------------------------------------------------
 
     async def merge_node(
         self,
@@ -29,11 +120,17 @@ class DuckPGQStore(GraphStore):
         key_props: dict[str, Any],
         all_props: dict[str, Any],
     ) -> str:
-        """Not implemented: DuckPGQ backend is reserved for v2."""
-        raise NotImplementedError(
-            "DuckPGQStore.merge_node is not implemented. "
-            "Use FalkorDBStore for v1 graph writes."
+        """Upsert a node into the label-specific table. Returns qualifiedName."""
+        qualified_name: str = (
+            key_props.get("qualifiedName") or all_props.get("qualifiedName", "")
         )
+        async with self._lock:
+            self._ensure_node_table(label)
+            self._conn.execute(
+                f'INSERT OR REPLACE INTO "{label}" (qualified_name, props) VALUES (?, ?)',
+                [qualified_name, json.dumps(all_props)],
+            )
+        return qualified_name
 
     async def merge_edge(
         self,
@@ -44,37 +141,46 @@ class DuckPGQStore(GraphStore):
         dst_label: str,
         props: dict[str, Any],
     ) -> None:
-        """Not implemented: DuckPGQ backend is reserved for v2."""
-        raise NotImplementedError(
-            "DuckPGQStore.merge_edge is not implemented. "
-            "Use FalkorDBStore for v1 graph writes."
-        )
+        """Upsert a directed edge into the rel_type-specific table."""
+        async with self._lock:
+            self._ensure_edge_table(rel_type)
+            self._conn.execute(
+                f'INSERT OR REPLACE INTO "{rel_type}" '
+                f"(src_qualified_name, dst_qualified_name, props) VALUES (?, ?, ?)",
+                [src_qualified_name, dst_qualified_name, json.dumps(props)],
+            )
 
     async def query(
         self,
         cypher: str,
         params: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Not implemented: DuckPGQ backend is reserved for v2."""
-        raise NotImplementedError(
-            "DuckPGQStore.query is not implemented. "
-            "Use FalkorDBStore for v1 graph queries."
-        )
+        """Execute a DuckDB SQL or PGQ SQL statement and return rows as dicts.
+
+        Note: This store uses DuckDB SQL / PGQ syntax, not Cypher.
+        The parameter name 'cypher' is inherited from the GraphStore ABC;
+        pass DuckDB SQL (including FROM GRAPH_TABLE(...) PGQ queries) here.
+        Named params use $name syntax: {'name': 'Foo'} binds $name.
+        """
+        async with self._lock:
+            result = self._conn.execute(cypher, params or {})
+            if result.description is None:
+                return []
+            columns = [desc[0] for desc in result.description]
+            return [dict(zip(columns, row)) for row in result.fetchall()]
 
     async def get_labels(self) -> list[str]:
-        """Not implemented: DuckPGQ backend is reserved for v2."""
-        raise NotImplementedError(
-            "DuckPGQStore.get_labels is not implemented. "
-            "Use FalkorDBStore for v1 schema inspection."
-        )
+        """Return all node labels that have been written to this store."""
+        return sorted(self._node_labels)
 
     async def get_relationship_types(self) -> list[str]:
-        """Not implemented: DuckPGQ backend is reserved for v2."""
-        raise NotImplementedError(
-            "DuckPGQStore.get_relationship_types is not implemented. "
-            "Use FalkorDBStore for v1 schema inspection."
-        )
+        """Return all relationship types that have been written to this store."""
+        return sorted(self._edge_types)
 
     async def close(self) -> None:
-        """No-op: DuckPGQStore holds no resources."""
-        pass
+        """Close the DuckDB connection and release file handle."""
+        try:
+            self._conn.close()
+            logger.debug("DuckPGQStore closed: %s", self._db_path)
+        except Exception:  # noqa: BLE001
+            pass

@@ -1,0 +1,960 @@
+"""IngestionService two-phase orchestration + incremental refresh."""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import subprocess
+import time
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from sfgraph.ingestion.constants import NODE_WRITE_ORDER
+from sfgraph.ingestion.models import EdgeFact, IngestionSummary, NodeFact, RefreshSummary
+from sfgraph.ingestion.schema_index import materialize_schema_index
+from sfgraph.parser.apex_extractor import ApexExtractor
+from sfgraph.parser.dynamic_accessor import DynamicAccessorRegistry
+from sfgraph.parser.flow_parser import parse_flow_xml
+from sfgraph.parser.lwc_parser import parse_lwc_file
+from sfgraph.parser.object_parser import parse_labels_xml, parse_object_dir
+from sfgraph.parser.pool import NodeParserPool
+from sfgraph.parser.vlocity_parser import parse_vlocity_json
+from sfgraph.storage.base import GraphStore
+from sfgraph.storage.manifest_store import ManifestStore
+from sfgraph.storage.vector_store import VectorStore
+
+logger = logging.getLogger(__name__)
+
+
+def _sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _parse_props(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            payload = json.loads(value)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            return {}
+    return {}
+
+
+class IngestionService:
+    """Two-phase ingestion pipeline for Salesforce metadata exports."""
+
+    SCHEMA_INDEX_PATH = "./data/schema_index.json"
+    INGESTION_META_PATH = "./data/ingestion_meta.json"
+    SKIP_DIR_NAMES = frozenset(
+        {
+            ".git",
+            ".hg",
+            ".svn",
+            ".sfdx",
+            ".sf",
+            "node_modules",
+            ".venv",
+            "venv",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".cache",
+            "dist",
+            "build",
+        }
+    )
+
+    def __init__(
+        self,
+        graph: GraphStore,
+        manifest: ManifestStore,
+        pool: NodeParserPool,
+        vectors: VectorStore | None = None,
+        schema_index_path: str | None = None,
+        ingestion_meta_path: str | None = None,
+    ) -> None:
+        self._graph = graph
+        self._manifest = manifest
+        self._pool = pool
+        self._vectors = vectors
+        self._schema_index_path = schema_index_path or self.SCHEMA_INDEX_PATH
+        self._ingestion_meta_path = ingestion_meta_path or self.INGESTION_META_PATH
+        self._apex_extractor = ApexExtractor()
+        self._dynamic_registry = DynamicAccessorRegistry()
+        self._active_project_scope: str | None = None
+        self._active_export_root: Path | None = None
+
+    @staticmethod
+    def _compute_project_scope(export_dir: str) -> str:
+        export_path = Path(export_dir).expanduser().resolve()
+        return hashlib.sha1(str(export_path).encode("utf-8")).hexdigest()[:12]
+
+    def _activate_scope(self, export_dir: str) -> str:
+        resolved = str(Path(export_dir).expanduser().resolve())
+        self._active_project_scope = self._compute_project_scope(resolved)
+        self._active_export_root = Path(resolved)
+        return resolved
+
+    @staticmethod
+    def _descope_qname(qualified_name: str) -> str:
+        if "::" not in qualified_name:
+            return qualified_name
+        return qualified_name.split("::", 1)[1]
+
+    def _scope_qname(self, qualified_name: str) -> str:
+        if not qualified_name:
+            return qualified_name
+        if "::" in qualified_name:
+            return qualified_name
+        if not self._active_project_scope:
+            return qualified_name
+        return f"{self._active_project_scope}::{qualified_name}"
+
+    def _scope_node_fact(self, node_fact: NodeFact) -> NodeFact:
+        key_props = dict(node_fact.key_props)
+        all_props = dict(node_fact.all_props)
+        raw_qname = str(key_props.get("qualifiedName") or all_props.get("qualifiedName") or "")
+        scoped_qname = self._scope_qname(raw_qname) if raw_qname else ""
+        if scoped_qname:
+            key_props["qualifiedName"] = scoped_qname
+            all_props["scopedQualifiedName"] = scoped_qname
+        if raw_qname:
+            all_props["qualifiedName"] = raw_qname
+        if self._active_project_scope:
+            all_props["projectScope"] = self._active_project_scope
+        return node_fact.model_copy(
+            update={
+                "key_props": key_props,
+                "all_props": all_props,
+            }
+        )
+
+    def _scope_edge_fact(self, edge_fact: EdgeFact) -> EdgeFact:
+        return edge_fact.model_copy(
+            update={
+                "src_qualified_name": self._scope_qname(edge_fact.src_qualified_name),
+                "dst_qualified_name": self._scope_qname(edge_fact.dst_qualified_name),
+            }
+        )
+
+    def _stub_node_props(self, scoped_qname: str, label: str) -> dict[str, Any]:
+        unscoped_qname = self._descope_qname(scoped_qname)
+        return {
+            "qualifiedName": unscoped_qname,
+            "scopedQualifiedName": scoped_qname,
+            "name": unscoped_qname.split(".")[-1],
+            "projectScope": self._active_project_scope,
+            "unresolvable": True,
+            "stubLabel": label,
+            "sourceFile": "stub",
+            "lineNumber": 0,
+            "parserType": "stub",
+            "lastIngestedAt": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @staticmethod
+    def _node_vector_text(all_props: dict[str, Any]) -> str:
+        parts = [
+            str(all_props.get("qualifiedName", "")),
+            str(all_props.get("name", "")),
+            str(all_props.get("label", "")),
+            str(all_props.get("sourceFile", "")),
+            str(all_props.get("parserType", "")),
+        ]
+        return " | ".join(p for p in parts if p)
+
+    async def _upsert_vector_for_node(self, scoped_qname: str, props: dict[str, Any]) -> None:
+        if not self._vectors:
+            return
+        text = self._node_vector_text(props)
+        if not text:
+            return
+        payload = {
+            "qualifiedName": props.get("qualifiedName"),
+            "scopedQualifiedName": scoped_qname,
+            "label": props.get("label"),
+            "sourceFile": props.get("sourceFile"),
+            "parserType": props.get("parserType"),
+        }
+        try:
+            await self._vectors.upsert(
+                node_id=scoped_qname,
+                text=text,
+                payload=payload,
+                project_scope=self._active_project_scope,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Vector upsert failed for %s: %s", scoped_qname, exc)
+
+    async def _delete_vectors_for_nodes(self, node_qnames: set[str]) -> None:
+        if not self._vectors or not node_qnames:
+            return
+        try:
+            await self._vectors.delete_by_node_ids(sorted(node_qnames))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Vector delete failed for %d nodes: %s", len(node_qnames), exc)
+
+    def _belongs_to_active_scope(self, qualified_name: str, props: dict[str, Any]) -> bool:
+        if not self._active_project_scope:
+            return True
+
+        prop_scope = props.get("projectScope")
+        if isinstance(prop_scope, str) and prop_scope:
+            return prop_scope == self._active_project_scope
+
+        if qualified_name.startswith(f"{self._active_project_scope}::"):
+            return True
+
+        source = props.get("sourceFile")
+        if not source or not self._active_export_root:
+            return False
+        try:
+            source_path = Path(str(source)).expanduser().resolve()
+            return source_path == self._active_export_root or self._active_export_root in source_path.parents
+        except Exception:
+            return False
+
+    async def ingest(self, export_dir: str) -> IngestionSummary:
+        """Ingest a metadata export directory and return summary statistics."""
+        export_dir = self._activate_scope(export_dir)
+        start = time.monotonic()
+        run_id = await self._manifest.create_run()
+        warnings: list[str] = []
+
+        discovered_files = self._discover_files(Path(export_dir))
+        for fpath, sha in discovered_files.items():
+            await self._manifest.upsert_file(fpath, sha, run_id)
+
+        facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols = await self._collect_facts(
+            list(discovered_files.keys())
+        )
+
+        node_counts, written_qnames = await self._write_nodes(facts_by_type)
+
+        for fpath in discovered_files:
+            if fpath not in parse_failures:
+                await self._manifest.set_status(fpath, "NODES_WRITTEN")
+
+        node_registry = await self._load_node_registry()
+        scoped_edges = [self._scope_edge_fact(edge) for edge in self._apply_picklist_guard(all_edges, facts_by_type)]
+        edge_count, orphaned_edges, edge_warnings = await self._write_edges(
+            scoped_edges,
+            node_registry=node_registry,
+        )
+        warnings.extend(edge_warnings)
+
+        for fpath in discovered_files:
+            if fpath not in parse_failures:
+                await self._manifest.set_status(fpath, "EDGES_WRITTEN")
+
+        await self._manifest.mark_run_complete(
+            run_id,
+            phase_1_complete=True,
+            phase_2_complete=True,
+        )
+
+        try:
+            await materialize_schema_index(self._graph, self._schema_index_path)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Schema index failed: {exc}")
+
+        duration = round(time.monotonic() - start, 3)
+        summary = IngestionSummary(
+            run_id=run_id,
+            export_dir=export_dir,
+            duration_seconds=duration,
+            node_counts_by_type=dict(node_counts),
+            edge_count=edge_count,
+            parse_failures=parse_failures,
+            orphaned_edges=orphaned_edges,
+            warnings=warnings,
+            parser_stats=parser_stats,
+            unresolved_symbols=unresolved_symbols,
+        )
+        self._write_ingestion_meta(summary)
+        return summary
+
+    async def refresh(self, export_dir: str) -> RefreshSummary:
+        """Incrementally refresh changed/new/deleted files based on manifest delta."""
+        export_dir = self._activate_scope(export_dir)
+        start = time.monotonic()
+        run_id = await self._manifest.create_run()
+        warnings: list[str] = []
+
+        current_files = self._discover_files(Path(export_dir))
+        delta = await self._manifest.get_delta(current_files)
+        changed_files = sorted(set(delta["new"] + delta["changed"]))
+        deleted_files = sorted(delta["deleted"])
+        affected_neighbor_files: list[str] = []
+
+        # REFRESH-04: conservative affected-neighbor rediscovery.
+        seed_nodes = await self._nodes_for_source_files(changed_files + deleted_files)
+        neighbor_nodes = await self._collect_neighbor_nodes(seed_nodes)
+        neighbor_files = await self._source_files_for_nodes(neighbor_nodes)
+        for fpath in sorted(neighbor_files):
+            if fpath in current_files and fpath not in deleted_files and fpath not in changed_files:
+                affected_neighbor_files.append(fpath)
+        reparse_files = sorted(set(changed_files + affected_neighbor_files))
+
+        # Deleted files: drop sourced nodes and manifest entries.
+        if deleted_files:
+            removed_qnames = await self._purge_nodes_by_source_files(deleted_files)
+            await self._delete_edges_for_nodes(removed_qnames)
+            await self._delete_vectors_for_nodes(removed_qnames)
+            await self._manifest.delete_files(deleted_files)
+
+        # Changed/new files: replace sourced nodes and rewrite their edges.
+        node_count = 0
+        edge_count = 0
+        orphaned_edges = 0
+
+        parse_failures: list[str] = []
+        parser_stats = self._empty_parser_stats()
+        unresolved_symbols = 0
+
+        if reparse_files:
+            for fpath in reparse_files:
+                sha = current_files.get(fpath)
+                if sha:
+                    await self._manifest.upsert_file(fpath, sha, run_id)
+
+            removed_qnames = await self._purge_nodes_by_source_files(reparse_files)
+            await self._delete_edges_for_nodes(removed_qnames)
+            await self._delete_vectors_for_nodes(removed_qnames)
+
+            facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols = await self._collect_facts(
+                reparse_files
+            )
+            node_counts, written_qnames = await self._write_nodes(facts_by_type)
+            node_count = sum(node_counts.values())
+
+            for fpath in reparse_files:
+                if fpath not in parse_failures:
+                    await self._manifest.set_status(fpath, "NODES_WRITTEN")
+
+            # Remove stale edges connected to rewritten nodes before adding new ones.
+            await self._delete_edges_for_nodes(written_qnames)
+
+            node_registry = await self._load_node_registry()
+            scoped_edges = [self._scope_edge_fact(edge) for edge in self._apply_picklist_guard(all_edges, facts_by_type)]
+            edge_count, orphaned_edges, edge_warnings = await self._write_edges(
+                scoped_edges,
+                node_registry=node_registry,
+            )
+            warnings.extend(edge_warnings)
+
+            for fpath in reparse_files:
+                if fpath not in parse_failures:
+                    await self._manifest.set_status(fpath, "EDGES_WRITTEN")
+
+        # Always prune dangling edges after deletes/updates.
+        await self._prune_dangling_edges()
+
+        await self._manifest.mark_run_complete(
+            run_id,
+            phase_1_complete=True,
+            phase_2_complete=True,
+        )
+
+        try:
+            await materialize_schema_index(self._graph, self._schema_index_path)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Schema index failed: {exc}")
+
+        duration = round(time.monotonic() - start, 3)
+        summary = RefreshSummary(
+            run_id=run_id,
+            export_dir=export_dir,
+            duration_seconds=duration,
+            processed_files=len(reparse_files),
+            changed_files=changed_files,
+            deleted_files=deleted_files,
+            affected_neighbor_files=affected_neighbor_files,
+            node_count=node_count,
+            edge_count=edge_count,
+            orphaned_edges=orphaned_edges,
+            warnings=warnings,
+            parser_stats=parser_stats,
+            unresolved_symbols=unresolved_symbols,
+        )
+        self._write_refresh_meta(summary)
+        return summary
+
+    async def watch_refresh(
+        self,
+        export_dir: str,
+        duration_seconds: int = 60,
+        poll_interval: float = 1.0,
+        debounce_seconds: float = 2.0,
+        max_refreshes: int = 25,
+    ) -> dict[str, Any]:
+        """Poll for file changes and trigger incremental refresh with debounce."""
+        export_dir = self._activate_scope(export_dir)
+        started = time.monotonic()
+        refreshes: list[dict[str, Any]] = []
+        last_seen_change_fingerprint: str | None = None
+
+        while (time.monotonic() - started) < duration_seconds and len(refreshes) < max_refreshes:
+            current_files = self._discover_files(Path(export_dir))
+            delta = await self._manifest.get_delta(current_files)
+            has_change = bool(delta["new"] or delta["changed"] or delta["deleted"])
+            if has_change:
+                change_fingerprint = json.dumps(
+                    {
+                        "new": sorted(delta["new"]),
+                        "changed": sorted(delta["changed"]),
+                        "deleted": sorted(delta["deleted"]),
+                    },
+                    sort_keys=True,
+                )
+                if change_fingerprint == last_seen_change_fingerprint:
+                    await asyncio.sleep(poll_interval)
+                    continue
+                last_seen_change_fingerprint = change_fingerprint
+                await asyncio.sleep(debounce_seconds)
+                summary = await self.refresh(export_dir)
+                refreshes.append(summary.model_dump())
+                continue
+            await asyncio.sleep(poll_interval)
+
+        return {
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "refresh_count": len(refreshes),
+            "refreshes": refreshes,
+        }
+
+    def _discover_files(self, export_path: Path) -> dict[str, str]:
+        """Discover ingestion targets and compute their SHA-256 digest."""
+        files: dict[str, str] = {}
+        suffixes = (
+            ".cls",
+            ".trigger",
+            ".js",
+            ".html",
+            ".json",
+            ".object-meta.xml",
+            ".flow-meta.xml",
+            ".labels-meta.xml",
+            ".label-meta.xml",
+        )
+        for path in sorted(export_path.rglob("*")):
+            if not path.is_file():
+                continue
+            if any(part in self.SKIP_DIR_NAMES for part in path.parts):
+                continue
+            if any(path.name.endswith(sfx) for sfx in suffixes):
+                files[str(path)] = _sha256(str(path))
+        return files
+
+    @staticmethod
+    def _empty_parser_stats() -> dict[str, dict[str, int]]:
+        return {
+            "apex": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+            "flow": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+            "object": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+            "labels": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+            "lwc": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+            "vlocity": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+            "unknown": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+        }
+
+    @staticmethod
+    def _parser_name_for_file(fpath: str) -> str:
+        path = Path(fpath)
+        if path.suffix in {".cls", ".trigger"}:
+            return "apex"
+        if path.suffix in {".js", ".html"} and "lwc" in {part.lower() for part in path.parts}:
+            return "lwc"
+        if fpath.endswith(".flow-meta.xml"):
+            return "flow"
+        if fpath.endswith(".object-meta.xml"):
+            return "object"
+        if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
+            return "labels"
+        if path.suffix == ".json":
+            return "vlocity"
+        return "unknown"
+
+    @staticmethod
+    def _is_unresolved_dynamic_edge(edge: EdgeFact) -> bool:
+        if edge.dst_qualified_name.startswith("UNRESOLVED."):
+            return True
+        if edge.src_qualified_name.startswith("UNRESOLVED."):
+            return True
+        if edge.resolutionMethod.lower() in {"dynamic", "unknown", "traced_limit", "regex"}:
+            return True
+        return False
+
+    async def _collect_facts(
+        self,
+        files: list[str],
+    ) -> tuple[dict[str, list[NodeFact]], list[EdgeFact], list[str], dict[str, dict[str, int]], int]:
+        facts_by_type: dict[str, list[NodeFact]] = defaultdict(list)
+        all_edges: list[EdgeFact] = []
+        parse_failures: list[str] = []
+        parser_stats = self._empty_parser_stats()
+        unresolved_symbols = 0
+
+        for fpath in files:
+            parser_name = self._parser_name_for_file(fpath)
+            try:
+                file_nodes, file_edges = await self._parse_file(fpath)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Parse failure for %s: %s", fpath, exc)
+                parse_failures.append(fpath)
+                await self._manifest.set_status(fpath, "FAILED")
+                parser_stats[parser_name]["error_files"] += 1
+                continue
+
+            if file_nodes or file_edges:
+                parser_stats[parser_name]["parsed_files"] += 1
+            else:
+                parser_stats[parser_name]["skipped_files"] += 1
+
+            for node_fact in file_nodes:
+                facts_by_type[node_fact.label].append(node_fact)
+            for edge in file_edges:
+                if self._is_unresolved_dynamic_edge(edge):
+                    unresolved_symbols += 1
+            all_edges.extend(file_edges)
+
+        return facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols
+
+    async def _write_nodes(self, facts_by_type: dict[str, list[NodeFact]]) -> tuple[dict[str, int], set[str]]:
+        node_counts: dict[str, int] = defaultdict(int)
+        written_qnames: set[str] = set()
+
+        for label in NODE_WRITE_ORDER:
+            for node_fact in facts_by_type.get(label, []):
+                scoped_fact = self._scope_node_fact(node_fact)
+                qname = scoped_fact.key_props.get("qualifiedName")
+                if qname and qname in written_qnames:
+                    continue
+                merged_qname = await self._graph.merge_node(
+                    scoped_fact.label,
+                    scoped_fact.key_props,
+                    scoped_fact.all_props,
+                )
+                actual_qname = qname or merged_qname
+                if actual_qname:
+                    written_qnames.add(actual_qname)
+                    vector_props = dict(scoped_fact.all_props)
+                    vector_props.setdefault("label", scoped_fact.label)
+                    await self._upsert_vector_for_node(actual_qname, vector_props)
+                node_counts[scoped_fact.label] += 1
+
+        known_labels = set(NODE_WRITE_ORDER)
+        for label, node_facts in facts_by_type.items():
+            if label in known_labels:
+                continue
+            for node_fact in node_facts:
+                scoped_fact = self._scope_node_fact(node_fact)
+                qname = scoped_fact.key_props.get("qualifiedName")
+                if qname and qname in written_qnames:
+                    continue
+                merged_qname = await self._graph.merge_node(
+                    scoped_fact.label,
+                    scoped_fact.key_props,
+                    scoped_fact.all_props,
+                )
+                actual_qname = qname or merged_qname
+                if actual_qname:
+                    written_qnames.add(actual_qname)
+                    vector_props = dict(scoped_fact.all_props)
+                    vector_props.setdefault("label", scoped_fact.label)
+                    await self._upsert_vector_for_node(actual_qname, vector_props)
+                node_counts[scoped_fact.label] += 1
+
+        return dict(node_counts), written_qnames
+
+    async def _load_node_registry(self) -> dict[str, str]:
+        registry: dict[str, str] = {}
+        labels = await self._graph.get_labels()
+        for label in labels:
+            try:
+                rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
+            except Exception:
+                rows = []
+            for row in rows:
+                qn = str(row.get("qualified_name", ""))
+                if not qn:
+                    continue
+                props = _parse_props(row.get("props"))
+                if self._belongs_to_active_scope(qn, props):
+                    registry[qn] = label
+        return registry
+
+    async def _nodes_for_source_files(self, source_files: list[str]) -> set[str]:
+        if not source_files:
+            return set()
+        labels = await self._graph.get_labels()
+        source_set = set(source_files)
+        matched: set[str] = set()
+        for label in labels:
+            try:
+                rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
+            except Exception:
+                rows = []
+            for row in rows:
+                qn = str(row.get("qualified_name", ""))
+                if not qn:
+                    continue
+                props = _parse_props(row.get("props"))
+                if not self._belongs_to_active_scope(qn, props):
+                    continue
+                if props.get("sourceFile") in source_set:
+                    matched.add(qn)
+        return matched
+
+    async def _collect_neighbor_nodes(self, node_qnames: set[str], limit: int = 1500) -> set[str]:
+        if not node_qnames:
+            return set()
+        rel_types = await self._graph.get_relationship_types()
+        neighbors: set[str] = set()
+        for rel in rel_types:
+            try:
+                rows = await self._graph.query(
+                    f'SELECT src_qualified_name, dst_qualified_name FROM "{rel}"'
+                )
+            except Exception:
+                rows = []
+            for row in rows:
+                src = str(row.get("src_qualified_name", ""))
+                dst = str(row.get("dst_qualified_name", ""))
+                if not src or not dst:
+                    continue
+                if self._active_project_scope:
+                    scope_prefix = f"{self._active_project_scope}::"
+                    if not src.startswith(scope_prefix) or not dst.startswith(scope_prefix):
+                        continue
+                if src in node_qnames and dst not in node_qnames:
+                    neighbors.add(dst)
+                elif dst in node_qnames and src not in node_qnames:
+                    neighbors.add(src)
+                if len(neighbors) >= limit:
+                    return neighbors
+        return neighbors
+
+    async def _source_files_for_nodes(self, node_qnames: set[str]) -> set[str]:
+        if not node_qnames:
+            return set()
+        labels = await self._graph.get_labels()
+        files: set[str] = set()
+        qn_set = set(node_qnames)
+        for label in labels:
+            try:
+                rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
+            except Exception:
+                rows = []
+            for row in rows:
+                qn = str(row.get("qualified_name", ""))
+                if qn not in qn_set:
+                    continue
+                props = _parse_props(row.get("props"))
+                if not self._belongs_to_active_scope(qn, props):
+                    continue
+                source = props.get("sourceFile")
+                if isinstance(source, str) and source:
+                    files.add(source)
+        return files
+
+    async def _purge_nodes_by_source_files(self, source_files: list[str]) -> set[str]:
+        if not source_files:
+            return set()
+
+        labels = await self._graph.get_labels()
+        source_set = set(source_files)
+        removed_qnames: set[str] = set()
+
+        for label in labels:
+            try:
+                rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
+            except Exception:
+                continue
+            to_delete: list[str] = []
+            for row in rows:
+                qn = str(row.get("qualified_name", ""))
+                props = _parse_props(row.get("props"))
+                source = props.get("sourceFile")
+                if qn and source in source_set and self._belongs_to_active_scope(qn, props):
+                    to_delete.append(qn)
+            for qn in to_delete:
+                try:
+                    await self._graph.query(
+                        f'DELETE FROM "{label}" WHERE qualified_name = $qn',
+                        {"qn": qn},
+                    )
+                    removed_qnames.add(qn)
+                except Exception:
+                    continue
+
+        return removed_qnames
+
+    async def _delete_edges_for_nodes(self, node_qnames: set[str]) -> None:
+        if not node_qnames:
+            return
+        rel_types = await self._graph.get_relationship_types()
+        for rel in rel_types:
+            for qn in node_qnames:
+                try:
+                    await self._graph.query(
+                        f'DELETE FROM "{rel}" WHERE src_qualified_name = $qn OR dst_qualified_name = $qn',
+                        {"qn": qn},
+                    )
+                except Exception:
+                    continue
+
+    async def _prune_dangling_edges(self) -> None:
+        registry = await self._load_node_registry()
+        rel_types = await self._graph.get_relationship_types()
+
+        for rel in rel_types:
+            try:
+                rows = await self._graph.query(
+                    f'SELECT src_qualified_name, dst_qualified_name FROM "{rel}"'
+                )
+            except Exception:
+                continue
+            for row in rows:
+                src = str(row.get("src_qualified_name", ""))
+                dst = str(row.get("dst_qualified_name", ""))
+                if not src or not dst:
+                    continue
+                if self._active_project_scope:
+                    in_scope_prefix = f"{self._active_project_scope}::"
+                    if not src.startswith(in_scope_prefix) and not dst.startswith(in_scope_prefix):
+                        continue
+                if src in registry and dst in registry:
+                    continue
+                try:
+                    await self._graph.query(
+                        f'DELETE FROM "{rel}" WHERE src_qualified_name = $src AND dst_qualified_name = $dst',
+                        {"src": src, "dst": dst},
+                    )
+                except Exception:
+                    continue
+
+    async def _write_edges(
+        self,
+        edge_facts: list[EdgeFact],
+        node_registry: dict[str, str],
+    ) -> tuple[int, int, list[str]]:
+        edge_count = 0
+        orphaned_edges = 0
+        warnings: list[str] = []
+
+        for edge_fact in edge_facts:
+            src_known = edge_fact.src_qualified_name in node_registry
+            dst_known = edge_fact.dst_qualified_name in node_registry
+
+            if not dst_known:
+                stub_label = edge_fact.dst_label or "ExternalNamespace"
+                if stub_label == "Unknown":
+                    stub_label = "ExternalNamespace"
+                if stub_label not in NODE_WRITE_ORDER and stub_label not in {
+                    "ExternalNamespace",
+                    "CustomLabel",
+                    "Flow",
+                    "PlatformEvent",
+                    "SFObject",
+                    "SFField",
+                    "SFPicklistValue",
+                    "ApexClass",
+                    "CustomSetting",
+                    "CustomMetadataType",
+                    "GlobalValueSet",
+                }:
+                    stub_label = "ExternalNamespace"
+                await self._graph.merge_node(
+                    stub_label,
+                    {"qualifiedName": edge_fact.dst_qualified_name},
+                    self._stub_node_props(edge_fact.dst_qualified_name, stub_label),
+                )
+                node_registry[edge_fact.dst_qualified_name] = stub_label
+                dst_known = True
+
+            if not src_known or not dst_known:
+                orphaned_edges += 1
+                warnings.append(
+                    f"Orphaned edge: {edge_fact.src_qualified_name} -[{edge_fact.rel_type}]-> {edge_fact.dst_qualified_name}"
+                )
+                continue
+
+            edge_props = edge_fact.to_merge_props()
+            if self._active_project_scope:
+                edge_props["projectScope"] = self._active_project_scope
+            await self._graph.merge_edge(
+                edge_fact.src_qualified_name,
+                edge_fact.src_label,
+                edge_fact.rel_type,
+                edge_fact.dst_qualified_name,
+                edge_fact.dst_label,
+                edge_props,
+            )
+            edge_count += 1
+
+        return edge_count, orphaned_edges, warnings
+
+    async def _parse_file(self, fpath: str) -> tuple[list[NodeFact], list[EdgeFact]]:
+        path = Path(fpath)
+
+        if path.suffix in {".cls", ".trigger"}:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            result = await self._pool.parse(fpath, "apex", content)
+            if not result.get("ok") and str(result.get("error", "")) in {"worker_restarting", "timeout"}:
+                # One retry for transient parser worker lifecycle events.
+                await asyncio.sleep(0.05)
+                result = await self._pool.parse(fpath, "apex", content)
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error") or "worker_parse_failed")
+            payload = result.get("payload") or {}
+            nodes, edges = self._apex_extractor.extract(payload, fpath)
+
+            # APEX-11 dynamic accessor edge candidates from raw method refs.
+            primary_class = next((n.key_props.get("qualifiedName") for n in nodes if n.label == "ApexClass"), path.stem)
+            for ref in payload.get("potential_refs", []):
+                if ref.get("refType") != "CALLS_CLASS_METHOD":
+                    continue
+                target_class = ref.get("targetClass", "")
+                target_method = ref.get("method", "")
+                if not target_class or not target_method:
+                    continue
+                edges.extend(
+                    self._dynamic_registry.match(
+                        class_name=target_class,
+                        method_name=target_method,
+                        src_qualified_name=primary_class,
+                        src_label="ApexClass",
+                        context_snippet=ref.get("contextSnippet", ""),
+                    )
+                )
+
+            return nodes, edges
+
+        if path.suffix in {".js", ".html"} and "lwc" in {part.lower() for part in path.parts}:
+            return parse_lwc_file(fpath)
+
+        if fpath.endswith(".flow-meta.xml"):
+            return parse_flow_xml(fpath)
+
+        if fpath.endswith(".object-meta.xml"):
+            return parse_object_dir(str(path.parent))
+
+        if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
+            return parse_labels_xml(fpath)
+
+        if path.suffix == ".json":
+            return parse_vlocity_json(fpath)
+
+        return [], []
+
+    def _apply_picklist_guard(
+        self,
+        edge_facts: list[EdgeFact],
+        facts_by_type: dict[str, list[NodeFact]],
+    ) -> list[EdgeFact]:
+        """Resolve READS_VALUE candidates only when source field is known Picklist."""
+        picklist_fields = {
+            nf.key_props.get("qualifiedName", "")
+            for nf in facts_by_type.get("SFField", [])
+            if nf.all_props.get("dataType") == "Picklist"
+            or nf.all_props.get("fieldType") == "Picklist"
+        }
+
+        resolved: list[EdgeFact] = []
+        for edge in edge_facts:
+            if edge.rel_type != "READS_VALUE" or not edge.dst_qualified_name.startswith("UNRESOLVED."):
+                resolved.append(edge)
+                continue
+
+            parts = edge.dst_qualified_name.split(".")
+            if len(parts) < 3:
+                continue
+            field_name = parts[1]
+            comparand = ".".join(parts[2:])
+            matched_field = next((qn for qn in picklist_fields if qn.endswith(f".{field_name}")), None)
+            if not matched_field:
+                continue
+
+            resolved.append(
+                edge.model_copy(
+                    update={
+                        "dst_qualified_name": f"{matched_field}.{comparand}",
+                        "confidence": 0.9,
+                        "resolutionMethod": "picklist_guard",
+                    }
+                )
+            )
+
+        return resolved
+
+    def _write_ingestion_meta(self, summary: IngestionSummary) -> None:
+        """Persist latest ingestion metadata for freshness contract responses."""
+        project_scope = self._compute_project_scope(summary.export_dir)
+        payload = {
+            "run_id": summary.run_id,
+            "indexed_at": datetime.now(timezone.utc).isoformat(),
+            "indexed_commit": self._current_git_commit(),
+            "export_dir": summary.export_dir,
+            "project_scope": project_scope,
+            "total_nodes": summary.total_nodes,
+            "edge_count": summary.edge_count,
+            "orphaned_edges": summary.orphaned_edges,
+            "parse_failures": len(summary.parse_failures),
+            "warnings": len(summary.warnings),
+            "mode": "full_ingest",
+            "parser_stats": summary.parser_stats,
+            "unresolved_symbols": summary.unresolved_symbols,
+        }
+        out = Path(self._ingestion_meta_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _write_refresh_meta(self, summary: RefreshSummary) -> None:
+        project_scope = self._compute_project_scope(summary.export_dir)
+        payload = {
+            "run_id": summary.run_id,
+            "indexed_at": datetime.now(timezone.utc).isoformat(),
+            "indexed_commit": self._current_git_commit(),
+            "export_dir": summary.export_dir,
+            "project_scope": project_scope,
+            "processed_files": summary.processed_files,
+            "changed_files": summary.changed_files,
+            "deleted_files": summary.deleted_files,
+            "affected_neighbor_files": summary.affected_neighbor_files,
+            "node_count": summary.node_count,
+            "edge_count": summary.edge_count,
+            "orphaned_edges": summary.orphaned_edges,
+            "warnings": len(summary.warnings),
+            "mode": "incremental_refresh",
+            "parser_stats": summary.parser_stats,
+            "unresolved_symbols": summary.unresolved_symbols,
+        }
+        out = Path(self._ingestion_meta_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _current_git_commit() -> str | None:
+        try:
+            root = Path(__file__).resolve().parents[3]
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(root),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout.strip()
+        except Exception:
+            return None

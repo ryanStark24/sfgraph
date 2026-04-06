@@ -2,14 +2,14 @@
 
 **Created:** 2026-04-04
 **Depth:** Standard (6 phases)
-**Coverage:** 99/99 v1 requirements mapped
+**Coverage:** 111/111 v1 requirements mapped
 
 ## Phases
 
 - [x] **Phase 1: Foundations** — Storage engines, GraphStore ABC, environment lock. Everything else is blocked on this. (completed 2026-04-04)
 - [x] **Phase 2: Node.js Parser Pool + MCP Skeleton** — Prove the Python↔Node.js IPC boundary; establish stdout discipline before any tool handler is written. (completed 2026-04-04)
-- [ ] **Phase 3: Ingestion Pipeline Core** — Apex, Objects, Flows parsers + two-phase ingest orchestration. First queryable graph.
-- [ ] **Phase 4: Remaining Parsers** — LWC and Vlocity parsers. Completes metadata coverage for a credible v1.
+- [x] **Phase 3: Ingestion Pipeline Core** — Apex, Objects, Flows parsers + two-phase ingest orchestration. First queryable graph. (completed 2026-04-06)
+- [x] **Phase 4: Remaining Parsers** — LWC and Vlocity parsers. Completes metadata coverage for a credible v1. (completed 2026-04-06)
 - [ ] **Phase 5: MCP Tools + Query Pipeline** — All 6 tools wired; three-agent NL→Cypher pipeline with confidence tiers.
 - [ ] **Phase 6: Hardening + OSS Readiness** — Variable Origin Tracer, file watcher, formula parser, Dynamic Accessor Registry, PyPI packaging, docs.
 
@@ -75,19 +75,23 @@ Plans:
 ### Phase 4: Remaining Parsers
 **Goal**: LWC and Vlocity metadata is fully ingested into the graph, making the tool credible for enterprise orgs that depend on OmniStudio and LWC components.
 **Depends on**: Phase 3
-**Requirements**: LWC-01, LWC-02, LWC-03, LWC-04, LWC-05, LWC-06, VLO-01, VLO-02, VLO-03, VLO-04, VLO-05, VLO-06, VLO-07
+**Requirements**: LWC-01, LWC-02, LWC-03, LWC-04, LWC-05, LWC-06, VLO-01, VLO-02, VLO-03, VLO-04, VLO-05, VLO-06, VLO-07, SEM-01
 **Success Criteria** (what must be TRUE):
   1. An LWC component JS file with a `@salesforce/apex/ClassName.methodName` wire import produces an IMPORTS_APEX edge (callType=wire) in the graph; an imperative call in a function body produces an IMPORTS_APEX edge (callType=imperative).
   2. An LWC HTML template with `<c-child-component>` produces a CONTAINS_CHILD edge; `lightning-record-form` field references produce WIRES_ADAPTER edges.
   3. An IntegrationProcedure DataPack JSON produces an IP node with all step elements; merge field references (`%StepName:FieldName%`) produce REFERENCES_STEP_OUTPUT edges.
   4. A DataRaptor Extract fixture produces DR_READS edges from the DataRaptor node to the correct SFField nodes; a DataRaptor Load produces DR_WRITES edges.
   5. The Vlocity namespace normalizer replaces `%vlocity_namespace%` in all relationship targets with the configured org namespace prefix before any edges are written.
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [x] 04-01-SUMMARY.md — LWC parser (JS + HTML) with Apex import, label, adapter, and child-component mapping
+- [x] 04-02-SUMMARY.md — Vlocity parser (IntegrationProcedure/DataRaptor/OmniScript) with namespace normalization
 
 ### Phase 5: MCP Tools + Query Pipeline
 **Goal**: A developer can connect Claude Desktop to the MCP server, ingest an org, and ask "what breaks if I change this field?" and receive a confidence-tiered, source-attributed answer in under 5 seconds.
 **Depends on**: Phase 4
-**Requirements**: QUERY-01, QUERY-02, QUERY-03, QUERY-04, QUERY-05, QUERY-06, QUERY-07, QUERY-08, QUERY-09, QUERY-10, MCP-02, MCP-03, MCP-04, MCP-05, MCP-06, MCP-07, MCP-08, MCP-09
+**Requirements**: QUERY-01, QUERY-02, QUERY-03, QUERY-04, QUERY-05, QUERY-06, QUERY-07, QUERY-08, QUERY-09, QUERY-10, MCP-02, MCP-03, MCP-04, MCP-05, MCP-06, MCP-07, MCP-08, MCP-09, TRUST-01, TRUST-02, TRACE-01, TRACE-02, MAP-01
 **Success Criteria** (what must be TRUE):
   1. `ingest_org(export_dir)` called from Claude Desktop runs the full ingestion pipeline and returns a summary with node count, edge count, warnings, and duration; `get_ingestion_status()` reflects the current state immediately after.
   2. `query("what uses Account.Status__c?")` returns a structured answer with results grouped into Definite (confidence ≥ 0.9), Probable (0.5–0.9), and Review manually (< 0.5) tiers, each with source file and line number citations.
@@ -101,7 +105,7 @@ Plans:
 ### Phase 6: Hardening + OSS Readiness
 **Goal**: The tool is production-hardened for pathological enterprise orgs and publishable to PyPI with zero-friction installation, complete documentation, and the Dynamic Accessor Registry pre-configured for common Salesforce patterns.
 **Depends on**: Phase 5
-**Requirements**: DYN-01, DYN-02, DYN-03, REFRESH-01, REFRESH-02, REFRESH-03, REFRESH-04, REFRESH-05, REFRESH-06, OSS-01, OSS-02, OSS-03, OSS-04
+**Requirements**: DYN-01, DYN-02, DYN-03, REFRESH-01, REFRESH-02, REFRESH-03, REFRESH-04, REFRESH-05, REFRESH-06, OSS-01, OSS-02, OSS-03, OSS-04, IMPACT-01, IMPACT-02, OBS-01, EXT-PLUG-01, TEST-INTEL-01, SNAP-01
 **Success Criteria** (what must be TRUE):
   1. The Variable Origin Tracer resolves a dynamic field reference through a 4-hop Apex method chain and produces an edge with resolutionMethod=traced; a 6-hop chain hits MAX_TRACE_DEPTH=5 and produces a TRACE_LIMIT_HIT edge (confidence=0.3).
   2. `sfgraph refresh` on a 3-file change set completes in under 5 seconds: deleted-file nodes are removed from the graph and vector index, changed-file nodes are re-ingested, and affected neighbors are re-discovered.
@@ -116,12 +120,38 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete | 2026-04-04 |
 | 2. Node.js Parser Pool + MCP Skeleton | 3/3 | Complete | 2026-04-04 |
-| 2.1 DuckPGQ Migration | 1/1 | Complete | 2026-04-06 |
-| 3. Ingestion Pipeline Core | 2/5 | In Progress|  |
-| 4. Remaining Parsers | 0/? | Not started | - |
-| 5. MCP Tools + Query Pipeline | 0/? | Not started | - |
-| 6. Hardening + OSS Readiness | 0/? | Not started | - |
+| 3. Ingestion Pipeline Core | 5/5 | Complete | 2026-04-06 |
+| 4. Remaining Parsers | 2/2 | Complete | 2026-04-06 |
+| 5. MCP Tools + Query Pipeline | 4/? | In Progress | 2026-04-06 |
+| 6. Hardening + OSS Readiness | 3/? | In Progress | 2026-04-06 |
+
+### Phase 3 Plan Checklist
+
+| Plan | Status | Completed |
+|------|--------|-----------|
+| 03-01: Schema constants + Pydantic models + fixtures | ✅ DONE | 2026-04-06 |
+| 03-02: Object/Field XML parser (OBJ-01–07) | ✅ DONE | 2026-04-06 |
+| 03-03: Apex CST full traversal + apex_extractor.py | ✅ DONE | 2026-04-06 |
+| 03-04: Flow XML parser (FLOW-01–08) | ✅ DONE | 2026-04-06 |
+| 03-05: IngestionService + ingest_org MCP tool | ✅ DONE | 2026-04-06 |
+
+### Phase 4 Plan Checklist
+
+| Plan | Status | Completed |
+|------|--------|-----------|
+| 04-01: LWC parser (LWC-01–06) | ✅ DONE | 2026-04-06 |
+| 04-02: Vlocity parser (VLO-01–07) | ✅ DONE | 2026-04-06 |
+
+
+### Phase 5 Plan Checklist
+
+| Plan | Status | Completed |
+|------|--------|-----------|
+| 05-01: Query + lineage + freshness baseline | ✅ DONE | 2026-04-06 |
+| 05-02: Cross-layer map + unknown-dynamic visibility + rules hooks | ✅ DONE | 2026-04-06 |
+| 05-03: Schema-filtered query pipeline + correction-attempt trace + confidence tiers | ✅ DONE | 2026-04-06 |
+| 05-04: Agent trace integration + deeper test-gap intelligence | ✅ DONE | 2026-04-06 |
 
 ---
 *Roadmap created: 2026-04-04*
-*Last updated: 2026-04-04 — Phase 3 planned: 5 plans (03-01 through 03-05) in 3 waves*
+*Last updated: 2026-04-06 — Phase 5 baseline started (query/lineage/freshness tools implemented)*
