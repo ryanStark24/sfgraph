@@ -1101,7 +1101,14 @@ class IngestionService:
                 await asyncio.sleep(0.05)
                 result = await self._pool.parse(fpath, "apex", content)
             if not result.get("ok"):
-                raise RuntimeError(result.get("error") or "worker_parse_failed")
+                error = str(result.get("error") or "worker_parse_failed")
+                payload = result.get("payload")
+                worker_stderr = ""
+                if isinstance(payload, dict):
+                    worker_stderr = str(payload.get("worker_stderr") or "").strip()
+                if worker_stderr:
+                    raise RuntimeError(f"{error} | worker_stderr={worker_stderr}")
+                raise RuntimeError(error)
             payload = result.get("payload") or {}
             nodes, edges = self._apex_extractor.extract(payload, fpath)
 

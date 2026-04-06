@@ -330,6 +330,22 @@ async def test_ingest_retries_transient_worker_exited(svc):
     assert summary.parse_failures == []
 
 
+@pytest.mark.asyncio
+async def test_ingest_parse_failure_preserves_worker_stderr(svc, caplog):
+    service, _, _, pool = svc
+    pool.parse = AsyncMock(
+        return_value={
+            "ok": False,
+            "error": "worker_exited",
+            "payload": {"worker_stderr": "[worker] init failed: missing parser"},
+        }
+    )
+
+    summary = await service.ingest(FIXTURE_EXPORT)
+    assert summary.parse_failures
+    assert "worker_stderr=[worker] init failed: missing parser" in caplog.text
+
+
 def test_discover_files_skips_tooling_dirs(svc, tmp_path):
     service, _, _, _ = svc
     good = tmp_path / "force-app" / "main" / "default" / "classes" / "Good.cls"

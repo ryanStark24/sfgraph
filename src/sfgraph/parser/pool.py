@@ -10,12 +10,14 @@ Requirements: POOL-03, POOL-04, POOL-06
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
 import os
 import shutil
 import sys
+from collections import deque
 from pathlib import Path
 from uuid import uuid4
 
@@ -54,6 +56,11 @@ class _Worker:
         default_factory=lambda: asyncio.Semaphore(1)
     )
     healthy: bool = True
+    stderr_tail: deque[str] = dataclasses.field(default_factory=lambda: deque(maxlen=25))
+    stderr_task: asyncio.Task | None = None
+
+    def recent_stderr(self) -> str:
+        return " | ".join(line for line in self.stderr_tail if line).strip()
 
 
 class NodeParserPool:
@@ -114,7 +121,9 @@ class NodeParserPool:
             stderr=asyncio.subprocess.PIPE,
             cwd=str(Path(WORKER_JS).parent.parent.parent.parent.parent),
         )
-        return _Worker(proc=proc)
+        worker = _Worker(proc=proc)
+        worker.stderr_task = asyncio.create_task(self._capture_stderr(worker))
+        return worker
 
     async def parse(
         self, file_path: str, grammar: str, file_content: str
@@ -177,17 +186,27 @@ class NodeParserPool:
         try:
             if worker.proc.stdin is None or worker.proc.stdout is None:
                 asyncio.create_task(self._replace_worker(worker))
-                return {"ok": False, "error": "worker_exited", "payload": None}
+                return self._error_response("worker_exited", worker)
             worker.proc.stdin.write(line.encode())
             await worker.proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as exc:
-            logger.warning("Worker IPC write failed for %s: %s", file_path, exc)
+            logger.warning(
+                "Worker IPC write failed for %s: %s%s",
+                file_path,
+                exc,
+                self._format_worker_context(worker),
+            )
             asyncio.create_task(self._replace_worker(worker))
-            return {"ok": False, "error": "worker_restarting", "payload": None}
+            return self._error_response("worker_restarting", worker)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Worker IPC unexpected write failure for %s: %s", file_path, exc)
+            logger.warning(
+                "Worker IPC unexpected write failure for %s: %s%s",
+                file_path,
+                exc,
+                self._format_worker_context(worker),
+            )
             asyncio.create_task(self._replace_worker(worker))
-            return {"ok": False, "error": "worker_restarting", "payload": None}
+            return self._error_response("worker_restarting", worker)
 
         try:
             raw = await asyncio.wait_for(
@@ -196,25 +215,54 @@ class NodeParserPool:
         except asyncio.TimeoutError:
             # Schedule worker replacement to avoid stale response contamination
             asyncio.create_task(self._replace_worker(worker))
-            return {"ok": False, "error": "timeout", "payload": None}
+            return self._error_response("timeout", worker)
 
         if not raw:
             # Worker process exited unexpectedly
             asyncio.create_task(self._replace_worker(worker))
-            return {"ok": False, "error": "worker_exited", "payload": None}
+            return self._error_response("worker_exited", worker)
 
         try:
             response = json.loads(raw.decode())
         except json.JSONDecodeError:
             asyncio.create_task(self._replace_worker(worker))
-            return {"ok": False, "error": "invalid_json", "payload": None}
+            return self._error_response("invalid_json", worker)
 
         # Handle voluntary memory_ceiling exit from worker
         if not response.get("ok") and response.get("error") == "memory_ceiling":
             asyncio.create_task(self._replace_worker(worker))
-            return {"ok": False, "error": "worker_restarting", "payload": None}
+            return self._error_response("worker_restarting", worker)
 
         return response
+
+    async def _capture_stderr(self, worker: _Worker) -> None:
+        if worker.proc.stderr is None:
+            return
+        try:
+            while True:
+                raw = await worker.proc.stderr.readline()
+                if not raw:
+                    return
+                line = raw.decode(errors="replace").strip()
+                if not line:
+                    continue
+                worker.stderr_tail.append(line)
+                logger.info("Worker stderr: %s", line)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Worker stderr capture failed: %s", exc)
+
+    @staticmethod
+    def _format_worker_context(worker: _Worker) -> str:
+        recent = worker.recent_stderr()
+        return f" | worker_stderr={recent}" if recent else ""
+
+    def _error_response(self, error: str, worker: _Worker) -> dict:
+        recent = worker.recent_stderr()
+        if recent:
+            return {"ok": False, "error": error, "payload": {"worker_stderr": recent}}
+        return {"ok": False, "error": error, "payload": None}
 
     async def _health_loop(self) -> None:
         """Background task: ping all workers every 30 seconds.
@@ -273,6 +321,9 @@ class NodeParserPool:
             return  # Already replaced
 
         old_worker.healthy = False
+        recent = old_worker.recent_stderr()
+        if recent:
+            logger.warning("Replacing worker after failure. Recent stderr: %s", recent)
 
         # Kill the old process
         try:
@@ -284,6 +335,10 @@ class NodeParserPool:
             await old_worker.proc.wait()
         except Exception:
             pass
+        if old_worker.stderr_task is not None:
+            old_worker.stderr_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await old_worker.stderr_task
 
         if self._shutdown:
             return
@@ -307,6 +362,10 @@ class NodeParserPool:
                 pass
 
         for worker in self._workers:
+            if worker.stderr_task is not None:
+                worker.stderr_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker.stderr_task
             try:
                 worker.proc.kill()
             except ProcessLookupError:
