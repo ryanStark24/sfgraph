@@ -2,22 +2,22 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 2 — Node.js Parser Pool + MCP Skeleton (COMPLETE)
-current_plan: 03 (completed) — ParseDispatcher + FastMCP lifespan skeleton
-status: completed
-last_updated: "2026-04-04T10:32:26.381Z"
+current_phase: 3 — Ingestion Pipeline Core (IN PROGRESS)
+current_plan: 01 (completed) — Schema constants, Pydantic models, fixture files
+status: in_progress
+last_updated: "2026-04-06T04:46:00.000Z"
 progress:
-  total_phases: 2
+  total_phases: 6
   completed_phases: 2
-  total_plans: 8
-  completed_plans: 8
-  percent: 100
+  total_plans: 13
+  completed_plans: 9
+  percent: 35
 ---
 
 # Project State: Salesforce Org Graph Analyzer
 
-**Last updated:** 2026-04-04
-**Session:** Plan 02-03 execution (ParseDispatcher + FastMCP lifespan skeleton)
+**Last updated:** 2026-04-06
+**Session:** Plan 03-01 execution (Schema constants, Pydantic models, fixture files)
 
 ---
 
@@ -33,21 +33,19 @@ progress:
 
 ## Current Position
 
-**Current phase:** 2 — Node.js Parser Pool + MCP Skeleton (COMPLETE)
-**Current plan:** 03 (completed) — ParseDispatcher + FastMCP lifespan skeleton
-**Status:** Milestone complete
+**Current phase:** 3 — Ingestion Pipeline Core (IN PROGRESS)
+**Current plan:** 01 (completed) — Schema constants, Pydantic models, fixture files
+**Status:** In progress
 
 **Progress:**
-[██████████] 100%
 Phase 1 [██████████] 100% (5/5 plans — COMPLETE)
 Phase 2 [██████████] 100% (3/3 plans — COMPLETE)
-Phase 3 [          ] 0%
+Phase 3 [██        ] 20% (1/5 plans)
 Phase 4 [          ] 0%
 Phase 5 [          ] 0%
 Phase 6 [          ] 0%
 
-Overall [██████░░░░] ~25%
-```
+Overall [████░░░░░░] ~35%
 
 ---
 
@@ -72,6 +70,7 @@ Overall [██████░░░░] ~25%
 | 02-nodejs-parser-pool | P02 | 15 min | 2 | 2 |
 | Phase 02-nodejs-parser-pool-mcp-skeleton P02 | 15 | 2 tasks | 2 files |
 | Phase 02-nodejs-parser-pool-mcp-skeleton PP03 | 2 | 2 tasks | 3 files |
+| 03-ingestion-pipeline-core | P01 | 2 min | 2 | 11 |
 
 ## Accumulated Context
 
@@ -79,7 +78,9 @@ Overall [██████░░░░] ~25%
 
 | Decision | Rationale |
 |----------|-----------|
-| falkordb==1.6.0 (Redis-protocol) used; falkordblite not on PyPI | The correct PyPI package is 'falkordb'; requires a running FalkorDB/Redis server in production |
+| DuckPGQ (duckdb>=1.0.0) replaces falkordb as graph store | falkordb required a running Redis server + Docker; DuckPGQ is fully embedded in-process — no server, no Docker, works on restricted company machines |
+| DuckPGQStore stores nodes in per-label tables, edges in per-rel-type tables | Each label/rel_type gets its own DuckDB table; schema tracked in _sfgraph_schema metadata table; props stored as JSON column |
+| query() method accepts DuckDB SQL / PGQ SQL, not Cypher | GraphStore ABC still names param 'cypher' but DuckPGQStore documents it accepts SQL; Phase 5 query generator must produce DuckDB SQL or PGQ MATCH syntax |
 | FalkorDB tests use mock injection pattern | No embedded FalkorDB mode; asyncio queue and ABC contract tested via unittest.mock |
 | query_points() replaces search() in qdrant-client 1.17.1 | search() was removed in this version; use query_points() and extract results from response.points |
 | falkordblite excluded from initial pyproject.toml | Package name unverified on PyPI; resolved in P04 — correct package is 'falkordb' |
@@ -109,12 +110,14 @@ Overall [██████░░░░] ~25%
 | FalkorDB live integration tests added in Plan 05 | docker-compose.test.yml provides test server; @pytest.mark.integration tests skip without server; socket probe pattern avoids pytest-asyncio skip-in-except bug |
 | FalkorDBStore(host/port/graph_name) used in server.py lifespan | Plan stub had incorrect path= kwarg; actual Phase 1 constructor takes host, port, graph_name |
 | ManifestStore(db_path=) used in server.py | Plan stub had path= kwarg; actual Phase 1 constructor uses db_path parameter |
+| NodeFact requires non-empty sourceFile via @field_validator | Pydantic str fields accept "" by default; explicit validator needed to enforce INGEST-04 attribution requirement |
+| Schema constants in constants.py, never hardcoded in parsers | Single source of truth for node types, edge types, categories — parsers import from this module |
 
 ### Critical Pitfalls to Remember
 
-1. FalkorDBLite requires Python 3.12 — enforce in pyproject.toml before any other work
+1. Python 3.12 still required — mcp + pydantic + fastembed dependencies
 2. Stdout pollution corrupts MCP stdio transport — `logging.basicConfig(stream=sys.stderr)` must be first import; add CI assertion
-3. FalkorDBLite spawns a Redis child process — requires `brew install libomp` on macOS; serialize all writes through asyncio queue
+3. DuckDB is fully embedded — no libomp, no Redis, no Docker needed
 4. tree-sitter-sfapex has documented parse failures on enterprise Apex (5-20% error rate) — wrap all CST traversal with `has_error` guard
 5. Qdrant local mode caps at ~20k vectors — design VectorStore abstraction to support both local + subprocess mode from the start
 6. LLM Cypher hallucination is silent (FalkorDB returns empty, not error) — validate against `CALL db.labels()` before execution
@@ -129,8 +132,9 @@ Overall [██████░░░░] ~25%
 - ParseDispatcher routes by file extension: `.cls`/`.trigger`/`.js` → Node.js pool; everything else → Python parsers
 - DuckPGQStore stub validates Protocol boundary (GRAPH-04) — complete in P03
 - ManifestStore is crash-recovery backbone — use from sfgraph.storage import ManifestStore
-- GraphStore ABC is complete — FalkorDBStore implements all 6 abstract async methods
-- sfgraph.storage exports: GraphStore, DuckPGQStore, FalkorDBStore, ManifestStore, VectorStore (Phase 1 complete)
+- GraphStore ABC is complete — DuckPGQStore is now the primary implementation; FalkorDBStore kept but not used by server
+- sfgraph.storage exports: GraphStore, DuckPGQStore, FalkorDBStore, ManifestStore, VectorStore
+- server.py uses DuckPGQStore(db_path="./data/sfgraph.duckdb") — no Redis, no Docker
 - VectorStore uses query_points() API (qdrant-client 1.17.x); search() removed in this version
 
 ### TODOs for Planning
@@ -148,20 +152,21 @@ None currently.
 
 ## Session Continuity
 
-### Last Session (2026-04-04)
+### Last Session (2026-04-06)
 
-- Executed Plan 02-03: ParseDispatcher + FastMCP lifespan skeleton
-- Created src/sfgraph/parser/dispatcher.py: route_file() with all 6 extension mappings and ValueError for unrecognized
-- Created tests/parser/test_dispatcher.py: 11 unit tests, 100% coverage on dispatcher
-- Updated src/sfgraph/server.py: Phase 1 stub replaced with full FastMCP lifespan + AppContext + ping tool
-- Auto-fixed constructor mismatches: FalkorDBStore uses host/port/graph_name; ManifestStore uses db_path
-- TDD: 11 tests RED → GREEN; 56/56 non-integration tests pass (no regressions)
-- PHASE 2 COMPLETE (3/3 plans done)
+- Executed Plan 03-01: Schema constants, Pydantic models, fixture files
+- Created src/sfgraph/ingestion/constants.py: 23 NODE_TYPES, 4 EDGE_CATEGORIES, 34 EDGE_TYPES, NODE_WRITE_ORDER
+- Created src/sfgraph/ingestion/models.py: NodeFact, EdgeFact, IngestionSummary with full attribution validation
+- Created tests/ingestion/test_constants.py: 13 tests all passing (GRAPH-01, GRAPH-03, INGEST-04, INGEST-06)
+- Created tests/fixtures/metadata/ tree: Account object, 2 fields, flow, Apex class + meta XML
+- Auto-fixed: added @field_validator("sourceFile") to NodeFact to reject empty strings
+- 85/85 non-integration tests pass (no regressions)
+- PHASE 3 PLAN 1 COMPLETE (1/5 plans in phase 3)
 
 ### Next Session
 
-- Phase 3 begins: ingestion pipeline (ParseDispatcher is the entry point, Phase 2 fully wired)
-- All Phase 2 requirements complete: POOL-01 through POOL-07 and MCP-01
+- Phase 3 Plan 02: XML object/field parser (SFObject + SFField nodes + picklist edges)
+- fixtures/metadata/objects/Account ready for parser tests
 - Note: export PATH="/Users/anshulmehta/.local/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 - Use /opt/homebrew/bin/git for all commits (Xcode license blocks /usr/bin/git)
 - Live tests require Docker: `docker compose -f docker-compose.test.yml up -d`
