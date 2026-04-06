@@ -56,6 +56,19 @@ Notes:
 - Add `OPENAI_API_KEY` under `env` only if you want optional LLM query-agent support.
 - The export directory you ingest must live inside the active workspace root because the MCP server enforces workspace-local paths.
 
+If you publish the npm bootstrap package, an `npx`-based config can be used instead:
+
+```json
+{
+  "servers": {
+    "salesforce-lineage": {
+      "command": "npx",
+      "args": ["-y", "@ryanstark24/sfgraph-mcp"]
+    }
+  }
+}
+```
+
 ## VS Code MCP Clients
 
 If you are using a VS Code MCP client such as Cline or Roo Code, the config shape varies slightly, but the process is the same:
@@ -82,6 +95,30 @@ Boundary:
 
 - the extension can manage local setup and write workspace config files
 - it cannot directly register MCP tools into arbitrary IDE extensions unless those extensions expose a writable config or API
+
+## npm Bootstrap Package
+
+This repo now contains an npm launcher in [`package.json`](../package.json) and [`bin/sfgraph-mcp.js`](../bin/sfgraph-mcp.js).
+
+The launcher is designed for configurations like:
+
+```json
+{
+  "servers": {
+    "salesforce-lineage": {
+      "command": "npx",
+      "args": ["-y", "@ryanstark24/sfgraph-mcp"]
+    }
+  }
+}
+```
+
+Behavior:
+
+- bootstraps a cached Python virtual environment
+- installs the Python `sfgraph` package
+- sets `NODE_PATH` so the Apex worker can find `web-tree-sitter-sfapex`
+- starts `python -m sfgraph.server`
 
 ## Claude Desktop
 

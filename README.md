@@ -61,6 +61,31 @@ pip install .
 npm install
 ```
 
+### Option 3: Run via `npx` bootstrap package
+
+This repo now includes an npm launcher package that can bootstrap a Python runtime automatically and start the MCP server in one step.
+
+Target usage after npm publish:
+
+```bash
+npx -y @ryanstark24/sfgraph-mcp
+```
+
+What it does:
+
+- creates a cached Python virtual environment
+- installs the Python package into that environment
+- reuses the cached environment on later runs
+- injects the Apex parser Node dependency through `NODE_PATH`
+
+Optional flags:
+
+```bash
+npx -y @ryanstark24/sfgraph-mcp --reinstall
+npx -y @ryanstark24/sfgraph-mcp --package-spec sfgraph
+npx -y @ryanstark24/sfgraph-mcp --runtime-dir /custom/path
+```
+
 ### Optional environment variables
 
 - `OPENAI_API_KEY`: optional, only for LLM-assisted query-agent behavior
@@ -161,6 +186,19 @@ This MCP works with IDEs and MCP clients that support `stdio` servers. The most 
 - server name: `salesforce-lineage`
 
 Detailed setup examples for Cursor, VS Code MCP clients, Claude Desktop, and other `stdio`-based clients are in [`docs/IDE_SETUP.md`](docs/IDE_SETUP.md).
+
+If you publish the npm launcher, clients that support `npx`-style MCP entries can use:
+
+```json
+{
+  "servers": {
+    "salesforce-lineage": {
+      "command": "npx",
+      "args": ["-y", "@ryanstark24/sfgraph-mcp"]
+    }
+  }
+}
+```
 
 ## VS Code Extension
 

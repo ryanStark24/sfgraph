@@ -1,18 +1,30 @@
 {
-  "name": "salesforcemcp",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "@ryanstark24/sfgraph-mcp",
+  "version": "0.1.0",
+  "description": "NPX launcher and bootstrapper for the sfgraph MCP server.",
+  "main": "bin/sfgraph-mcp.js",
+  "bin": {
+    "sfgraph-mcp": "bin/sfgraph-mcp.js"
+  },
+  "files": [
+    "bin/sfgraph-mcp.js",
+    "README.md"
+  ],
   "type": "commonjs",
   "directories": {
     "test": "tests"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --check bin/sfgraph-mcp.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "mcp",
+    "salesforce",
+    "sfgraph",
+    "lineage"
+  ],
+  "author": "ryanStark24",
+  "license": "MIT",
   "dependencies": {
     "web-tree-sitter-sfapex": "^2.4.1"
   }
