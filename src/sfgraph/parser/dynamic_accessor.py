@@ -14,14 +14,19 @@ from sfgraph.ingestion.models import EdgeFact
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG = Path(__file__).resolve().parents[3] / "config" / "dynamic_accessors.yaml"
+
+def _default_config_path() -> Path:
+    packaged = Path(__file__).resolve().parents[1] / "config" / "dynamic_accessors.yaml"
+    if packaged.exists():
+        return packaged
+    return Path(__file__).resolve().parents[3] / "config" / "dynamic_accessors.yaml"
 
 
 class DynamicAccessorRegistry:
     """Loads YAML accessor rules and emits matching edge candidates."""
 
     def __init__(self, config_path: str | None = None) -> None:
-        path = Path(config_path) if config_path else _DEFAULT_CONFIG
+        path = Path(config_path) if config_path else _default_config_path()
         if not path.exists():
             logger.warning("Dynamic accessor config not found at %s", path)
             self._index: dict[tuple[str, str], dict] = {}

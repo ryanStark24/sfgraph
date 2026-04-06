@@ -8,10 +8,17 @@ from typing import Any
 import yaml
 
 
+def _default_rules_path() -> Path:
+    packaged = Path(__file__).resolve().parents[1] / "config" / "graph_rules.yaml"
+    if packaged.exists():
+        return packaged
+    return Path(__file__).resolve().parents[3] / "config" / "graph_rules.yaml"
+
+
 class RulesRegistry:
     """Loads optional org-level rules from YAML/JSON configuration."""
 
-    DEFAULT_PATH = Path(__file__).resolve().parents[3] / "config" / "graph_rules.yaml"
+    DEFAULT_PATH = _default_rules_path()
 
     def __init__(self, config_path: str | None = None) -> None:
         path = Path(config_path) if config_path else self.DEFAULT_PATH

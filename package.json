@@ -1,6 +1,6 @@
 {
   "name": "@ryanstark24/sfgraph-mcp",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "NPX launcher and bootstrapper for the sfgraph MCP server.",
   "main": "bin/sfgraph-mcp.js",
   "bin": {
