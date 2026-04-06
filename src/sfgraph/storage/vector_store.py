@@ -16,6 +16,7 @@ fastembed model: BAAI/bge-small-en-v1.5 (384 dimensions)
 """
 import logging
 import hashlib
+import os
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -28,6 +29,7 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
 )
+from sfgraph.runtime_policy import network_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +70,30 @@ class VectorStore:
         """Return the fastembed TextEmbedding model, loading on first call."""
         if self._embedder is None:
             from fastembed import TextEmbedding
-            logger.info(
-                "Loading BAAI/bge-small-en-v1.5 embedding model (first use — may download ~130MB)"
-            )
-            self._embedder = TextEmbedding("BAAI/bge-small-en-v1.5")
+            if not network_allowed():
+                # Hard privacy default: never fetch model artifacts over the network
+                # unless explicitly allowed by the operator.
+                os.environ.setdefault("HF_HUB_OFFLINE", "1")
+                os.environ.setdefault("HUGGINGFACE_HUB_OFFLINE", "1")
+                logger.info(
+                    "Loading BAAI/bge-small-en-v1.5 embedding model in offline mode"
+                )
+                try:
+                    self._embedder = TextEmbedding(
+                        "BAAI/bge-small-en-v1.5",
+                        local_files_only=True,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        "Embeddings are configured to stay local-only. "
+                        "Pre-cache the BAAI/bge-small-en-v1.5 model or set "
+                        "SFGRAPH_ALLOW_NETWORK=1 to allow model download."
+                    ) from exc
+            else:
+                logger.info(
+                    "Loading BAAI/bge-small-en-v1.5 embedding model (first use — may download ~130MB)"
+                )
+                self._embedder = TextEmbedding("BAAI/bge-small-en-v1.5")
         return self._embedder
 
     @staticmethod

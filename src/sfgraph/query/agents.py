@@ -8,6 +8,8 @@ from urllib import request as urlrequest
 from dataclasses import dataclass
 from typing import Any
 
+from sfgraph.runtime_policy import network_allowed
+
 
 @dataclass
 class AgentTrace:
@@ -23,7 +25,11 @@ class LLMClient:
         self._api_key = os.getenv("OPENAI_API_KEY", "")
         self._base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self._model = os.getenv("SFGRAPH_AGENT_MODEL", "gpt-4.1-mini")
-        self._enabled = bool(self._api_key) and os.getenv("SFGRAPH_DISABLE_LLM_AGENTS", "0") not in {"1", "true", "True"}
+        self._enabled = (
+            network_allowed()
+            and bool(self._api_key)
+            and os.getenv("SFGRAPH_DISABLE_LLM_AGENTS", "0") not in {"1", "true", "True"}
+        )
 
     @property
     def enabled(self) -> bool:

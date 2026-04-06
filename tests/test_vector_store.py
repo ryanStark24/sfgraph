@@ -5,6 +5,9 @@ These tests use Qdrant in-memory mode (path=":memory:") for fast, disk-free exec
 The first test run that exercises upsert/search will download BAAI/bge-small-en-v1.5
 (~130MB ONNX model) if not already cached by fastembed. Subsequent runs use the cache.
 """
+import sys
+import types
+
 import pytest
 from sfgraph.storage.vector_store import VectorStore
 
@@ -141,3 +144,22 @@ def test_all_storage_exports_importable():
     assert FalkorDBStore is not None
     assert VectorStore is not None
     assert ManifestStore is not None
+
+
+def test_vector_store_uses_offline_embedder_by_default(monkeypatch):
+    monkeypatch.delenv("SFGRAPH_ALLOW_NETWORK", raising=False)
+
+    calls: list[dict] = []
+
+    class FakeTextEmbedding:
+        def __init__(self, model_name, **kwargs):
+            calls.append({"model_name": model_name, **kwargs})
+
+    fake_module = types.SimpleNamespace(TextEmbedding=FakeTextEmbedding)
+    monkeypatch.setitem(sys.modules, "fastembed", fake_module)
+
+    store = VectorStore(path=":memory:")
+    embedder = store._get_embedder()
+    assert embedder is not None
+    assert calls[0]["model_name"] == "BAAI/bge-small-en-v1.5"
+    assert calls[0]["local_files_only"] is True

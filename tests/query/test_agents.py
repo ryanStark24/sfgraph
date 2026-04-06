@@ -10,6 +10,7 @@ def _heuristic_filter(question: str, labels: list[str], rels: list[str]) -> dict
 
 
 def test_schema_filter_heuristic_mode(monkeypatch):
+    monkeypatch.delenv("SFGRAPH_ALLOW_NETWORK", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     agent = SchemaFilterAgent()
     filtered, trace = agent.run(
@@ -23,6 +24,7 @@ def test_schema_filter_heuristic_mode(monkeypatch):
 
 
 def test_schema_filter_llm_override(monkeypatch):
+    monkeypatch.setenv("SFGRAPH_ALLOW_NETWORK", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     agent = SchemaFilterAgent()
     # Avoid network in test.
@@ -43,6 +45,7 @@ def test_schema_filter_llm_override(monkeypatch):
 
 
 def test_planner_corrector_formatter_llm_safe(monkeypatch):
+    monkeypatch.setenv("SFGRAPH_ALLOW_NETWORK", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     planner = QueryPlannerAgent()
     corrector = QueryCorrectorAgent()
@@ -59,3 +62,16 @@ def test_planner_corrector_formatter_llm_safe(monkeypatch):
     assert p.strategy == "llm" and "reason=" in p.detail
     assert c.strategy == "llm" and "hint=" in c.detail
     assert f.strategy == "llm" and "style=" in f.detail
+
+
+def test_llm_agents_disabled_by_default_even_with_api_key(monkeypatch):
+    monkeypatch.delenv("SFGRAPH_ALLOW_NETWORK", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    agent = SchemaFilterAgent()
+    _, trace = agent.run(
+        question="what uses Account.Status__c?",
+        labels=["SFField", "ApexClass", "Flow"],
+        rels=["READS_FIELD", "FLOW_READS_FIELD"],
+        heuristic_filter=_heuristic_filter,
+    )
+    assert trace.strategy == "heuristic"
