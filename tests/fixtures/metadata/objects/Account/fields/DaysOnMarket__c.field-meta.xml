@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>DaysOnMarket__c</fullName>
+    <label>Days On Market</label>
+    <type>Number</type>
+    <formula>TODAY() - Date_Listed__c</formula>
+    <scale>0</scale>
+    <precision>18</precision>
+</CustomField>
