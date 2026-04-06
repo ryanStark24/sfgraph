@@ -47,6 +47,43 @@ def _resolve_node() -> str:
     )
 
 
+def _candidate_node_modules_dirs() -> list[Path]:
+    candidates = [
+        Path.cwd() / "node_modules",
+        Path(__file__).resolve().parents[3] / "node_modules",
+    ]
+    seen: set[str] = set()
+    resolved: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(candidate)
+    return resolved
+
+
+def _resolve_parser_package_env() -> dict[str, str]:
+    env_updates: dict[str, str] = {}
+    explicit_node_modules = os.environ.get("SFGRAPH_NODE_MODULES_DIR")
+    explicit_package = os.environ.get("SFGRAPH_SFAPEX_PACKAGE")
+    if explicit_node_modules:
+        env_updates["SFGRAPH_NODE_MODULES_DIR"] = explicit_node_modules
+    if explicit_package:
+        env_updates["SFGRAPH_SFAPEX_PACKAGE"] = explicit_package
+    if explicit_node_modules and explicit_package:
+        return env_updates
+
+    for node_modules_dir in _candidate_node_modules_dirs():
+        package_dir = node_modules_dir / "web-tree-sitter-sfapex"
+        if not package_dir.exists():
+            continue
+        env_updates.setdefault("SFGRAPH_NODE_MODULES_DIR", str(node_modules_dir))
+        env_updates.setdefault("SFGRAPH_SFAPEX_PACKAGE", str(package_dir))
+        return env_updates
+    return env_updates
+
+
 @dataclasses.dataclass
 class _Worker:
     """Represents a single persistent Node.js worker subprocess."""
@@ -113,6 +150,8 @@ class NodeParserPool:
         """
         if node_bin is None:
             node_bin = _resolve_node()
+        worker_env = os.environ.copy()
+        worker_env.update(_resolve_parser_package_env())
         proc = await asyncio.create_subprocess_exec(
             node_bin,
             WORKER_JS,
@@ -120,7 +159,7 @@ class NodeParserPool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(Path(WORKER_JS).parent.parent.parent.parent.parent),
-            env=os.environ.copy(),
+            env=worker_env,
         )
         worker = _Worker(proc=proc)
         worker.stderr_task = asyncio.create_task(self._capture_stderr(worker))

@@ -203,6 +203,7 @@ function bootstrapRuntime(runtimeDir, packageSpec, reinstall) {
 
 function startServer(pythonPath) {
   const nodePath = resolveNodeModulesDir();
+  const sfapexPackage = path.join(nodePath, "web-tree-sitter-sfapex");
   const workspaceRoot = process.cwd();
   const workspaceHash = crypto.createHash("sha1").update(workspaceRoot).digest("hex").slice(0, 12);
   const dataDir = path.join(DEFAULT_RUNTIME_DIR, "workspaces", workspaceHash, "data");
@@ -210,6 +211,8 @@ function startServer(pythonPath) {
   const env = {
     ...process.env,
     NODE_PATH: process.env.NODE_PATH ? `${nodePath}${path.delimiter}${process.env.NODE_PATH}` : nodePath,
+    SFGRAPH_NODE_MODULES_DIR: process.env.SFGRAPH_NODE_MODULES_DIR || nodePath,
+    SFGRAPH_SFAPEX_PACKAGE: process.env.SFGRAPH_SFAPEX_PACKAGE || sfapexPackage,
     SFGRAPH_DATA_DIR: process.env.SFGRAPH_DATA_DIR || dataDir
   };
 

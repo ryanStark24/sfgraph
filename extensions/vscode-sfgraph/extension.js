@@ -214,9 +214,14 @@ async function startServer() {
   currentRepoPath = repoPath;
 
   const pythonPath = getPythonPath(repoPath);
+  const nodeModulesDir = path.join(repoPath, "node_modules");
+  const sfapexPackage = path.join(nodeModulesDir, "web-tree-sitter-sfapex");
   const env = {
     ...process.env,
-    PYTHONPATH: path.join(repoPath, "src")
+    PYTHONPATH: path.join(repoPath, "src"),
+    NODE_PATH: process.env.NODE_PATH ? `${nodeModulesDir}${path.delimiter}${process.env.NODE_PATH}` : nodeModulesDir,
+    SFGRAPH_NODE_MODULES_DIR: nodeModulesDir,
+    SFGRAPH_SFAPEX_PACKAGE: sfapexPackage
   };
 
   outputChannel.clear();
@@ -326,7 +331,10 @@ async function writeCursorMcpConfig() {
     args: ["-m", "sfgraph.server"],
     cwd: repoPath,
     env: {
-      PYTHONPATH: path.join(repoPath, "src")
+      PYTHONPATH: path.join(repoPath, "src"),
+      NODE_PATH: nodeModulesDir,
+      SFGRAPH_NODE_MODULES_DIR: nodeModulesDir,
+      SFGRAPH_SFAPEX_PACKAGE: sfapexPackage
     }
   };
 

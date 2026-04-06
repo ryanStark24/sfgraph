@@ -6,8 +6,31 @@
 
 'use strict';
 
-const { getApexParser } = require('web-tree-sitter-sfapex');
+const path = require('node:path');
 const readline = require('readline');
+
+function loadApexParserModule() {
+  const candidates = [];
+  if (process.env.SFGRAPH_SFAPEX_PACKAGE) {
+    candidates.push(process.env.SFGRAPH_SFAPEX_PACKAGE);
+  }
+  if (process.env.SFGRAPH_NODE_MODULES_DIR) {
+    candidates.push(path.join(process.env.SFGRAPH_NODE_MODULES_DIR, 'web-tree-sitter-sfapex'));
+  }
+  candidates.push('web-tree-sitter-sfapex');
+
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      return require(candidate);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('Unable to load web-tree-sitter-sfapex');
+}
+
+const { getApexParser } = loadApexParserModule();
 
 const MAX_FILES = 200;
 
