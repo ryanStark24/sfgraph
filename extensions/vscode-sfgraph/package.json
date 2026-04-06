@@ -15,7 +15,8 @@
     "onCommand:sfgraph.installDependencies",
     "onCommand:sfgraph.startServer",
     "onCommand:sfgraph.stopServer",
-    "onCommand:sfgraph.writeCursorMcpConfig"
+    "onCommand:sfgraph.writeCursorMcpConfig",
+    "onCommand:sfgraph.showProgress"
   ],
   "contributes": {
     "commands": [
@@ -34,6 +35,10 @@
       {
         "command": "sfgraph.writeCursorMcpConfig",
         "title": "sfgraph: Write Cursor MCP Config"
+      },
+      {
+        "command": "sfgraph.showProgress",
+        "title": "sfgraph: Show Ingestion Progress"
       }
     ],
     "configuration": {
@@ -48,6 +53,17 @@
           "type": "string",
           "default": "sfgraph",
           "description": "Client-facing MCP server name to write into generated config."
+        },
+        "sfgraph.dataDir": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute path to the sfgraph data directory. Leave blank to use <repo>/data."
+        },
+        "sfgraph.progressPollMs": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 500,
+          "description": "Polling interval in milliseconds for updating the status bar with ingestion progress."
         }
       }
     }
