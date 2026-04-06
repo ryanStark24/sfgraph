@@ -6,7 +6,7 @@ The server runs over `stdio`, so each client needs the same core configuration:
 
 - command: Python from this repo's virtual environment
 - args: `-m sfgraph.server`
-- cwd: the `salesforceMCP` repo root
+- cwd: the `sfgraph` repo root
 - env: `PYTHONPATH=<repo>/src`
 
 ## Before You Start
@@ -15,7 +15,7 @@ From a fresh machine:
 
 ```bash
 git clone <your-repo-url>
-cd salesforceMCP
+cd sfgraph
 uv sync
 npm install
 ```
@@ -40,11 +40,11 @@ Example:
 {
   "mcpServers": {
     "salesforce-lineage": {
-      "command": "/absolute/path/to/salesforceMCP/.venv/bin/python",
+      "command": "/absolute/path/to/sfgraph/.venv/bin/python",
       "args": ["-m", "sfgraph.server"],
-      "cwd": "/absolute/path/to/salesforceMCP",
+      "cwd": "/absolute/path/to/sfgraph",
       "env": {
-        "PYTHONPATH": "/absolute/path/to/salesforceMCP/src"
+        "PYTHONPATH": "/absolute/path/to/sfgraph/src"
       }
     }
   }
@@ -60,11 +60,11 @@ Notes:
 
 If you are using a VS Code MCP client such as Cline or Roo Code, the config shape varies slightly, but the process is the same:
 
-- command: `/absolute/path/to/salesforceMCP/.venv/bin/python`
+- command: `/absolute/path/to/sfgraph/.venv/bin/python`
 - args: `["-m", "sfgraph.server"]`
-- cwd: `/absolute/path/to/salesforceMCP`
+- cwd: `/absolute/path/to/sfgraph`
 - env:
-  - `PYTHONPATH=/absolute/path/to/salesforceMCP/src`
+  - `PYTHONPATH=/absolute/path/to/sfgraph/src`
 
 If the extension expects a JSON server block, reuse the same structure shown in the Cursor example.
 
@@ -81,11 +81,11 @@ Example:
 {
   "mcpServers": {
     "salesforce-lineage": {
-      "command": "/absolute/path/to/salesforceMCP/.venv/bin/python",
+      "command": "/absolute/path/to/sfgraph/.venv/bin/python",
       "args": ["-m", "sfgraph.server"],
-      "cwd": "/absolute/path/to/salesforceMCP",
+      "cwd": "/absolute/path/to/sfgraph",
       "env": {
-        "PYTHONPATH": "/absolute/path/to/salesforceMCP/src"
+        "PYTHONPATH": "/absolute/path/to/sfgraph/src"
       }
     }
   }
@@ -111,7 +111,7 @@ For clean isolation across multiple Salesforce projects:
 
 ```text
 workspace/
-  salesforceMCP/
+  sfgraph/
   ProjectA/
     export/
     .sfgraph-data/

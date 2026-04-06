@@ -36,7 +36,7 @@ Requires Python `3.12+`.
 
 ```bash
 git clone <your-repo-url>
-cd salesforceMCP
+cd sfgraph
 uv sync
 npm install
 ```
