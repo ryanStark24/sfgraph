@@ -83,19 +83,21 @@ function run(command, args, options = {}) {
 
 function resolvePythonBootstrapCommand() {
   const candidates = [
+    { command: "python3.12", args: ["--version"] },
     { command: "python3", args: ["--version"] },
     { command: "python", args: ["--version"] }
   ];
 
   if (process.platform === "win32") {
-    candidates.unshift({ command: "py", args: ["-3", "--version"], launcher: true });
+    candidates.unshift({ command: "py", args: ["-3.12", "--version"], launcher: true, baseArgs: ["-3.12"] });
+    candidates.push({ command: "py", args: ["-3", "--version"], launcher: true, baseArgs: ["-3"] });
   }
 
   for (const candidate of candidates) {
     try {
       run(candidate.command, candidate.args, { capture: true });
       return candidate.launcher
-        ? { command: candidate.command, baseArgs: ["-3"] }
+        ? { command: candidate.command, baseArgs: candidate.baseArgs || ["-3"] }
         : { command: candidate.command, baseArgs: [] };
     } catch (_error) {
       continue;
@@ -111,6 +113,15 @@ function getVenvPaths(runtimeDir) {
     ? path.join(venvDir, "Scripts", "python.exe")
     : path.join(venvDir, "bin", "python");
   return { venvDir, pythonPath };
+}
+
+function getPythonVersionTag(command, baseArgs) {
+  const result = run(
+    command,
+    [...baseArgs, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+    { capture: true }
+  );
+  return (result.stdout || "").trim() || "unknown";
 }
 
 function readState(statePath) {
@@ -146,14 +157,17 @@ function needsBootstrap(pythonPath, packageSpec, statePath, reinstall) {
 
 function bootstrapRuntime(runtimeDir, packageSpec, reinstall) {
   ensureDir(runtimeDir);
-  const statePath = path.join(runtimeDir, "state.json");
-  const { venvDir, pythonPath } = getVenvPaths(runtimeDir);
+  const bootstrap = resolvePythonBootstrapCommand();
+  const pythonVersionTag = getPythonVersionTag(bootstrap.command, bootstrap.baseArgs);
+  const versionedRuntimeDir = path.join(runtimeDir, `py${pythonVersionTag}`);
+  ensureDir(versionedRuntimeDir);
+  const statePath = path.join(versionedRuntimeDir, "state.json");
+  const { venvDir, pythonPath } = getVenvPaths(versionedRuntimeDir);
 
   if (!needsBootstrap(pythonPath, packageSpec, statePath, reinstall)) {
     return { pythonPath, venvDir };
   }
 
-  const bootstrap = resolvePythonBootstrapCommand();
   if (!fileExists(pythonPath)) {
     run(bootstrap.command, [...bootstrap.baseArgs, "-m", "venv", venvDir]);
   }
@@ -162,6 +176,7 @@ function bootstrapRuntime(runtimeDir, packageSpec, reinstall) {
   run(pythonPath, ["-m", "pip", "install", "--upgrade", "--force-reinstall", packageSpec]);
   writeState(statePath, {
     packageSpec,
+    pythonVersion: pythonVersionTag,
     bootstrappedAt: new Date().toISOString()
   });
   return { pythonPath, venvDir };
