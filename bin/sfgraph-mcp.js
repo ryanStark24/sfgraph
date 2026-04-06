@@ -158,7 +158,7 @@ function bootstrapRuntime(runtimeDir, packageSpec, reinstall) {
   }
 
   run(pythonPath, ["-m", "pip", "install", "--upgrade", "pip"]);
-  run(pythonPath, ["-m", "pip", "install", "--upgrade", packageSpec]);
+  run(pythonPath, ["-m", "pip", "install", "--upgrade", "--force-reinstall", packageSpec]);
   writeState(statePath, {
     packageSpec,
     bootstrappedAt: new Date().toISOString()
