@@ -13,6 +13,7 @@ logging.basicConfig(
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP, Context
@@ -50,10 +51,11 @@ class AppContext:
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Initialize all storage handles and parser pool. MCP-01."""
-    Path("./data").mkdir(parents=True, exist_ok=True)
-    graph = DuckPGQStore(db_path="./data/sfgraph.duckdb")
-    vectors = VectorStore(path="./data/vectors")
-    manifest = ManifestStore(db_path="./data/manifest.sqlite")
+    data_root = Path(os.getenv("SFGRAPH_DATA_DIR", "./data")).expanduser().resolve()
+    data_root.mkdir(parents=True, exist_ok=True)
+    graph = DuckPGQStore(db_path=str(data_root / "sfgraph.duckdb"))
+    vectors = VectorStore(path=str(data_root / "vectors"))
+    manifest = ManifestStore(db_path=str(data_root / "manifest.sqlite"))
     pool = NodeParserPool()
 
     await manifest.initialize()

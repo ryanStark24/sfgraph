@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const cp = require("node:child_process");
+const crypto = require("node:crypto");
 
 const DEFAULT_PACKAGE_SPEC = process.env.SFGRAPH_PYTHON_PACKAGE_SPEC || "git+https://github.com/ryanStark24/sfgraph.git";
 const DEFAULT_RUNTIME_DIR = process.env.SFGRAPH_RUNTIME_DIR || getDefaultRuntimeDir();
@@ -168,13 +169,18 @@ function bootstrapRuntime(runtimeDir, packageSpec, reinstall) {
 
 function startServer(pythonPath) {
   const nodePath = path.join(__dirname, "..", "node_modules");
+  const workspaceRoot = process.cwd();
+  const workspaceHash = crypto.createHash("sha1").update(workspaceRoot).digest("hex").slice(0, 12);
+  const dataDir = path.join(DEFAULT_RUNTIME_DIR, "workspaces", workspaceHash, "data");
+  ensureDir(dataDir);
   const env = {
     ...process.env,
-    NODE_PATH: process.env.NODE_PATH ? `${nodePath}${path.delimiter}${process.env.NODE_PATH}` : nodePath
+    NODE_PATH: process.env.NODE_PATH ? `${nodePath}${path.delimiter}${process.env.NODE_PATH}` : nodePath,
+    SFGRAPH_DATA_DIR: process.env.SFGRAPH_DATA_DIR || dataDir
   };
 
   const child = cp.spawn(pythonPath, ["-m", "sfgraph.server"], {
-    cwd: process.cwd(),
+    cwd: workspaceRoot,
     env,
     stdio: "inherit"
   });
