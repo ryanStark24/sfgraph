@@ -69,7 +69,7 @@ async def lifespan(server: FastMCP):
     logger.info("All storage engines closed")
 
 
-mcp = FastMCP("salesforce-lineage", lifespan=lifespan)
+mcp = FastMCP("sfgraph", lifespan=lifespan)
 
 
 @mcp.tool()

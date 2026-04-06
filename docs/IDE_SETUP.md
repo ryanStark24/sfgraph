@@ -39,7 +39,7 @@ Example:
 ```json
 {
   "mcpServers": {
-    "salesforce-lineage": {
+    "sfgraph": {
       "command": "/absolute/path/to/sfgraph/.venv/bin/python",
       "args": ["-m", "sfgraph.server"],
       "cwd": "/absolute/path/to/sfgraph",
@@ -61,7 +61,7 @@ If you publish the npm bootstrap package, an `npx`-based config can be used inst
 ```json
 {
   "servers": {
-    "salesforce-lineage": {
+    "sfgraph": {
       "command": "npx",
       "args": ["-y", "@ryanstark24/sfgraph-mcp"]
     }
@@ -105,7 +105,7 @@ The launcher is designed for configurations like:
 ```json
 {
   "servers": {
-    "salesforce-lineage": {
+    "sfgraph": {
       "command": "npx",
       "args": ["-y", "@ryanstark24/sfgraph-mcp"]
     }
@@ -132,7 +132,7 @@ Example:
 ```json
 {
   "mcpServers": {
-    "salesforce-lineage": {
+    "sfgraph": {
       "command": "/absolute/path/to/sfgraph/.venv/bin/python",
       "args": ["-m", "sfgraph.server"],
       "cwd": "/absolute/path/to/sfgraph",

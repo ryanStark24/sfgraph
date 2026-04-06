@@ -46,7 +46,7 @@
         },
         "sfgraph.serverName": {
           "type": "string",
-          "default": "salesforce-lineage",
+          "default": "sfgraph",
           "description": "Client-facing MCP server name to write into generated config."
         }
       }

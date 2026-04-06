@@ -183,7 +183,7 @@ This MCP works with IDEs and MCP clients that support `stdio` servers. The most 
 - args: `-m sfgraph.server`
 - cwd: repo root
 - env: `PYTHONPATH=<repo>/src`
-- server name: `salesforce-lineage`
+- server name: `sfgraph`
 
 Detailed setup examples for Cursor, VS Code MCP clients, Claude Desktop, and other `stdio`-based clients are in [`docs/IDE_SETUP.md`](docs/IDE_SETUP.md).
 
@@ -192,7 +192,7 @@ If you publish the npm launcher, clients that support `npx`-style MCP entries ca
 ```json
 {
   "servers": {
-    "salesforce-lineage": {
+    "sfgraph": {
       "command": "npx",
       "args": ["-y", "@ryanstark24/sfgraph-mcp"]
     }

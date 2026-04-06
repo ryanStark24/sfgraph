@@ -187,7 +187,7 @@ async function writeCursorMcpConfig() {
   }
 
   const config = vscode.workspace.getConfiguration("sfgraph");
-  const serverName = config.get("serverName", "salesforce-lineage");
+  const serverName = config.get("serverName", "sfgraph");
   const pythonPath = getPythonPath(repoPath);
   const cursorDir = path.join(workspaceRoot, ".cursor");
   const cursorFile = path.join(cursorDir, "mcp.json");
