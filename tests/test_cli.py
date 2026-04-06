@@ -18,6 +18,7 @@ def test_cli_help_exits_zero():
     assert "sfgraph" in result.stdout
     assert "ingest" in result.stdout
     assert "refresh" in result.stdout
+    assert "progress" in result.stdout
 
 
 def test_cli_query_help_exits_zero():

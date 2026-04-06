@@ -63,7 +63,7 @@ If you publish the npm bootstrap package, an `npx`-based config can be used inst
   "servers": {
     "sfgraph": {
       "command": "npx",
-      "args": ["-y", "@ryanstark24/sfgraph-mcp"]
+      "args": ["-y", "@ryanstark24/sfgraph-mcp@beta"]
     }
   }
 }
@@ -107,7 +107,7 @@ The launcher is designed for configurations like:
   "servers": {
     "sfgraph": {
       "command": "npx",
-      "args": ["-y", "@ryanstark24/sfgraph-mcp"]
+      "args": ["-y", "@ryanstark24/sfgraph-mcp@beta"]
     }
   }
 }

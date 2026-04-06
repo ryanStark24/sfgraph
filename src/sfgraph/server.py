@@ -46,6 +46,7 @@ class AppContext:
     vectors: VectorStore
     manifest: ManifestStore
     pool: NodeParserPool
+    data_root: Path
 
 
 @asynccontextmanager
@@ -63,7 +64,7 @@ async def lifespan(server: FastMCP):
     await pool.start()
     logger.info("All storage engines initialized")
 
-    yield AppContext(graph=graph, vectors=vectors, manifest=manifest, pool=pool)
+    yield AppContext(graph=graph, vectors=vectors, manifest=manifest, pool=pool, data_root=data_root)
 
     await pool.shutdown()
     await manifest.close()
@@ -72,6 +73,28 @@ async def lifespan(server: FastMCP):
 
 
 mcp = FastMCP("sfgraph", lifespan=lifespan)
+
+
+def _build_ingestion_service(app: AppContext) -> IngestionService:
+    return IngestionService(
+        graph=app.graph,
+        manifest=app.manifest,
+        pool=app.pool,
+        vectors=app.vectors,
+        ingestion_meta_path=str(app.data_root / "ingestion_meta.json"),
+        ingestion_progress_path=str(app.data_root / "ingestion_progress.json"),
+    )
+
+
+def _build_query_service(app: AppContext) -> GraphQueryService:
+    return GraphQueryService(
+        graph=app.graph,
+        manifest=app.manifest,
+        vectors=app.vectors,
+        repo_root=str(Path.cwd()),
+        ingestion_meta_path=str(app.data_root / "ingestion_meta.json"),
+        ingestion_progress_path=str(app.data_root / "ingestion_progress.json"),
+    )
 
 
 @mcp.tool()
@@ -87,12 +110,7 @@ async def ingest_org(export_dir: str, ctx: Context) -> str:
     """Ingest a Salesforce metadata export directory into the local graph."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    service = IngestionService(
-        graph=app.graph,
-        manifest=app.manifest,
-        pool=app.pool,
-        vectors=app.vectors,
-    )
+    service = _build_ingestion_service(app)
     summary = await service.ingest(export_dir)
     return json.dumps(
         {
@@ -117,12 +135,7 @@ async def refresh(export_dir: str, ctx: Context) -> str:
     """Run incremental refresh for changed/new/deleted files."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    service = IngestionService(
-        graph=app.graph,
-        manifest=app.manifest,
-        pool=app.pool,
-        vectors=app.vectors,
-    )
+    service = _build_ingestion_service(app)
     summary = await service.refresh(export_dir)
     return json.dumps(
         {
@@ -156,12 +169,7 @@ async def watch_refresh(
     """Watch for filesystem changes and trigger debounced incremental refresh."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    service = IngestionService(
-        graph=app.graph,
-        manifest=app.manifest,
-        pool=app.pool,
-        vectors=app.vectors,
-    )
+    service = _build_ingestion_service(app)
     payload = await service.watch_refresh(
         export_dir=export_dir,
         duration_seconds=duration_seconds,
@@ -176,9 +184,18 @@ async def watch_refresh(
 async def get_ingestion_status(ctx: Context) -> str:
     """Return graph/manifest ingestion status with freshness metadata."""
     app: AppContext = ctx.request_context.lifespan_context
-    service = GraphQueryService(graph=app.graph, manifest=app.manifest, vectors=app.vectors)
+    service = _build_query_service(app)
     status = await service.get_ingestion_status()
     return json.dumps(status, indent=2)
+
+
+@mcp.tool()
+async def get_ingestion_progress(ctx: Context) -> str:
+    """Return live ingestion progress if a full ingest or refresh is running."""
+    app: AppContext = ctx.request_context.lifespan_context
+    service = _build_query_service(app)
+    payload = await service.get_ingestion_progress()
+    return json.dumps(payload, indent=2)
 
 
 @mcp.tool()
@@ -192,7 +209,7 @@ async def trace_upstream(
 ) -> str:
     """Trace incoming lineage paths to a node with guardrails and evidence."""
     app: AppContext = ctx.request_context.lifespan_context
-    service = GraphQueryService(graph=app.graph, manifest=app.manifest, vectors=app.vectors)
+    service = _build_query_service(app)
     result = await service.trace_upstream(
         start_node=node_id,
         max_hops=max_hops,
@@ -214,7 +231,7 @@ async def trace_downstream(
 ) -> str:
     """Trace outgoing blast-radius paths from a node with guardrails and evidence."""
     app: AppContext = ctx.request_context.lifespan_context
-    service = GraphQueryService(graph=app.graph, manifest=app.manifest, vectors=app.vectors)
+    service = _build_query_service(app)
     result = await service.trace_downstream(
         start_node=node_id,
         max_hops=max_hops,
@@ -229,7 +246,7 @@ async def trace_downstream(
 async def get_node(node_id: str, ctx: Context) -> str:
     """Return node details and adjacent edges with evidence/freshness metadata."""
     app: AppContext = ctx.request_context.lifespan_context
-    service = GraphQueryService(graph=app.graph, manifest=app.manifest, vectors=app.vectors)
+    service = _build_query_service(app)
     result = await service.get_node(node_id=node_id)
     return json.dumps(result, indent=2)
 
@@ -238,7 +255,7 @@ async def get_node(node_id: str, ctx: Context) -> str:
 async def explain_field(field_qualified_name: str, ctx: Context) -> str:
     """Return an evidence-backed reader/writer/dependent field impact summary."""
     app: AppContext = ctx.request_context.lifespan_context
-    service = GraphQueryService(graph=app.graph, manifest=app.manifest, vectors=app.vectors)
+    service = _build_query_service(app)
     result = await service.explain_field(field_qualified_name=field_qualified_name)
     return json.dumps(result, indent=2)
 
@@ -254,7 +271,7 @@ async def query(
 ) -> str:
     """Natural-language-ish query tool with evidence-first structured output."""
     app: AppContext = ctx.request_context.lifespan_context
-    service = GraphQueryService(graph=app.graph, manifest=app.manifest, vectors=app.vectors)
+    service = _build_query_service(app)
     result = await service.query(
         question=question,
         max_hops=max_hops,
@@ -275,7 +292,7 @@ async def impact_from_git_diff(
 ) -> str:
     """Generate change-aware impact report from git diff file list."""
     app: AppContext = ctx.request_context.lifespan_context
-    service = GraphQueryService(graph=app.graph, manifest=app.manifest, vectors=app.vectors)
+    service = _build_query_service(app)
     result = await service.impact_from_git_diff(
         base_ref=base_ref,
         head_ref=head_ref,
@@ -296,7 +313,7 @@ async def cross_layer_flow_map(
 ) -> str:
     """Show cross-layer lineage map UI -> Flow/OmniScript -> DR/IP -> Apex -> Object/Field."""
     app: AppContext = ctx.request_context.lifespan_context
-    service = GraphQueryService(graph=app.graph, manifest=app.manifest, vectors=app.vectors)
+    service = _build_query_service(app)
     result = await service.cross_layer_flow_map(
         start_node=node_id,
         max_hops=max_hops,
@@ -315,7 +332,7 @@ async def list_unknown_dynamic_edges(
 ) -> str:
     """List unresolved dynamic references for explicit confidence handling."""
     app: AppContext = ctx.request_context.lifespan_context
-    service = GraphQueryService(graph=app.graph, manifest=app.manifest, vectors=app.vectors)
+    service = _build_query_service(app)
     result = await service.list_unknown_dynamic_edges(limit=limit, offset=offset)
     return json.dumps(result, indent=2)
 
@@ -378,7 +395,7 @@ async def test_gap_intelligence_from_git_diff(
 ) -> str:
     """Return coverage-style test gap intelligence for git diff impacted components."""
     app: AppContext = ctx.request_context.lifespan_context
-    service = GraphQueryService(graph=app.graph, manifest=app.manifest, vectors=app.vectors)
+    service = _build_query_service(app)
     result = await service.test_gap_intelligence_from_git_diff(
         base_ref=base_ref,
         head_ref=head_ref,

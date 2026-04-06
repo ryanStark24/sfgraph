@@ -55,6 +55,7 @@ class IngestionService:
 
     SCHEMA_INDEX_PATH = "./data/schema_index.json"
     INGESTION_META_PATH = "./data/ingestion_meta.json"
+    INGESTION_PROGRESS_PATH = "./data/ingestion_progress.json"
     SKIP_DIR_NAMES = frozenset(
         {
             ".git",
@@ -82,6 +83,7 @@ class IngestionService:
         vectors: VectorStore | None = None,
         schema_index_path: str | None = None,
         ingestion_meta_path: str | None = None,
+        ingestion_progress_path: str | None = None,
     ) -> None:
         self._graph = graph
         self._manifest = manifest
@@ -89,10 +91,13 @@ class IngestionService:
         self._vectors = vectors
         self._schema_index_path = schema_index_path or self.SCHEMA_INDEX_PATH
         self._ingestion_meta_path = ingestion_meta_path or self.INGESTION_META_PATH
+        self._ingestion_progress_path = ingestion_progress_path or self.INGESTION_PROGRESS_PATH
         self._apex_extractor = ApexExtractor()
         self._dynamic_registry = DynamicAccessorRegistry()
         self._active_project_scope: str | None = None
         self._active_export_root: Path | None = None
+        self._progress_started_at: str | None = None
+        self._last_progress_flush_at: float = 0.0
 
     @staticmethod
     def _compute_project_scope(export_dir: str) -> str:
@@ -232,13 +237,63 @@ class IngestionService:
         warnings: list[str] = []
 
         discovered_files = self._discover_files(Path(export_dir))
+        self._progress_started_at = datetime.now(timezone.utc).isoformat()
+        self._last_progress_flush_at = 0.0
+        self._write_progress_snapshot(
+            {
+                "run_id": run_id,
+                "mode": "full_ingest",
+                "state": "running",
+                "phase": "discovering",
+                "export_dir": export_dir,
+                "project_scope": self._active_project_scope,
+                "started_at": self._progress_started_at,
+                "updated_at": self._progress_started_at,
+                "total_files": len(discovered_files),
+                "processed_files": 0,
+                "failed_files": 0,
+                "current_file": None,
+                "parser_stats": self._empty_parser_stats(),
+                "unresolved_symbols": 0,
+                "node_counts_by_type": {},
+                "edge_count": 0,
+                "orphaned_edges": 0,
+                "warnings_count": 0,
+            },
+            force=True,
+        )
         for fpath, sha in discovered_files.items():
             await self._manifest.upsert_file(fpath, sha, run_id)
 
         facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols = await self._collect_facts(
-            list(discovered_files.keys())
+            list(discovered_files.keys()),
+            run_id=run_id,
+            mode="full_ingest",
+            total_files=len(discovered_files),
         )
 
+        self._write_progress_snapshot(
+            {
+                "run_id": run_id,
+                "mode": "full_ingest",
+                "state": "running",
+                "phase": "writing_nodes",
+                "export_dir": export_dir,
+                "project_scope": self._active_project_scope,
+                "started_at": self._progress_started_at,
+                "total_files": len(discovered_files),
+                "processed_files": len(discovered_files),
+                "failed_files": len(parse_failures),
+                "current_file": None,
+                "parser_stats": parser_stats,
+                "unresolved_symbols": unresolved_symbols,
+                "node_counts_by_type": {},
+                "edge_count": 0,
+                "orphaned_edges": 0,
+                "warnings_count": len(warnings),
+            },
+            force=True,
+        )
         node_counts, written_qnames = await self._write_nodes(facts_by_type)
 
         for fpath in discovered_files:
@@ -247,6 +302,28 @@ class IngestionService:
 
         node_registry = await self._load_node_registry()
         scoped_edges = [self._scope_edge_fact(edge) for edge in self._apply_picklist_guard(all_edges, facts_by_type)]
+        self._write_progress_snapshot(
+            {
+                "run_id": run_id,
+                "mode": "full_ingest",
+                "state": "running",
+                "phase": "writing_edges",
+                "export_dir": export_dir,
+                "project_scope": self._active_project_scope,
+                "started_at": self._progress_started_at,
+                "total_files": len(discovered_files),
+                "processed_files": len(discovered_files),
+                "failed_files": len(parse_failures),
+                "current_file": None,
+                "parser_stats": parser_stats,
+                "unresolved_symbols": unresolved_symbols,
+                "node_counts_by_type": dict(node_counts),
+                "edge_count": 0,
+                "orphaned_edges": 0,
+                "warnings_count": len(warnings),
+            },
+            force=True,
+        )
         edge_count, orphaned_edges, edge_warnings = await self._write_edges(
             scoped_edges,
             node_registry=node_registry,
@@ -282,6 +359,30 @@ class IngestionService:
             unresolved_symbols=unresolved_symbols,
         )
         self._write_ingestion_meta(summary)
+        self._write_progress_snapshot(
+            {
+                "run_id": run_id,
+                "mode": "full_ingest",
+                "state": "completed",
+                "phase": "completed",
+                "export_dir": export_dir,
+                "project_scope": self._active_project_scope,
+                "started_at": self._progress_started_at,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration_seconds": duration,
+                "total_files": len(discovered_files),
+                "processed_files": len(discovered_files),
+                "failed_files": len(parse_failures),
+                "current_file": None,
+                "parser_stats": parser_stats,
+                "unresolved_symbols": unresolved_symbols,
+                "node_counts_by_type": dict(node_counts),
+                "edge_count": edge_count,
+                "orphaned_edges": orphaned_edges,
+                "warnings_count": len(warnings),
+            },
+            force=True,
+        )
         return summary
 
     async def refresh(self, export_dir: str) -> RefreshSummary:
@@ -290,6 +391,8 @@ class IngestionService:
         start = time.monotonic()
         run_id = await self._manifest.create_run()
         warnings: list[str] = []
+        self._progress_started_at = datetime.now(timezone.utc).isoformat()
+        self._last_progress_flush_at = 0.0
 
         current_files = self._discover_files(Path(export_dir))
         delta = await self._manifest.get_delta(current_files)
@@ -305,6 +408,32 @@ class IngestionService:
             if fpath in current_files and fpath not in deleted_files and fpath not in changed_files:
                 affected_neighbor_files.append(fpath)
         reparse_files = sorted(set(changed_files + affected_neighbor_files))
+        self._write_progress_snapshot(
+            {
+                "run_id": run_id,
+                "mode": "incremental_refresh",
+                "state": "running",
+                "phase": "planning_refresh",
+                "export_dir": export_dir,
+                "project_scope": self._active_project_scope,
+                "started_at": self._progress_started_at,
+                "updated_at": self._progress_started_at,
+                "total_files": len(reparse_files),
+                "processed_files": 0,
+                "failed_files": 0,
+                "current_file": None,
+                "changed_files": changed_files,
+                "deleted_files": deleted_files,
+                "affected_neighbor_files": affected_neighbor_files,
+                "parser_stats": self._empty_parser_stats(),
+                "unresolved_symbols": 0,
+                "node_count": 0,
+                "edge_count": 0,
+                "orphaned_edges": 0,
+                "warnings_count": 0,
+            },
+            force=True,
+        )
 
         # Deleted files: drop sourced nodes and manifest entries.
         if deleted_files:
@@ -333,7 +462,38 @@ class IngestionService:
             await self._delete_vectors_for_nodes(removed_qnames)
 
             facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols = await self._collect_facts(
-                reparse_files
+                reparse_files,
+                run_id=run_id,
+                mode="incremental_refresh",
+                total_files=len(reparse_files),
+                changed_files=changed_files,
+                deleted_files=deleted_files,
+                affected_neighbor_files=affected_neighbor_files,
+            )
+            self._write_progress_snapshot(
+                {
+                    "run_id": run_id,
+                    "mode": "incremental_refresh",
+                    "state": "running",
+                    "phase": "writing_nodes",
+                    "export_dir": export_dir,
+                    "project_scope": self._active_project_scope,
+                    "started_at": self._progress_started_at,
+                    "total_files": len(reparse_files),
+                    "processed_files": len(reparse_files),
+                    "failed_files": len(parse_failures),
+                    "current_file": None,
+                    "changed_files": changed_files,
+                    "deleted_files": deleted_files,
+                    "affected_neighbor_files": affected_neighbor_files,
+                    "parser_stats": parser_stats,
+                    "unresolved_symbols": unresolved_symbols,
+                    "node_count": 0,
+                    "edge_count": 0,
+                    "orphaned_edges": 0,
+                    "warnings_count": len(warnings),
+                },
+                force=True,
             )
             node_counts, written_qnames = await self._write_nodes(facts_by_type)
             node_count = sum(node_counts.values())
@@ -347,6 +507,31 @@ class IngestionService:
 
             node_registry = await self._load_node_registry()
             scoped_edges = [self._scope_edge_fact(edge) for edge in self._apply_picklist_guard(all_edges, facts_by_type)]
+            self._write_progress_snapshot(
+                {
+                    "run_id": run_id,
+                    "mode": "incremental_refresh",
+                    "state": "running",
+                    "phase": "writing_edges",
+                    "export_dir": export_dir,
+                    "project_scope": self._active_project_scope,
+                    "started_at": self._progress_started_at,
+                    "total_files": len(reparse_files),
+                    "processed_files": len(reparse_files),
+                    "failed_files": len(parse_failures),
+                    "current_file": None,
+                    "changed_files": changed_files,
+                    "deleted_files": deleted_files,
+                    "affected_neighbor_files": affected_neighbor_files,
+                    "parser_stats": parser_stats,
+                    "unresolved_symbols": unresolved_symbols,
+                    "node_count": node_count,
+                    "edge_count": 0,
+                    "orphaned_edges": 0,
+                    "warnings_count": len(warnings),
+                },
+                force=True,
+            )
             edge_count, orphaned_edges, edge_warnings = await self._write_edges(
                 scoped_edges,
                 node_registry=node_registry,
@@ -388,6 +573,33 @@ class IngestionService:
             unresolved_symbols=unresolved_symbols,
         )
         self._write_refresh_meta(summary)
+        self._write_progress_snapshot(
+            {
+                "run_id": run_id,
+                "mode": "incremental_refresh",
+                "state": "completed",
+                "phase": "completed",
+                "export_dir": export_dir,
+                "project_scope": self._active_project_scope,
+                "started_at": self._progress_started_at,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration_seconds": duration,
+                "total_files": len(reparse_files),
+                "processed_files": len(reparse_files),
+                "failed_files": len(parse_failures),
+                "current_file": None,
+                "changed_files": changed_files,
+                "deleted_files": deleted_files,
+                "affected_neighbor_files": affected_neighbor_files,
+                "parser_stats": parser_stats,
+                "unresolved_symbols": unresolved_symbols,
+                "node_count": node_count,
+                "edge_count": edge_count,
+                "orphaned_edges": orphaned_edges,
+                "warnings_count": len(warnings),
+            },
+            force=True,
+        )
         return summary
 
     async def watch_refresh(
@@ -498,6 +710,13 @@ class IngestionService:
     async def _collect_facts(
         self,
         files: list[str],
+        *,
+        run_id: str | None = None,
+        mode: str = "full_ingest",
+        total_files: int | None = None,
+        changed_files: list[str] | None = None,
+        deleted_files: list[str] | None = None,
+        affected_neighbor_files: list[str] | None = None,
     ) -> tuple[dict[str, list[NodeFact]], list[EdgeFact], list[str], dict[str, dict[str, int]], int]:
         facts_by_type: dict[str, list[NodeFact]] = defaultdict(list)
         all_edges: list[EdgeFact] = []
@@ -505,7 +724,8 @@ class IngestionService:
         parser_stats = self._empty_parser_stats()
         unresolved_symbols = 0
 
-        for fpath in files:
+        total = len(files) if total_files is None else total_files
+        for index, fpath in enumerate(files, start=1):
             parser_name = self._parser_name_for_file(fpath)
             try:
                 file_nodes, file_edges = await self._parse_file(fpath)
@@ -514,6 +734,28 @@ class IngestionService:
                 parse_failures.append(fpath)
                 await self._manifest.set_status(fpath, "FAILED")
                 parser_stats[parser_name]["error_files"] += 1
+                if run_id:
+                    self._write_progress_snapshot(
+                        {
+                            "run_id": run_id,
+                            "mode": mode,
+                            "state": "running",
+                            "phase": "parsing",
+                            "export_dir": str(self._active_export_root) if self._active_export_root else None,
+                            "project_scope": self._active_project_scope,
+                            "started_at": self._progress_started_at,
+                            "total_files": total,
+                            "processed_files": index,
+                            "failed_files": len(parse_failures),
+                            "current_file": fpath,
+                            "changed_files": changed_files or [],
+                            "deleted_files": deleted_files or [],
+                            "affected_neighbor_files": affected_neighbor_files or [],
+                            "parser_stats": parser_stats,
+                            "unresolved_symbols": unresolved_symbols,
+                            "warnings_count": 0,
+                        }
+                    )
                 continue
 
             if file_nodes or file_edges:
@@ -527,8 +769,50 @@ class IngestionService:
                 if self._is_unresolved_dynamic_edge(edge):
                     unresolved_symbols += 1
             all_edges.extend(file_edges)
+            if run_id:
+                self._write_progress_snapshot(
+                    {
+                        "run_id": run_id,
+                        "mode": mode,
+                        "state": "running",
+                        "phase": "parsing",
+                        "export_dir": str(self._active_export_root) if self._active_export_root else None,
+                        "project_scope": self._active_project_scope,
+                        "started_at": self._progress_started_at,
+                        "total_files": total,
+                        "processed_files": index,
+                        "failed_files": len(parse_failures),
+                        "current_file": fpath,
+                        "changed_files": changed_files or [],
+                        "deleted_files": deleted_files or [],
+                        "affected_neighbor_files": affected_neighbor_files or [],
+                        "parser_stats": parser_stats,
+                        "unresolved_symbols": unresolved_symbols,
+                        "warnings_count": 0,
+                    }
+                )
 
         return facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols
+
+    def _write_progress_snapshot(self, payload: dict[str, Any], *, force: bool = False) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload = dict(payload)
+        payload.setdefault("updated_at", now)
+        payload.setdefault("started_at", self._progress_started_at)
+
+        total_files = payload.get("total_files")
+        processed_files = payload.get("processed_files")
+        if isinstance(total_files, int) and total_files >= 0 and isinstance(processed_files, int):
+            payload["completion_ratio"] = 1.0 if total_files == 0 else round(min(processed_files / total_files, 1.0), 4)
+
+        monotonic_now = time.monotonic()
+        if not force and (monotonic_now - self._last_progress_flush_at) < 0.25:
+            return
+
+        out = Path(self._ingestion_progress_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self._last_progress_flush_at = monotonic_now
 
     async def _write_nodes(self, facts_by_type: dict[str, list[NodeFact]]) -> tuple[dict[str, int], set[str]]:
         node_counts: dict[str, int] = defaultdict(int)

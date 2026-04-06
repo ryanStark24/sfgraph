@@ -67,6 +67,7 @@ class GraphQueryService:
         vectors: VectorStore | None = None,
         repo_root: str | None = None,
         ingestion_meta_path: str = "./data/ingestion_meta.json",
+        ingestion_progress_path: str = "./data/ingestion_progress.json",
         rules_path: str | None = None,
     ) -> None:
         self._graph = graph
@@ -74,6 +75,7 @@ class GraphQueryService:
         self._vectors = vectors
         self._repo_root = Path(repo_root or Path(__file__).resolve().parents[3])
         self._ingestion_meta_path = Path(ingestion_meta_path)
+        self._ingestion_progress_path = Path(ingestion_progress_path)
         self._rules = RulesRegistry(config_path=rules_path)
         self._schema_agent = SchemaFilterAgent()
         self._planner_agent = QueryPlannerAgent()
@@ -98,6 +100,15 @@ class GraphQueryService:
             return {}
         try:
             payload = json.loads(self._ingestion_meta_path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+    def _read_ingestion_progress(self) -> dict[str, Any]:
+        if not self._ingestion_progress_path.exists():
+            return {}
+        try:
+            payload = json.loads(self._ingestion_progress_path.read_text(encoding="utf-8"))
             return payload if isinstance(payload, dict) else {}
         except Exception:
             return {}
@@ -895,6 +906,7 @@ class GraphQueryService:
         latest_run = await self._manifest.get_latest_completed_run()
         pending = await self._manifest.get_pending_files(limit=200)
         meta = self._read_ingestion_meta()
+        progress = await self.get_ingestion_progress()
 
         return {
             "node_counts_by_type": node_counts,
@@ -905,8 +917,23 @@ class GraphQueryService:
             "parser_stats": meta.get("parser_stats", {}),
             "unresolved_symbols": int(meta.get("unresolved_symbols", 0) or 0),
             "rules": self._rules.describe(),
+            "active_run": progress if progress.get("state") == "running" else None,
             "freshness": await self.freshness(partial_results=False),
         }
+
+    async def get_ingestion_progress(self) -> dict[str, Any]:
+        progress = self._read_ingestion_progress()
+        if not progress:
+            return {
+                "available": False,
+                "state": "idle",
+                "freshness": await self.freshness(partial_results=False),
+            }
+
+        progress = dict(progress)
+        progress["available"] = True
+        progress["freshness"] = await self.freshness(partial_results=progress.get("state") == "running")
+        return progress
 
     async def _find_nodes_by_source_files(self, changed_files: list[str], limit: int = 500) -> list[dict[str, Any]]:
         """Best-effort mapping from changed file paths to graph nodes."""

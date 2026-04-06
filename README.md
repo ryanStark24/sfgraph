@@ -28,6 +28,18 @@ The query layer is built around trust and operational safety:
 - Project-scoped storage keys to prevent cross-project contamination
 - Explicit unknown/dynamic edge reporting instead of false certainty
 
+## Documentation
+
+Start here depending on what you need:
+
+- Product overview and install: this README
+- Architecture and internals: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- MCP tool reference: [`docs/TOOLS.md`](docs/TOOLS.md)
+- IDE and client setup: [`docs/IDE_SETUP.md`](docs/IDE_SETUP.md)
+- Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
+- Scope migration: [`docs/SCOPE_MIGRATION_RUNBOOK.md`](docs/SCOPE_MIGRATION_RUNBOOK.md)
+- Release process: [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)
+
 ## Install
 
 ### Option 1: Install from source
@@ -65,10 +77,10 @@ npm install
 
 This repo now includes an npm launcher package that can bootstrap a Python runtime automatically and start the MCP server in one step.
 
-Target usage after npm publish:
+Current beta usage:
 
 ```bash
-npx -y @ryanstark24/sfgraph-mcp
+npx -y @ryanstark24/sfgraph-mcp@beta
 ```
 
 What it does:
@@ -112,6 +124,9 @@ uv run sfgraph query "what uses Account.Status__c?" --data-dir ./data
 # Check freshness / status
 uv run sfgraph status --data-dir ./data
 
+# Check live ingest progress
+uv run sfgraph progress --data-dir ./data
+
 # Run benchmark
 uv run sfgraph benchmark /absolute/path/to/export --data-dir ./data
 ```
@@ -122,6 +137,7 @@ Available commands:
 - `ingest`
 - `refresh`
 - `query`
+- `progress`
 - `status`
 - `migrate-scope`
 - `benchmark`
@@ -145,6 +161,7 @@ The server stores graph data under `./data` relative to the repo root by default
 - `ingest_org(export_dir)`
 - `refresh(export_dir)`
 - `watch_refresh(export_dir, duration_seconds?, poll_interval?, debounce_seconds?, max_refreshes?)`
+- `get_ingestion_progress()`
 - `get_ingestion_status()`
 - `query(question, max_hops?, max_results?, time_budget_ms?, offset?)`
 - `trace_upstream(node_id, max_hops?, max_results?, time_budget_ms?, offset?)`
@@ -194,7 +211,7 @@ If you publish the npm launcher, clients that support `npx`-style MCP entries ca
   "servers": {
     "sfgraph": {
       "command": "npx",
-      "args": ["-y", "@ryanstark24/sfgraph-mcp"]
+      "args": ["-y", "@ryanstark24/sfgraph-mcp@beta"]
     }
   }
 }
@@ -222,6 +239,9 @@ This is the right place to add UI for server lifecycle inside VS Code. For other
 
 ## Operations Docs
 
+- Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- Tool reference: [`docs/TOOLS.md`](docs/TOOLS.md)
 - IDE setup: [`docs/IDE_SETUP.md`](docs/IDE_SETUP.md)
+- Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
 - Scope migration: [`docs/SCOPE_MIGRATION_RUNBOOK.md`](docs/SCOPE_MIGRATION_RUNBOOK.md)
 - Release checklist: [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)

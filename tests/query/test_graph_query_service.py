@@ -271,6 +271,40 @@ async def test_get_ingestion_status_contract(svc: GraphQueryService):
     assert "parser_stats" in status
     assert status["unresolved_symbols"] == 3
     assert "freshness" in status
+    assert "active_run" in status
+
+
+@pytest.mark.asyncio
+async def test_get_ingestion_progress_returns_snapshot(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_progress.db"))
+    await manifest.initialize()
+    progress_path = tmp_path / "ingestion_progress.json"
+    progress_path.write_text(
+        json.dumps(
+            {
+                "run_id": "run-progress-1",
+                "mode": "full_ingest",
+                "state": "running",
+                "phase": "parsing",
+                "total_files": 10,
+                "processed_files": 4,
+                "completion_ratio": 0.4,
+            }
+        ),
+        encoding="utf-8",
+    )
+    svc = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        ingestion_progress_path=str(progress_path),
+    )
+
+    payload = await svc.get_ingestion_progress()
+    assert payload["available"] is True
+    assert payload["state"] == "running"
+    assert payload["processed_files"] == 4
+    assert "freshness" in payload
 
 
 @pytest.mark.asyncio

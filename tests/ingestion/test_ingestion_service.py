@@ -71,6 +71,7 @@ def svc():
         manifest=manifest,
         pool=pool,
         schema_index_path="/tmp/test_schema_index.json",
+        ingestion_progress_path="/tmp/test_ingestion_progress.json",
     )
     return service, graph, manifest, pool
 
@@ -331,3 +332,20 @@ async def test_refresh_includes_affected_neighbor_files(svc):
     summary = await service.refresh(FIXTURE_EXPORT)
     assert neighbor in summary.affected_neighbor_files
     assert summary.processed_files >= 2
+
+
+@pytest.mark.asyncio
+async def test_ingest_writes_progress_snapshot(svc, tmp_path):
+    service, _, _, _ = svc
+    progress_path = tmp_path / "ingestion_progress.json"
+    service._ingestion_progress_path = str(progress_path)
+
+    await service.ingest(FIXTURE_EXPORT)
+
+    payload = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert payload["available"] if "available" in payload else True
+    assert payload["state"] == "completed"
+    assert payload["phase"] == "completed"
+    assert payload["mode"] == "full_ingest"
+    assert payload["total_files"] >= 1
+    assert payload["processed_files"] == payload["total_files"]

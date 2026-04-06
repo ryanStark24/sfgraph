@@ -46,6 +46,10 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument("--data-dir", default="./data")
     status.set_defaults(func=_cmd_status)
 
+    progress = sub.add_parser("progress", help="Show live ingestion progress, if available")
+    progress.add_argument("--data-dir", default="./data")
+    progress.set_defaults(func=_cmd_progress)
+
     migrate = sub.add_parser("migrate-scope", help="Migrate legacy unscoped rows for a project")
     migrate.add_argument("export_dir")
     migrate.add_argument("--data-dir", default="./data")
@@ -101,6 +105,7 @@ async def _cmd_ingest(args: argparse.Namespace) -> int:
             pool=runtime["pool"],
             vectors=runtime["vectors"],
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
         )
         summary = await service.ingest(args.export_dir)
         print(json.dumps(summary.model_dump(), indent=2))
@@ -118,6 +123,7 @@ async def _cmd_refresh(args: argparse.Namespace) -> int:
             pool=runtime["pool"],
             vectors=runtime["vectors"],
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
         )
         summary = await service.refresh(args.export_dir)
         print(json.dumps(summary.model_dump(), indent=2))
@@ -135,6 +141,7 @@ async def _cmd_query(args: argparse.Namespace) -> int:
             vectors=runtime["vectors"],
             repo_root=str(Path.cwd()),
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
         )
         payload = await service.query(
             args.question,
@@ -156,8 +163,27 @@ async def _cmd_status(args: argparse.Namespace) -> int:
             vectors=runtime["vectors"],
             repo_root=str(Path.cwd()),
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
         )
         payload = await service.get_ingestion_status()
+        print(json.dumps(payload, indent=2))
+        return 0
+    finally:
+        await _close_runtime(runtime)
+
+
+async def _cmd_progress(args: argparse.Namespace) -> int:
+    runtime = await _build_runtime(args.data_dir, needs_pool=False)
+    try:
+        service = GraphQueryService(
+            graph=runtime["graph"],
+            manifest=runtime["manifest"],
+            vectors=runtime["vectors"],
+            repo_root=str(Path.cwd()),
+            ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
+        )
+        payload = await service.get_ingestion_progress()
         print(json.dumps(payload, indent=2))
         return 0
     finally:
