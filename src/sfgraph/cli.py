@@ -26,6 +26,12 @@ def _build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="Run MCP server")
     serve.set_defaults(func=_cmd_serve)
 
+    daemon = sub.add_parser("daemon", help="Run the local sfgraph daemon")
+    daemon.add_argument("--data-dir", default="./data")
+    daemon.add_argument("--host", default="127.0.0.1")
+    daemon.add_argument("--port", type=int, required=True)
+    daemon.set_defaults(func=_cmd_daemon)
+
     ingest = sub.add_parser("ingest", help="Run full ingest for an export directory (defaults to workspace-root force-app/ and vlocity/ when present)")
     ingest.add_argument("export_dir")
     ingest.add_argument("--data-dir", default="./data")
@@ -110,6 +116,12 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
 
     mcp.run()
     return 0
+
+
+def _cmd_daemon(args: argparse.Namespace) -> int:
+    from sfgraph.daemon import main as daemon_main
+
+    return daemon_main(["--data-dir", args.data_dir, "--host", args.host, "--port", str(args.port)])
 
 
 async def _cmd_ingest(args: argparse.Namespace) -> int:
