@@ -27,6 +27,7 @@ from sfgraph.query.graph_query_service import GraphQueryService
 from sfgraph.storage.duckpgq_store import DuckPGQStore
 from sfgraph.storage.vector_store import VectorStore
 from sfgraph.storage.manifest_store import ManifestStore
+from sfgraph.storage.parse_cache import ParseCache
 from sfgraph.parser.pool import NodeParserPool
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class AppContext:
     graph: DuckPGQStore
     vectors: VectorStore
     manifest: ManifestStore
+    parse_cache: ParseCache
     pool: NodeParserPool
     data_root: Path
     jobs: IngestJobManager
@@ -60,11 +62,13 @@ async def lifespan(server: FastMCP):
     graph = DuckPGQStore(db_path=str(data_root / "sfgraph.duckdb"))
     vectors = VectorStore(path=str(data_root / "vectors"))
     manifest = ManifestStore(db_path=str(data_root / "manifest.sqlite"))
+    parse_cache = ParseCache(db_path=str(data_root / "parse_cache.sqlite"))
     pool = NodeParserPool()
     jobs = IngestJobManager(
         ingest_factory=lambda export_dir, options: _build_ingestion_service_from_parts(
             graph=graph,
             manifest=manifest,
+            parse_cache=parse_cache,
             pool=pool,
             vectors=vectors,
             data_root=data_root,
@@ -75,6 +79,7 @@ async def lifespan(server: FastMCP):
         refresh_factory=lambda export_dir, options: _build_ingestion_service_from_parts(
             graph=graph,
             manifest=manifest,
+            parse_cache=parse_cache,
             pool=pool,
             vectors=vectors,
             data_root=data_root,
@@ -85,6 +90,7 @@ async def lifespan(server: FastMCP):
         vectorize_factory=lambda export_dir, options: _build_ingestion_service_from_parts(
             graph=graph,
             manifest=manifest,
+            parse_cache=parse_cache,
             pool=pool,
             vectors=vectors,
             data_root=data_root,
@@ -95,13 +101,15 @@ async def lifespan(server: FastMCP):
     )
 
     await manifest.initialize()
+    await parse_cache.initialize()
     await vectors.initialize()
     await pool.start()
     logger.info("All storage engines initialized")
 
-    yield AppContext(graph=graph, vectors=vectors, manifest=manifest, pool=pool, data_root=data_root, jobs=jobs)
+    yield AppContext(graph=graph, vectors=vectors, manifest=manifest, parse_cache=parse_cache, pool=pool, data_root=data_root, jobs=jobs)
 
     await pool.shutdown()
+    await parse_cache.close()
     await manifest.close()
     await graph.close()
     logger.info("All storage engines closed")
@@ -114,6 +122,7 @@ def _build_ingestion_service(app: AppContext) -> IngestionService:
     return _build_ingestion_service_from_parts(
         graph=app.graph,
         manifest=app.manifest,
+        parse_cache=app.parse_cache,
         pool=app.pool,
         vectors=app.vectors,
         data_root=app.data_root,
@@ -124,6 +133,7 @@ def _build_ingestion_service_from_parts(
     *,
     graph: DuckPGQStore,
     manifest: ManifestStore,
+    parse_cache: ParseCache,
     pool: NodeParserPool,
     vectors: VectorStore,
     data_root: Path,
@@ -135,6 +145,7 @@ def _build_ingestion_service_from_parts(
     return IngestionService(
         graph=graph,
         manifest=manifest,
+        parse_cache=parse_cache,
         pool=pool,
         vectors=vector_store,
         ingestion_meta_path=str(data_root / "ingestion_meta.json"),
@@ -235,6 +246,7 @@ async def ingest_org(
     service = _build_ingestion_service_from_parts(
         graph=app.graph,
         manifest=app.manifest,
+        parse_cache=app.parse_cache,
         pool=app.pool,
         vectors=app.vectors,
         data_root=app.data_root,

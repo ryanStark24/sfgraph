@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS files (
     sha256          TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'PENDING',
     run_id          TEXT,
-    last_ingested_at REAL
+    last_ingested_at REAL,
+    size_bytes      INTEGER,
+    mtime_ns        INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -47,9 +49,26 @@ class ManifestStore:
         """Open the database and create tables if they do not exist."""
         self._conn = await aiosqlite.connect(self._db_path)
         await self._conn.executescript(_SCHEMA)
+        await self._ensure_column("files", "size_bytes", "INTEGER")
+        await self._ensure_column("files", "mtime_ns", "INTEGER")
         await self._conn.commit()
 
-    async def upsert_file(self, path: str, sha256: str, run_id: str) -> None:
+    async def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        cursor = await self._conn.execute(f"PRAGMA table_info({table})")
+        rows = await cursor.fetchall()
+        columns = {str(row[1]) for row in rows}
+        if column not in columns:
+            await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+    async def upsert_file(
+        self,
+        path: str,
+        sha256: str,
+        run_id: str,
+        *,
+        size_bytes: int | None = None,
+        mtime_ns: int | None = None,
+    ) -> None:
         """Insert or update a file record, always resetting status to PENDING.
 
         This is intentional: any re-ingestion starts fresh so the two-phase
@@ -57,15 +76,17 @@ class ManifestStore:
         """
         await self._conn.execute(
             """
-            INSERT INTO files (path, sha256, status, run_id, last_ingested_at)
-            VALUES (?, ?, 'PENDING', ?, ?)
+            INSERT INTO files (path, sha256, status, run_id, last_ingested_at, size_bytes, mtime_ns)
+            VALUES (?, ?, 'PENDING', ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 sha256 = excluded.sha256,
                 status = 'PENDING',
                 run_id = excluded.run_id,
-                last_ingested_at = excluded.last_ingested_at
+                last_ingested_at = excluded.last_ingested_at,
+                size_bytes = excluded.size_bytes,
+                mtime_ns = excluded.mtime_ns
             """,
-            (path, sha256, run_id, time.time()),
+            (path, sha256, run_id, time.time(), size_bytes, mtime_ns),
         )
         await self._conn.commit()
 
@@ -109,7 +130,8 @@ class ManifestStore:
         unchanged: list = []
         deleted: list = []
 
-        for path, sha in current_files.items():
+        for path, payload in current_files.items():
+            sha = payload["sha256"] if isinstance(payload, dict) else payload
             if path not in stored:
                 new.append(path)
             elif stored[path] != sha:
@@ -122,6 +144,27 @@ class ManifestStore:
                 deleted.append(path)
 
         return {"new": new, "changed": changed, "unchanged": unchanged, "deleted": deleted}
+
+    async def get_tracked_files(self) -> Dict[str, Dict[str, Any]]:
+        """Return stored file metadata keyed by path."""
+        cursor = await self._conn.execute(
+            """
+            SELECT path, sha256, status, size_bytes, mtime_ns, run_id, last_ingested_at
+            FROM files
+            """
+        )
+        rows = await cursor.fetchall()
+        tracked: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            tracked[str(row[0])] = {
+                "sha256": row[1],
+                "status": row[2],
+                "size_bytes": row[3],
+                "mtime_ns": row[4],
+                "run_id": row[5],
+                "last_ingested_at": row[6],
+            }
+        return tracked
 
     async def create_run(self) -> str:
         """Create a new ingestion run record and return its run_id."""

@@ -26,6 +26,7 @@ from sfgraph.parser.pool import NodeParserPool
 from sfgraph.parser.vlocity_parser import is_vlocity_datapack_file, parse_vlocity_json
 from sfgraph.storage.base import GraphStore
 from sfgraph.storage.manifest_store import ManifestStore
+from sfgraph.storage.parse_cache import ParseCache
 from sfgraph.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,7 @@ class IngestionService:
         manifest: ManifestStore,
         pool: NodeParserPool,
         vectors: VectorStore | None = None,
+        parse_cache: ParseCache | None = None,
         schema_index_path: str | None = None,
         ingestion_meta_path: str | None = None,
         ingestion_progress_path: str | None = None,
@@ -133,6 +135,7 @@ class IngestionService:
         self._manifest = manifest
         self._pool = pool
         self._vectors = vectors
+        self._parse_cache = parse_cache
         self._schema_index_path = schema_index_path or self.SCHEMA_INDEX_PATH
         self._ingestion_meta_path = ingestion_meta_path or self.INGESTION_META_PATH
         self._ingestion_progress_path = ingestion_progress_path or self.INGESTION_PROGRESS_PATH
@@ -144,6 +147,36 @@ class IngestionService:
         self._last_progress_flush_at: float = 0.0
         self._include_globs = include_globs or []
         self._exclude_globs = exclude_globs or []
+
+    @staticmethod
+    def _serialize_parse_result(nodes: list[NodeFact], edges: list[EdgeFact]) -> dict[str, Any]:
+        return {
+            "nodes": [node.model_dump() for node in nodes],
+            "edges": [edge.model_dump() for edge in edges],
+        }
+
+    @staticmethod
+    def _deserialize_parse_result(payload: dict[str, Any]) -> tuple[list[NodeFact], list[EdgeFact]]:
+        raw_nodes = payload.get("nodes") if isinstance(payload, dict) else []
+        raw_edges = payload.get("edges") if isinstance(payload, dict) else []
+        nodes = [NodeFact.model_validate(node) for node in raw_nodes or []]
+        edges = [EdgeFact.model_validate(edge) for edge in raw_edges or []]
+        return nodes, edges
+
+    @staticmethod
+    def _cacheable_parser(parser_name: str) -> bool:
+        # Object parsing walks an entire object directory, so a single file hash
+        # is not a safe cache key for it.
+        return parser_name not in {"object", "unknown"}
+
+    @staticmethod
+    def _rebind_cached_nodes(nodes: list[NodeFact], fpath: str) -> list[NodeFact]:
+        rebound: list[NodeFact] = []
+        for node in nodes:
+            props = dict(node.all_props)
+            props["sourceFile"] = fpath
+            rebound.append(node.model_copy(update={"sourceFile": fpath, "all_props": props}))
+        return rebound
 
     @staticmethod
     def _compute_project_scope(export_dir: str) -> str:
@@ -404,10 +437,13 @@ class IngestionService:
         start = time.monotonic()
         run_id = await self._manifest.create_run()
         warnings: list[str] = []
-
-        discovered_files = self._discover_files(Path(export_dir))
         self._progress_started_at = datetime.now(timezone.utc).isoformat()
         self._last_progress_flush_at = 0.0
+        discovered_files = await self._discover_file_records(
+            Path(export_dir),
+            run_id=run_id,
+            mode="full_ingest",
+        )
         self._write_progress_snapshot(
             {
                 "run_id": run_id,
@@ -431,11 +467,18 @@ class IngestionService:
             },
             force=True,
         )
-        for fpath, sha in discovered_files.items():
-            await self._manifest.upsert_file(fpath, sha, run_id)
+        for fpath, meta in discovered_files.items():
+            await self._manifest.upsert_file(
+                fpath,
+                meta["sha256"],
+                run_id,
+                size_bytes=meta.get("size_bytes"),
+                mtime_ns=meta.get("mtime_ns"),
+            )
 
         facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols = await self._collect_facts(
             list(discovered_files.keys()),
+            file_records=discovered_files,
             run_id=run_id,
             mode="full_ingest",
             total_files=len(discovered_files),
@@ -563,7 +606,11 @@ class IngestionService:
         self._progress_started_at = datetime.now(timezone.utc).isoformat()
         self._last_progress_flush_at = 0.0
 
-        current_files = self._discover_files(Path(export_dir))
+        current_files = await self._discover_file_records(
+            Path(export_dir),
+            run_id=run_id,
+            mode="incremental_refresh",
+        )
         delta = await self._manifest.get_delta(current_files)
         changed_files = sorted(set(delta["new"] + delta["changed"]))
         deleted_files = sorted(delta["deleted"])
@@ -622,9 +669,15 @@ class IngestionService:
 
         if reparse_files:
             for fpath in reparse_files:
-                sha = current_files.get(fpath)
-                if sha:
-                    await self._manifest.upsert_file(fpath, sha, run_id)
+                meta = current_files.get(fpath)
+                if meta:
+                    await self._manifest.upsert_file(
+                        fpath,
+                        meta["sha256"],
+                        run_id,
+                        size_bytes=meta.get("size_bytes"),
+                        mtime_ns=meta.get("mtime_ns"),
+                    )
 
             removed_qnames = await self._purge_nodes_by_source_files(reparse_files)
             await self._delete_edges_for_nodes(removed_qnames)
@@ -632,6 +685,7 @@ class IngestionService:
 
             facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols = await self._collect_facts(
                 reparse_files,
+                file_records=current_files,
                 run_id=run_id,
                 mode="incremental_refresh",
                 total_files=len(reparse_files),
@@ -786,7 +840,7 @@ class IngestionService:
         last_seen_change_fingerprint: str | None = None
 
         while (time.monotonic() - started) < duration_seconds and len(refreshes) < max_refreshes:
-            current_files = self._discover_files(Path(export_dir))
+            current_files = await self._discover_file_records(Path(export_dir))
             delta = await self._manifest.get_delta(current_files)
             has_change = bool(delta["new"] or delta["changed"] or delta["deleted"])
             if has_change:
@@ -814,10 +868,20 @@ class IngestionService:
             "refreshes": refreshes,
         }
 
-    def _discover_files(self, export_path: Path) -> dict[str, str]:
-        """Discover ingestion targets and compute their SHA-256 digest."""
-        files: dict[str, str] = {}
+    async def _discover_file_records(
+        self,
+        export_path: Path,
+        *,
+        run_id: str | None = None,
+        mode: str = "full_ingest",
+    ) -> dict[str, dict[str, int | str]]:
+        """Discover ingestion targets and reuse stored hashes when file stats match."""
+        files: dict[str, dict[str, int | str]] = {}
         root = export_path.resolve()
+        tracked = await self._manifest.get_tracked_files()
+        scanned_files = 0
+        hashed_files = 0
+        reused_hashes = 0
         for discovery_root in self._discovery_roots(root):
             for current_root, dirs, filenames in os.walk(discovery_root, topdown=True):
                 current_path = Path(current_root)
@@ -831,6 +895,7 @@ class IngestionService:
 
                 for filename in sorted(filenames):
                     path = current_path / filename
+                    scanned_files += 1
                     if self._should_skip_file(path):
                         continue
                     if not self._matches_discovery_rules(path, root):
@@ -852,8 +917,55 @@ class IngestionService:
                         )
                     ):
                         continue
-                    files[str(path)] = _sha256(str(path))
+                    stat = path.stat()
+                    tracked_file = tracked.get(str(path))
+                    sha = None
+                    if (
+                        tracked_file
+                        and tracked_file.get("size_bytes") == stat.st_size
+                        and tracked_file.get("mtime_ns") == stat.st_mtime_ns
+                        and tracked_file.get("sha256")
+                    ):
+                        sha = str(tracked_file["sha256"])
+                        reused_hashes += 1
+                    else:
+                        sha = _sha256(str(path))
+                        hashed_files += 1
+                    files[str(path)] = {
+                        "sha256": sha,
+                        "size_bytes": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns,
+                    }
+                    if run_id:
+                        self._write_progress_snapshot(
+                            {
+                                "run_id": run_id,
+                                "mode": mode,
+                                "state": "running",
+                                "phase": "discovering",
+                                "export_dir": str(root),
+                                "project_scope": self._active_project_scope,
+                                "started_at": self._progress_started_at,
+                                "total_files": max(scanned_files, 1),
+                                "processed_files": hashed_files + reused_hashes,
+                                "failed_files": 0,
+                                "current_file": str(path),
+                                "current_parser": "discovery",
+                                "parser_stats": self._empty_parser_stats(),
+                                "unresolved_symbols": 0,
+                                "warnings_count": 0,
+                                "discovery_scanned_files": scanned_files,
+                                "discovery_discovered_files": len(files),
+                                "discovery_hashed_files": hashed_files,
+                                "discovery_reused_hashes": reused_hashes,
+                            }
+                        )
         return files
+
+    def _discover_files(self, export_path: Path) -> dict[str, str]:
+        """Compatibility helper used by tests; returns path->sha mapping."""
+        records = asyncio.run(self._discover_file_records(export_path))
+        return {path: str(meta["sha256"]) for path, meta in records.items()}
 
     def _discovery_roots(self, export_path: Path) -> list[Path]:
         root = export_path.resolve()
@@ -927,6 +1039,7 @@ class IngestionService:
         self,
         files: list[str],
         *,
+        file_records: dict[str, dict[str, int | str]] | None = None,
         run_id: str | None = None,
         mode: str = "full_ingest",
         total_files: int | None = None,
@@ -944,7 +1057,10 @@ class IngestionService:
         for index, fpath in enumerate(files, start=1):
             parser_name = self._parser_name_for_file(fpath)
             try:
-                file_nodes, file_edges = await self._parse_file(fpath)
+                file_sha = None
+                if file_records and fpath in file_records:
+                    file_sha = str(file_records[fpath].get("sha256") or "")
+                file_nodes, file_edges = await self._parse_file(fpath, sha256=file_sha or None)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Parse failure for %s: %s", fpath, exc)
                 parse_failures.append(fpath)
@@ -971,6 +1087,7 @@ class IngestionService:
                             "parser_stats": parser_stats,
                             "unresolved_symbols": unresolved_symbols,
                             "warnings_count": 0,
+                            "cache_enabled": bool(self._parse_cache),
                         }
                     )
                 continue
@@ -1007,6 +1124,7 @@ class IngestionService:
                         "parser_stats": parser_stats,
                         "unresolved_symbols": unresolved_symbols,
                         "warnings_count": 0,
+                        "cache_enabled": bool(self._parse_cache),
                     }
                 )
 
@@ -1346,8 +1464,15 @@ class IngestionService:
 
         return edge_count, orphaned_edges, warnings
 
-    async def _parse_file(self, fpath: str) -> tuple[list[NodeFact], list[EdgeFact]]:
+    async def _parse_file(self, fpath: str, *, sha256: str | None = None) -> tuple[list[NodeFact], list[EdgeFact]]:
         path = Path(fpath)
+        parser_name = self._parser_name_for_file(fpath)
+        can_cache = self._cacheable_parser(parser_name)
+        if self._parse_cache and sha256 and can_cache:
+            cached = await self._parse_cache.get(parser_name, sha256)
+            if cached is not None:
+                nodes, edges = self._deserialize_parse_result(cached)
+                return self._rebind_cached_nodes(nodes, fpath), edges
 
         if path.suffix in {".cls", ".trigger"}:
             result = await self._pool.parse(fpath, "apex")
@@ -1384,22 +1509,39 @@ class IngestionService:
                     )
                 )
 
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
             return nodes, edges
 
         if path.suffix in {".js", ".html"} and "lwc" in {part.lower() for part in path.parts}:
-            return parse_lwc_file(fpath)
+            nodes, edges = parse_lwc_file(fpath)
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
+            return nodes, edges
 
         if fpath.endswith(".flow-meta.xml"):
-            return parse_flow_xml(fpath)
+            nodes, edges = parse_flow_xml(fpath)
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
+            return nodes, edges
 
         if fpath.endswith(".object-meta.xml"):
-            return parse_object_dir(str(path.parent))
+            nodes, edges = parse_object_dir(str(path.parent))
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
+            return nodes, edges
 
         if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
-            return parse_labels_xml(fpath)
+            nodes, edges = parse_labels_xml(fpath)
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
+            return nodes, edges
 
         if path.suffix == ".json" and is_vlocity_datapack_file(path):
-            return parse_vlocity_json(fpath)
+            nodes, edges = parse_vlocity_json(fpath)
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
+            return nodes, edges
 
         return [], []
 

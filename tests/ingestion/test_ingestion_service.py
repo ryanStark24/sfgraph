@@ -31,6 +31,7 @@ def make_mock_manifest() -> AsyncMock:
     manifest.set_status = AsyncMock(return_value=None)
     manifest.mark_run_complete = AsyncMock(return_value=None)
     manifest.get_delta = AsyncMock(return_value={"new": [], "changed": [], "unchanged": [], "deleted": []})
+    manifest.get_tracked_files = AsyncMock(return_value={})
     manifest.delete_files = AsyncMock(return_value=0)
     return manifest
 
@@ -565,6 +566,66 @@ def test_discover_files_falls_back_to_root_when_default_roots_missing(tmp_path):
 
     discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
     assert str(loose_cls) in discovered
+
+
+@pytest.mark.asyncio
+async def test_discovery_reuses_manifest_hash_when_stats_match(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+    )
+    apex_file = tmp_path / "force-app" / "main" / "default" / "classes" / "Reuse.cls"
+    apex_file.parent.mkdir(parents=True, exist_ok=True)
+    apex_file.write_text("public class Reuse {}", encoding="utf-8")
+    stat = apex_file.stat()
+    manifest.get_tracked_files = AsyncMock(
+        return_value={
+            str(apex_file): {
+                "sha256": "abc123",
+                "size_bytes": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "status": "EDGES_WRITTEN",
+            }
+        }
+    )
+
+    discovered = await service._discover_file_records(tmp_path)
+    assert discovered[str(apex_file)]["sha256"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_parse_file_uses_cache_for_duplicate_content(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    parse_cache = AsyncMock()
+    parse_cache.get = AsyncMock(side_effect=[None, {"nodes": [], "edges": []}])
+    parse_cache.put = AsyncMock(return_value=None)
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        parse_cache=parse_cache,
+        pool=pool,
+    )
+    first = tmp_path / "force-app" / "main" / "default" / "classes" / "A.cls"
+    second = tmp_path / "force-app" / "main" / "default" / "classes" / "B.cls"
+    first.parent.mkdir(parents=True, exist_ok=True)
+    source = "public class AccountService {}"
+    first.write_text(source, encoding="utf-8")
+    second.write_text(source, encoding="utf-8")
+    sha = "same-sha"
+
+    await service._parse_file(str(first), sha256=sha)
+    nodes, edges = await service._parse_file(str(second), sha256=sha)
+
+    assert pool.parse.await_count == 1
+    parse_cache.put.assert_awaited()
+    assert nodes == []
+    assert edges == []
 
 
 @pytest.mark.asyncio

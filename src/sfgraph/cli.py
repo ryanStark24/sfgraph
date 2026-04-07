@@ -15,6 +15,7 @@ from sfgraph.parser.pool import NodeParserPool
 from sfgraph.query.graph_query_service import GraphQueryService
 from sfgraph.storage.duckpgq_store import DuckPGQStore
 from sfgraph.storage.manifest_store import ManifestStore
+from sfgraph.storage.parse_cache import ParseCache
 from sfgraph.storage.vector_store import VectorStore
 
 
@@ -84,19 +85,22 @@ async def _build_runtime(data_dir: str, needs_pool: bool = False, enable_vectors
     graph = DuckPGQStore(db_path=str(data_path / "sfgraph.duckdb"))
     vectors = VectorStore(path=str(data_path / "vectors")) if enable_vectors else None
     manifest = ManifestStore(db_path=str(data_path / "manifest.sqlite"))
+    parse_cache = ParseCache(db_path=str(data_path / "parse_cache.sqlite"))
     await manifest.initialize()
+    await parse_cache.initialize()
     if vectors is not None:
         await vectors.initialize()
 
     pool = NodeParserPool()
     if needs_pool:
         await pool.start()
-    return {"graph": graph, "vectors": vectors, "manifest": manifest, "pool": pool, "needs_pool": needs_pool}
+    return {"graph": graph, "vectors": vectors, "manifest": manifest, "parse_cache": parse_cache, "pool": pool, "needs_pool": needs_pool}
 
 
 async def _close_runtime(runtime: dict[str, Any]) -> None:
     if runtime.get("needs_pool"):
         await runtime["pool"].shutdown()
+    await runtime["parse_cache"].close()
     await runtime["manifest"].close()
     await runtime["graph"].close()
 
@@ -114,6 +118,7 @@ async def _cmd_ingest(args: argparse.Namespace) -> int:
         service = IngestionService(
             graph=runtime["graph"],
             manifest=runtime["manifest"],
+            parse_cache=runtime["parse_cache"],
             pool=runtime["pool"],
             vectors=runtime["vectors"],
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
@@ -134,6 +139,7 @@ async def _cmd_refresh(args: argparse.Namespace) -> int:
         service = IngestionService(
             graph=runtime["graph"],
             manifest=runtime["manifest"],
+            parse_cache=runtime["parse_cache"],
             pool=runtime["pool"],
             vectors=runtime["vectors"],
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
@@ -176,6 +182,7 @@ async def _cmd_vectorize(args: argparse.Namespace) -> int:
         service = IngestionService(
             graph=runtime["graph"],
             manifest=runtime["manifest"],
+            parse_cache=runtime["parse_cache"],
             pool=runtime["pool"],
             vectors=runtime["vectors"],
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),

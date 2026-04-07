@@ -8,6 +8,7 @@ client dependency.
 from sfgraph.storage.base import GraphStore
 from sfgraph.storage.duckpgq_store import DuckPGQStore
 from sfgraph.storage.manifest_store import ManifestStore
+from sfgraph.storage.parse_cache import ParseCache
 from sfgraph.storage.vector_store import VectorStore
 
 try:
@@ -26,4 +27,4 @@ except ModuleNotFoundError as exc:
             )
 
 
-__all__ = ["GraphStore", "DuckPGQStore", "FalkorDBStore", "ManifestStore", "VectorStore"]
+__all__ = ["GraphStore", "DuckPGQStore", "FalkorDBStore", "ManifestStore", "ParseCache", "VectorStore"]
