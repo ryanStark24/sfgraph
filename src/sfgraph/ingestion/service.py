@@ -8,6 +8,7 @@ import logging
 import os
 import fnmatch
 import subprocess
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -128,6 +129,7 @@ class IngestionService:
         pool: NodeParserPool,
         vectors: VectorStore | None = None,
         parse_cache: ParseCache | None = None,
+        cancel_event: threading.Event | None = None,
         schema_index_path: str | None = None,
         ingestion_meta_path: str | None = None,
         ingestion_progress_path: str | None = None,
@@ -139,6 +141,7 @@ class IngestionService:
         self._pool = pool
         self._vectors = vectors
         self._parse_cache = parse_cache
+        self._cancel_event = cancel_event
         self._schema_index_path = schema_index_path or self.SCHEMA_INDEX_PATH
         self._ingestion_meta_path = ingestion_meta_path or self.INGESTION_META_PATH
         self._ingestion_progress_path = ingestion_progress_path or self.INGESTION_PROGRESS_PATH
@@ -150,6 +153,10 @@ class IngestionService:
         self._last_progress_flush_at: float = 0.0
         self._include_globs = include_globs or []
         self._exclude_globs = exclude_globs or []
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            raise asyncio.CancelledError("cancelled")
 
     @staticmethod
     def _serialize_parse_result(
@@ -919,6 +926,7 @@ class IngestionService:
         reused_hashes = 0
         for discovery_root in self._discovery_roots(root):
             for current_root, dirs, filenames in os.walk(discovery_root, topdown=True):
+                self._raise_if_cancelled()
                 current_path = Path(current_root)
                 dirs[:] = [d for d in dirs if d not in self.SKIP_DIR_NAMES]
 
@@ -929,6 +937,7 @@ class IngestionService:
                     continue
 
                 for filename in sorted(filenames):
+                    self._raise_if_cancelled()
                     path = current_path / filename
                     scanned_files += 1
                     if self._should_skip_file(path):
@@ -1142,6 +1151,7 @@ class IngestionService:
 
         total = len(files) if total_files is None else total_files
         for index, fpath in enumerate(files, start=1):
+            self._raise_if_cancelled()
             parser_name = self._parser_name_for_file(fpath)
             try:
                 file_sha = None
@@ -1280,7 +1290,9 @@ class IngestionService:
         written_qnames: set[str] = set()
 
         for label in NODE_WRITE_ORDER:
+            self._raise_if_cancelled()
             for node_fact in facts_by_type.get(label, []):
+                self._raise_if_cancelled()
                 scoped_fact = self._scope_node_fact(node_fact)
                 qname = scoped_fact.key_props.get("qualifiedName")
                 if qname and qname in written_qnames:
@@ -1300,9 +1312,11 @@ class IngestionService:
 
         known_labels = set(NODE_WRITE_ORDER)
         for label, node_facts in facts_by_type.items():
+            self._raise_if_cancelled()
             if label in known_labels:
                 continue
             for node_fact in node_facts:
+                self._raise_if_cancelled()
                 scoped_fact = self._scope_node_fact(node_fact)
                 qname = scoped_fact.key_props.get("qualifiedName")
                 if qname and qname in written_qnames:
@@ -1326,6 +1340,7 @@ class IngestionService:
         registry: dict[str, str] = {}
         labels = await self._graph.get_labels()
         for label in labels:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
             except Exception:
@@ -1346,6 +1361,7 @@ class IngestionService:
         source_set = set(source_files)
         matched: set[str] = set()
         for label in labels:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
             except Exception:
@@ -1367,6 +1383,7 @@ class IngestionService:
         rel_types = await self._graph.get_relationship_types()
         neighbors: set[str] = set()
         for rel in rel_types:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(
                     f'SELECT src_qualified_name, dst_qualified_name FROM "{rel}"'
@@ -1397,6 +1414,7 @@ class IngestionService:
         files: set[str] = set()
         qn_set = set(node_qnames)
         for label in labels:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
             except Exception:
@@ -1422,6 +1440,7 @@ class IngestionService:
         removed_qnames: set[str] = set()
 
         for label in labels:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
             except Exception:
@@ -1434,6 +1453,7 @@ class IngestionService:
                 if qn and source in source_set and self._belongs_to_active_scope(qn, props):
                     to_delete.append(qn)
             for qn in to_delete:
+                self._raise_if_cancelled()
                 try:
                     await self._graph.query(
                         f'DELETE FROM "{label}" WHERE qualified_name = $qn',
@@ -1450,7 +1470,9 @@ class IngestionService:
             return
         rel_types = await self._graph.get_relationship_types()
         for rel in rel_types:
+            self._raise_if_cancelled()
             for qn in node_qnames:
+                self._raise_if_cancelled()
                 try:
                     await self._graph.query(
                         f'DELETE FROM "{rel}" WHERE src_qualified_name = $qn OR dst_qualified_name = $qn',
@@ -1464,6 +1486,7 @@ class IngestionService:
         rel_types = await self._graph.get_relationship_types()
 
         for rel in rel_types:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(
                     f'SELECT src_qualified_name, dst_qualified_name FROM "{rel}"'
@@ -1471,6 +1494,7 @@ class IngestionService:
             except Exception:
                 continue
             for row in rows:
+                self._raise_if_cancelled()
                 src = str(row.get("src_qualified_name", ""))
                 dst = str(row.get("dst_qualified_name", ""))
                 if not src or not dst:
@@ -1499,6 +1523,7 @@ class IngestionService:
         warnings: list[str] = []
 
         for edge_fact in edge_facts:
+            self._raise_if_cancelled()
             src_known = edge_fact.src_qualified_name in node_registry
             dst_known = edge_fact.dst_qualified_name in node_registry
 

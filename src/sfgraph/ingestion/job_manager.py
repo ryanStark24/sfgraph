@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -10,7 +11,7 @@ from typing import Any, Awaitable, Callable
 from sfgraph.ingestion.models import IngestionSummary, RefreshSummary, VectorizeSummary
 
 IngestResult = IngestionSummary | RefreshSummary | VectorizeSummary
-IngestCallable = Callable[[str], Awaitable[IngestResult]]
+IngestCallable = Callable[[str, dict[str, Any], threading.Event], Awaitable[IngestResult]]
 
 
 def _utc_now() -> str:
@@ -33,6 +34,7 @@ class IngestJobRecord:
     options: dict[str, Any] = field(default_factory=dict)
     result_summary: dict[str, Any] | None = None
     _task: asyncio.Task[None] | None = field(default=None, repr=False, compare=False)
+    _cancel_event: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,7 +130,7 @@ class IngestJobManager:
                 return job.to_dict()
             if job._task is not None and not job._task.done():
                 job.state = "cancelling"
-                job._task.cancel()
+                job._cancel_event.set()
             return job.to_dict()
 
     async def _run_job(self, job: IngestJobRecord) -> None:
@@ -144,7 +146,11 @@ class IngestJobManager:
             runner = self._vectorize_factory
 
         try:
-            summary = await runner(job.export_dir, job.options)
+            summary = await runner(
+                job.export_dir,
+                job.options,
+                job._cancel_event,
+            )
         except asyncio.CancelledError:
             async with self._lock:
                 job.state = "cancelled"

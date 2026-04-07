@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -82,23 +83,26 @@ async def create_app_context(data_root: Path) -> DaemonAppContext:
     parse_cache = ParseCache(db_path=str(data_root / "parse_cache.sqlite"))
     pool = NodeParserPool()
     jobs = IngestJobManager(
-        ingest_factory=lambda export_dir, options: _run_job_in_worker_thread(
+        ingest_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_thread(
             job_type="ingest",
             data_root=data_root,
             export_dir=export_dir,
             options=options,
+            cancel_event=cancel_event,
         ),
-        refresh_factory=lambda export_dir, options: _run_job_in_worker_thread(
+        refresh_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_thread(
             job_type="refresh",
             data_root=data_root,
             export_dir=export_dir,
             options=options,
+            cancel_event=cancel_event,
         ),
-        vectorize_factory=lambda export_dir, options: _run_job_in_worker_thread(
+        vectorize_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_thread(
             job_type="vectorize",
             data_root=data_root,
             export_dir=export_dir,
             options=options,
+            cancel_event=cancel_event,
         ),
     )
     await manifest.initialize()
@@ -155,6 +159,7 @@ def build_ingestion_service_from_parts(
     pool: NodeParserPool,
     vectors: VectorStore,
     data_root: Path,
+    cancel_event: threading.Event | None = None,
     mode: str = "full",
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
@@ -166,6 +171,7 @@ def build_ingestion_service_from_parts(
         parse_cache=parse_cache,
         pool=pool,
         vectors=vector_store,
+        cancel_event=cancel_event,
         ingestion_meta_path=str(data_root / "ingestion_meta.json"),
         ingestion_progress_path=str(data_root / "ingestion_progress.json"),
         include_globs=include_globs,
@@ -190,6 +196,7 @@ async def _run_isolated_job(
     data_root: Path,
     export_dir: str,
     options: dict[str, Any],
+    cancel_event: threading.Event,
 ):
     graph = DuckPGQStore(db_path=str(data_root / "sfgraph.duckdb"))
     vectors = VectorStore(path=str(data_root / "vectors"))
@@ -211,6 +218,7 @@ async def _run_isolated_job(
             pool=pool,
             vectors=vectors,
             data_root=data_root,
+            cancel_event=cancel_event,
             mode="full" if job_type == "vectorize" else mode,
             include_globs=[] if job_type == "vectorize" else include_globs,
             exclude_globs=[] if job_type == "vectorize" else exclude_globs,
@@ -237,6 +245,7 @@ async def _run_job_in_worker_thread(
     data_root: Path,
     export_dir: str,
     options: dict[str, Any],
+    cancel_event: threading.Event,
 ):
     return await asyncio.to_thread(
         lambda: asyncio.run(
@@ -245,6 +254,7 @@ async def _run_job_in_worker_thread(
                 data_root=data_root,
                 export_dir=export_dir,
                 options=dict(options),
+                cancel_event=cancel_event,
             )
         )
     )

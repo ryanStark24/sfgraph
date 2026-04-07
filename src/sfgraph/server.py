@@ -60,6 +60,16 @@ def _data_root_for_export_dir(runtime_root: Path, export_dir: str) -> Path:
     return runtime_root / _workspace_key(export_dir) / "data"
 
 
+def _session_daemon(app: AppContext) -> DaemonClient:
+    session_key = str(Path.cwd().resolve())
+    daemon = app.daemons.get(session_key)
+    if daemon is None:
+        app.session_data_root.mkdir(parents=True, exist_ok=True)
+        daemon = ensure_daemon_client(app.session_data_root, workspace_root=Path(session_key))
+        app.daemons[session_key] = daemon
+    return daemon
+
+
 def _daemon_for_export_dir(app: AppContext, export_dir: str, *, activate: bool = True) -> DaemonClient:
     resolved = str(Path(export_dir).expanduser().resolve())
     daemon = app.daemons.get(resolved)
@@ -81,7 +91,7 @@ def _current_daemon(app: AppContext, export_dir: str | None = None) -> DaemonCli
     if len(app.daemons) == 1:
         only_export_dir = next(iter(app.daemons))
         return _daemon_for_export_dir(app, only_export_dir, activate=False)
-    raise RuntimeError("No active export directory selected. Pass export_dir to target a specific workspace.")
+    return _session_daemon(app)
 
 
 def _all_known_export_dirs(app: AppContext) -> list[str]:

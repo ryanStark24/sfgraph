@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -44,17 +45,20 @@ def _refresh_summary(export_dir: str) -> RefreshSummary:
 
 @pytest.mark.asyncio
 async def test_job_manager_runs_ingest_to_completion(tmp_path: Path):
-    async def fake_ingest(export_dir: str, options: dict[str, object]):
+    async def fake_ingest(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         await asyncio.sleep(0.01)
         assert options == {}
+        assert cancel_event.is_set() is False
         return _ingest_summary(export_dir)
 
-    async def fake_refresh(export_dir: str, options: dict[str, object]):
+    async def fake_refresh(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         await asyncio.sleep(0.01)
         assert options == {}
+        assert cancel_event.is_set() is False
         return _refresh_summary(export_dir)
 
-    async def fake_vectorize(export_dir: str, options: dict[str, object]):
+    async def fake_vectorize(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        assert cancel_event.is_set() is False
         return _refresh_summary(export_dir)
 
     manager = IngestJobManager(
@@ -78,14 +82,14 @@ async def test_job_manager_runs_ingest_to_completion(tmp_path: Path):
 async def test_job_manager_blocks_second_active_job(tmp_path: Path):
     gate = asyncio.Event()
 
-    async def fake_ingest(export_dir: str, options: dict[str, object]):
+    async def fake_ingest(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         await gate.wait()
         return _ingest_summary(export_dir)
 
-    async def fake_refresh(export_dir: str, options: dict[str, object]):
+    async def fake_refresh(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         return _refresh_summary(export_dir)
 
-    async def fake_vectorize(export_dir: str, options: dict[str, object]):
+    async def fake_vectorize(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         return _refresh_summary(export_dir)
 
     manager = IngestJobManager(
@@ -107,16 +111,20 @@ async def test_job_manager_blocks_second_active_job(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_job_manager_cancels_running_job(tmp_path: Path):
-    gate = asyncio.Event()
+    started = asyncio.Event()
+    cancelled_seen = asyncio.Event()
 
-    async def fake_ingest(export_dir: str, options: dict[str, object]):
-        await gate.wait()
-        return _ingest_summary(export_dir)
+    async def fake_ingest(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        started.set()
+        while not cancel_event.is_set():
+            await asyncio.sleep(0.01)
+        cancelled_seen.set()
+        raise asyncio.CancelledError()
 
-    async def fake_refresh(export_dir: str, options: dict[str, object]):
+    async def fake_refresh(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         return _refresh_summary(export_dir)
 
-    async def fake_vectorize(export_dir: str, options: dict[str, object]):
+    async def fake_vectorize(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         return _refresh_summary(export_dir)
 
     manager = IngestJobManager(
@@ -126,10 +134,14 @@ async def test_job_manager_cancels_running_job(tmp_path: Path):
     )
     job = await manager.start_job(job_type="ingest", export_dir=str(tmp_path))
 
-    await asyncio.sleep(0.01)
+    await started.wait()
     cancelled = await manager.cancel_job(job["job_id"])
     assert cancelled["state"] == "cancelling"
+    assert manager.active_job_id == job["job_id"]
+    with pytest.raises(RuntimeError):
+        await manager.start_job(job_type="refresh", export_dir=str(tmp_path / "other"))
 
+    await cancelled_seen.wait()
     await asyncio.sleep(0.05)
     record = await manager.get_job(job["job_id"])
     assert record is not None
@@ -142,14 +154,15 @@ async def test_job_manager_cancels_running_job(tmp_path: Path):
 async def test_job_manager_preserves_job_options(tmp_path: Path):
     seen_options: dict[str, object] = {}
 
-    async def fake_ingest(export_dir: str, options: dict[str, object]):
+    async def fake_ingest(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         seen_options.update(options)
+        assert cancel_event.is_set() is False
         return _ingest_summary(export_dir)
 
-    async def fake_refresh(export_dir: str, options: dict[str, object]):
+    async def fake_refresh(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         return _refresh_summary(export_dir)
 
-    async def fake_vectorize(export_dir: str, options: dict[str, object]):
+    async def fake_vectorize(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         return _refresh_summary(export_dir)
 
     manager = IngestJobManager(
@@ -172,13 +185,13 @@ async def test_job_manager_preserves_job_options(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_job_manager_runs_vectorize_job(tmp_path: Path):
-    async def fake_ingest(export_dir: str, options: dict[str, object]):
+    async def fake_ingest(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         return _ingest_summary(export_dir)
 
-    async def fake_refresh(export_dir: str, options: dict[str, object]):
+    async def fake_refresh(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         return _refresh_summary(export_dir)
 
-    async def fake_vectorize(export_dir: str, options: dict[str, object]):
+    async def fake_vectorize(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
         return _refresh_summary(export_dir)
 
     manager = IngestJobManager(

@@ -96,6 +96,36 @@ async def test_non_export_tools_proxy_to_daemon():
 
 
 @pytest.mark.asyncio
+async def test_status_uses_session_daemon_before_export_activation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(workspace)
+    daemon = _FakeDaemon("session")
+    created: list[tuple[Path, Path | None]] = []
+
+    def fake_ensure_daemon_client(data_root: Path, workspace_root: Path | None = None):
+        created.append((data_root, workspace_root))
+        return daemon
+
+    monkeypatch.setattr(server, "ensure_daemon_client", fake_ensure_daemon_client)
+    app = SimpleNamespace(
+        runtime_root=tmp_path / "runtime" / "workspaces",
+        session_data_root=tmp_path / "runtime" / "session" / "data",
+        daemons={},
+        job_routes={},
+        active_export_dir=None,
+    )
+
+    status_payload = json.loads(await server.get_ingestion_status(_ctx(app)))
+    progress_payload = json.loads(await server.get_ingestion_progress(_ctx(app)))
+
+    assert status_payload["daemon"] == "session"
+    assert progress_payload["daemon"] == "session"
+    assert created
+    assert created[0][0] == app.session_data_root
+
+
+@pytest.mark.asyncio
 async def test_export_path_guard_still_applies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "repo"
     outside = tmp_path / "outside"
