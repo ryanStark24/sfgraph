@@ -25,19 +25,19 @@ def _build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="Run MCP server")
     serve.set_defaults(func=_cmd_serve)
 
-    ingest = sub.add_parser("ingest", help="Run full ingest for an export directory")
+    ingest = sub.add_parser("ingest", help="Run full ingest for an export directory (defaults to workspace-root force-app/ and vlocity/ when present)")
     ingest.add_argument("export_dir")
     ingest.add_argument("--data-dir", default="./data")
     ingest.add_argument("--mode", choices=("full", "graph_only"), default="full")
-    ingest.add_argument("--include", action="append", default=[], help="Include glob relative to export root")
+    ingest.add_argument("--include", action="append", default=[], help="Include glob relative to export root. Overrides the default force-app/vlocity root selection.")
     ingest.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root")
     ingest.set_defaults(func=_cmd_ingest)
 
-    refresh = sub.add_parser("refresh", help="Run incremental refresh for an export directory")
+    refresh = sub.add_parser("refresh", help="Run incremental refresh for an export directory (defaults to workspace-root force-app/ and vlocity/ when present)")
     refresh.add_argument("export_dir")
     refresh.add_argument("--data-dir", default="./data")
     refresh.add_argument("--mode", choices=("full", "graph_only"), default="full")
-    refresh.add_argument("--include", action="append", default=[], help="Include glob relative to export root")
+    refresh.add_argument("--include", action="append", default=[], help="Include glob relative to export root. Overrides the default force-app/vlocity root selection.")
     refresh.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root")
     refresh.set_defaults(func=_cmd_refresh)
 

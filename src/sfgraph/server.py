@@ -224,7 +224,7 @@ async def ingest_org(
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
 ) -> str:
-    """Deprecated: use start_ingest_job for non-blocking ingest with polling."""
+    """Deprecated: use start_ingest_job for non-blocking ingest with polling. Default discovery scans workspace-root force-app/ and vlocity/ when present."""
     app: AppContext = ctx.request_context.lifespan_context
     await _assert_no_active_background_job(app, "ingest_org")
     export_dir = _validate_workspace_export_dir(export_dir)
@@ -273,7 +273,7 @@ async def start_ingest_job(
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
 ) -> str:
-    """Start a background full ingest and return a pollable job record."""
+    """Start a background full ingest and return a pollable job record. By default discovery scans workspace-root force-app/ and vlocity/ unless include_globs override it."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
     payload = await app.jobs.start_job(
@@ -296,7 +296,7 @@ async def start_refresh_job(
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
 ) -> str:
-    """Start a background refresh and return a pollable job record."""
+    """Start a background refresh and return a pollable job record. By default discovery scans workspace-root force-app/ and vlocity/ unless include_globs override it."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
     payload = await app.jobs.start_job(
@@ -366,7 +366,7 @@ async def refresh(
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
 ) -> str:
-    """Deprecated: use start_refresh_job for non-blocking refresh with polling."""
+    """Deprecated: use start_refresh_job for non-blocking refresh with polling. Default discovery scans workspace-root force-app/ and vlocity/ when present."""
     app: AppContext = ctx.request_context.lifespan_context
     await _assert_no_active_background_job(app, "refresh")
     export_dir = _validate_workspace_export_dir(export_dir)

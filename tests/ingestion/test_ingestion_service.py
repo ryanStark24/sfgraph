@@ -525,6 +525,48 @@ def test_discover_files_respects_include_exclude_globs(tmp_path):
     assert str(other) not in discovered
 
 
+def test_discover_files_defaults_to_force_app_and_vlocity_roots(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+    )
+    force_app_cls = tmp_path / "force-app" / "main" / "default" / "classes" / "AccountService.cls"
+    vlocity_json = tmp_path / "vlocity" / "DataRaptor" / "AccountExtract_DataPack.json"
+    vendor_cls = tmp_path / "vendor" / "Other.cls"
+    force_app_cls.parent.mkdir(parents=True, exist_ok=True)
+    vlocity_json.parent.mkdir(parents=True, exist_ok=True)
+    vendor_cls.parent.mkdir(parents=True, exist_ok=True)
+    force_app_cls.write_text("public class AccountService {}", encoding="utf-8")
+    vlocity_json.write_text('{"VlocityDataPackType":"DataRaptor"}', encoding="utf-8")
+    vendor_cls.write_text("public class Other {}", encoding="utf-8")
+
+    discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
+    assert str(force_app_cls) in discovered
+    assert str(vlocity_json) in discovered
+    assert str(vendor_cls) not in discovered
+
+
+def test_discover_files_falls_back_to_root_when_default_roots_missing(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+    )
+    loose_cls = tmp_path / "classes" / "Loose.cls"
+    loose_cls.parent.mkdir(parents=True, exist_ok=True)
+    loose_cls.write_text("public class Loose {}", encoding="utf-8")
+
+    discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
+    assert str(loose_cls) in discovered
+
+
 @pytest.mark.asyncio
 async def test_refresh_includes_affected_neighbor_files(svc):
     service, _, manifest, _ = svc

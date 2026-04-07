@@ -115,6 +115,7 @@ class IngestionService:
     )
     SKIP_FILE_PREFIXES = ("~$",)
     SKIP_FILE_SUFFIXES = (".tmp", ".swp", ".swo")
+    DEFAULT_DISCOVERY_ROOTS = ("force-app", "vlocity")
 
     def __init__(
         self,
@@ -817,41 +818,54 @@ class IngestionService:
         """Discover ingestion targets and compute their SHA-256 digest."""
         files: dict[str, str] = {}
         root = export_path.resolve()
-        for current_root, dirs, filenames in os.walk(root, topdown=True):
-            current_path = Path(current_root)
-            dirs[:] = [d for d in dirs if d not in self.SKIP_DIR_NAMES]
+        for discovery_root in self._discovery_roots(root):
+            for current_root, dirs, filenames in os.walk(discovery_root, topdown=True):
+                current_path = Path(current_root)
+                dirs[:] = [d for d in dirs if d not in self.SKIP_DIR_NAMES]
 
-            # Skip nested repositories entirely. Export roots are allowed to be repos,
-            # but cloned repos inside the export tree should not be indexed.
-            if current_path != root and any((current_path / marker).exists() for marker in (".git", ".hg", ".svn")):
-                dirs[:] = []
-                continue
+                # Skip nested repositories entirely. Export roots are allowed to be repos,
+                # but cloned repos inside the export tree should not be indexed.
+                if current_path != discovery_root and any((current_path / marker).exists() for marker in (".git", ".hg", ".svn")):
+                    dirs[:] = []
+                    continue
 
-            for filename in sorted(filenames):
-                path = current_path / filename
-                if self._should_skip_file(path):
-                    continue
-                if not self._matches_discovery_rules(path, root):
-                    continue
-                if path.suffix == ".json":
-                    if not is_vlocity_datapack_file(path):
+                for filename in sorted(filenames):
+                    path = current_path / filename
+                    if self._should_skip_file(path):
                         continue
-                elif not any(
-                    path.name.endswith(sfx)
-                    for sfx in (
-                        ".cls",
-                        ".trigger",
-                        ".js",
-                        ".html",
-                        ".object-meta.xml",
-                        ".flow-meta.xml",
-                        ".labels-meta.xml",
-                        ".label-meta.xml",
-                    )
-                ):
-                    continue
-                files[str(path)] = _sha256(str(path))
+                    if not self._matches_discovery_rules(path, root):
+                        continue
+                    if path.suffix == ".json":
+                        if not is_vlocity_datapack_file(path):
+                            continue
+                    elif not any(
+                        path.name.endswith(sfx)
+                        for sfx in (
+                            ".cls",
+                            ".trigger",
+                            ".js",
+                            ".html",
+                            ".object-meta.xml",
+                            ".flow-meta.xml",
+                            ".labels-meta.xml",
+                            ".label-meta.xml",
+                        )
+                    ):
+                        continue
+                    files[str(path)] = _sha256(str(path))
         return files
+
+    def _discovery_roots(self, export_path: Path) -> list[Path]:
+        root = export_path.resolve()
+        if self._include_globs:
+            return [root]
+        if root.name in self.DEFAULT_DISCOVERY_ROOTS:
+            return [root]
+        discovered = [
+            child for child in sorted(root.iterdir())
+            if child.is_dir() and child.name in self.DEFAULT_DISCOVERY_ROOTS
+        ]
+        return discovered or [root]
 
     @classmethod
     def _should_skip_file(cls, path: Path) -> bool:
