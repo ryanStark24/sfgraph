@@ -693,6 +693,36 @@ async def test_query_routes_component_token_population_to_exact_component_analys
 
 
 @pytest.mark.asyncio
+async def test_query_routes_object_event_questions_to_event_analysis(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_event_route.db"))
+    await manifest.initialize()
+    trigger_file = tmp_path / "force-app" / "main" / "default" / "triggers" / "QuoteLineItemTrigger.trigger"
+    trigger_file.parent.mkdir(parents=True, exist_ok=True)
+    trigger_file.write_text(
+        "trigger QuoteLineItemTrigger on QuoteLineItem (before insert, after insert) {\n"
+        "  if (Trigger.isBefore && Trigger.isInsert) {\n"
+        "    QuoteLineItemTriggerHelper.populateFields(Trigger.new);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.query("what happens when a QuoteLineItem is inserted?")
+    assert payload["mode"] == "analyze_object_event"
+    assert payload["event"] == "insert"
+    assert payload["triggers"]
+    assert payload["pipeline"]["intent"] == "object_event"
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
 async def test_test_gap_intelligence_from_changed_files(svc: GraphQueryService):
     payload = await svc.test_gap_intelligence_from_changed_files(
         changed_files=["classes/AccountService.cls"],

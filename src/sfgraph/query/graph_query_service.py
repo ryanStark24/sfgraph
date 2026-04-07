@@ -672,6 +672,24 @@ class GraphQueryService:
             return component, token
         return None
 
+    @staticmethod
+    def _object_event_query_parts(question: str) -> tuple[str, str] | None:
+        q = " ".join(question.strip().split())
+        patterns = (
+            r"\bwhat\s+happens\s+when\s+(?:a|an)?\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\s+(inserted|updated|deleted|undeleted)\b",
+            r"\b(?:on|for)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(insert|update|delete|undelete)\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, q, flags=re.IGNORECASE)
+            if not match:
+                continue
+            object_name = match.group(1)
+            event = match.group(2).lower()
+            if event.endswith("ed"):
+                event = event[:-2]
+            return object_name, event
+        return None
+
     async def analyze_field(self, field_name: str, focus: str = "both", max_results: int = 100) -> dict[str, Any]:
         resolved_fields = await self._field_targets_for_question(field_name)
         if not resolved_fields:
@@ -835,6 +853,21 @@ class GraphQueryService:
         offset: int = 0,
     ) -> dict[str, Any]:
         q = question.strip()
+        object_event = self._object_event_query_parts(q)
+        if object_event:
+            object_name, event = object_event
+            result = await self.analyze_object_event(
+                object_name=object_name,
+                event=event,
+                max_results=max_results,
+            )
+            result["question"] = q
+            result["pipeline"] = {
+                "intent": "object_event",
+                "hint": "Object lifecycle query routed to trigger/event analysis.",
+            }
+            return result
+
         component_token = self._component_token_query_parts(q)
         if component_token:
             component_name, token = component_token
