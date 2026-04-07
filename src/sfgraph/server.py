@@ -185,6 +185,29 @@ def _read_progress_snapshot(data_root: Path) -> dict[str, Any]:
     return payload
 
 
+def _deprecated_tool_payload(*, tool_name: str, replacement: str) -> dict[str, Any]:
+    return {
+        "deprecated": True,
+        "tool": tool_name,
+        "replacement_tool": replacement,
+        "message": (
+            f"{tool_name} is deprecated and will be removed in a future release. "
+            f"Use {replacement} for background execution and progress polling."
+        ),
+    }
+
+
+async def _assert_no_active_background_job(app: AppContext, tool_name: str) -> None:
+    active_job = await app.jobs.get_active_job()
+    if active_job is None:
+        return
+    raise RuntimeError(
+        f"{tool_name} cannot run while background job {active_job['job_id']} "
+        f"({active_job['job_type']}) is {active_job['state']}. "
+        "Wait for it to complete or cancel it first."
+    )
+
+
 @mcp.tool()
 async def ping(ctx: Context) -> str:
     """Health check tool — confirms lifespan context is wired correctly."""
@@ -201,9 +224,14 @@ async def ingest_org(
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
 ) -> str:
-    """Ingest a Salesforce metadata export directory into the local graph."""
+    """Deprecated: use start_ingest_job for non-blocking ingest with polling."""
     app: AppContext = ctx.request_context.lifespan_context
+    await _assert_no_active_background_job(app, "ingest_org")
     export_dir = _validate_workspace_export_dir(export_dir)
+    logger.warning(
+        "Deprecated MCP tool ingest_org called for %s. Use start_ingest_job instead.",
+        export_dir,
+    )
     service = _build_ingestion_service_from_parts(
         graph=app.graph,
         manifest=app.manifest,
@@ -217,6 +245,7 @@ async def ingest_org(
     summary = await service.ingest(export_dir)
     return json.dumps(
         {
+            **_deprecated_tool_payload(tool_name="ingest_org", replacement="start_ingest_job"),
             "run_id": summary.run_id,
             "export_dir": summary.export_dir,
             "duration_seconds": summary.duration_seconds,
@@ -337,9 +366,14 @@ async def refresh(
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
 ) -> str:
-    """Run incremental refresh for changed/new/deleted files."""
+    """Deprecated: use start_refresh_job for non-blocking refresh with polling."""
     app: AppContext = ctx.request_context.lifespan_context
+    await _assert_no_active_background_job(app, "refresh")
     export_dir = _validate_workspace_export_dir(export_dir)
+    logger.warning(
+        "Deprecated MCP tool refresh called for %s. Use start_refresh_job instead.",
+        export_dir,
+    )
     service = _build_ingestion_service_from_parts(
         graph=app.graph,
         manifest=app.manifest,
@@ -353,6 +387,7 @@ async def refresh(
     summary = await service.refresh(export_dir)
     return json.dumps(
         {
+            **_deprecated_tool_payload(tool_name="refresh", replacement="start_refresh_job"),
             "run_id": summary.run_id,
             "export_dir": summary.export_dir,
             "duration_seconds": summary.duration_seconds,
@@ -378,6 +413,7 @@ async def refresh(
 async def vectorize(export_dir: str, ctx: Context) -> str:
     """Rebuild vectors for the current project scope without reparsing source files."""
     app: AppContext = ctx.request_context.lifespan_context
+    await _assert_no_active_background_job(app, "vectorize")
     export_dir = _validate_workspace_export_dir(export_dir)
     service = _build_ingestion_service_from_parts(
         graph=app.graph,
@@ -402,6 +438,7 @@ async def watch_refresh(
 ) -> str:
     """Watch for filesystem changes and trigger debounced incremental refresh."""
     app: AppContext = ctx.request_context.lifespan_context
+    await _assert_no_active_background_job(app, "watch_refresh")
     export_dir = _validate_workspace_export_dir(export_dir)
     service = _build_ingestion_service(app)
     payload = await service.watch_refresh(

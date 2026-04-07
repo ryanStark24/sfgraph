@@ -486,6 +486,19 @@ def test_discover_files_skips_temp_lock_files(svc, tmp_path):
     assert str(temp_lock) not in discovered
 
 
+def test_discover_files_skips_prefixed_temp_lock_files(svc, tmp_path):
+    service, _, _, _ = svc
+    valid = tmp_path / "flows" / "Quote_Process.flow-meta.xml"
+    prefixed_lock = tmp_path / "flows" / "ca0d0b6db8475579__~$ote_Process_on_Create_and_Update.flow-meta.xml"
+    valid.parent.mkdir(parents=True, exist_ok=True)
+    valid.write_text("<Flow />", encoding="utf-8")
+    prefixed_lock.write_text("not real xml", encoding="utf-8")
+
+    discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
+    assert str(valid) in discovered
+    assert str(prefixed_lock) not in discovered
+
+
 def test_discover_files_respects_include_exclude_globs(tmp_path):
     graph = make_mock_graph()
     manifest = make_mock_manifest()

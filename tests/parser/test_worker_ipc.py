@@ -148,3 +148,18 @@ def test_parse_large_inline_apex_uses_framed_response():
     assert len(responses) == 1
     assert responses[0]["ok"] is True
     assert responses[0]["payload"]["hasError"] is False
+
+
+def test_parse_apex_tolerates_stray_prefix_before_docblock():
+    """Apex exports with stray leading punctuation before comments should still parse."""
+    content = "-/**\n * Header\n */\npublic class PrefixedDocblockClass {\n    public void run() {}\n}\n"
+    req = {
+        "requestId": "test-prefixed-docblock",
+        "grammar": "apex",
+        "filePath": "PrefixedDocblockClass.cls",
+        "fileContent": content,
+    }
+    responses = _send_request([req])
+    assert len(responses) == 1
+    assert responses[0]["ok"] is True
+    assert responses[0]["payload"]["hasError"] is False

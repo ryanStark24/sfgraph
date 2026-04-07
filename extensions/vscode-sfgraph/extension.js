@@ -11,6 +11,83 @@ let statusBarItem = null;
 let progressPollHandle = null;
 let currentRepoPath = "";
 
+function getWorkspacePaths(repoPath) {
+  const crypto = require("node:crypto");
+  const workspaceHash = crypto.createHash("sha1").update(repoPath).digest("hex").slice(0, 12);
+  const dataDir = getDataDir(repoPath);
+  const workspaceDir = path.dirname(dataDir);
+  const pidFile = path.join(workspaceDir, "server.pid");
+  return { workspaceDir, dataDir, pidFile, workspaceHash };
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function looksLikeSfgraphServerPid(pid) {
+  if (!Number.isInteger(pid) || pid <= 0 || !processExists(pid)) {
+    return false;
+  }
+  if (process.platform === "win32") {
+    return true;
+  }
+  try {
+    const result = cp.spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const command = (result.stdout || "").trim();
+    return command.includes("sfgraph.server");
+  } catch (_error) {
+    return false;
+  }
+}
+
+function sleep(ms) {
+  const sab = new SharedArrayBuffer(4);
+  const int32 = new Int32Array(sab);
+  Atomics.wait(int32, 0, 0, ms);
+}
+
+function cleanupExistingServer(repoPath) {
+  const { workspaceDir, pidFile } = getWorkspacePaths(repoPath);
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  if (!fs.existsSync(pidFile)) {
+    return;
+  }
+  const raw = fs.readFileSync(pidFile, "utf8").trim();
+  const pid = Number.parseInt(raw, 10);
+  if (!Number.isInteger(pid) || pid <= 0 || !looksLikeSfgraphServerPid(pid)) {
+    fs.rmSync(pidFile, { force: true });
+    return;
+  }
+  outputChannel.appendLine(`Stopping existing sfgraph.server pid ${pid}`);
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (_error) {
+    fs.rmSync(pidFile, { force: true });
+    return;
+  }
+  for (let i = 0; i < 20; i += 1) {
+    if (!processExists(pid)) {
+      fs.rmSync(pidFile, { force: true });
+      return;
+    }
+    sleep(100);
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (_error) {
+    // best effort
+  }
+  fs.rmSync(pidFile, { force: true });
+}
+
 function activate(context) {
   outputChannel = vscode.window.createOutputChannel("sfgraph");
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -212,16 +289,19 @@ async function startServer() {
     return;
   }
   currentRepoPath = repoPath;
+  cleanupExistingServer(repoPath);
 
   const pythonPath = getPythonPath(repoPath);
   const nodeModulesDir = path.join(repoPath, "node_modules");
   const sfapexPackage = path.join(nodeModulesDir, "web-tree-sitter-sfapex");
+  const { dataDir, pidFile } = getWorkspacePaths(repoPath);
   const env = {
     ...process.env,
     PYTHONPATH: path.join(repoPath, "src"),
     NODE_PATH: process.env.NODE_PATH ? `${nodeModulesDir}${path.delimiter}${process.env.NODE_PATH}` : nodeModulesDir,
     SFGRAPH_NODE_MODULES_DIR: nodeModulesDir,
-    SFGRAPH_SFAPEX_PACKAGE: sfapexPackage
+    SFGRAPH_SFAPEX_PACKAGE: sfapexPackage,
+    SFGRAPH_DATA_DIR: dataDir
   };
 
   outputChannel.clear();
@@ -233,6 +313,7 @@ async function startServer() {
     env,
     stdio: ["ignore", "pipe", "pipe"]
   });
+  fs.writeFileSync(pidFile, `${serverProcess.pid}\n`, "utf8");
 
   serverProcess.stdout.on("data", (chunk) => {
     outputChannel.append(chunk.toString());
@@ -242,6 +323,7 @@ async function startServer() {
   });
 
   serverProcess.on("exit", (code, signal) => {
+    fs.rmSync(pidFile, { force: true });
     outputChannel.appendLine(`sfgraph server exited (code=${code}, signal=${signal})`);
     stopProgressPolling();
     serverProcess = null;
@@ -269,6 +351,8 @@ async function stopServer() {
   stopProgressPolling();
   serverProcess.kill();
   serverProcess = null;
+  const { pidFile } = getWorkspacePaths(currentRepoPath);
+  fs.rmSync(pidFile, { force: true });
   updateStatusBar(false);
   vscode.window.showInformationMessage("sfgraph MCP server stopped.");
 }

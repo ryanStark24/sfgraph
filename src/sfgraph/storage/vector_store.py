@@ -198,17 +198,25 @@ class VectorStore:
         """Delete all points for a project scope. Returns attempted delete count."""
         if not project_scope:
             return 0
-        # Fetch ids first for deterministic return count.
-        points, _ = self._client.scroll(
-            collection_name=COLLECTION_NAME,
-            scroll_filter=Filter(
-                must=[FieldCondition(key="project_scope", match=MatchValue(value=project_scope))]
-            ),
-            limit=10000,
-            with_payload=False,
-            with_vectors=False,
-        )
-        point_ids = [p.id for p in points]
+        # Fetch ids first for deterministic return count. Large scopes can span
+        # multiple pages, so keep scrolling until Qdrant reports exhaustion.
+        point_ids: list[Any] = []
+        offset = None
+        while True:
+            points, next_offset = self._client.scroll(
+                collection_name=COLLECTION_NAME,
+                scroll_filter=Filter(
+                    must=[FieldCondition(key="project_scope", match=MatchValue(value=project_scope))]
+                ),
+                limit=10000,
+                offset=offset,
+                with_payload=False,
+                with_vectors=False,
+            )
+            point_ids.extend(p.id for p in points)
+            if next_offset is None:
+                break
+            offset = next_offset
         if not point_ids:
             return 0
         self._client.delete(

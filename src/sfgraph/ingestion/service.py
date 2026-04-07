@@ -856,7 +856,7 @@ class IngestionService:
     @classmethod
     def _should_skip_file(cls, path: Path) -> bool:
         name = path.name
-        if any(name.startswith(prefix) for prefix in cls.SKIP_FILE_PREFIXES):
+        if any(name.startswith(prefix) or prefix in name for prefix in cls.SKIP_FILE_PREFIXES):
             return True
         if any(name.endswith(suffix) for suffix in cls.SKIP_FILE_SUFFIXES):
             return True
