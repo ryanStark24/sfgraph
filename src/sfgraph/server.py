@@ -197,6 +197,17 @@ def _deprecated_tool_payload(*, tool_name: str, replacement: str) -> dict[str, A
     }
 
 
+async def _assert_no_active_background_job(app: AppContext, tool_name: str) -> None:
+    active_job = await app.jobs.get_active_job()
+    if active_job is None:
+        return
+    raise RuntimeError(
+        f"{tool_name} cannot run while background job {active_job['job_id']} "
+        f"({active_job['job_type']}) is {active_job['state']}. "
+        "Wait for it to complete or cancel it first."
+    )
+
+
 @mcp.tool()
 async def ping(ctx: Context) -> str:
     """Health check tool — confirms lifespan context is wired correctly."""
@@ -215,6 +226,7 @@ async def ingest_org(
 ) -> str:
     """Deprecated: use start_ingest_job for non-blocking ingest with polling."""
     app: AppContext = ctx.request_context.lifespan_context
+    await _assert_no_active_background_job(app, "ingest_org")
     export_dir = _validate_workspace_export_dir(export_dir)
     logger.warning(
         "Deprecated MCP tool ingest_org called for %s. Use start_ingest_job instead.",
@@ -356,6 +368,7 @@ async def refresh(
 ) -> str:
     """Deprecated: use start_refresh_job for non-blocking refresh with polling."""
     app: AppContext = ctx.request_context.lifespan_context
+    await _assert_no_active_background_job(app, "refresh")
     export_dir = _validate_workspace_export_dir(export_dir)
     logger.warning(
         "Deprecated MCP tool refresh called for %s. Use start_refresh_job instead.",
@@ -400,6 +413,7 @@ async def refresh(
 async def vectorize(export_dir: str, ctx: Context) -> str:
     """Rebuild vectors for the current project scope without reparsing source files."""
     app: AppContext = ctx.request_context.lifespan_context
+    await _assert_no_active_background_job(app, "vectorize")
     export_dir = _validate_workspace_export_dir(export_dir)
     service = _build_ingestion_service_from_parts(
         graph=app.graph,
@@ -424,6 +438,7 @@ async def watch_refresh(
 ) -> str:
     """Watch for filesystem changes and trigger debounced incremental refresh."""
     app: AppContext = ctx.request_context.lifespan_context
+    await _assert_no_active_background_job(app, "watch_refresh")
     export_dir = _validate_workspace_export_dir(export_dir)
     service = _build_ingestion_service(app)
     payload = await service.watch_refresh(

@@ -7,6 +7,7 @@ The first test run that exercises upsert/search will download BAAI/bge-small-en-
 """
 import sys
 import types
+from types import SimpleNamespace
 
 import pytest
 from sfgraph.storage.vector_store import VectorStore
@@ -126,6 +127,33 @@ async def test_delete_by_project_scope(store: VectorStore):
     results_b = await store.search("class", limit=10, project_scope="scopeB")
     assert results_a == []
     assert results_b
+
+
+async def test_delete_by_project_scope_scrolls_all_pages():
+    store = VectorStore(path=":memory:")
+
+    deleted_calls: list[list[int]] = []
+
+    class FakeClient:
+        def __init__(self):
+            self._calls = 0
+
+        def scroll(self, **kwargs):
+            self._calls += 1
+            if self._calls == 1:
+                return ([SimpleNamespace(id=1), SimpleNamespace(id=2)], "offset-2")
+            if self._calls == 2:
+                return ([SimpleNamespace(id=3)], None)
+            raise AssertionError("scroll called too many times")
+
+        def delete(self, *, collection_name, points_selector, wait):
+            deleted_calls.append(list(points_selector.points))
+
+    store._client = FakeClient()
+
+    deleted = await store.delete_by_project_scope("scopeA")
+    assert deleted == 3
+    assert deleted_calls == [[1, 2, 3]]
 
 
 def test_vector_store_requires_path_or_url():
