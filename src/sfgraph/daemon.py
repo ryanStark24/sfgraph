@@ -55,7 +55,22 @@ class _DaemonHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
-            self._send_json(200, {"ok": True, "pid": os.getpid()})
+            payload: dict[str, Any] = {"ok": True, "pid": os.getpid()}
+            progress_path = Path(getattr(self.server, "data_root")) / "ingestion_progress.json"
+            if progress_path.exists():
+                try:
+                    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+                except Exception:
+                    progress = {}
+                if isinstance(progress, dict):
+                    payload["progress_available"] = True
+                    payload["active_state"] = progress.get("state")
+                    payload["active_phase"] = progress.get("phase")
+                    payload["last_progress_at"] = progress.get("last_progress_at") or progress.get("updated_at")
+                    payload["active_run_id"] = progress.get("run_id")
+            else:
+                payload["progress_available"] = False
+            self._send_json(200, payload)
             return
         if self.path == "/meta":
             self._send_json(200, getattr(self.server, "meta_payload"))

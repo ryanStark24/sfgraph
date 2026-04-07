@@ -247,6 +247,19 @@ async def test_query_dispatches_to_trace_upstream(svc: GraphQueryService):
 
 
 @pytest.mark.asyncio
+async def test_query_field_population_is_strict_and_exact(svc: GraphQueryService):
+    svc._vectors = AsyncMock()
+    result = await svc.query("where is Status__c populated?")
+    assert result["mode"] == "field_writes"
+    assert result["fields"]
+    assert result["fields"][0]["field"] == "Account.Status__c"
+    assert result["findings"]
+    assert all(finding["field"] == "Account.Status__c" for finding in result["findings"])
+    assert "vector fallback disabled" in result["pipeline"]["hint"].lower()
+    svc._vectors.search.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_node_returns_adjacent_edges(svc: GraphQueryService):
     payload = await svc.get_node("Account.Status__c")
     assert payload["node"] is not None

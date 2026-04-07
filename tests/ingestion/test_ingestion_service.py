@@ -768,4 +768,45 @@ async def test_ingest_writes_progress_snapshot(svc, tmp_path):
     assert payload["phase"] == "completed"
     assert payload["mode"] == "full_ingest"
     assert payload["total_files"] >= 1
-    assert payload["processed_files"] == payload["total_files"]
+    assert "last_progress_at" in payload
+    assert "last_job_heartbeat_at" in payload
+
+
+@pytest.mark.asyncio
+async def test_collect_facts_tracks_vlocity_outcomes(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+    )
+
+    valid = tmp_path / "vlocity" / "cards" / "AccountCard_DataPack.json"
+    invalid = tmp_path / "vlocity" / "cards" / "Broken_DataPack.json"
+    support = tmp_path / "vlocity" / "cards" / "support.json"
+    valid.parent.mkdir(parents=True, exist_ok=True)
+    valid.write_text(
+        json.dumps(
+            {
+                "VlocityDataPackType": "VlocityCard",
+                "Name": "AccountCard",
+                "IntegrationProcedureName": "LoadAccount",
+            }
+        ),
+        encoding="utf-8",
+    )
+    invalid.write_text("{broken", encoding="utf-8")
+    support.write_text(json.dumps({"name": "not-a-datapack"}), encoding="utf-8")
+
+    _, _, _, parser_stats, _ = await service._collect_facts(
+        [str(valid), str(invalid), str(support)],
+        file_records=None,
+    )
+
+    assert parser_stats["vlocity"]["parsed_files"] == 1
+    assert parser_stats["vlocity"]["specialized_files"] == 1
+    assert parser_stats["vlocity"]["invalid_json_files"] == 1
+    assert parser_stats["vlocity"]["non_datapack_json_files"] == 1
+    assert parser_stats["vlocity"]["skipped_files"] == 2

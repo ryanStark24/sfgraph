@@ -8,7 +8,12 @@ import pytest
 
 from sfgraph.ingestion.constants import EDGE_CATEGORIES
 from sfgraph.parser.vlocity_registry import SUPPORTED_VLOCITY_DATAPACK_TYPES
-from sfgraph.parser.vlocity_parser import VlocityParser, is_vlocity_datapack_file, parse_vlocity_json
+from sfgraph.parser.vlocity_parser import (
+    VlocityParser,
+    is_vlocity_datapack_file,
+    parse_vlocity_json,
+    parse_vlocity_json_detailed,
+)
 
 
 def _write_json(path: Path, payload: dict):
@@ -208,6 +213,38 @@ def test_unknown_vlocity_pack_type_still_emits_generic_node(tmp_path):
         and e.dst_qualified_name == "SyncCatalog"
         for e in edges
     )
+
+
+def test_vlocity_card_uses_specialized_component_node(tmp_path):
+    file = tmp_path / "AccountCard_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "VlocityCard",
+            "Name": "AccountCard",
+            "IntegrationProcedureName": "LoadAccountCard",
+            "ApexClassName": "AccountCardController",
+        },
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.node_label == "VlocityCard"
+    assert any(n.label == "VlocityCard" and n.key_props["qualifiedName"] == "VlocityCard.AccountCard" for n in nodes)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "IntegrationProcedure" for e in edges)
+
+
+def test_vlocity_detailed_outcomes_report_non_datapack_and_invalid_json(tmp_path):
+    invalid = tmp_path / "broken_DataPack.json"
+    invalid.write_text("{not-json", encoding="utf-8")
+    _, _, invalid_meta = parse_vlocity_json_detailed(str(invalid))
+    assert invalid_meta.outcome == "invalid_json"
+
+    support = tmp_path / "vlocity" / "support.json"
+    support.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(support, {"name": "support-json-without-pack-type"})
+    _, _, support_meta = parse_vlocity_json_detailed(str(support))
+    assert support_meta.outcome == "non_datapack_json"
 
 
 def test_vlocity_candidate_detection_accepts_generic_datapack_names(tmp_path):

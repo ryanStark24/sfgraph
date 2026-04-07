@@ -23,7 +23,10 @@ from sfgraph.parser.flow_parser import parse_flow_xml
 from sfgraph.parser.lwc_parser import parse_lwc_file
 from sfgraph.parser.object_parser import parse_labels_xml, parse_object_dir
 from sfgraph.parser.pool import NodeParserPool
-from sfgraph.parser.vlocity_parser import is_vlocity_datapack_file, parse_vlocity_json
+from sfgraph.parser.vlocity_parser import (
+    is_vlocity_datapack_file,
+    parse_vlocity_json_detailed,
+)
 from sfgraph.storage.base import GraphStore
 from sfgraph.storage.manifest_store import ManifestStore
 from sfgraph.storage.parse_cache import ParseCache
@@ -149,19 +152,25 @@ class IngestionService:
         self._exclude_globs = exclude_globs or []
 
     @staticmethod
-    def _serialize_parse_result(nodes: list[NodeFact], edges: list[EdgeFact]) -> dict[str, Any]:
+    def _serialize_parse_result(
+        nodes: list[NodeFact],
+        edges: list[EdgeFact],
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {
             "nodes": [node.model_dump() for node in nodes],
             "edges": [edge.model_dump() for edge in edges],
+            "metadata": metadata or {},
         }
 
     @staticmethod
-    def _deserialize_parse_result(payload: dict[str, Any]) -> tuple[list[NodeFact], list[EdgeFact]]:
+    def _deserialize_parse_result(payload: dict[str, Any]) -> tuple[list[NodeFact], list[EdgeFact], dict[str, Any]]:
         raw_nodes = payload.get("nodes") if isinstance(payload, dict) else []
         raw_edges = payload.get("edges") if isinstance(payload, dict) else []
+        metadata = payload.get("metadata") if isinstance(payload, dict) else {}
         nodes = [NodeFact.model_validate(node) for node in raw_nodes or []]
         edges = [EdgeFact.model_validate(edge) for edge in raw_edges or []]
-        return nodes, edges
+        return nodes, edges, metadata if isinstance(metadata, dict) else {}
 
     @staticmethod
     def _cacheable_parser(parser_name: str) -> bool:
@@ -1026,9 +1035,65 @@ class IngestionService:
             "object": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
             "labels": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
             "lwc": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
-            "vlocity": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+            "vlocity": {
+                "parsed_files": 0,
+                "error_files": 0,
+                "skipped_files": 0,
+                "specialized_files": 0,
+                "generic_files": 0,
+                "invalid_json_files": 0,
+                "non_object_json_files": 0,
+                "non_datapack_json_files": 0,
+                "unsupported_type_files": 0,
+            },
             "unknown": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
         }
+
+    @staticmethod
+    def _record_parser_outcome(
+        parser_stats: dict[str, dict[str, int]],
+        parser_name: str,
+        file_nodes: list[NodeFact],
+        file_edges: list[EdgeFact],
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        bucket = parser_stats[parser_name]
+        metadata = metadata or {}
+        if parser_name != "vlocity":
+            if file_nodes or file_edges:
+                bucket["parsed_files"] += 1
+            else:
+                bucket["skipped_files"] += 1
+            return
+
+        outcome = str(metadata.get("outcome") or "")
+        if outcome == "parsed_specialized":
+            bucket["parsed_files"] += 1
+            bucket["specialized_files"] += 1
+            return
+        if outcome == "parsed_generic":
+            bucket["parsed_files"] += 1
+            bucket["generic_files"] += 1
+            if bool(metadata.get("unsupported_type")):
+                bucket["unsupported_type_files"] += 1
+            return
+        if outcome == "invalid_json":
+            bucket["skipped_files"] += 1
+            bucket["invalid_json_files"] += 1
+            return
+        if outcome == "non_object_json":
+            bucket["skipped_files"] += 1
+            bucket["non_object_json_files"] += 1
+            return
+        if outcome == "non_datapack_json":
+            bucket["skipped_files"] += 1
+            bucket["non_datapack_json_files"] += 1
+            return
+
+        if file_nodes or file_edges:
+            bucket["parsed_files"] += 1
+        else:
+            bucket["skipped_files"] += 1
 
     @staticmethod
     def _parser_name_for_file(fpath: str) -> str:
@@ -1082,7 +1147,7 @@ class IngestionService:
                 file_sha = None
                 if file_records and fpath in file_records:
                     file_sha = str(file_records[fpath].get("sha256") or "")
-                file_nodes, file_edges = await self._parse_file(fpath, sha256=file_sha or None)
+                file_nodes, file_edges, parse_metadata = await self._parse_file_with_metadata(fpath, sha256=file_sha or None)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Parse failure for %s: %s", fpath, exc)
                 parse_failures.append(fpath)
@@ -1114,10 +1179,7 @@ class IngestionService:
                     )
                 continue
 
-            if file_nodes or file_edges:
-                parser_stats[parser_name]["parsed_files"] += 1
-            else:
-                parser_stats[parser_name]["skipped_files"] += 1
+            self._record_parser_outcome(parser_stats, parser_name, file_nodes, file_edges, parse_metadata)
 
             for node_fact in file_nodes:
                 facts_by_type[node_fact.label].append(node_fact)
@@ -1156,6 +1218,8 @@ class IngestionService:
         now = datetime.now(timezone.utc).isoformat()
         payload = dict(payload)
         payload.setdefault("updated_at", now)
+        payload.setdefault("last_progress_at", now)
+        payload.setdefault("last_job_heartbeat_at", now)
         payload.setdefault("started_at", self._progress_started_at)
 
         total_files = payload.get("total_files")
@@ -1487,6 +1551,15 @@ class IngestionService:
         return edge_count, orphaned_edges, warnings
 
     async def _parse_file(self, fpath: str, *, sha256: str | None = None) -> tuple[list[NodeFact], list[EdgeFact]]:
+        nodes, edges, _ = await self._parse_file_with_metadata(fpath, sha256=sha256)
+        return nodes, edges
+
+    async def _parse_file_with_metadata(
+        self,
+        fpath: str,
+        *,
+        sha256: str | None = None,
+    ) -> tuple[list[NodeFact], list[EdgeFact], dict[str, Any]]:
         path = Path(fpath)
         parser_name = self._parser_name_for_file(fpath)
         cache_namespace = self._parse_cache_namespace(parser_name, fpath)
@@ -1494,8 +1567,8 @@ class IngestionService:
         if self._parse_cache and sha256 and can_cache:
             cached = await self._parse_cache.get(cache_namespace, sha256)
             if cached is not None:
-                nodes, edges = self._deserialize_parse_result(cached)
-                return self._rebind_cached_nodes(nodes, fpath), edges
+                nodes, edges, metadata = self._deserialize_parse_result(cached)
+                return self._rebind_cached_nodes(nodes, fpath), edges, metadata
 
         if path.suffix in {".cls", ".trigger"}:
             result = await self._pool.parse(fpath, "apex")
@@ -1532,41 +1605,49 @@ class IngestionService:
                     )
                 )
 
+            metadata = {"outcome": "parsed", "parser_strategy": "specialized", "node_label": "ApexClass"}
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, metadata))
+            return nodes, edges, metadata
 
         if path.suffix in {".js", ".html"} and "lwc" in {part.lower() for part in path.parts}:
             nodes, edges = parse_lwc_file(fpath)
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
+            return nodes, edges, {"outcome": "parsed"}
 
         if fpath.endswith(".flow-meta.xml"):
             nodes, edges = parse_flow_xml(fpath)
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
+            return nodes, edges, {"outcome": "parsed"}
 
         if fpath.endswith(".object-meta.xml"):
             nodes, edges = parse_object_dir(str(path.parent))
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
+            return nodes, edges, {"outcome": "parsed"}
 
         if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
             nodes, edges = parse_labels_xml(fpath)
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
+            return nodes, edges, {"outcome": "parsed"}
 
         if path.suffix == ".json" and is_vlocity_datapack_file(path):
-            nodes, edges = parse_vlocity_json(fpath)
+            nodes, edges, meta = parse_vlocity_json_detailed(fpath)
+            metadata = {
+                "outcome": meta.outcome,
+                "pack_type": meta.pack_type,
+                "parser_strategy": meta.parser_strategy,
+                "node_label": meta.node_label,
+                "unsupported_type": meta.unsupported_type,
+            }
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, metadata))
+            return nodes, edges, metadata
 
-        return [], []
+        return [], [], {"outcome": "skipped"}
 
     def _apply_picklist_guard(
         self,

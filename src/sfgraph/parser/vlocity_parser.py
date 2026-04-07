@@ -5,6 +5,7 @@ NodeFact and EdgeFact structures consumed by IngestionService.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import re
 from pathlib import Path
@@ -23,6 +24,25 @@ _VLOCITY_NAME_HINTS = SUPPORTED_VLOCITY_DATAPACK_TYPE_HINTS + (
     "vlocity",
     "omnistudio",
 )
+
+_SPECIALIZED_UI_PACK_TYPES: frozenset[str] = frozenset(
+    {
+        "UIFacet",
+        "UISection",
+        "VlocityCard",
+        "VlocityUILayout",
+        "VlocityUITemplate",
+    }
+)
+
+
+@dataclass(frozen=True)
+class VlocityParseMetadata:
+    outcome: str
+    pack_type: str = ""
+    parser_strategy: str = "none"
+    node_label: str = ""
+    unsupported_type: bool = False
 
 
 def is_vlocity_datapack_file(file_path: str | Path) -> bool:
@@ -118,6 +138,51 @@ def _node(label: str, qname: str, props: dict[str, Any], source_file: str) -> No
         lineNumber=0,
         parserType="vlocity_json",
     )
+
+
+def _collect_reference_edges(
+    src_qname: str,
+    src_label: str,
+    data: dict[str, Any],
+    namespace: str,
+    default_context: str,
+) -> list[EdgeFact]:
+    edges: list[EdgeFact] = []
+    seen_edges: set[tuple[str, str, str]] = set()
+    for key_path, raw_value in _iter_keyed_strings(data):
+        normalized = _normalize_namespace(raw_value, namespace)
+        lower_path = [part.lower() for part in key_path]
+        if not lower_path:
+            continue
+        dest_label = ""
+        if any("integrationprocedure" in part for part in lower_path):
+            dest_label = "IntegrationProcedure"
+        elif any("dataraptor" in part for part in lower_path):
+            dest_label = "DataRaptor"
+        elif any("omniscript" in part for part in lower_path):
+            dest_label = "OmniScript"
+        elif any("apex" in part or part == "classname" or part == "class" for part in lower_path):
+            dest_label = "ApexClass"
+        if not dest_label:
+            continue
+        edge_key = ("CALLS", dest_label, normalized)
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        edges.append(
+            _edge(
+                src_qname,
+                src_label,
+                "CALLS",
+                normalized,
+                dest_label,
+                0.65,
+                "heuristic",
+                "CONFIG",
+                ".".join(key_path[-3:]) or default_context,
+            )
+        )
+    return edges
 
 
 def _parse_integration_procedure(
@@ -387,64 +452,115 @@ def _parse_generic_datapack(
         )
     )
 
-    seen_edges: set[tuple[str, str, str]] = set()
-    for key_path, raw_value in _iter_keyed_strings(data):
-        normalized = _normalize_namespace(raw_value, namespace)
-        lower_path = [part.lower() for part in key_path]
-        if not lower_path:
-            continue
-        dest_label = ""
-        if any("integrationprocedure" in part for part in lower_path):
-            dest_label = "IntegrationProcedure"
-        elif any("dataraptor" in part for part in lower_path):
-            dest_label = "DataRaptor"
-        elif any("omniscript" in part for part in lower_path):
-            dest_label = "OmniScript"
-        elif any("apex" in part or part == "classname" or part == "class" for part in lower_path):
-            dest_label = "ApexClass"
-        if not dest_label:
-            continue
-        edge_key = ("CALLS", dest_label, normalized)
-        if edge_key in seen_edges:
-            continue
-        seen_edges.add(edge_key)
-        edges.append(
-            _edge(
-                qualified_name,
-                "VlocityDataPack",
-                "CALLS",
-                normalized,
-                dest_label,
-                0.65,
-                "heuristic",
-                "CONFIG",
-                ".".join(key_path[-3:]) or pack_type,
-            )
-        )
-
+    edges.extend(_collect_reference_edges(qualified_name, "VlocityDataPack", data, namespace, pack_type))
     return nodes, edges
 
 
-def parse_vlocity_json(file_path: str, namespace: str = "vlocity_cmt") -> tuple[list[NodeFact], list[EdgeFact]]:
-    """Parse one Vlocity JSON DataPack file."""
+def _parse_component_datapack(
+    data: dict[str, Any],
+    source_file: str,
+    namespace: str,
+    pack_type: str,
+    label: str,
+) -> tuple[list[NodeFact], list[EdgeFact]]:
+    name = _first_string(
+        data.get("Name"),
+        data.get("DeveloperName"),
+        data.get("MasterLabel"),
+        data.get("GlobalKey"),
+        Path(source_file).stem,
+    )
+    qualified_name = f"{_safe_pack_type_for_qname(pack_type)}.{name}"
+    nodes = [
+        _node(
+            label,
+            qualified_name,
+            {
+                "name": name,
+                "dataPackType": pack_type,
+                "subType": _first_string(data.get("SubType"), data.get("subType")),
+                "componentFamily": "ui",
+                "templateName": _first_string(
+                    data.get("TemplateName"),
+                    data.get("templateName"),
+                    data.get("Template"),
+                ),
+                "isActive": bool(data.get("IsActive", data.get("isActive", True))),
+            },
+            source_file,
+        )
+    ]
+    edges = _collect_reference_edges(qualified_name, label, data, namespace, pack_type)
+    return nodes, edges
+
+
+def parse_vlocity_json_detailed(
+    file_path: str,
+    namespace: str = "vlocity_cmt",
+) -> tuple[list[NodeFact], list[EdgeFact], VlocityParseMetadata]:
+    """Parse one Vlocity JSON candidate file and report the parse outcome."""
     path = Path(file_path)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return [], []
+        return [], [], VlocityParseMetadata(outcome="invalid_json")
 
     if not isinstance(data, dict):
-        return [], []
+        return [], [], VlocityParseMetadata(outcome="non_object_json")
 
     raw_pack_type = _pack_type(data, file_path)
+    if not raw_pack_type and not any(key in data for key in ("VlocityDataPackType", "DataPackType", "Type", "type")):
+        return [], [], VlocityParseMetadata(outcome="non_datapack_json")
+
     ptype = raw_pack_type.lower()
     if ptype == "integrationprocedure":
-        return _parse_integration_procedure(data, file_path, namespace)
+        nodes, edges = _parse_integration_procedure(data, file_path, namespace)
+        return nodes, edges, VlocityParseMetadata(
+            outcome="parsed_specialized",
+            pack_type=raw_pack_type,
+            parser_strategy="specialized",
+            node_label="IntegrationProcedure",
+        )
     if ptype == "dataraptor":
-        return _parse_data_raptor(data, file_path, namespace)
+        nodes, edges = _parse_data_raptor(data, file_path, namespace)
+        return nodes, edges, VlocityParseMetadata(
+            outcome="parsed_specialized",
+            pack_type=raw_pack_type,
+            parser_strategy="specialized",
+            node_label="DataRaptor",
+        )
     if ptype == "omniscript":
-        return _parse_omniscript(data, file_path)
-    return _parse_generic_datapack(data, file_path, namespace, raw_pack_type or "Unknown")
+        nodes, edges = _parse_omniscript(data, file_path)
+        return nodes, edges, VlocityParseMetadata(
+            outcome="parsed_specialized",
+            pack_type=raw_pack_type,
+            parser_strategy="specialized",
+            node_label="OmniScript",
+        )
+    if raw_pack_type in _SPECIALIZED_UI_PACK_TYPES:
+        nodes, edges = _parse_component_datapack(data, file_path, namespace, raw_pack_type, raw_pack_type)
+        return nodes, edges, VlocityParseMetadata(
+            outcome="parsed_specialized",
+            pack_type=raw_pack_type,
+            parser_strategy="specialized",
+            node_label=raw_pack_type,
+        )
+
+    pack_type = raw_pack_type or "Unknown"
+    nodes, edges = _parse_generic_datapack(data, file_path, namespace, pack_type)
+    return nodes, edges, VlocityParseMetadata(
+        outcome="parsed_generic",
+        pack_type=pack_type,
+        parser_strategy="generic",
+        node_label="VlocityDataPack",
+        unsupported_type=bool(raw_pack_type and raw_pack_type not in SUPPORTED_VLOCITY_DATAPACK_TYPE_SET),
+    )
+
+
+def parse_vlocity_json(file_path: str, namespace: str = "vlocity_cmt") -> tuple[list[NodeFact], list[EdgeFact]]:
+    """Parse one Vlocity JSON DataPack file."""
+    nodes, edges, _ = parse_vlocity_json_detailed(file_path, namespace=namespace)
+    return nodes, edges
 
 
 class VlocityParser:
@@ -458,7 +574,7 @@ class VlocityParser:
         all_edges: list[EdgeFact] = []
 
         for path in sorted(Path(datapacks_dir).rglob("*.json")):
-            nodes, edges = parse_vlocity_json(str(path), namespace=self._namespace)
+            nodes, edges, _ = parse_vlocity_json_detailed(str(path), namespace=self._namespace)
             all_nodes.extend(nodes)
             all_edges.extend(edges)
 

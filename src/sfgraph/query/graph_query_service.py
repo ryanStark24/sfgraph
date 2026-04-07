@@ -433,11 +433,21 @@ class GraphQueryService:
         schema_filter, schema_trace = await self._schema_filter(q)
         intent = self._intent(q)
         planner_trace = self._planner_agent.run(question=q, intent=intent)
-        field_match = None
-        match = re.search(r"\b([A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)?)\b", q)
-        if match:
-            field_match = match.group(1)
-            field_match = self._rules.resolve_alias(field_match)
+        field_targets = await self._field_targets_for_question(q)
+        field_match = field_targets[0] if field_targets else None
+        field_query_mode = self._field_query_mode(q)
+
+        if field_query_mode and field_targets:
+            result = await self._query_field_access(
+                question=q,
+                field_targets=field_targets,
+                focus=field_query_mode,
+                max_results=max_results,
+                schema_filter=schema_filter,
+                schema_trace=schema_trace,
+                planner_trace=planner_trace,
+            )
+            return result
 
         if intent == "trace_upstream" and field_match:
             result = await self.trace_upstream(
@@ -560,6 +570,156 @@ class GraphQueryService:
             "freshness": await self.freshness(partial_results=partial),
             "partial_results": partial,
         }
+
+    @staticmethod
+    def _field_query_mode(question: str) -> str | None:
+        q = question.lower()
+        if any(phrase in q for phrase in ("what uses", "who uses", "used by")):
+            return None
+        write_hits = any(
+            phrase in q
+            for phrase in (
+                " populate",
+                " populated",
+                " populated?",
+                " writes ",
+                " write ",
+                " written",
+                " assigned",
+                " assign ",
+                " set ",
+                " sets ",
+                " updated",
+                " update ",
+                " filled",
+                " fills ",
+            )
+        )
+        read_hits = any(
+            phrase in q
+            for phrase in (
+                " uses ",
+                " use ",
+                " used ",
+                " read ",
+                " reads ",
+                " referenced",
+                " reference ",
+                " consumed",
+                " depends on",
+            )
+        ) or "what uses" in q or "who uses" in q or "used by" in q
+        if write_hits and read_hits:
+            return "explain"
+        if write_hits:
+            return "writes"
+        if read_hits:
+            return "reads"
+        return None
+
+    async def _field_targets_for_question(self, question: str, limit: int = 20) -> list[str]:
+        explicit_matches = [
+            self._rules.resolve_alias(match.group(1))
+            for match in re.finditer(r"\b([A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)?)\b", question)
+        ]
+        if explicit_matches:
+            return list(dict.fromkeys(explicit_matches))
+
+        bare_matches = [
+            self._rules.resolve_alias(match.group(1))
+            for match in re.finditer(r"\b([A-Za-z][A-Za-z0-9_]*__(?:c|r|mdt|e))\b", question)
+        ]
+        targets: list[str] = []
+        for token in bare_matches:
+            targets.extend(await self._find_fields_by_suffix(token, limit=limit))
+            if len(targets) >= limit:
+                break
+        return list(dict.fromkeys(targets))[:limit]
+
+    async def _find_fields_by_suffix(self, field_token: str, limit: int = 20) -> list[str]:
+        scoped_matches: list[str] = []
+        try:
+            rows = await self._graph.query(
+                'SELECT qualified_name, props FROM "SFField" WHERE lower(qualified_name) LIKE $needle LIMIT 200',
+                {"needle": f"%.{field_token.lower()}"},
+            )
+        except Exception:
+            rows = []
+        for row in rows:
+            scoped_qname = str(row.get("qualified_name", ""))
+            if not scoped_qname or not self._is_in_scope(scoped_qname):
+                continue
+            descoped = self._descope_qname(scoped_qname)
+            if not descoped.lower().endswith(f".{field_token.lower()}"):
+                continue
+            scoped_matches.append(descoped)
+            if len(scoped_matches) >= limit:
+                break
+        return scoped_matches
+
+    async def _query_field_access(
+        self,
+        *,
+        question: str,
+        field_targets: list[str],
+        focus: str,
+        max_results: int,
+        schema_filter: dict[str, list[str]],
+        schema_trace: dict[str, str],
+        planner_trace: Any,
+    ) -> dict[str, Any]:
+        results: list[dict[str, Any]] = []
+        aggregated_findings: list[dict[str, Any]] = []
+        partial = False
+        for field_name in field_targets[:10]:
+            payload = await self.explain_field(field_name)
+            partial = partial or bool(payload.get("partial_results"))
+            field_result = {
+                "field": field_name,
+                "readers": payload.get("readers", []),
+                "writers": payload.get("writers", []),
+                "dependents": payload.get("dependents", []),
+                "partial_results": bool(payload.get("partial_results")),
+            }
+            results.append(field_result)
+            selected = (
+                field_result["writers"]
+                if focus == "writes"
+                else field_result["readers"]
+                if focus == "reads"
+                else field_result["writers"] + field_result["readers"]
+            )
+            for finding in selected:
+                aggregated_findings.append({"field": field_name, **finding})
+
+        aggregated_findings.sort(key=lambda finding: float(finding.get("confidence", 0.0)), reverse=True)
+        formatter_trace = self._formatter_agent.run(len(aggregated_findings[:max_results]))
+        mode = {
+            "writes": "field_writes",
+            "reads": "field_reads",
+            "explain": "field_access",
+        }[focus]
+        payload: dict[str, Any] = {
+            "mode": mode,
+            "question": question,
+            "fields": results,
+            "findings": aggregated_findings[:max_results],
+            "partial_results": partial or len(aggregated_findings) > max_results,
+            "freshness": await self.freshness(partial_results=partial or len(aggregated_findings) > max_results),
+            "confidence_tiers": self._confidence_tiers(aggregated_findings[:max_results]),
+            "pipeline": {
+                "schema_filter": schema_filter,
+                "intent": mode,
+                "attempts": [],
+                "agent_trace": [
+                    schema_trace,
+                    {"name": planner_trace.name, "strategy": planner_trace.strategy, "detail": planner_trace.detail},
+                    {"name": formatter_trace.name, "strategy": formatter_trace.strategy, "detail": formatter_trace.detail},
+                ],
+                "hint": "Strict exact field graph search; semantic vector fallback disabled.",
+            },
+        }
+        return payload
 
     @staticmethod
     def _layer_for_label(label: str) -> str:
