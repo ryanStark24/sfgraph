@@ -39,6 +39,7 @@ Start here depending on what you need:
 - Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
 - Scope migration: [`docs/SCOPE_MIGRATION_RUNBOOK.md`](docs/SCOPE_MIGRATION_RUNBOOK.md)
 - Release process: [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)
+- Release notes: [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md)
 
 ## Install
 
@@ -252,3 +253,4 @@ This is the right place to add UI for server lifecycle inside VS Code. For other
 - Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
 - Scope migration: [`docs/SCOPE_MIGRATION_RUNBOOK.md`](docs/SCOPE_MIGRATION_RUNBOOK.md)
 - Release checklist: [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)
+- Release notes: [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md)
