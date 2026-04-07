@@ -39,7 +39,7 @@ def test_online_dataset_ingest_and_acceptance_suite(tmp_path: Path):
     if os.getenv("SFGRAPH_ONLINE_DATASET_TESTS") != "1":
         pytest.skip("Set SFGRAPH_ONLINE_DATASET_TESTS=1 to run online dataset quality tests.")
 
-    repo_url = os.getenv("SFGRAPH_ONLINE_REPO_URL", "https://github.com/Soforce/vlocity-ex.git")
+    repo_url = os.getenv("SFGRAPH_ONLINE_REPO_URL", "https://github.com/pradhanTejeshwar/OmnistudioComponents.git")
     clone_dir = tmp_path / "repo"
     data_dir = tmp_path / "data"
     suite_path = tmp_path / "suite.json"

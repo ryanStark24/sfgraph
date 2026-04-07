@@ -12,12 +12,12 @@ Use this to run an end-to-end dry run on public repositories that include both S
 
 ```bash
 SFGRAPH_ONLINE_DATASET_TESTS=1 \
-SFGRAPH_ONLINE_REPO_URL=https://github.com/Soforce/vlocity-ex.git \
+SFGRAPH_ONLINE_REPO_URL=https://github.com/pradhanTejeshwar/OmnistudioComponents.git \
 uv run pytest tests/test_online_dataset_quality.py -m online_dataset -q
 ```
 
 ## Notes
 
 - The suite runs `sfgraph ingest --mode graph_only` then `sfgraph acceptance`.
-- Default dataset URL is `Soforce/vlocity-ex`.
+- Default dataset URL is `pradhanTejeshwar/OmnistudioComponents`.
 - For very large repos (for example `OmnistudioComponents`), expect longer ingest time.
