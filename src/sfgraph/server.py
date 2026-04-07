@@ -62,19 +62,21 @@ async def lifespan(server: FastMCP):
     manifest = ManifestStore(db_path=str(data_root / "manifest.sqlite"))
     pool = NodeParserPool()
     jobs = IngestJobManager(
-        ingest_factory=lambda export_dir: _build_ingestion_service_from_parts(
+        ingest_factory=lambda export_dir, options: _build_ingestion_service_from_parts(
             graph=graph,
             manifest=manifest,
             pool=pool,
             vectors=vectors,
             data_root=data_root,
+            mode=str(options.get("mode", "full")),
         ).ingest(export_dir),
-        refresh_factory=lambda export_dir: _build_ingestion_service_from_parts(
+        refresh_factory=lambda export_dir, options: _build_ingestion_service_from_parts(
             graph=graph,
             manifest=manifest,
             pool=pool,
             vectors=vectors,
             data_root=data_root,
+            mode=str(options.get("mode", "full")),
         ).refresh(export_dir),
     )
 
@@ -111,12 +113,14 @@ def _build_ingestion_service_from_parts(
     pool: NodeParserPool,
     vectors: VectorStore,
     data_root: Path,
+    mode: str = "full",
 ) -> IngestionService:
+    vector_store = vectors if mode != "graph_only" else None
     return IngestionService(
         graph=graph,
         manifest=manifest,
         pool=pool,
-        vectors=vectors,
+        vectors=vector_store,
         ingestion_meta_path=str(data_root / "ingestion_meta.json"),
         ingestion_progress_path=str(data_root / "ingestion_progress.json"),
     )
@@ -164,11 +168,18 @@ async def ping(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def ingest_org(export_dir: str, ctx: Context) -> str:
+async def ingest_org(export_dir: str, ctx: Context, mode: str = "full") -> str:
     """Ingest a Salesforce metadata export directory into the local graph."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    service = _build_ingestion_service(app)
+    service = _build_ingestion_service_from_parts(
+        graph=app.graph,
+        manifest=app.manifest,
+        pool=app.pool,
+        vectors=app.vectors,
+        data_root=app.data_root,
+        mode=mode,
+    )
     summary = await service.ingest(export_dir)
     return json.dumps(
         {
@@ -183,26 +194,35 @@ async def ingest_org(export_dir: str, ctx: Context) -> str:
             "parser_stats": summary.parser_stats,
             "unresolved_symbols": summary.unresolved_symbols,
             "warnings": summary.warnings[:20],
+            "mode": mode,
         },
         indent=2,
     )
 
 
 @mcp.tool()
-async def start_ingest_job(export_dir: str, ctx: Context) -> str:
+async def start_ingest_job(export_dir: str, ctx: Context, mode: str = "full") -> str:
     """Start a background full ingest and return a pollable job record."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    payload = await app.jobs.start_job(job_type="ingest", export_dir=export_dir)
+    payload = await app.jobs.start_job(
+        job_type="ingest",
+        export_dir=export_dir,
+        options={"mode": mode},
+    )
     return json.dumps(payload, indent=2)
 
 
 @mcp.tool()
-async def start_refresh_job(export_dir: str, ctx: Context) -> str:
+async def start_refresh_job(export_dir: str, ctx: Context, mode: str = "full") -> str:
     """Start a background refresh and return a pollable job record."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    payload = await app.jobs.start_job(job_type="refresh", export_dir=export_dir)
+    payload = await app.jobs.start_job(
+        job_type="refresh",
+        export_dir=export_dir,
+        options={"mode": mode},
+    )
     return json.dumps(payload, indent=2)
 
 
@@ -241,11 +261,18 @@ async def cancel_ingest_job(job_id: str, ctx: Context) -> str:
 
 
 @mcp.tool()
-async def refresh(export_dir: str, ctx: Context) -> str:
+async def refresh(export_dir: str, ctx: Context, mode: str = "full") -> str:
     """Run incremental refresh for changed/new/deleted files."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    service = _build_ingestion_service(app)
+    service = _build_ingestion_service_from_parts(
+        graph=app.graph,
+        manifest=app.manifest,
+        pool=app.pool,
+        vectors=app.vectors,
+        data_root=app.data_root,
+        mode=mode,
+    )
     summary = await service.refresh(export_dir)
     return json.dumps(
         {
@@ -262,6 +289,7 @@ async def refresh(export_dir: str, ctx: Context) -> str:
             "parser_stats": summary.parser_stats,
             "unresolved_symbols": summary.unresolved_symbols,
             "warnings": summary.warnings[:20],
+            "mode": mode,
         },
         indent=2,
     )

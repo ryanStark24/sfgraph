@@ -25,6 +25,7 @@ from uuid import uuid4
 NODE_BINARY = "/opt/homebrew/opt/node@22/bin/node"
 WORKER_JS = str(Path(__file__).parent / "worker" / "worker.js")
 logger = logging.getLogger(__name__)
+RESPONSE_PREFIX = "@@SFGRAPH_LEN@@"
 
 
 def _resolve_node() -> str:
@@ -252,24 +253,16 @@ class NodeParserPool:
             return self._error_response("worker_restarting", worker)
 
         try:
-            raw = await asyncio.wait_for(
-                worker.proc.stdout.readline(), timeout=10.0
+            response = await asyncio.wait_for(
+                self._read_response(worker), timeout=10.0
             )
         except asyncio.TimeoutError:
             # Schedule worker replacement to avoid stale response contamination
             asyncio.create_task(self._replace_worker(worker))
             return self._error_response("timeout", worker)
-
-        if not raw:
-            # Worker process exited unexpectedly
+        except asyncio.IncompleteReadError:
             asyncio.create_task(self._replace_worker(worker))
             return self._error_response("worker_exited", worker)
-
-        try:
-            response = json.loads(raw.decode())
-        except json.JSONDecodeError:
-            asyncio.create_task(self._replace_worker(worker))
-            return self._error_response("invalid_json", worker)
 
         # Handle voluntary memory_ceiling exit from worker
         if not response.get("ok") and response.get("error") == "memory_ceiling":
@@ -277,6 +270,29 @@ class NodeParserPool:
             return self._error_response("worker_restarting", worker)
 
         return response
+
+    async def _read_response(self, worker: _Worker) -> dict:
+        if worker.proc.stdout is None:
+            raise asyncio.IncompleteReadError(partial=b"", expected=1)
+
+        header = await worker.proc.stdout.readline()
+        if not header:
+            raise asyncio.IncompleteReadError(partial=b"", expected=1)
+
+        if header.startswith(RESPONSE_PREFIX.encode()):
+            try:
+                payload_length = int(header.decode().strip()[len(RESPONSE_PREFIX):])
+            except ValueError as exc:
+                raise json.JSONDecodeError("invalid framed response header", header.decode(errors="ignore"), 0) from exc
+            raw = await worker.proc.stdout.readexactly(payload_length)
+        else:
+            raw = header
+
+        try:
+            return json.loads(raw.decode())
+        except json.JSONDecodeError:
+            asyncio.create_task(self._replace_worker(worker))
+            return self._error_response("invalid_json", worker)
 
     async def _capture_stderr(self, worker: _Worker) -> None:
         if worker.proc.stderr is None:
@@ -338,12 +354,7 @@ class NodeParserPool:
         try:
             worker.proc.stdin.write(line.encode())
             await worker.proc.stdin.drain()
-            raw = await asyncio.wait_for(
-                worker.proc.stdout.readline(), timeout=5.0
-            )
-            if not raw:
-                return False
-            response = json.loads(raw.decode())
+            response = await asyncio.wait_for(self._read_response(worker), timeout=5.0)
             return response.get("type") == "pong"
         except Exception:
             return False

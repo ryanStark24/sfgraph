@@ -9,6 +9,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('readline');
+const RESPONSE_PREFIX = '@@SFGRAPH_LEN@@';
 
 function loadApexParserModule() {
   const candidates = [];
@@ -37,6 +38,12 @@ const MAX_FILES = 200;
 
 let apexParser = null;
 let fileCount = 0;
+
+function writeResponse(payload) {
+  const body = JSON.stringify(payload);
+  process.stdout.write(`${RESPONSE_PREFIX}${Buffer.byteLength(body, 'utf8')}\n`);
+  process.stdout.write(body);
+}
 
 /**
  * extractRawFacts — Full CST traversal for APEX-01 through APEX-09.
@@ -249,7 +256,7 @@ function handleLine(line) {
 
   // ping → pong health check (POOL-04)
   if (msg.type === 'ping') {
-    process.stdout.write(JSON.stringify({ requestId: msg.requestId, type: 'pong' }) + '\n');
+    writeResponse({ requestId: msg.requestId, type: 'pong' });
     return;
   }
 
@@ -264,14 +271,12 @@ function handleLine(line) {
 
     // POOL-05: memory ceiling — voluntary replacement after MAX_FILES
     if (fileCount > MAX_FILES) {
-      process.stdout.write(
-        JSON.stringify({
-          requestId: msg.requestId,
-          ok: false,
-          error: 'memory_ceiling',
-          payload: null,
-        }) + '\n'
-      );
+      writeResponse({
+        requestId: msg.requestId,
+        ok: false,
+        error: 'memory_ceiling',
+        payload: null,
+      });
       process.exit(0);
     }
 
@@ -284,35 +289,29 @@ function handleLine(line) {
     // APEX-10 guard: hasError is a PROPERTY (boolean) in WASM API — NOT a method
     if (root.hasError) {
       process.stderr.write('[worker] parse error in ' + msg.filePath + '\n');
-      process.stdout.write(
-        JSON.stringify({
-          requestId: msg.requestId,
-          ok: false,
-          error: 'parse_error',
-          payload: null,
-        }) + '\n'
-      );
+      writeResponse({
+        requestId: msg.requestId,
+        ok: false,
+        error: 'parse_error',
+        payload: null,
+      });
       return;
     }
 
     const payload = extractRawFacts(root, msg.filePath);
-    process.stdout.write(
-      JSON.stringify({
-        requestId: msg.requestId,
-        ok: true,
-        payload,
-      }) + '\n'
-    );
+    writeResponse({
+      requestId: msg.requestId,
+      ok: true,
+      payload,
+    });
   } catch (e) {
     process.stderr.write('[worker] exception: ' + e.message + '\n');
-    process.stdout.write(
-      JSON.stringify({
-        requestId: msg.requestId,
-        ok: false,
-        error: e.message,
-        payload: null,
-      }) + '\n'
-    );
+    writeResponse({
+      requestId: msg.requestId,
+      ok: false,
+      error: e.message,
+      payload: null,
+    });
   }
 }
 

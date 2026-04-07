@@ -30,6 +30,7 @@ class IngestJobRecord:
     completed_at: str | None = None
     error: str | None = None
     run_id: str | None = None
+    options: dict[str, Any] = field(default_factory=dict)
     result_summary: dict[str, Any] | None = None
     _task: asyncio.Task[None] | None = field(default=None, repr=False, compare=False)
 
@@ -44,6 +45,7 @@ class IngestJobRecord:
             "completed_at": self.completed_at,
             "error": self.error,
             "run_id": self.run_id,
+            "options": self.options,
             "result_summary": self.result_summary,
         }
 
@@ -51,7 +53,11 @@ class IngestJobRecord:
 class IngestJobManager:
     """Owns one active background ingest/refresh job per workspace process."""
 
-    def __init__(self, ingest_factory: IngestCallable, refresh_factory: IngestCallable) -> None:
+    def __init__(
+        self,
+        ingest_factory: Callable[[str, dict[str, Any]], Awaitable[IngestResult]],
+        refresh_factory: Callable[[str, dict[str, Any]], Awaitable[IngestResult]],
+    ) -> None:
         self._ingest_factory = ingest_factory
         self._refresh_factory = refresh_factory
         self._jobs: dict[str, IngestJobRecord] = {}
@@ -62,7 +68,13 @@ class IngestJobManager:
     def active_job_id(self) -> str | None:
         return self._active_job_id
 
-    async def start_job(self, *, job_type: str, export_dir: str) -> dict[str, Any]:
+    async def start_job(
+        self,
+        *,
+        job_type: str,
+        export_dir: str,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Start an ingest or refresh in the background."""
         if job_type not in {"ingest", "refresh"}:
             raise ValueError(f"Unsupported job_type: {job_type}")
@@ -79,6 +91,7 @@ class IngestJobManager:
                 job_id=str(uuid.uuid4()),
                 job_type=job_type,
                 export_dir=export_dir,
+                options=dict(options or {}),
             )
             self._jobs[job.job_id] = job
             self._active_job_id = job.job_id
@@ -124,7 +137,7 @@ class IngestJobManager:
         runner = self._ingest_factory if job.job_type == "ingest" else self._refresh_factory
 
         try:
-            summary = await runner(job.export_dir)
+            summary = await runner(job.export_dir, job.options)
         except asyncio.CancelledError:
             async with self._lock:
                 job.state = "cancelled"

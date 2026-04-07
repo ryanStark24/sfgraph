@@ -22,6 +22,13 @@ SIMPLE_CLS = (FIXTURES / "simple.cls").read_text()
 BROKEN_CLS = (FIXTURES / "broken.cls").read_text()
 
 
+def _large_apex_class(method_count: int = 2500) -> str:
+    methods = "\n".join(
+        f"    public void method{i}() {{ Integer x = {i}; }}" for i in range(method_count)
+    )
+    return f"public class HugePoolClass {{\n{methods}\n}}"
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_pool_starts_and_parses_apex_file():
@@ -76,3 +83,17 @@ async def test_pool_shutdown_cleans_up():
         assert worker.proc.returncode is not None, (
             f"Worker process {worker.proc.pid} still running after shutdown"
         )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_pool_parses_large_inline_apex_without_chunk_limit():
+    """Large response payloads should not fail due to readline limits."""
+    pool = NodeParserPool(size=1)
+    await pool.start()
+    try:
+        result = await pool.parse("HugePoolClass.cls", "apex", _large_apex_class())
+        assert result["ok"] is True
+        assert result["payload"]["hasError"] is False
+    finally:
+        await pool.shutdown()

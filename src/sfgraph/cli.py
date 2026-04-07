@@ -28,11 +28,13 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest = sub.add_parser("ingest", help="Run full ingest for an export directory")
     ingest.add_argument("export_dir")
     ingest.add_argument("--data-dir", default="./data")
+    ingest.add_argument("--mode", choices=("full", "graph_only"), default="full")
     ingest.set_defaults(func=_cmd_ingest)
 
     refresh = sub.add_parser("refresh", help="Run incremental refresh for an export directory")
     refresh.add_argument("export_dir")
     refresh.add_argument("--data-dir", default="./data")
+    refresh.add_argument("--mode", choices=("full", "graph_only"), default="full")
     refresh.set_defaults(func=_cmd_refresh)
 
     query = sub.add_parser("query", help="Run graph query")
@@ -67,14 +69,15 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _build_runtime(data_dir: str, needs_pool: bool = False) -> dict[str, Any]:
+async def _build_runtime(data_dir: str, needs_pool: bool = False, enable_vectors: bool = True) -> dict[str, Any]:
     data_path = Path(data_dir)
     data_path.mkdir(parents=True, exist_ok=True)
     graph = DuckPGQStore(db_path=str(data_path / "sfgraph.duckdb"))
-    vectors = VectorStore(path=str(data_path / "vectors"))
+    vectors = VectorStore(path=str(data_path / "vectors")) if enable_vectors else None
     manifest = ManifestStore(db_path=str(data_path / "manifest.sqlite"))
     await manifest.initialize()
-    await vectors.initialize()
+    if vectors is not None:
+        await vectors.initialize()
 
     pool = NodeParserPool()
     if needs_pool:
@@ -97,7 +100,7 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
 
 
 async def _cmd_ingest(args: argparse.Namespace) -> int:
-    runtime = await _build_runtime(args.data_dir, needs_pool=True)
+    runtime = await _build_runtime(args.data_dir, needs_pool=True, enable_vectors=args.mode != "graph_only")
     try:
         service = IngestionService(
             graph=runtime["graph"],
@@ -115,7 +118,7 @@ async def _cmd_ingest(args: argparse.Namespace) -> int:
 
 
 async def _cmd_refresh(args: argparse.Namespace) -> int:
-    runtime = await _build_runtime(args.data_dir, needs_pool=True)
+    runtime = await _build_runtime(args.data_dir, needs_pool=True, enable_vectors=args.mode != "graph_only")
     try:
         service = IngestionService(
             graph=runtime["graph"],

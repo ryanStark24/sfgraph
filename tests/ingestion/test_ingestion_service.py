@@ -391,6 +391,19 @@ def test_discover_files_skips_nested_git_repos(svc, tmp_path):
     assert str(nested_cls) not in discovered
 
 
+def test_discover_files_skips_temp_lock_files(svc, tmp_path):
+    service, _, _, _ = svc
+    valid = tmp_path / "flows" / "Quote_Process.flow-meta.xml"
+    temp_lock = tmp_path / "flows" / "~$Quote_Process.flow-meta.xml"
+    valid.parent.mkdir(parents=True, exist_ok=True)
+    valid.write_text("<Flow />", encoding="utf-8")
+    temp_lock.write_text("not real xml", encoding="utf-8")
+
+    discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
+    assert str(valid) in discovered
+    assert str(temp_lock) not in discovered
+
+
 @pytest.mark.asyncio
 async def test_refresh_includes_affected_neighbor_files(svc):
     service, _, manifest, _ = svc

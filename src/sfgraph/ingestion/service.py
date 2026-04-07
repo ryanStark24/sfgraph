@@ -76,6 +76,8 @@ class IngestionService:
             "build",
         }
     )
+    SKIP_FILE_PREFIXES = ("~$",)
+    SKIP_FILE_SUFFIXES = (".tmp", ".swp", ".swo")
 
     def __init__(
         self,
@@ -663,6 +665,8 @@ class IngestionService:
 
             for filename in sorted(filenames):
                 path = current_path / filename
+                if self._should_skip_file(path):
+                    continue
                 if path.suffix == ".json":
                     if not is_vlocity_datapack_file(path):
                         continue
@@ -682,6 +686,15 @@ class IngestionService:
                     continue
                 files[str(path)] = _sha256(str(path))
         return files
+
+    @classmethod
+    def _should_skip_file(cls, path: Path) -> bool:
+        name = path.name
+        if any(name.startswith(prefix) for prefix in cls.SKIP_FILE_PREFIXES):
+            return True
+        if any(name.endswith(suffix) for suffix in cls.SKIP_FILE_SUFFIXES):
+            return True
+        return False
 
     @staticmethod
     def _empty_parser_stats() -> dict[str, dict[str, int]]:
