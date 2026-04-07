@@ -100,6 +100,7 @@ class _DaemonServer(ThreadingHTTPServer):
 async def run_daemon(data_root: Path, host: str, port: int) -> None:
     app = await create_app_context(data_root)
     loop = asyncio.get_running_loop()
+    server = _DaemonServer((host, port), _DaemonHandler)
     meta = {
         "host": host,
         "port": port,
@@ -108,15 +109,13 @@ async def run_daemon(data_root: Path, host: str, port: int) -> None:
         "data_root": str(data_root),
     }
     meta_path = _daemon_meta_path(data_root)
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-    server = _DaemonServer((host, port), _DaemonHandler)
     server.loop = loop  # type: ignore[attr-defined]
     server.operations = DaemonOperations(app)  # type: ignore[attr-defined]
     server.meta_payload = meta  # type: ignore[attr-defined]
 
     thread = threading.Thread(target=server.serve_forever, name="sfgraphd-http", daemon=True)
     thread.start()
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     logger.info("sfgraph daemon listening on %s", meta["base_url"])
 
     stop_event = asyncio.Event()
@@ -143,10 +142,23 @@ async def run_daemon(data_root: Path, host: str, port: int) -> None:
             pass
 
 
-def start_daemon_subprocess(data_root: Path, host: str = _DEFAULT_HOST) -> dict[str, Any]:
+def clear_daemon_metadata(data_root: Path) -> None:
+    meta_path = _daemon_meta_path(data_root.expanduser().resolve())
+    try:
+        meta_path.unlink(missing_ok=True)
+    except Exception:
+        logger.warning("Failed to remove stale daemon metadata at %s", meta_path, exc_info=True)
+
+
+def start_daemon_subprocess(
+    data_root: Path,
+    host: str = _DEFAULT_HOST,
+    *,
+    ignore_existing: bool = False,
+) -> dict[str, Any]:
     data_root = data_root.expanduser().resolve()
     meta_path = _daemon_meta_path(data_root)
-    if meta_path.exists():
+    if not ignore_existing and meta_path.exists():
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             pid = int(meta.get("pid", 0))
@@ -154,6 +166,8 @@ def start_daemon_subprocess(data_root: Path, host: str = _DEFAULT_HOST) -> dict[
                 return meta
         except Exception:
             pass
+    elif ignore_existing:
+        clear_daemon_metadata(data_root)
     port = _free_port()
     env = os.environ.copy()
     env["SFGRAPH_DATA_DIR"] = str(data_root)

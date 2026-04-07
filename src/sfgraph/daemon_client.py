@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from sfgraph.daemon import start_daemon_subprocess
+from sfgraph.daemon import clear_daemon_metadata, start_daemon_subprocess
 
 
 class DaemonClient:
@@ -44,10 +44,15 @@ class DaemonClient:
 
 
 def ensure_daemon_client(data_root: Path) -> DaemonClient:
-    meta = start_daemon_subprocess(data_root)
-    client = DaemonClient(str(meta["base_url"]), data_root)
-    try:
-        client.health()
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed to connect to sfgraph daemon at {meta['base_url']}: {exc}") from exc
-    return client
+    last_error: urllib.error.URLError | None = None
+    for attempt in range(2):
+        meta = start_daemon_subprocess(data_root, ignore_existing=attempt > 0)
+        client = DaemonClient(str(meta["base_url"]), data_root)
+        try:
+            client.health()
+            return client
+        except urllib.error.URLError as exc:
+            last_error = exc
+            clear_daemon_metadata(data_root)
+    assert last_error is not None
+    raise RuntimeError(f"Failed to connect to sfgraph daemon at {meta['base_url']}: {last_error}") from last_error
