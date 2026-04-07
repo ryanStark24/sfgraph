@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import inspect
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,15 @@ def _build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--synthetic-classes", type=int, default=0)
     benchmark.add_argument("--synthetic-flows", type=int, default=0)
     benchmark.set_defaults(func=_cmd_benchmark)
+
+    acceptance = sub.add_parser("acceptance", help="Run a question suite and report quality/latency/token-size estimates")
+    acceptance.add_argument("--data-dir", default="./data")
+    acceptance.add_argument(
+        "--suite",
+        default="docs/acceptance_question_suite.json",
+        help="Path to JSON suite file with an array of {id, question, expected_mode?}",
+    )
+    acceptance.set_defaults(func=_cmd_acceptance)
     return parser
 
 
@@ -268,6 +278,83 @@ async def _cmd_benchmark(args: argparse.Namespace) -> int:
     )
     print(json.dumps(payload, indent=2))
     return 0
+
+
+def _estimate_tokens(text: str) -> int:
+    # Rough estimate for trend tracking in acceptance runs.
+    return max(1, (len(text) + 3) // 4)
+
+
+async def _cmd_acceptance(args: argparse.Namespace) -> int:
+    suite_path = Path(args.suite).expanduser().resolve()
+    if not suite_path.exists():
+        raise FileNotFoundError(f"Suite file not found: {suite_path}")
+    raw = json.loads(suite_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError("Acceptance suite must be a JSON array.")
+
+    runtime = await _build_runtime(args.data_dir, needs_pool=False)
+    try:
+        service = GraphQueryService(
+            graph=runtime["graph"],
+            manifest=runtime["manifest"],
+            vectors=runtime["vectors"],
+            repo_root=str(Path.cwd()),
+            ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
+        )
+        results: list[dict[str, Any]] = []
+        passed_expectations = 0
+        expectation_count = 0
+        for idx, entry in enumerate(raw, start=1):
+            if not isinstance(entry, dict):
+                continue
+            question = str(entry.get("question", "")).strip()
+            if not question:
+                continue
+            case_id = str(entry.get("id") or f"q{idx}")
+            expected_mode = entry.get("expected_mode")
+            t0 = time.perf_counter()
+            payload = await service.query(question, max_hops=3, max_results=50)
+            elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+            response_json = json.dumps(payload, separators=(",", ":"))
+            mode = str(payload.get("mode", "unknown"))
+            status = "info"
+            if expected_mode is not None:
+                expectation_count += 1
+                if mode == str(expected_mode):
+                    passed_expectations += 1
+                    status = "pass"
+                else:
+                    status = "fail"
+            results.append(
+                {
+                    "id": case_id,
+                    "question": question,
+                    "mode": mode,
+                    "expected_mode": expected_mode,
+                    "status": status,
+                    "duration_ms": elapsed_ms,
+                    "response_bytes": len(response_json.encode("utf-8")),
+                    "response_tokens_est": _estimate_tokens(response_json),
+                    "partial_results": bool(payload.get("partial_results", False)),
+                }
+            )
+
+        total = len(results)
+        summary = {
+            "suite_path": str(suite_path),
+            "total_cases": total,
+            "expectation_count": expectation_count,
+            "expectation_passed": passed_expectations,
+            "expectation_pass_rate": round((passed_expectations / expectation_count), 3) if expectation_count else None,
+            "avg_duration_ms": round(sum(item["duration_ms"] for item in results) / total, 2) if total else 0.0,
+            "avg_response_tokens_est": round(sum(item["response_tokens_est"] for item in results) / total, 2) if total else 0.0,
+        }
+        print(json.dumps({"summary": summary, "cases": results}, indent=2))
+        return 0
+    finally:
+        await _close_runtime(runtime)
 
 
 def main(argv: list[str] | None = None) -> int:

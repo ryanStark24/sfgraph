@@ -85,11 +85,21 @@ Key fields:
 
 ## Query and Lineage
 
+Preferred intent tools (use these first):
+
+- `analyze_field(...)` for "where is field populated/assigned/used"
+- `analyze_object_event(...)` for "what happens when Object is inserted/updated/deleted"
+- `analyze_component(...)` for "in class/flow/IP/DR where is token set or used"
+- `analyze_change(...)` for "what breaks if I change X"
+
+Use `query(...)` as a fallback when the question is broad or exploratory.
+
 ### `query(question, ...)`
 
 Purpose:
 
 - natural-language-ish entry point for common lineage/impact questions
+- generic fallback for ambiguous questions; internally routes to intent analyzers for recognized patterns
 
 Behavior:
 
@@ -130,6 +140,50 @@ Purpose:
 Purpose:
 
 - summarize readers, writers, and dependents for a field
+- low-level helper; prefer `analyze_field` for production Q&A workflows
+
+### `analyze_field(field_name, focus?)`
+
+Purpose:
+
+- strict field-centric analysis for reads/writes
+- combines exact repo evidence with graph evidence
+
+Typical use:
+
+- `where is Service_Id__c populated`
+- `who reads Account.Clarity_Customer_ID__c`
+
+### `analyze_object_event(object_name, event)`
+
+Purpose:
+
+- object lifecycle map from trigger/event entrypoints
+
+Typical use:
+
+- `what happens when QuoteLineItem is inserted`
+
+### `analyze_component(component_name, token?, focus?)`
+
+Purpose:
+
+- component-focused lineage and exact token tracing
+
+Typical use:
+
+- `in class OSS_ServiceabilityTask, where is accessId populated`
+
+### `analyze_change(target?, changed_files?, ...)`
+
+Purpose:
+
+- change-impact analysis from component or file targets
+
+Typical use:
+
+- `what breaks if I change AccountService`
+- release impact checks from touched files
 
 ### `list_unknown_dynamic_edges(limit?, offset?)`
 

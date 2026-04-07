@@ -168,6 +168,7 @@ async def ingest_org(
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
 ) -> str:
+    """Deprecated blocking ingest path. Prefer `start_ingest_job`."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
     daemon = _daemon_for_export_dir(app, export_dir)
@@ -290,6 +291,7 @@ async def refresh(
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
 ) -> str:
+    """Deprecated blocking refresh path. Prefer `start_refresh_job`."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
     daemon = _daemon_for_export_dir(app, export_dir)
@@ -336,6 +338,7 @@ async def watch_refresh(
 
 @mcp.tool()
 async def get_ingestion_status(ctx: Context, export_dir: str | None = None) -> str:
+    """Return graph + ingestion status for the active or selected workspace."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app, export_dir)
     return _daemon_call(daemon, "get_ingestion_status")
@@ -343,6 +346,7 @@ async def get_ingestion_status(ctx: Context, export_dir: str | None = None) -> s
 
 @mcp.tool()
 async def get_ingestion_progress(ctx: Context, export_dir: str | None = None) -> str:
+    """Return latest persisted ingestion progress snapshot."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app, export_dir)
     return _daemon_call(daemon, "get_ingestion_progress")
@@ -357,6 +361,7 @@ async def trace_upstream(
     time_budget_ms: int = 1500,
     offset: int = 0,
 ) -> str:
+    """Advanced graph traversal helper. Prefer `analyze_field` / `analyze_component` for user Q&A."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app)
     return _daemon_call(daemon, "trace_upstream", node_id=node_id, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
@@ -371,6 +376,7 @@ async def trace_downstream(
     time_budget_ms: int = 1500,
     offset: int = 0,
 ) -> str:
+    """Advanced graph traversal helper. Prefer `analyze_change` for impact questions."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app)
     return _daemon_call(daemon, "trace_downstream", node_id=node_id, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
@@ -385,6 +391,7 @@ async def get_node(node_id: str, ctx: Context) -> str:
 
 @mcp.tool()
 async def explain_field(field_qualified_name: str, ctx: Context) -> str:
+    """Low-level field edge inspection. Prefer `analyze_field` for user-facing answers."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app)
     return _daemon_call(daemon, "explain_field", field_qualified_name=field_qualified_name)
@@ -397,6 +404,7 @@ async def analyze_field(
     focus: str = "both",
     max_results: int = 100,
 ) -> str:
+    """Best tool for field read/write questions (populate, assign, update, use)."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app)
     return _daemon_call(daemon, "analyze_field", field_name=field_name, focus=focus, max_results=max_results)
@@ -409,6 +417,7 @@ async def analyze_object_event(
     ctx: Context,
     max_results: int = 50,
 ) -> str:
+    """Best tool for lifecycle questions: what runs on object insert/update/delete."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app)
     return _daemon_call(daemon, "analyze_object_event", object_name=object_name, event=event, max_results=max_results)
@@ -422,6 +431,7 @@ async def analyze_component(
     focus: str = "both",
     max_results: int = 100,
 ) -> str:
+    """Best tool for component lineage and token-level source tracing in classes/flows/IP/DR."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app)
     return _daemon_call(
@@ -443,6 +453,7 @@ async def query(
     time_budget_ms: int = 1500,
     offset: int = 0,
 ) -> str:
+    """Generic fallback query. Prefer intent tools (`analyze_*`) when question is specific."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app)
     return _daemon_call(daemon, "query", question=question, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
@@ -456,6 +467,7 @@ async def analyze_change(
     max_hops: int = 2,
     max_results_per_component: int = 25,
 ) -> str:
+    """Best tool for change impact: "what breaks if I change X?"."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app)
     return _daemon_call(

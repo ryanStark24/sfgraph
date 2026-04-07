@@ -137,6 +137,9 @@ uv run sfgraph progress --data-dir ./data
 
 # Run benchmark
 uv run sfgraph benchmark /absolute/path/to/export --data-dir ./data
+
+# Run acceptance suite (quality + latency + token-size estimates)
+uv run sfgraph acceptance --data-dir ./data --suite docs/acceptance_question_suite.json
 ```
 
 Available commands:
@@ -149,6 +152,7 @@ Available commands:
 - `status`
 - `migrate-scope`
 - `benchmark`
+- `acceptance`
 
 ### MCP server
 
@@ -166,6 +170,14 @@ The server stores graph data under `./data` relative to the repo root by default
 
 ## Core MCP Tools
 
+- Preferred for specific questions:
+  - `analyze_field`
+  - `analyze_object_event`
+  - `analyze_component`
+  - `analyze_change`
+- Generic fallback:
+  - `query`
+
 - `ingest_org(export_dir)`
 - `refresh(export_dir)`
 - `watch_refresh(export_dir, duration_seconds?, poll_interval?, debounce_seconds?, max_refreshes?)`
@@ -176,6 +188,10 @@ The server stores graph data under `./data` relative to the repo root by default
 - `trace_downstream(node_id, max_hops?, max_results?, time_budget_ms?, offset?)`
 - `get_node(node_id)`
 - `explain_field(field_qualified_name)`
+- `analyze_field(field_name, focus?, max_results?)`
+- `analyze_object_event(object_name, event, max_results?)`
+- `analyze_component(component_name, token?, focus?, max_results?)`
+- `analyze_change(target?, changed_files?, max_hops?, max_results_per_component?)`
 - `impact_from_git_diff(base_ref?, head_ref?, max_hops?, max_results_per_component?)`
 - `cross_layer_flow_map(node_id, max_hops?, max_results?)`
 - `list_unknown_dynamic_edges(limit?, offset?)`

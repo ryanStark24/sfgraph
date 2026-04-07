@@ -21,6 +21,7 @@ def test_cli_help_exits_zero():
     assert "progress" in result.stdout
     assert "vectorize" in result.stdout
     assert "daemon" in result.stdout
+    assert "acceptance" in result.stdout
 
 
 def test_cli_query_help_exits_zero():
@@ -83,3 +84,13 @@ def test_cli_ingest_help_includes_discovery_filters():
     assert result.returncode == 0
     assert "--include" in result.stdout
     assert "--exclude" in result.stdout
+
+
+def test_cli_acceptance_help_exits_zero():
+    result = subprocess.run(
+        [sys.executable, "-m", "sfgraph.cli", "acceptance", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--suite" in result.stdout
