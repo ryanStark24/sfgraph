@@ -1,15 +1,54 @@
 # Architecture
 
-`sfgraph` is a local-first Salesforce metadata analysis system with three major layers:
+`sfgraph` is a local-first Salesforce metadata analysis system with three core responsibilities:
 
-- ingestion: parse Salesforce metadata and write graph state
-- storage: persist graph state, manifest state, and vector state
-- query/MCP: expose lineage, impact, and troubleshooting tools over MCP and CLI
+- ingest Salesforce metadata into a scoped graph
+- persist graph, manifest, and vector state locally
+- answer lineage, impact, and troubleshooting questions over CLI and MCP
+
+This document describes both:
+
+- the current architecture
+- the target architecture for the next generation of faster, more robust, more transparent ingest
+
+## Goals
+
+The architecture is optimized for:
+
+- evidence over prose
+- local execution over hosted processing
+- explicit handling of unknown and dynamic edges
+- project isolation
+- predictable ingest behavior on large production exports
+- release-safe defaults where client code and metadata stay on the client machine
+
+## Hard Runtime Rules
+
+The intended runtime policy is:
+
+- metadata parsing happens locally
+- graph persistence happens locally
+- vector persistence happens locally
+- client code and metadata do not leave the machine during normal analysis
+
+Current enforced default:
+
+- remote LLM query-agent calls are disabled unless `SFGRAPH_ALLOW_NETWORK=1`
+- embedding model downloads are disabled unless `SFGRAPH_ALLOW_NETWORK=1`
+
+Allowed network access outside of core metadata analysis still exists during installation/bootstrap, for example:
+
+- npm package download
+- Python package installation
+- optional model prefetch during explicit bootstrap
 
 ## High-Level Flow
 
+Current high-level flow:
+
 ```text
 metadata export
+  -> discovery
   -> parsers
   -> node/edge facts
   -> graph store + manifest + vectors
@@ -17,7 +56,20 @@ metadata export
   -> MCP tools / CLI
 ```
 
-## Main Components
+Target high-level flow:
+
+```text
+metadata export
+  -> ingest job creation
+  -> discovery phase
+  -> parse queue
+  -> node write queue
+  -> edge write queue
+  -> optional vector queue
+  -> query service / MCP polling
+```
+
+## Current Components
 
 ### Ingestion
 
@@ -27,10 +79,11 @@ Responsibilities:
 
 - discover supported files in an export
 - parse Apex, Flows, objects, LWC, and Vlocity assets
-- normalize results into `NodeFact` and `EdgeFact`
+- normalize parser output into `NodeFact` and `EdgeFact`
 - write scoped graph rows
 - track run/file status in the manifest
-- update vector search chunks for query fallback
+- persist ingest progress snapshots
+- update vector search chunks
 
 Important files:
 
@@ -51,7 +104,21 @@ Current parser coverage:
 - LWC JS/HTML metadata references
 - OmniStudio / Vlocity JSON
 
-The Apex path uses a Node worker with `web-tree-sitter-sfapex`, which is why `npm install` is required even though the main product is Python.
+Important notes:
+
+- the Apex path uses a Node worker with `web-tree-sitter-sfapex`
+- rich Vlocity parsing currently exists for:
+  - `IntegrationProcedure`
+  - `DataRaptor`
+  - `OmniScript`
+- other supported Vlocity types currently fall back to generic `VlocityDataPack` parsing
+
+Important files:
+
+- [`src/sfgraph/parser/pool.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/parser/pool.py)
+- [`src/sfgraph/parser/worker/worker.js`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/parser/worker/worker.js)
+- [`src/sfgraph/parser/vlocity_parser.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/parser/vlocity_parser.py)
+- [`src/sfgraph/parser/vlocity_registry.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/parser/vlocity_registry.py)
 
 ### Storage
 
@@ -60,12 +127,12 @@ Storage lives under `src/sfgraph/storage/`.
 Current runtime model:
 
 - graph store: DuckDB-backed property graph tables
-- manifest store: SQLite file state and ingestion run tracking
+- manifest store: SQLite file state and run tracking
 - vector store: local Qdrant path storage for semantic fallback
 
 Important note:
 
-- FalkorDB exists as an optional backend path, but the default product flow is DuckDB-based.
+- FalkorDB exists as an optional backend path, but the default product flow is DuckDB-based
 
 ### Query Layer
 
@@ -108,23 +175,12 @@ Isolation mechanisms:
 - vector search is filtered by `project_scope`
 - ingestion freshness metadata records `project_scope` and export path
 - MCP ingest paths are restricted to the current workspace root
+- nested repositories inside the export tree are skipped during discovery
 
 Recommended practice:
 
 - use a separate data directory for each project
 - run one MCP server instance per workspace
-
-## Freshness Contract
-
-Many query outputs return:
-
-- `indexed_commit`
-- `indexed_at`
-- `project_scope`
-- `dirty_files_pending`
-- `partial_results`
-
-This is meant to make stale or partial graph state visible instead of silent.
 
 ## Runtime Layout
 
@@ -140,12 +196,301 @@ npx bootstrap default:
 - workspace-specific data under:
   - `~/Library/Caches/sfgraph-mcp/workspaces/<hash>/data` on macOS
 
-## Design Goals
+## Current Strengths
 
-The architecture is optimized for:
+The current system already does a few important things well:
 
-- evidence over prose
-- local operation over hosted dependency
-- honest handling of dynamic/unknown edges
-- project isolation
-- repeatable impact analysis during code review and release validation
+- local parsing rather than hosted parsing
+- scoped graph identity to prevent cross-project contamination
+- explicit progress snapshot persistence
+- evidence-first query output instead of opaque prose summaries
+- baseline Vlocity coverage across a broader type inventory than before
+
+## Current Weaknesses
+
+The current ingest architecture still has practical limitations:
+
+### 1. Ingest is too synchronous
+
+Today `ingest_org(...)` is a long-running blocking tool call.
+
+Consequences:
+
+- some MCP clients cannot poll progress effectively during the run
+- UX appears frozen even when work is happening
+- job cancellation/resume semantics are weak
+
+### 2. Progress is persisted but not job-native
+
+Today progress exists as a snapshot file and helper tools, but not as a first-class ingest job model.
+
+Consequences:
+
+- progress polling is client-dependent
+- no stable `job_id`
+- no robust cancellation or resume story
+
+### 3. Vector work can slow the critical path
+
+Today vector updates happen during ingest.
+
+Consequences:
+
+- graph ingest latency can be coupled to embedding availability
+- first-use model readiness can delay ingest unless pre-cached
+
+### 4. Discovery is still heavier than it should be
+
+Even after pruning improvements, production trees can still contain:
+
+- huge JSON volumes
+- generated files
+- exports with low-value or repetitive metadata classes
+
+Consequences:
+
+- file hashing and traversal can dominate ingest time
+- users perceive “slow ingest” before parser throughput is even the bottleneck
+
+### 5. Vlocity coverage is broad but not yet deep
+
+We now recognize the upstream-supported type inventory, but only a subset has rich domain-specific graph extraction.
+
+Consequences:
+
+- baseline coverage exists
+- full semantic richness does not yet exist across all Vlocity types
+
+## Target Ingest Architecture
+
+The target ingest architecture should be job-based, phase-aware, resumable, and local-only by default.
+
+### Job Model
+
+Introduce explicit ingest jobs:
+
+- `start_ingest(export_dir, mode?) -> job_id`
+- `get_ingest_job(job_id)`
+- `cancel_ingest(job_id)`
+- `list_ingest_jobs()`
+- optional `resume_ingest(job_id)`
+
+`ingest_org(...)` can remain as a convenience wrapper, but should internally create and wait on a job.
+
+### Phase Model
+
+Each job should move through explicit phases:
+
+1. `bootstrap`
+2. `discovering`
+3. `parsing`
+4. `writing_nodes`
+5. `writing_edges`
+6. `vectorizing`
+7. `completed`
+8. `failed`
+9. `cancelled`
+
+### Progress Contract
+
+Progress should expose:
+
+- `job_id`
+- `state`
+- `phase`
+- `total_files_discovered`
+- `files_hashed`
+- `files_parsed`
+- `files_failed`
+- `nodes_written`
+- `edges_written`
+- `vectors_written`
+- `current_file`
+- `current_parser`
+- `parser_breakdown`
+- `elapsed_seconds`
+- `estimated_remaining_seconds`
+- `top_failure_reasons`
+
+### Queue Model
+
+Use explicit bounded queues:
+
+- discovery queue
+- parse queue
+- node write queue
+- edge write queue
+- vector queue
+- retry queue
+
+Benefits:
+
+- backpressure becomes visible
+- parser workers are isolated from DB write latency
+- vector work can be deferred or disabled without affecting graph ingest
+
+### Recommended Modes
+
+Support explicit ingest modes:
+
+- `graph_only`
+- `graph_plus_vectors`
+- `vectors_only`
+
+Recommended default for large orgs:
+
+- start with `graph_only`
+- run vectorization as a second job
+
+## Efficiency Plan
+
+### 1. Reduce discovery cost
+
+Recommended improvements:
+
+- keep nested repo pruning
+- continue aggressive directory skipping
+- skip low-value/generated trees by policy
+- allow configurable include/exclude patterns
+- hash only candidate files rather than broad trees
+
+Potential future additions:
+
+- manifest-assisted fast stat comparison before hashing
+- shallow discovery caches per export root
+
+### 2. Keep large Apex files off the pipe
+
+This is now already improved:
+
+- the worker reads from disk during normal ingest instead of receiving full file bodies inline
+
+Additional future improvements:
+
+- length-prefixed IPC as a fallback transport
+- explicit large-file handling metrics
+
+### 3. Batch graph writes harder
+
+Recommended improvements:
+
+- larger node merge batches
+- larger edge merge batches
+- write ordering by type plus batch size tuning
+- optional commit checkpoints per phase
+
+### 4. Make vectors secondary
+
+Recommended improvements:
+
+- default to graph-first ingest
+- defer vector creation to a second phase or a second job
+- support vector disabling for privacy-sensitive or speed-sensitive use cases
+
+### 5. Add warm bootstrap
+
+There should be an explicit bootstrap step that prepares everything before ingest:
+
+- create venv
+- install Python dependencies
+- install Node dependencies
+- verify parser worker startup
+- optionally prefetch embedding model locally
+- record runtime readiness
+
+Recommended bootstrap modes:
+
+- `bootstrap-minimal`
+- `bootstrap-full`
+
+### 6. Improve skip accounting
+
+Recommended improvements:
+
+- distinguish `ignored`, `unsupported`, `empty`, and `failed`
+- report unsupported Vlocity types explicitly
+- make “skipped” actionable rather than opaque
+
+## Vlocity Target Design
+
+The current target should be:
+
+- baseline support for all upstream-listed DataPack types
+- rich parsers for the highest-value types first
+
+Recommended rollout:
+
+1. keep generic `VlocityDataPack` fallback for all types
+2. add unsupported-type reporting by frequency
+3. add rich parsers incrementally for the highest-volume / highest-value types
+
+Useful source of truth:
+
+- upstream `vlocity_build` supported type inventory
+
+## Privacy and Security Design
+
+The product promise should be:
+
+- client code and metadata do not leave the machine during normal analysis
+
+To preserve that, the architecture should enforce:
+
+- no implicit remote query shaping
+- no implicit model downloads during ingest
+- no hidden hosted parsing
+- explicit opt-in for all outbound runtime calls
+
+The only acceptable network-by-default surface should be installation/bootstrap, not metadata analysis.
+
+## Recommended Next Implementation Steps
+
+Highest ROI sequence:
+
+1. introduce background ingest jobs with `job_id`
+2. expose true job polling APIs over MCP and CLI
+3. split vectorization into a separate phase or job
+4. add richer skip / unsupported-type accounting
+5. add configurable discovery include/exclude rules
+6. add warm bootstrap with dependency and model prefetch
+7. add resumable ingest checkpoints
+
+## Release Readiness Gates
+
+Before release, the tool should satisfy:
+
+### Correctness
+
+- no nested repos indexed
+- no cross-project graph contamination
+- large Apex files ingest without IPC chunk failures
+- Vlocity fallback covers all known upstream type names
+
+### UX
+
+- users can see meaningful progress during ingest
+- users can tell whether the run is parsing, writing, or vectorizing
+- failures surface with reasons, not silent skips
+
+### Privacy
+
+- no client metadata leaves the machine by default
+- remote features require explicit opt-in
+
+### Performance
+
+- large exports remain responsive
+- critical-path ingest does not block on optional vector work
+- discovery cost is bounded and explainable
+
+## Summary
+
+The current architecture is now substantially safer and more scalable than the original shape, but the next major win is not another parser tweak.
+
+The next major win is a job-based ingest architecture:
+
+- faster in practice
+- easier to monitor
+- easier to resume
+- easier to keep local-only
+- much more trustworthy for large production orgs
