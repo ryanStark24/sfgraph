@@ -39,6 +39,51 @@ const MAX_FILES = 200;
 let apexParser = null;
 let fileCount = 0;
 
+function replaceCharsPreservingNewlines(text, start, end) {
+  if (start >= end) return text;
+  const prefix = text.slice(0, start);
+  const middle = text.slice(start, end).replace(/[^\n\r]/g, ' ');
+  const suffix = text.slice(end);
+  return prefix + middle + suffix;
+}
+
+function sanitizeApexContent(content) {
+  let sanitized = content;
+
+  if (sanitized.charCodeAt(0) === 0xfeff) {
+    sanitized = ' ' + sanitized.slice(1);
+  }
+
+  // Some exported files carry a stray punctuation character before the first
+  // comment block, e.g. "-/**". Replace only that junk while preserving line map.
+  sanitized = sanitized.replace(/^(\s*)-+(?=\s*\/\*\*)/, (match, leading) => `${leading}${' '.repeat(match.length - leading.length)}`);
+
+  const declarationMatch = sanitized.match(
+    /(?:^|\n)\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:global|public|private|protected)?\s*(?:with\s+sharing|without\s+sharing|inherited\s+sharing)?\s*(?:virtual|abstract|static|testmethod)?\s*(?:class|interface|enum|trigger)\b/m
+  );
+  if (!declarationMatch || declarationMatch.index == null) {
+    return sanitized;
+  }
+
+  const declarationIndex = declarationMatch.index + (declarationMatch[0].startsWith('\n') ? 1 : 0);
+  const prefix = sanitized.slice(0, declarationIndex);
+  if (!prefix.trim()) {
+    return sanitized;
+  }
+
+  // If the prefix is only banner comments / separators, blank it out so the
+  // parser starts at the declaration without losing line positions.
+  const bannerOnly = prefix
+    .replace(/\/\/[^\n\r]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/[\s\-*=|#/]+/g, '');
+  if (bannerOnly.length === 0) {
+    return replaceCharsPreservingNewlines(sanitized, 0, declarationIndex);
+  }
+
+  return sanitized;
+}
+
 function writeResponse(payload) {
   const body = JSON.stringify(payload);
   process.stdout.write(`${RESPONSE_PREFIX}${Buffer.byteLength(body, 'utf8')}\n`);
@@ -341,8 +386,29 @@ function handleLine(line) {
     const content = typeof msg.fileContent === 'string'
       ? msg.fileContent
       : fs.readFileSync(msg.filePath, 'utf8');
-    const tree = apexParser.parse(content);
-    const root = tree.rootNode;
+    const variants = [content];
+    const sanitized = sanitizeApexContent(content);
+    if (sanitized !== content) {
+      variants.push(sanitized);
+    }
+
+    let tree = null;
+    let root = null;
+    let parsedContent = content;
+    for (const candidate of variants) {
+      const candidateTree = apexParser.parse(candidate);
+      const candidateRoot = candidateTree.rootNode;
+      if (!candidateRoot.hasError) {
+        tree = candidateTree;
+        root = candidateRoot;
+        parsedContent = candidate;
+        break;
+      }
+      if (tree === null) {
+        tree = candidateTree;
+        root = candidateRoot;
+      }
+    }
 
     // APEX-10 guard: hasError is a PROPERTY (boolean) in WASM API — NOT a method
     if (root.hasError) {
@@ -351,7 +417,7 @@ function handleLine(line) {
         requestId: msg.requestId,
         ok: false,
         error: 'parse_error',
-        payload: summarizeParseFailure(root, msg.filePath, content),
+        payload: summarizeParseFailure(root, msg.filePath, parsedContent),
       });
       return;
     }
