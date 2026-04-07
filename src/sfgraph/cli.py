@@ -29,13 +29,22 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("export_dir")
     ingest.add_argument("--data-dir", default="./data")
     ingest.add_argument("--mode", choices=("full", "graph_only"), default="full")
+    ingest.add_argument("--include", action="append", default=[], help="Include glob relative to export root")
+    ingest.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root")
     ingest.set_defaults(func=_cmd_ingest)
 
     refresh = sub.add_parser("refresh", help="Run incremental refresh for an export directory")
     refresh.add_argument("export_dir")
     refresh.add_argument("--data-dir", default="./data")
     refresh.add_argument("--mode", choices=("full", "graph_only"), default="full")
+    refresh.add_argument("--include", action="append", default=[], help="Include glob relative to export root")
+    refresh.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root")
     refresh.set_defaults(func=_cmd_refresh)
+
+    vectorize = sub.add_parser("vectorize", help="Rebuild vectors for an already ingested export")
+    vectorize.add_argument("export_dir")
+    vectorize.add_argument("--data-dir", default="./data")
+    vectorize.set_defaults(func=_cmd_vectorize)
 
     query = sub.add_parser("query", help="Run graph query")
     query.add_argument("question")
@@ -109,6 +118,8 @@ async def _cmd_ingest(args: argparse.Namespace) -> int:
             vectors=runtime["vectors"],
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
             ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
+            include_globs=args.include,
+            exclude_globs=args.exclude,
         )
         summary = await service.ingest(args.export_dir)
         print(json.dumps(summary.model_dump(), indent=2))
@@ -127,6 +138,8 @@ async def _cmd_refresh(args: argparse.Namespace) -> int:
             vectors=runtime["vectors"],
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
             ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
+            include_globs=args.include,
+            exclude_globs=args.exclude,
         )
         summary = await service.refresh(args.export_dir)
         print(json.dumps(summary.model_dump(), indent=2))
@@ -152,6 +165,24 @@ async def _cmd_query(args: argparse.Namespace) -> int:
             max_results=args.max_results,
         )
         print(json.dumps(payload, indent=2))
+        return 0
+    finally:
+        await _close_runtime(runtime)
+
+
+async def _cmd_vectorize(args: argparse.Namespace) -> int:
+    runtime = await _build_runtime(args.data_dir, needs_pool=False, enable_vectors=True)
+    try:
+        service = IngestionService(
+            graph=runtime["graph"],
+            manifest=runtime["manifest"],
+            pool=runtime["pool"],
+            vectors=runtime["vectors"],
+            ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
+        )
+        summary = await service.vectorize(args.export_dir)
+        print(json.dumps(summary.model_dump(), indent=2))
         return 0
     finally:
         await _close_runtime(runtime)

@@ -171,6 +171,49 @@ async def test_ingest_parse_failure_logs_diagnostics(svc, caplog):
 
 
 @pytest.mark.asyncio
+async def test_vectorize_rebuilds_vectors_for_active_scope(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    vectors = AsyncMock()
+    vectors.delete_by_project_scope = AsyncMock(return_value=2)
+    vectors.upsert = AsyncMock(return_value=None)
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        vectors=vectors,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+    )
+    export_dir = str(tmp_path / "repo")
+    Path(export_dir).mkdir(parents=True, exist_ok=True)
+    scope = service._activate_scope(export_dir)
+    scoped_qname = f"{service._active_project_scope}::AccountService"
+    graph.get_labels = AsyncMock(return_value=["ApexClass"])
+    graph.query = AsyncMock(
+        return_value=[
+            {
+                "qualified_name": scoped_qname,
+                "props": json.dumps(
+                    {
+                        "qualifiedName": "AccountService",
+                        "sourceFile": "classes/AccountService.cls",
+                        "parserType": "apex_cst",
+                        "projectScope": service._active_project_scope,
+                        "label": "ApexClass",
+                    }
+                ),
+            }
+        ]
+    )
+
+    summary = await service.vectorize(scope)
+    assert summary.processed_nodes == 1
+    vectors.delete_by_project_scope.assert_awaited()
+    vectors.upsert.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_ingest_merge_node_has_source_attribution(svc):
     service, graph, _, _ = svc
     await service.ingest(FIXTURE_EXPORT)
@@ -441,6 +484,32 @@ def test_discover_files_skips_temp_lock_files(svc, tmp_path):
     discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
     assert str(valid) in discovered
     assert str(temp_lock) not in discovered
+
+
+def test_discover_files_respects_include_exclude_globs(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        include_globs=["force-app/**"],
+        exclude_globs=["**/*Test.cls"],
+    )
+    keep = tmp_path / "force-app" / "main" / "default" / "classes" / "AccountService.cls"
+    drop = tmp_path / "force-app" / "main" / "default" / "classes" / "AccountServiceTest.cls"
+    other = tmp_path / "vendor" / "Repo.cls"
+    keep.parent.mkdir(parents=True, exist_ok=True)
+    other.parent.mkdir(parents=True, exist_ok=True)
+    keep.write_text("public class AccountService {}", encoding="utf-8")
+    drop.write_text("public class AccountServiceTest {}", encoding="utf-8")
+    other.write_text("public class Repo {}", encoding="utf-8")
+
+    discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
+    assert str(keep) in discovered
+    assert str(drop) not in discovered
+    assert str(other) not in discovered
 
 
 @pytest.mark.asyncio

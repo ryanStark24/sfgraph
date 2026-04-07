@@ -125,3 +125,14 @@ class RefreshSummary(BaseModel):
     warnings: list[str]
     parser_stats: dict[str, dict[str, int]] = {}
     unresolved_symbols: int = 0
+
+
+class VectorizeSummary(BaseModel):
+    """Returned by IngestionService.vectorize() when vectors are rebuilt."""
+
+    run_id: str
+    export_dir: str
+    duration_seconds: float
+    processed_nodes: int
+    skipped_nodes: int
+    warnings: list[str]

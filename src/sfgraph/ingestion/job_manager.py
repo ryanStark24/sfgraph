@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from sfgraph.ingestion.models import IngestionSummary, RefreshSummary
+from sfgraph.ingestion.models import IngestionSummary, RefreshSummary, VectorizeSummary
 
-IngestResult = IngestionSummary | RefreshSummary
+IngestResult = IngestionSummary | RefreshSummary | VectorizeSummary
 IngestCallable = Callable[[str], Awaitable[IngestResult]]
 
 
@@ -57,9 +57,11 @@ class IngestJobManager:
         self,
         ingest_factory: Callable[[str, dict[str, Any]], Awaitable[IngestResult]],
         refresh_factory: Callable[[str, dict[str, Any]], Awaitable[IngestResult]],
+        vectorize_factory: Callable[[str, dict[str, Any]], Awaitable[IngestResult]],
     ) -> None:
         self._ingest_factory = ingest_factory
         self._refresh_factory = refresh_factory
+        self._vectorize_factory = vectorize_factory
         self._jobs: dict[str, IngestJobRecord] = {}
         self._active_job_id: str | None = None
         self._lock = asyncio.Lock()
@@ -76,7 +78,7 @@ class IngestJobManager:
         options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Start an ingest or refresh in the background."""
-        if job_type not in {"ingest", "refresh"}:
+        if job_type not in {"ingest", "refresh", "vectorize"}:
             raise ValueError(f"Unsupported job_type: {job_type}")
 
         async with self._lock:
@@ -134,7 +136,12 @@ class IngestJobManager:
             job.state = "running"
             job.started_at = _utc_now()
 
-        runner = self._ingest_factory if job.job_type == "ingest" else self._refresh_factory
+        if job.job_type == "ingest":
+            runner = self._ingest_factory
+        elif job.job_type == "refresh":
+            runner = self._refresh_factory
+        else:
+            runner = self._vectorize_factory
 
         try:
             summary = await runner(job.export_dir, job.options)

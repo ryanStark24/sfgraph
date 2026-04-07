@@ -69,6 +69,8 @@ async def lifespan(server: FastMCP):
             vectors=vectors,
             data_root=data_root,
             mode=str(options.get("mode", "full")),
+            include_globs=_as_string_list(options.get("include_globs")),
+            exclude_globs=_as_string_list(options.get("exclude_globs")),
         ).ingest(export_dir),
         refresh_factory=lambda export_dir, options: _build_ingestion_service_from_parts(
             graph=graph,
@@ -77,7 +79,19 @@ async def lifespan(server: FastMCP):
             vectors=vectors,
             data_root=data_root,
             mode=str(options.get("mode", "full")),
+            include_globs=_as_string_list(options.get("include_globs")),
+            exclude_globs=_as_string_list(options.get("exclude_globs")),
         ).refresh(export_dir),
+        vectorize_factory=lambda export_dir, options: _build_ingestion_service_from_parts(
+            graph=graph,
+            manifest=manifest,
+            pool=pool,
+            vectors=vectors,
+            data_root=data_root,
+            mode="full",
+            include_globs=[],
+            exclude_globs=[],
+        ).vectorize(export_dir),
     )
 
     await manifest.initialize()
@@ -114,6 +128,8 @@ def _build_ingestion_service_from_parts(
     vectors: VectorStore,
     data_root: Path,
     mode: str = "full",
+    include_globs: list[str] | None = None,
+    exclude_globs: list[str] | None = None,
 ) -> IngestionService:
     vector_store = vectors if mode != "graph_only" else None
     return IngestionService(
@@ -123,6 +139,8 @@ def _build_ingestion_service_from_parts(
         vectors=vector_store,
         ingestion_meta_path=str(data_root / "ingestion_meta.json"),
         ingestion_progress_path=str(data_root / "ingestion_progress.json"),
+        include_globs=include_globs,
+        exclude_globs=exclude_globs,
     )
 
 
@@ -142,6 +160,14 @@ def _merge_job_with_progress(job: dict[str, Any], progress: dict[str, Any]) -> d
     if progress.get("available"):
         payload["progress"] = progress
     return payload
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    return [str(value)] if str(value) else []
 
 
 def _read_progress_snapshot(data_root: Path) -> dict[str, Any]:
@@ -168,7 +194,13 @@ async def ping(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def ingest_org(export_dir: str, ctx: Context, mode: str = "full") -> str:
+async def ingest_org(
+    export_dir: str,
+    ctx: Context,
+    mode: str = "full",
+    include_globs: list[str] | None = None,
+    exclude_globs: list[str] | None = None,
+) -> str:
     """Ingest a Salesforce metadata export directory into the local graph."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
@@ -179,6 +211,8 @@ async def ingest_org(export_dir: str, ctx: Context, mode: str = "full") -> str:
         vectors=app.vectors,
         data_root=app.data_root,
         mode=mode,
+        include_globs=include_globs,
+        exclude_globs=exclude_globs,
     )
     summary = await service.ingest(export_dir)
     return json.dumps(
@@ -195,33 +229,68 @@ async def ingest_org(export_dir: str, ctx: Context, mode: str = "full") -> str:
             "unresolved_symbols": summary.unresolved_symbols,
             "warnings": summary.warnings[:20],
             "mode": mode,
+            "include_globs": include_globs or [],
+            "exclude_globs": exclude_globs or [],
         },
         indent=2,
     )
 
 
 @mcp.tool()
-async def start_ingest_job(export_dir: str, ctx: Context, mode: str = "full") -> str:
+async def start_ingest_job(
+    export_dir: str,
+    ctx: Context,
+    mode: str = "full",
+    include_globs: list[str] | None = None,
+    exclude_globs: list[str] | None = None,
+) -> str:
     """Start a background full ingest and return a pollable job record."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
     payload = await app.jobs.start_job(
         job_type="ingest",
         export_dir=export_dir,
-        options={"mode": mode},
+        options={
+            "mode": mode,
+            "include_globs": include_globs or [],
+            "exclude_globs": exclude_globs or [],
+        },
     )
     return json.dumps(payload, indent=2)
 
 
 @mcp.tool()
-async def start_refresh_job(export_dir: str, ctx: Context, mode: str = "full") -> str:
+async def start_refresh_job(
+    export_dir: str,
+    ctx: Context,
+    mode: str = "full",
+    include_globs: list[str] | None = None,
+    exclude_globs: list[str] | None = None,
+) -> str:
     """Start a background refresh and return a pollable job record."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
     payload = await app.jobs.start_job(
         job_type="refresh",
         export_dir=export_dir,
-        options={"mode": mode},
+        options={
+            "mode": mode,
+            "include_globs": include_globs or [],
+            "exclude_globs": exclude_globs or [],
+        },
+    )
+    return json.dumps(payload, indent=2)
+
+
+@mcp.tool()
+async def start_vectorize_job(export_dir: str, ctx: Context) -> str:
+    """Start a background vector-only rebuild for the active project scope."""
+    app: AppContext = ctx.request_context.lifespan_context
+    export_dir = _validate_workspace_export_dir(export_dir)
+    payload = await app.jobs.start_job(
+        job_type="vectorize",
+        export_dir=export_dir,
+        options={"mode": "full"},
     )
     return json.dumps(payload, indent=2)
 
@@ -261,7 +330,13 @@ async def cancel_ingest_job(job_id: str, ctx: Context) -> str:
 
 
 @mcp.tool()
-async def refresh(export_dir: str, ctx: Context, mode: str = "full") -> str:
+async def refresh(
+    export_dir: str,
+    ctx: Context,
+    mode: str = "full",
+    include_globs: list[str] | None = None,
+    exclude_globs: list[str] | None = None,
+) -> str:
     """Run incremental refresh for changed/new/deleted files."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
@@ -272,6 +347,8 @@ async def refresh(export_dir: str, ctx: Context, mode: str = "full") -> str:
         vectors=app.vectors,
         data_root=app.data_root,
         mode=mode,
+        include_globs=include_globs,
+        exclude_globs=exclude_globs,
     )
     summary = await service.refresh(export_dir)
     return json.dumps(
@@ -290,9 +367,28 @@ async def refresh(export_dir: str, ctx: Context, mode: str = "full") -> str:
             "unresolved_symbols": summary.unresolved_symbols,
             "warnings": summary.warnings[:20],
             "mode": mode,
+            "include_globs": include_globs or [],
+            "exclude_globs": exclude_globs or [],
         },
         indent=2,
     )
+
+
+@mcp.tool()
+async def vectorize(export_dir: str, ctx: Context) -> str:
+    """Rebuild vectors for the current project scope without reparsing source files."""
+    app: AppContext = ctx.request_context.lifespan_context
+    export_dir = _validate_workspace_export_dir(export_dir)
+    service = _build_ingestion_service_from_parts(
+        graph=app.graph,
+        manifest=app.manifest,
+        pool=app.pool,
+        vectors=app.vectors,
+        data_root=app.data_root,
+        mode="full",
+    )
+    summary = await service.vectorize(export_dir)
+    return json.dumps(summary.model_dump(), indent=2)
 
 
 @mcp.tool()

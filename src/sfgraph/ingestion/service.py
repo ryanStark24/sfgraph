@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import fnmatch
 import subprocess
 import time
 from collections import defaultdict
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from sfgraph.ingestion.constants import NODE_WRITE_ORDER
-from sfgraph.ingestion.models import EdgeFact, IngestionSummary, NodeFact, RefreshSummary
+from sfgraph.ingestion.models import EdgeFact, IngestionSummary, NodeFact, RefreshSummary, VectorizeSummary
 from sfgraph.ingestion.schema_index import materialize_schema_index
 from sfgraph.parser.apex_extractor import ApexExtractor
 from sfgraph.parser.dynamic_accessor import DynamicAccessorRegistry
@@ -124,6 +125,8 @@ class IngestionService:
         schema_index_path: str | None = None,
         ingestion_meta_path: str | None = None,
         ingestion_progress_path: str | None = None,
+        include_globs: list[str] | None = None,
+        exclude_globs: list[str] | None = None,
     ) -> None:
         self._graph = graph
         self._manifest = manifest
@@ -138,6 +141,8 @@ class IngestionService:
         self._active_export_root: Path | None = None
         self._progress_started_at: str | None = None
         self._last_progress_flush_at: float = 0.0
+        self._include_globs = include_globs or []
+        self._exclude_globs = exclude_globs or []
 
     @staticmethod
     def _compute_project_scope(export_dir: str) -> str:
@@ -248,6 +253,129 @@ class IngestionService:
             await self._vectors.delete_by_node_ids(sorted(node_qnames))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Vector delete failed for %d nodes: %s", len(node_qnames), exc)
+
+    async def vectorize(self, export_dir: str) -> VectorizeSummary:
+        """Rebuild vectors for all nodes in the active project scope."""
+        export_dir = self._activate_scope(export_dir)
+        start = time.monotonic()
+        run_id = await self._manifest.create_run()
+        warnings: list[str] = []
+        self._progress_started_at = datetime.now(timezone.utc).isoformat()
+        self._last_progress_flush_at = 0.0
+
+        if not self._vectors:
+            raise RuntimeError("Vector store is disabled for this runtime. Re-run with mode=full to enable vectors.")
+
+        rows_by_label = await self._load_scoped_nodes_with_props()
+        total_nodes = sum(len(rows) for rows in rows_by_label.values())
+        self._write_progress_snapshot(
+            {
+                "run_id": run_id,
+                "mode": "vectorize",
+                "state": "running",
+                "phase": "vectorizing",
+                "export_dir": export_dir,
+                "project_scope": self._active_project_scope,
+                "started_at": self._progress_started_at,
+                "updated_at": self._progress_started_at,
+                "total_files": total_nodes,
+                "processed_files": 0,
+                "failed_files": 0,
+                "current_file": None,
+                "current_parser": "vector",
+                "parser_stats": self._empty_parser_stats(),
+                "unresolved_symbols": 0,
+                "node_counts_by_type": {},
+                "edge_count": 0,
+                "orphaned_edges": 0,
+                "warnings_count": 0,
+            },
+            force=True,
+        )
+
+        if self._active_project_scope:
+            deleted = await self._vectors.delete_by_project_scope(self._active_project_scope)
+            if deleted:
+                logger.info("Deleted %d existing vectors for project scope %s", deleted, self._active_project_scope)
+
+        processed_nodes = 0
+        skipped_nodes = 0
+        node_counts_by_type: dict[str, int] = {}
+        for label, rows in rows_by_label.items():
+            node_counts_by_type[label] = len(rows)
+            for qname, props in rows:
+                text = self._node_vector_text(props)
+                if not text:
+                    skipped_nodes += 1
+                    continue
+                try:
+                    await self._upsert_vector_for_node(qname, props | {"label": label})
+                    processed_nodes += 1
+                except Exception as exc:  # noqa: BLE001
+                    warnings.append(f"Vector upsert failed for {qname}: {exc}")
+                self._write_progress_snapshot(
+                    {
+                        "run_id": run_id,
+                        "mode": "vectorize",
+                        "state": "running",
+                        "phase": "vectorizing",
+                        "export_dir": export_dir,
+                        "project_scope": self._active_project_scope,
+                        "started_at": self._progress_started_at,
+                        "total_files": total_nodes,
+                        "processed_files": processed_nodes + skipped_nodes,
+                        "failed_files": 0,
+                        "current_file": qname,
+                        "current_parser": "vector",
+                        "parser_stats": self._empty_parser_stats(),
+                        "unresolved_symbols": 0,
+                        "node_counts_by_type": node_counts_by_type,
+                        "edge_count": 0,
+                        "orphaned_edges": 0,
+                        "warnings_count": len(warnings),
+                    }
+                )
+
+        await self._manifest.mark_run_complete(
+            run_id,
+            phase_1_complete=True,
+            phase_2_complete=True,
+        )
+        duration = round(time.monotonic() - start, 3)
+        summary = VectorizeSummary(
+            run_id=run_id,
+            export_dir=export_dir,
+            duration_seconds=duration,
+            processed_nodes=processed_nodes,
+            skipped_nodes=skipped_nodes,
+            warnings=warnings,
+        )
+        self._write_progress_snapshot(
+            {
+                "run_id": run_id,
+                "mode": "vectorize",
+                "state": "completed",
+                "phase": "completed",
+                "export_dir": export_dir,
+                "project_scope": self._active_project_scope,
+                "started_at": self._progress_started_at,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration_seconds": duration,
+                "total_files": total_nodes,
+                "processed_files": processed_nodes + skipped_nodes,
+                "failed_files": 0,
+                "current_file": None,
+                "current_parser": "vector",
+                "parser_stats": self._empty_parser_stats(),
+                "unresolved_symbols": 0,
+                "node_counts_by_type": node_counts_by_type,
+                "edge_count": 0,
+                "orphaned_edges": 0,
+                "warnings_count": len(warnings),
+            },
+            force=True,
+        )
+        return summary
 
     def _belongs_to_active_scope(self, qualified_name: str, props: dict[str, Any]) -> bool:
         if not self._active_project_scope:
@@ -703,6 +831,8 @@ class IngestionService:
                 path = current_path / filename
                 if self._should_skip_file(path):
                     continue
+                if not self._matches_discovery_rules(path, root):
+                    continue
                 if path.suffix == ".json":
                     if not is_vlocity_datapack_file(path):
                         continue
@@ -731,6 +861,14 @@ class IngestionService:
         if any(name.endswith(suffix) for suffix in cls.SKIP_FILE_SUFFIXES):
             return True
         return False
+
+    def _matches_discovery_rules(self, path: Path, root: Path) -> bool:
+        relative = path.relative_to(root).as_posix()
+        if self._include_globs and not any(fnmatch.fnmatch(relative, pattern) for pattern in self._include_globs):
+            return False
+        if self._exclude_globs and any(fnmatch.fnmatch(relative, pattern) for pattern in self._exclude_globs):
+            return False
+        return True
 
     @staticmethod
     def _empty_parser_stats() -> dict[str, dict[str, int]]:
@@ -812,6 +950,7 @@ class IngestionService:
                             "processed_files": index,
                             "failed_files": len(parse_failures),
                             "current_file": fpath,
+                            "current_parser": parser_name,
                             "changed_files": changed_files or [],
                             "deleted_files": deleted_files or [],
                             "affected_neighbor_files": affected_neighbor_files or [],
@@ -847,6 +986,7 @@ class IngestionService:
                         "processed_files": index,
                         "failed_files": len(parse_failures),
                         "current_file": fpath,
+                        "current_parser": parser_name,
                         "changed_files": changed_files or [],
                         "deleted_files": deleted_files or [],
                         "affected_neighbor_files": affected_neighbor_files or [],
@@ -868,6 +1008,26 @@ class IngestionService:
         processed_files = payload.get("processed_files")
         if isinstance(total_files, int) and total_files >= 0 and isinstance(processed_files, int):
             payload["completion_ratio"] = 1.0 if total_files == 0 else round(min(processed_files / total_files, 1.0), 4)
+            payload["pending_files"] = max(total_files - processed_files, 0)
+            payload["queue_status"] = {
+                "pending": payload["pending_files"],
+                "processed": processed_files,
+                "failed": int(payload.get("failed_files", 0) or 0),
+            }
+        started_at = payload.get("started_at")
+        if isinstance(started_at, str):
+            try:
+                started_dt = datetime.fromisoformat(started_at)
+                elapsed_seconds = max((datetime.now(timezone.utc) - started_dt).total_seconds(), 0.0)
+                payload["elapsed_seconds"] = round(elapsed_seconds, 3)
+                if isinstance(processed_files, int) and elapsed_seconds > 0:
+                    files_per_second = processed_files / elapsed_seconds
+                    payload["files_per_second"] = round(files_per_second, 3)
+                    pending_files = payload.get("pending_files")
+                    if isinstance(pending_files, int) and files_per_second > 0:
+                        payload["estimated_remaining_seconds"] = round(pending_files / files_per_second, 1)
+            except Exception:
+                pass
 
         monotonic_now = time.monotonic()
         if not force and (monotonic_now - self._last_progress_flush_at) < 0.25:
@@ -877,6 +1037,25 @@ class IngestionService:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         self._last_progress_flush_at = monotonic_now
+
+    async def _load_scoped_nodes_with_props(self) -> dict[str, list[tuple[str, dict[str, Any]]]]:
+        rows_by_label: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        labels = await self._graph.get_labels()
+        for label in labels:
+            try:
+                rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
+            except Exception:
+                rows = []
+            kept: list[tuple[str, dict[str, Any]]] = []
+            for row in rows:
+                qn = str(row.get("qualified_name", ""))
+                if not qn:
+                    continue
+                props = _parse_props(row.get("props"))
+                if self._belongs_to_active_scope(qn, props):
+                    kept.append((qn, props))
+            rows_by_label[label] = kept
+        return rows_by_label
 
     async def _write_nodes(self, facts_by_type: dict[str, list[NodeFact]]) -> tuple[dict[str, int], set[str]]:
         node_counts: dict[str, int] = defaultdict(int)

@@ -19,6 +19,7 @@ def test_cli_help_exits_zero():
     assert "ingest" in result.stdout
     assert "refresh" in result.stdout
     assert "progress" in result.stdout
+    assert "vectorize" in result.stdout
 
 
 def test_cli_query_help_exits_zero():
@@ -53,3 +54,14 @@ def test_cli_progress_help_exits_zero():
     )
     assert result.returncode == 0
     assert "--data-dir" in result.stdout
+
+
+def test_cli_ingest_help_includes_discovery_filters():
+    result = subprocess.run(
+        [sys.executable, "-m", "sfgraph.cli", "ingest", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--include" in result.stdout
+    assert "--exclude" in result.stdout
