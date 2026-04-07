@@ -52,6 +52,42 @@ def _parse_props(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _format_parser_failure_details(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    details: list[str] = []
+    worker_stderr = str(payload.get("worker_stderr") or "").strip()
+    if worker_stderr:
+        details.append(f"worker_stderr={worker_stderr}")
+    error_line = payload.get("errorLine")
+    error_column = payload.get("errorColumn")
+    if error_line is not None:
+        if error_column is not None:
+            details.append(f"error_location=line {error_line}, col {error_column}")
+        else:
+            details.append(f"error_line={error_line}")
+    error_node_type = payload.get("errorNodeType")
+    if error_node_type:
+        details.append(f"error_node={error_node_type}")
+    file_size = payload.get("fileSizeBytes")
+    if isinstance(file_size, int):
+        details.append(f"file_size_bytes={file_size}")
+    class_names = payload.get("classNames")
+    if isinstance(class_names, list) and class_names:
+        details.append("classes=" + ",".join(str(name) for name in class_names[:5]))
+    top_level = payload.get("topLevelKinds")
+    if isinstance(top_level, list) and top_level:
+        details.append("top_level=" + ",".join(str(kind) for kind in top_level[:8]))
+    context_snippet = str(payload.get("contextSnippet") or "").strip()
+    if context_snippet:
+        compact = " ".join(context_snippet.split())
+        details.append(f"context={compact[:220]}")
+    exception_name = payload.get("exceptionName")
+    if exception_name:
+        details.append(f"exception={exception_name}")
+    return " | ".join(details)
+
+
 class IngestionService:
     """Two-phase ingestion pipeline for Salesforce metadata exports."""
 
@@ -1129,11 +1165,9 @@ class IngestionService:
             if not result.get("ok"):
                 error = str(result.get("error") or "worker_parse_failed")
                 payload = result.get("payload")
-                worker_stderr = ""
-                if isinstance(payload, dict):
-                    worker_stderr = str(payload.get("worker_stderr") or "").strip()
-                if worker_stderr:
-                    raise RuntimeError(f"{error} | worker_stderr={worker_stderr}")
+                detail_suffix = _format_parser_failure_details(payload)
+                if detail_suffix:
+                    raise RuntimeError(f"{error} | {detail_suffix}")
                 raise RuntimeError(error)
             payload = result.get("payload") or {}
             nodes, edges = self._apex_extractor.extract(payload, fpath)

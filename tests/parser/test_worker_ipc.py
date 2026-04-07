@@ -97,7 +97,9 @@ def test_parse_broken_apex_returns_parse_error():
     assert resp["requestId"] == "test-broken-1"
     assert resp["ok"] is False
     assert resp["error"] == "parse_error"
-    assert resp["payload"] is None
+    assert resp["payload"]["filePath"].endswith("broken.cls")
+    assert isinstance(resp["payload"]["fileSizeBytes"], int)
+    assert "contextSnippet" in resp["payload"]
 
 
 def test_multiple_requests_correlated_by_request_id():

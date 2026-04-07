@@ -126,9 +126,48 @@ async def test_ingest_node_counts_by_type(svc):
 @pytest.mark.asyncio
 async def test_ingest_parse_failure_does_not_crash(svc):
     service, _, _, pool = svc
-    pool.parse = AsyncMock(return_value={"ok": False, "error": "parse_error", "payload": None})
+    pool.parse = AsyncMock(
+        return_value={
+            "ok": False,
+            "error": "parse_error",
+            "payload": {
+                "errorLine": 42,
+                "errorColumn": 7,
+                "errorNodeType": "ERROR",
+                "contextSnippet": "public class Broken {",
+                "fileSizeBytes": 1234,
+            },
+        }
+    )
     summary = await service.ingest(FIXTURE_EXPORT)
     assert isinstance(summary, IngestionSummary)
+
+
+@pytest.mark.asyncio
+async def test_ingest_parse_failure_logs_diagnostics(svc, caplog):
+    service, _, _, pool = svc
+    pool.parse = AsyncMock(
+        return_value={
+            "ok": False,
+            "error": "parse_error",
+            "payload": {
+                "errorLine": 42,
+                "errorColumn": 7,
+                "errorNodeType": "ERROR",
+                "contextSnippet": "public class Broken {",
+                "fileSizeBytes": 1234,
+                "classNames": ["Broken"],
+                "topLevelKinds": ["class_declaration"],
+            },
+        }
+    )
+
+    summary = await service.ingest(FIXTURE_EXPORT)
+    assert summary.parse_failures
+    assert "error_location=line 42, col 7" in caplog.text
+    assert "error_node=ERROR" in caplog.text
+    assert "file_size_bytes=1234" in caplog.text
+    assert "classes=Broken" in caplog.text
 
 
 @pytest.mark.asyncio

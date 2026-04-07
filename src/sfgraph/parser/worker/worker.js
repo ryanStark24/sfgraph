@@ -45,6 +45,64 @@ function writeResponse(payload) {
   process.stdout.write(body);
 }
 
+function clip(text, limit = 180) {
+  if (typeof text !== 'string') return '';
+  return text.length <= limit ? text : text.slice(0, limit);
+}
+
+function summarizeParseFailure(root, filePath, content) {
+  let errorNode = null;
+  try {
+    const errors = root.descendantsOfType('ERROR');
+    if (errors && errors.length > 0) {
+      errorNode = errors[0];
+    }
+  } catch (_e) {
+    // Best-effort diagnostics only.
+  }
+
+  const topLevel = [];
+  try {
+    for (const child of root.namedChildren || []) {
+      topLevel.push(child.type);
+    }
+  } catch (_e) {
+    // ignore
+  }
+
+  const classNames = [];
+  try {
+    for (const cls of root.descendantsOfType('class_declaration')) {
+      const name = cls.childForFieldName('name')?.text;
+      if (name) classNames.push(name);
+      if (classNames.length >= 5) break;
+    }
+  } catch (_e) {
+    // ignore
+  }
+
+  const line = errorNode ? errorNode.startPosition.row + 1 : null;
+  const column = errorNode ? errorNode.startPosition.column + 1 : null;
+  let contextSnippet = '';
+  if (errorNode && content) {
+    contextSnippet = clip(errorNode.text || '', 220);
+  } else if (content) {
+    const firstLines = content.split('\n').slice(0, 5).join('\n');
+    contextSnippet = clip(firstLines, 220);
+  }
+
+  return {
+    filePath,
+    fileSizeBytes: Buffer.byteLength(content || '', 'utf8'),
+    errorNodeType: errorNode ? errorNode.type : null,
+    errorLine: line,
+    errorColumn: column,
+    topLevelKinds: topLevel.slice(0, 12),
+    classNames,
+    contextSnippet,
+  };
+}
+
 /**
  * extractRawFacts — Full CST traversal for APEX-01 through APEX-09.
  * @param {object} root - tree-sitter root node
@@ -293,7 +351,7 @@ function handleLine(line) {
         requestId: msg.requestId,
         ok: false,
         error: 'parse_error',
-        payload: null,
+        payload: summarizeParseFailure(root, msg.filePath, content),
       });
       return;
     }
@@ -310,7 +368,13 @@ function handleLine(line) {
       requestId: msg.requestId,
       ok: false,
       error: e.message,
-      payload: null,
+      payload: {
+        filePath: msg.filePath,
+        fileSizeBytes: typeof msg.fileContent === 'string'
+          ? Buffer.byteLength(msg.fileContent, 'utf8')
+          : null,
+        exceptionName: e.name || 'Error',
+      },
     });
   }
 }
