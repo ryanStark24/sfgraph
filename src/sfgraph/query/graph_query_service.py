@@ -690,6 +690,76 @@ class GraphQueryService:
             return object_name, event
         return None
 
+    @staticmethod
+    def _change_query_target(question: str) -> str | None:
+        q = " ".join(question.strip().split())
+        patterns = (
+            r"\bwhat\s+breaks\s+if\s+i\s+change\s+(.+)$",
+            r"\bimpact\s+of\s+changing\s+(.+)$",
+            r"\bimpact\s+if\s+i\s+change\s+(.+)$",
+            r"\bwhat\s+is\s+impacted\s+by\s+(.+)$",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, q, flags=re.IGNORECASE)
+            if not match:
+                continue
+            target = match.group(1).strip().strip("?.")
+            if target:
+                return target
+        return None
+
+    async def analyze_change(
+        self,
+        target: str | None = None,
+        changed_files: list[str] | None = None,
+        max_hops: int = 2,
+        max_results_per_component: int = 25,
+    ) -> dict[str, Any]:
+        files: list[str] = []
+        target_resolution: dict[str, Any] = {"target": target, "mode": None}
+
+        if changed_files:
+            files = [str(Path(item)) for item in changed_files if str(item).strip()]
+            target_resolution["mode"] = "explicit_files"
+        elif target:
+            target_clean = target.strip()
+            if "/" in target_clean or target_clean.endswith((".cls", ".trigger", ".xml", ".json")):
+                file_path = Path(target_clean)
+                if not file_path.is_absolute():
+                    file_path = (self._repo_root / file_path).resolve()
+                files = [str(file_path)]
+                target_resolution["mode"] = "file_target"
+            else:
+                nodes = await self._find_component_nodes(target_clean, max_results=10)
+                resolved_files: list[str] = []
+                for node in nodes:
+                    source_file = str(node.get("props", {}).get("sourceFile", ""))
+                    if not source_file:
+                        continue
+                    source_path = Path(source_file)
+                    if not source_path.is_absolute():
+                        source_path = (self._repo_root / source_path).resolve()
+                    resolved_files.append(str(source_path))
+                files = sorted(set(resolved_files))
+                target_resolution["mode"] = "component_target"
+                target_resolution["resolved_components"] = [node["qualifiedName"] for node in nodes]
+        else:
+            files = []
+            target_resolution["mode"] = "none"
+
+        impact = await self.impact_from_changed_files(
+            changed_files=files,
+            max_hops=max_hops,
+            max_results_per_component=max_results_per_component,
+        )
+        return {
+            "mode": "analyze_change",
+            "target_resolution": target_resolution,
+            "analysis": impact,
+            "freshness": impact.get("freshness"),
+            "partial_results": impact.get("partial_results", False),
+        }
+
     async def analyze_field(self, field_name: str, focus: str = "both", max_results: int = 100) -> dict[str, Any]:
         resolved_fields = await self._field_targets_for_question(field_name)
         if not resolved_fields:
@@ -853,6 +923,16 @@ class GraphQueryService:
         offset: int = 0,
     ) -> dict[str, Any]:
         q = question.strip()
+        change_target = self._change_query_target(q)
+        if change_target:
+            result = await self.analyze_change(target=change_target, max_hops=max_hops, max_results_per_component=max_results)
+            result["question"] = q
+            result["pipeline"] = {
+                "intent": "analyze_change",
+                "hint": "Change-impact query routed to impact analysis.",
+            }
+            return result
+
         object_event = self._object_event_query_parts(q)
         if object_event:
             object_name, event = object_event

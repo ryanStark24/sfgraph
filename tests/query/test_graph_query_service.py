@@ -723,6 +723,23 @@ async def test_query_routes_object_event_questions_to_event_analysis(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_analyze_change_resolves_component_to_source_files(svc: GraphQueryService):
+    payload = await svc.analyze_change(target="AccountService", max_hops=2, max_results_per_component=10)
+    assert payload["mode"] == "analyze_change"
+    assert payload["target_resolution"]["mode"] == "component_target"
+    assert payload["analysis"]["changed_files"]
+    assert any(path.endswith("AccountService.cls") for path in payload["analysis"]["changed_files"])
+
+
+@pytest.mark.asyncio
+async def test_query_routes_change_questions_to_analyze_change(svc: GraphQueryService):
+    payload = await svc.query("what breaks if I change AccountService?")
+    assert payload["mode"] == "analyze_change"
+    assert payload["pipeline"]["intent"] == "analyze_change"
+    assert payload["target_resolution"]["mode"] in {"component_target", "file_target"}
+
+
+@pytest.mark.asyncio
 async def test_test_gap_intelligence_from_changed_files(svc: GraphQueryService):
     payload = await svc.test_gap_intelligence_from_changed_files(
         changed_files=["classes/AccountService.cls"],

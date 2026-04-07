@@ -449,6 +449,26 @@ async def query(
 
 
 @mcp.tool()
+async def analyze_change(
+    ctx: Context,
+    target: str | None = None,
+    changed_files: list[str] | None = None,
+    max_hops: int = 2,
+    max_results_per_component: int = 25,
+) -> str:
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app)
+    return _daemon_call(
+        daemon,
+        "analyze_change",
+        target=target,
+        changed_files=changed_files or [],
+        max_hops=max_hops,
+        max_results_per_component=max_results_per_component,
+    )
+
+
+@mcp.tool()
 async def impact_from_git_diff(
     ctx: Context,
     base_ref: str = "HEAD~1",

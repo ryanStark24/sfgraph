@@ -504,6 +504,16 @@ class DaemonOperations:
             max_results=int(params.get("max_results", 100)),
         )
 
+    async def analyze_change(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = build_query_service(self.app)
+        changed_files = params.get("changed_files")
+        return await service.analyze_change(
+            target=str(params["target"]) if params.get("target") is not None else None,
+            changed_files=[str(item) for item in changed_files] if isinstance(changed_files, list) else None,
+            max_hops=int(params.get("max_hops", 2)),
+            max_results_per_component=int(params.get("max_results_per_component", 25)),
+        )
+
     async def query(self, params: dict[str, Any]) -> dict[str, Any]:
         service = build_query_service(self.app)
         return await service.query(

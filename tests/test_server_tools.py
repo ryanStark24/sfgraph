@@ -115,6 +115,32 @@ async def test_analyze_component_proxies_to_current_daemon():
 
 
 @pytest.mark.asyncio
+async def test_analyze_change_proxies_to_current_daemon():
+    export_dir = str(Path("/tmp/repo").resolve())
+    daemon = _FakeDaemon()
+    app = SimpleNamespace(
+        runtime_root=Path("/tmp/runtime/workspaces"),
+        session_data_root=Path("/tmp/runtime/session/data"),
+        daemons={export_dir: daemon},
+        job_routes={},
+        active_export_dir=export_dir,
+    )
+    payload = await server.analyze_change(
+        _ctx(app),
+        target="AccountService",
+        changed_files=["force-app/main/default/classes/AccountService.cls"],
+        max_hops=3,
+        max_results_per_component=12,
+    )
+    decoded = json.loads(payload)
+    assert decoded["method"] == "analyze_change"
+    assert decoded["params"]["target"] == "AccountService"
+    assert decoded["params"]["changed_files"] == ["force-app/main/default/classes/AccountService.cls"]
+    assert decoded["params"]["max_hops"] == 3
+    assert decoded["params"]["max_results_per_component"] == 12
+
+
+@pytest.mark.asyncio
 async def test_status_uses_session_daemon_before_export_activation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "repo"
     workspace.mkdir(parents=True, exist_ok=True)
