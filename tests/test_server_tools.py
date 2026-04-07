@@ -96,6 +96,25 @@ async def test_non_export_tools_proxy_to_daemon():
 
 
 @pytest.mark.asyncio
+async def test_analyze_component_proxies_to_current_daemon():
+    export_dir = str(Path("/tmp/repo").resolve())
+    daemon = _FakeDaemon()
+    app = SimpleNamespace(
+        runtime_root=Path("/tmp/runtime/workspaces"),
+        session_data_root=Path("/tmp/runtime/session/data"),
+        daemons={export_dir: daemon},
+        job_routes={},
+        active_export_dir=export_dir,
+    )
+    payload = await server.analyze_component("OSS_ServiceabilityTask", _ctx(app), token="accessId", focus="writes")
+    decoded = json.loads(payload)
+    assert decoded["method"] == "analyze_component"
+    assert decoded["params"]["component_name"] == "OSS_ServiceabilityTask"
+    assert decoded["params"]["token"] == "accessId"
+    assert decoded["params"]["focus"] == "writes"
+
+
+@pytest.mark.asyncio
 async def test_status_uses_session_daemon_before_export_activation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "repo"
     workspace.mkdir(parents=True, exist_ok=True)

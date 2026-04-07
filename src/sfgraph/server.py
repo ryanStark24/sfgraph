@@ -415,6 +415,26 @@ async def analyze_object_event(
 
 
 @mcp.tool()
+async def analyze_component(
+    component_name: str,
+    ctx: Context,
+    token: str | None = None,
+    focus: str = "both",
+    max_results: int = 100,
+) -> str:
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app)
+    return _daemon_call(
+        daemon,
+        "analyze_component",
+        component_name=component_name,
+        token=token,
+        focus=focus,
+        max_results=max_results,
+    )
+
+
+@mcp.tool()
 async def query(
     question: str,
     ctx: Context,

@@ -495,6 +495,15 @@ class DaemonOperations:
             max_results=int(params.get("max_results", 50)),
         )
 
+    async def analyze_component(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = build_query_service(self.app)
+        return await service.analyze_component(
+            component_name=str(params["component_name"]),
+            token=str(params["token"]) if params.get("token") is not None else None,
+            focus=str(params.get("focus", "both")),
+            max_results=int(params.get("max_results", 100)),
+        )
+
     async def query(self, params: dict[str, Any]) -> dict[str, Any]:
         service = build_query_service(self.app)
         return await service.query(

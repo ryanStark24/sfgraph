@@ -484,6 +484,194 @@ class GraphQueryService:
 
         return "mention", 0.65
 
+    @staticmethod
+    def _classify_component_token_match(token: str, line: str, window: str, file_path: Path) -> tuple[str, float]:
+        lower_line = line.lower()
+        lower_window = window.lower()
+        escaped = re.escape(token)
+        if file_path.suffix in {".cls", ".trigger"}:
+            write_patterns = (
+                rf"\b{escaped}\b\s*=",
+                rf"\.put\(\s*['\"]{escaped}['\"]\s*,",
+                rf"['\"]{escaped}['\"]\s*:",
+            )
+            read_patterns = (
+                rf"\b{escaped}\b",
+                rf"\.get\(\s*['\"]{escaped}['\"]\s*\)",
+            )
+            if any(re.search(pattern, line) for pattern in write_patterns):
+                return "write", 0.98
+            if any(re.search(pattern, line) for pattern in read_patterns):
+                if "put(" in lower_window or "= " in lower_window:
+                    return "read", 0.9
+                return "mention", 0.75
+            return "mention", 0.7
+        if file_path.suffix == ".json":
+            if any(keyword in lower_window for keyword in ("put(", "destinationfield", "destinationfields", "output", "setvalues")):
+                return "write", 0.88
+            if any(keyword in lower_window for keyword in ("sourcefield", "input", "get(", "extract", "query")):
+                return "read", 0.82
+            return "mention", 0.7
+        if file_path.suffix.endswith(".xml"):
+            if any(keyword in lower_window for keyword in ("<assigntoreference>", "<recordupdates>", "<outputassignments>")):
+                return "write", 0.84
+            return "mention", 0.7
+        return "mention", 0.65
+
+    async def _find_component_nodes(self, component_name: str, max_results: int = 20) -> list[dict[str, Any]]:
+        search = component_name.strip()
+        if not search:
+            return []
+        normalized_search = self._rules.resolve_alias(search)
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for label in await self._labels():
+            try:
+                rows = await self._graph.query(
+                    f'SELECT qualified_name, props FROM "{label}" WHERE lower(qualified_name) LIKE $needle LIMIT 200',
+                    {"needle": f"%{normalized_search.lower()}%"},
+                )
+            except Exception:
+                rows = []
+            for row in rows:
+                scoped_qname = str(row.get("qualified_name", ""))
+                if not scoped_qname or scoped_qname in seen or not self._is_in_scope(scoped_qname):
+                    continue
+                descoped = self._descope_qname(scoped_qname)
+                if descoped != normalized_search and not descoped.endswith(f".{normalized_search}") and normalized_search.lower() not in descoped.lower():
+                    continue
+                seen.add(scoped_qname)
+                out.append(
+                    {
+                        "qualifiedName": descoped,
+                        "scopedQualifiedName": scoped_qname,
+                        "label": label,
+                        "props": _parse_props(row.get("props")),
+                    }
+                )
+                if len(out) >= max_results:
+                    return out
+        return out
+
+    async def analyze_component(
+        self,
+        component_name: str,
+        token: str | None = None,
+        focus: str = "both",
+        max_results: int = 100,
+    ) -> dict[str, Any]:
+        resolved_nodes = await self._find_component_nodes(component_name, max_results=25)
+        exact_matches: list[dict[str, Any]] = []
+        graph_relations: list[dict[str, Any]] = []
+        seen_exact: set[tuple[str, int, str]] = set()
+
+        for node in resolved_nodes:
+            qname = node["qualifiedName"]
+            outgoing = await self._edges_for_node(qname, "out")
+            incoming = await self._edges_for_node(qname, "in")
+            graph_relations.append(
+                {
+                    "node": qname,
+                    "outgoing": outgoing[:25],
+                    "incoming": incoming[:25],
+                }
+            )
+
+            source_file = str(node.get("props", {}).get("sourceFile", ""))
+            if not source_file:
+                continue
+            source_path = Path(source_file)
+            if not source_path.is_absolute():
+                source_path = (self._repo_root / source_path).resolve()
+            text = self._read_text_safe(source_path)
+            if not text:
+                continue
+            if token and token not in text:
+                continue
+            lines = text.splitlines()
+            if token:
+                token_matcher = token
+            else:
+                token_matcher = component_name
+            for idx, line in enumerate(lines, start=1):
+                if token_matcher not in line:
+                    continue
+                start = max(0, idx - 3)
+                end = min(len(lines), idx + 2)
+                window = "\n".join(lines[start:end])
+                kind, confidence = self._classify_component_token_match(token_matcher, line, window, source_path)
+                if focus == "writes" and kind != "write":
+                    continue
+                if focus == "reads" and kind not in {"read", "write"}:
+                    continue
+                key = (str(source_path), idx, kind)
+                if key in seen_exact:
+                    continue
+                seen_exact.add(key)
+                exact_matches.append(
+                    {
+                        "component": qname,
+                        "token": token_matcher,
+                        "kind": kind,
+                        "file": str(source_path),
+                        "line": idx,
+                        "context": line.strip()[:240],
+                        "confidence": confidence,
+                    }
+                )
+
+        exact_matches.sort(key=lambda item: (0 if item["kind"] == "write" else 1, -float(item["confidence"])))
+        partial = len(exact_matches) > max_results or len(graph_relations) > max_results
+        return {
+            "mode": "analyze_component",
+            "component_query": component_name,
+            "resolved_components": resolved_nodes[:max_results],
+            "token": token,
+            "focus": focus,
+            "exact_matches": exact_matches[:max_results],
+            "graph_relations": graph_relations[:max_results],
+            "freshness": await self.freshness(partial_results=partial),
+            "partial_results": partial,
+            "coverage_note": (
+                "Exact source matches are prioritized for token-level tracing. "
+                "Graph relations provide neighboring context for impact and lineage."
+            ),
+        }
+
+    @staticmethod
+    def _component_token_query_parts(question: str) -> tuple[str, str] | None:
+        q = " ".join(question.strip().split())
+        patterns = (
+            (
+                r"\bin\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*,?\s*where\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:is\s+)?(?:populated|set|assigned|updated)\b",
+                ("component", "token"),
+            ),
+            (
+                r"\bin\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*,?\s*where\s+is\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:being\s+)?(?:populated|set|assigned|updated)\b",
+                ("component", "token"),
+            ),
+            (
+                r"\bwhere\s+is\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:being\s+)?(?:populated|set|assigned|updated)\s+in\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                ("token", "component"),
+            ),
+            (
+                r"\bin\s+([A-Za-z_][A-Za-z0-9_]*)\s*,?\s*where\s+is\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:being\s+)?(?:populated|set|assigned|updated)\b",
+                ("component", "token"),
+            ),
+        )
+        for pattern, order in patterns:
+            match = re.search(pattern, q, flags=re.IGNORECASE)
+            if not match:
+                continue
+            if order == ("token", "component"):
+                token = match.group(1)
+                component = match.group(2)
+            else:
+                component = match.group(1)
+                token = match.group(2)
+            return component, token
+        return None
+
     async def analyze_field(self, field_name: str, focus: str = "both", max_results: int = 100) -> dict[str, Any]:
         resolved_fields = await self._field_targets_for_question(field_name)
         if not resolved_fields:
@@ -647,6 +835,23 @@ class GraphQueryService:
         offset: int = 0,
     ) -> dict[str, Any]:
         q = question.strip()
+        component_token = self._component_token_query_parts(q)
+        if component_token:
+            component_name, token = component_token
+            result = await self.analyze_component(
+                component_name=component_name,
+                token=token,
+                focus="writes",
+                max_results=max_results,
+            )
+            result["question"] = q
+            result["pipeline"] = {
+                "intent": "component_token_writes",
+                "hint": "Exact component token tracing; semantic vector fallback disabled.",
+            }
+            result["confidence_tiers"] = self._confidence_tiers(result.get("exact_matches", []))
+            return result
+
         schema_filter, schema_trace = await self._schema_filter(q)
         intent = self._intent(q)
         planner_trace = self._planner_agent.run(question=q, intent=intent)

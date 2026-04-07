@@ -360,6 +360,49 @@ async def test_analyze_object_event_finds_matching_triggers(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_analyze_component_token_traces_exact_assignments(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_component.db"))
+    await manifest.initialize()
+    await graph.merge_node(
+        "ApexClass",
+        {"qualifiedName": "OrderNowUpdateAttribute"},
+        {
+            "qualifiedName": "OrderNowUpdateAttribute",
+            "sourceFile": "force-app/main/default/classes/OrderNowUpdateAttribute.cls",
+            "lineNumber": 1,
+            "parserType": "apex_cst",
+        },
+    )
+    class_file = tmp_path / "force-app" / "main" / "default" / "classes" / "OrderNowUpdateAttribute.cls"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_text(
+        "public class OrderNowUpdateAttribute {\n"
+        "  public static Map<String, Object> updateAttrib(Map<String, Object> input, Id qliId) {\n"
+        "    Map<String, Object> drinputMap = new Map<String, Object>();\n"
+        "    drinputMap.put('accessId', qliId);\n"
+        "    String accessId = (String) input.get('accessId');\n"
+        "    return drinputMap;\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_component("OrderNowUpdateAttribute", token="accessId", focus="writes")
+    assert payload["resolved_components"]
+    assert payload["exact_matches"]
+    assert any(item["kind"] == "write" for item in payload["exact_matches"])
+    assert any(item["file"].endswith("OrderNowUpdateAttribute.cls") for item in payload["exact_matches"])
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
 async def test_get_node_returns_adjacent_edges(svc: GraphQueryService):
     payload = await svc.get_node("Account.Status__c")
     assert payload["node"] is not None
@@ -637,6 +680,16 @@ async def test_query_uses_vector_fallback_when_no_lexical_hits(tmp_path: Path):
     assert payload["pipeline"]["agent_trace"]
     await manifest.close()
     await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_query_routes_component_token_population_to_exact_component_analysis(svc: GraphQueryService):
+    svc._vectors = AsyncMock()
+    payload = await svc.query("In class OSS_ServiceabilityTask, where is accessId populated? show method and source file.")
+    assert payload["mode"] == "analyze_component"
+    assert payload["pipeline"]["intent"] == "component_token_writes"
+    assert "vector fallback disabled" in payload["pipeline"]["hint"].lower()
+    svc._vectors.search.assert_not_called()
 
 
 @pytest.mark.asyncio
