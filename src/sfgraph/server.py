@@ -391,6 +391,30 @@ async def explain_field(field_qualified_name: str, ctx: Context) -> str:
 
 
 @mcp.tool()
+async def analyze_field(
+    field_name: str,
+    ctx: Context,
+    focus: str = "both",
+    max_results: int = 100,
+) -> str:
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "analyze_field", field_name=field_name, focus=focus, max_results=max_results)
+
+
+@mcp.tool()
+async def analyze_object_event(
+    object_name: str,
+    event: str,
+    ctx: Context,
+    max_results: int = 50,
+) -> str:
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "analyze_object_event", object_name=object_name, event=event, max_results=max_results)
+
+
+@mcp.tool()
 async def query(
     question: str,
     ctx: Context,

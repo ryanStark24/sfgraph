@@ -479,6 +479,22 @@ class DaemonOperations:
         service = build_query_service(self.app)
         return await service.explain_field(field_qualified_name=str(params["field_qualified_name"]))
 
+    async def analyze_field(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = build_query_service(self.app)
+        return await service.analyze_field(
+            field_name=str(params["field_name"]),
+            focus=str(params.get("focus", "both")),
+            max_results=int(params.get("max_results", 100)),
+        )
+
+    async def analyze_object_event(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = build_query_service(self.app)
+        return await service.analyze_object_event(
+            object_name=str(params["object_name"]),
+            event=str(params["event"]),
+            max_results=int(params.get("max_results", 50)),
+        )
+
     async def query(self, params: dict[str, Any]) -> dict[str, Any]:
         service = build_query_service(self.app)
         return await service.query(

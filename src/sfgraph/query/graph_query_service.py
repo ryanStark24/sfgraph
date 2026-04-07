@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import time
@@ -59,6 +60,18 @@ def _semantic_kind(rel_type: str, context: str) -> str:
 
 class GraphQueryService:
     """Provides lineage and query helpers over the current graph store."""
+
+    _SKIP_DIR_NAMES = frozenset({".git", ".hg", ".svn", "node_modules", ".sf", ".sfdx", ".venv", "venv", "__pycache__"})
+    _EXACT_SEARCH_SUFFIXES = (
+        ".cls",
+        ".trigger",
+        ".flow-meta.xml",
+        ".object-meta.xml",
+        ".labels-meta.xml",
+        ".label-meta.xml",
+        ".json",
+        ".xml",
+    )
 
     def __init__(
         self,
@@ -419,6 +432,210 @@ class GraphQueryService:
             "dependents": dependents,
             "freshness": await self.freshness(partial_results=partial),
             "partial_results": partial,
+        }
+
+    def _iter_repo_files(self, suffixes: tuple[str, ...] | None = None):
+        suffixes = suffixes or self._EXACT_SEARCH_SUFFIXES
+        for current_root, dirs, filenames in os.walk(self._repo_root):
+            dirs[:] = [d for d in dirs if d not in self._SKIP_DIR_NAMES]
+            for filename in filenames:
+                if not filename.endswith(suffixes):
+                    continue
+                yield Path(current_root) / filename
+
+    @staticmethod
+    def _read_text_safe(path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _classify_exact_field_match(
+        field_token: str,
+        line: str,
+        window: str,
+        file_path: Path,
+    ) -> tuple[str, float]:
+        lower_line = line.lower()
+        lower_window = window.lower()
+        if file_path.suffix in {".cls", ".trigger"}:
+            assignment_patterns = (
+                rf"\b{re.escape(field_token)}\b\s*=",
+                rf"\.\s*{re.escape(field_token)}\s*=",
+            )
+            if any(re.search(pattern, line) for pattern in assignment_patterns):
+                return "write", 0.98
+            if any(keyword in lower_window for keyword in ("select ", "where ", ".get(", "map<", "jsonattribute", "serviceid")):
+                return "read", 0.9
+            return "mention", 0.75
+
+        if file_path.suffix == ".json":
+            if any(keyword in lower_window for keyword in ("destinationfield", "destinationfields", "targetfield", "updateablefields")):
+                return "write", 0.9
+            if any(keyword in lower_window for keyword in ("sourcefield", "sourcefields", "input", "query", "extract")):
+                return "read", 0.82
+            return "mention", 0.7
+
+        if file_path.suffix.endswith(".xml"):
+            if any(keyword in lower_window for keyword in ("<field>", "<assigntoreference>", "<outputassignments>", "<recordupdates>")):
+                return "write", 0.85
+            return "mention", 0.7
+
+        return "mention", 0.65
+
+    async def analyze_field(self, field_name: str, focus: str = "both", max_results: int = 100) -> dict[str, Any]:
+        resolved_fields = await self._field_targets_for_question(field_name)
+        if not resolved_fields:
+            resolved_fields = [self._rules.resolve_alias(field_name)]
+
+        findings: list[dict[str, Any]] = []
+        repo_results: list[dict[str, Any]] = []
+        seen_keys: set[tuple[str, str, int, str]] = set()
+
+        for resolved in resolved_fields:
+            explain = await self.explain_field(resolved)
+            graph_findings = []
+            if focus in {"both", "writes"}:
+                graph_findings.extend({"field": resolved, "source": "graph", "kind": "write", **item} for item in explain.get("writers", []))
+            if focus in {"both", "reads"}:
+                graph_findings.extend({"field": resolved, "source": "graph", "kind": "read", **item} for item in explain.get("readers", []))
+            findings.extend(graph_findings)
+
+            token = resolved.split(".", 1)[1] if "." in resolved else resolved
+            for path in self._iter_repo_files():
+                text = self._read_text_safe(path)
+                if token not in text and resolved not in text:
+                    continue
+                lines = text.splitlines()
+                for idx, line in enumerate(lines, start=1):
+                    if token not in line and resolved not in line:
+                        continue
+                    start = max(0, idx - 3)
+                    end = min(len(lines), idx + 2)
+                    window = "\n".join(lines[start:end])
+                    kind, confidence = self._classify_exact_field_match(token, line, window, path)
+                    if focus == "writes" and kind != "write":
+                        continue
+                    if focus == "reads" and kind not in {"read", "write"}:
+                        continue
+                    key = (str(path), resolved, idx, kind)
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    repo_results.append(
+                        {
+                            "field": resolved,
+                            "source": "repo_search",
+                            "kind": kind,
+                            "file": str(path),
+                            "line": idx,
+                            "context": line.strip()[:240],
+                            "confidence": confidence,
+                        }
+                    )
+
+        repo_results.sort(key=lambda item: (0 if item["kind"] == "write" else 1, -float(item["confidence"])))
+        findings.sort(key=lambda item: -float(item.get("confidence", 0.0)))
+        partial = len(repo_results) > max_results or len(findings) > max_results
+        return {
+            "mode": "analyze_field",
+            "field_query": field_name,
+            "resolved_fields": resolved_fields,
+            "focus": focus,
+            "graph_findings": findings[:max_results],
+            "exact_matches": repo_results[:max_results],
+            "freshness": await self.freshness(partial_results=partial),
+            "partial_results": partial,
+            "coverage_note": (
+                "Exact repo evidence and graph evidence are both included. "
+                "When graph coverage is incomplete, exact repo matches may reveal additional writers/readers."
+            ),
+        }
+
+    @staticmethod
+    def _parse_trigger_declaration(text: str) -> tuple[str, str, set[str]] | None:
+        match = re.search(r"trigger\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)", text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        trigger_name = match.group(1)
+        object_name = match.group(2)
+        events = {
+            event.strip().lower()
+            for event in match.group(3).split(",")
+            if event.strip()
+        }
+        return trigger_name, object_name, events
+
+    @staticmethod
+    def _extract_method_calls(text: str) -> list[dict[str, str]]:
+        calls: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", text):
+            klass = match.group(1)
+            method = match.group(2)
+            key = (klass, method)
+            if key in seen:
+                continue
+            seen.add(key)
+            calls.append({"className": klass, "methodName": method})
+        return calls
+
+    async def analyze_object_event(self, object_name: str, event: str, max_results: int = 50) -> dict[str, Any]:
+        target_event = event.strip().lower()
+        matched_triggers: list[dict[str, Any]] = []
+        for path in self._iter_repo_files((".trigger",)):
+            text = self._read_text_safe(path)
+            parsed = self._parse_trigger_declaration(text)
+            if not parsed:
+                continue
+            trigger_name, trigger_object, events = parsed
+            if trigger_object.lower() != object_name.lower():
+                continue
+            if target_event not in events and f"before {target_event}" not in events and f"after {target_event}" not in events:
+                continue
+            phases = sorted(e for e in events if e.endswith(target_event))
+            matched_triggers.append(
+                {
+                    "triggerName": trigger_name,
+                    "objectName": trigger_object,
+                    "events": sorted(events),
+                    "matchingPhases": phases or [target_event],
+                    "file": str(path),
+                    "methodCalls": self._extract_method_calls(text),
+                }
+            )
+
+        phase_map: dict[str, list[dict[str, Any]]] = {}
+        for trigger in matched_triggers:
+            for phase in trigger["matchingPhases"]:
+                phase_map.setdefault(phase, []).append(trigger)
+
+        findings: list[dict[str, Any]] = []
+        for phase, triggers in sorted(phase_map.items()):
+            for trigger in triggers:
+                findings.append(
+                    {
+                        "phase": phase,
+                        "triggerName": trigger["triggerName"],
+                        "file": trigger["file"],
+                        "methodCalls": trigger["methodCalls"][:20],
+                    }
+                )
+
+        return {
+            "mode": "analyze_object_event",
+            "object_name": object_name,
+            "event": target_event,
+            "triggers": matched_triggers[:max_results],
+            "phases": phase_map,
+            "findings": findings[:max_results],
+            "freshness": await self.freshness(partial_results=len(matched_triggers) > max_results),
+            "partial_results": len(matched_triggers) > max_results,
+            "important_note": (
+                "Salesforce does not guarantee execution order across multiple triggers on the same object event. "
+                "All matched triggers run in the same transaction."
+            ),
         }
 
     async def query(

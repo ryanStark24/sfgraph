@@ -260,6 +260,106 @@ async def test_query_field_population_is_strict_and_exact(svc: GraphQueryService
 
 
 @pytest.mark.asyncio
+async def test_analyze_field_combines_graph_and_exact_repo_matches(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_field.db"))
+    await manifest.initialize()
+
+    await graph.merge_node(
+        "SFField",
+        {"qualifiedName": "OrderItem.Service_Id__c"},
+        {
+            "qualifiedName": "OrderItem.Service_Id__c",
+            "sourceFile": "objects/OrderItem/fields/Service_Id__c.field-meta.xml",
+            "lineNumber": 1,
+            "parserType": "xml_object",
+        },
+    )
+    await graph.merge_node(
+        "ApexClass",
+        {"qualifiedName": "OrderExtensionEngine"},
+        {
+            "qualifiedName": "OrderExtensionEngine",
+            "sourceFile": "classes/OrderExtensionEngine.cls",
+            "lineNumber": 1,
+            "parserType": "apex_cst",
+        },
+    )
+    await graph.merge_edge(
+        "OrderExtensionEngine",
+        "ApexClass",
+        "WRITES_FIELD",
+        "OrderItem.Service_Id__c",
+        "SFField",
+        {
+            "confidence": 0.96,
+            "resolutionMethod": "cst",
+            "edgeCategory": "DATA_FLOW",
+            "contextSnippet": "orderItemEach.Service_Id__c = serviceId;",
+        },
+    )
+
+    code_file = tmp_path / "force-app" / "main" / "default" / "classes" / "OrderExtensionEngine.cls"
+    code_file.parent.mkdir(parents=True, exist_ok=True)
+    code_file.write_text(
+        "public class OrderExtensionEngine {\n"
+        "  public static void apply(OrderItem orderItemEach, String serviceId) {\n"
+        "    orderItemEach.Service_Id__c = serviceId;\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_field("Service_Id__c", focus="writes")
+    assert "OrderItem.Service_Id__c" in payload["resolved_fields"]
+    assert payload["graph_findings"]
+    assert payload["exact_matches"]
+    assert any(match["file"].endswith("OrderExtensionEngine.cls") for match in payload["exact_matches"])
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_object_event_finds_matching_triggers(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_trigger.db"))
+    await manifest.initialize()
+    trigger_file = tmp_path / "force-app" / "main" / "default" / "triggers" / "QuoteLineItemTrigger.trigger"
+    trigger_file.parent.mkdir(parents=True, exist_ok=True)
+    trigger_file.write_text(
+        "trigger QuoteLineItemTrigger on QuoteLineItem (before insert, after insert, before update) {\n"
+        "  if (Trigger.isBefore && Trigger.isInsert) {\n"
+        "    QuoteLineItemTriggerHelper.processBuildersBeforeInsertCode(Trigger.new);\n"
+        "  }\n"
+        "  if (Trigger.isAfter && Trigger.isInsert) {\n"
+        "    QuoteLineItemTriggerHelper.processAfterInsert(Trigger.new);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_object_event("QuoteLineItem", "insert")
+    assert payload["triggers"]
+    assert payload["triggers"][0]["triggerName"] == "QuoteLineItemTrigger"
+    calls = payload["triggers"][0]["methodCalls"]
+    assert any(call["className"] == "QuoteLineItemTriggerHelper" for call in calls)
+    assert payload["important_note"]
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
 async def test_get_node_returns_adjacent_edges(svc: GraphQueryService):
     payload = await svc.get_node("Account.Status__c")
     assert payload["node"] is not None
