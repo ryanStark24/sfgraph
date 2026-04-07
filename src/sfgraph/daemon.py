@@ -60,6 +60,23 @@ class _DaemonHandler(BaseHTTPRequestHandler):
         if self.path == "/meta":
             self._send_json(200, getattr(self.server, "meta_payload"))
             return
+        if self.path == "/progress-snapshot":
+            progress_path = Path(getattr(self.server, "data_root")) / "ingestion_progress.json"
+            if not progress_path.exists():
+                self._send_json(200, {"available": False, "state": "idle"})
+                return
+            try:
+                payload = json.loads(progress_path.read_text(encoding="utf-8"))
+            except Exception:
+                self._send_json(200, {"available": False, "state": "idle"})
+                return
+            if not isinstance(payload, dict):
+                self._send_json(200, {"available": False, "state": "idle"})
+                return
+            payload = dict(payload)
+            payload["available"] = True
+            self._send_json(200, payload)
+            return
         self._send_json(404, {"error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -112,6 +129,7 @@ async def run_daemon(data_root: Path, host: str, port: int) -> None:
     server.loop = loop  # type: ignore[attr-defined]
     server.operations = DaemonOperations(app)  # type: ignore[attr-defined]
     server.meta_payload = meta  # type: ignore[attr-defined]
+    server.data_root = str(data_root)  # type: ignore[attr-defined]
 
     thread = threading.Thread(target=server.serve_forever, name="sfgraphd-http", daemon=True)
     thread.start()

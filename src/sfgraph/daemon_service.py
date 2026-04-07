@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -81,39 +82,24 @@ async def create_app_context(data_root: Path) -> DaemonAppContext:
     parse_cache = ParseCache(db_path=str(data_root / "parse_cache.sqlite"))
     pool = NodeParserPool()
     jobs = IngestJobManager(
-        ingest_factory=lambda export_dir, options: build_ingestion_service_from_parts(
-            graph=graph,
-            manifest=manifest,
-            parse_cache=parse_cache,
-            pool=pool,
-            vectors=vectors,
+        ingest_factory=lambda export_dir, options: _run_job_in_worker_thread(
+            job_type="ingest",
             data_root=data_root,
-            mode=str(options.get("mode", "full")),
-            include_globs=_as_string_list(options.get("include_globs")),
-            exclude_globs=_as_string_list(options.get("exclude_globs")),
-        ).ingest(export_dir),
-        refresh_factory=lambda export_dir, options: build_ingestion_service_from_parts(
-            graph=graph,
-            manifest=manifest,
-            parse_cache=parse_cache,
-            pool=pool,
-            vectors=vectors,
+            export_dir=export_dir,
+            options=options,
+        ),
+        refresh_factory=lambda export_dir, options: _run_job_in_worker_thread(
+            job_type="refresh",
             data_root=data_root,
-            mode=str(options.get("mode", "full")),
-            include_globs=_as_string_list(options.get("include_globs")),
-            exclude_globs=_as_string_list(options.get("exclude_globs")),
-        ).refresh(export_dir),
-        vectorize_factory=lambda export_dir, options: build_ingestion_service_from_parts(
-            graph=graph,
-            manifest=manifest,
-            parse_cache=parse_cache,
-            pool=pool,
-            vectors=vectors,
+            export_dir=export_dir,
+            options=options,
+        ),
+        vectorize_factory=lambda export_dir, options: _run_job_in_worker_thread(
+            job_type="vectorize",
             data_root=data_root,
-            mode="full",
-            include_globs=[],
-            exclude_globs=[],
-        ).vectorize(export_dir),
+            export_dir=export_dir,
+            options=options,
+        ),
     )
     await manifest.initialize()
     await parse_cache.initialize()
@@ -135,6 +121,19 @@ async def close_app_context(app: DaemonAppContext) -> None:
     await app.parse_cache.close()
     await app.manifest.close()
     await app.graph.close()
+
+
+async def _close_runtime_parts(
+    *,
+    graph: DuckPGQStore,
+    manifest: ManifestStore,
+    parse_cache: ParseCache,
+    pool: NodeParserPool,
+) -> None:
+    await pool.shutdown()
+    await parse_cache.close()
+    await manifest.close()
+    await graph.close()
 
 
 def build_ingestion_service(app: DaemonAppContext) -> IngestionService:
@@ -182,6 +181,72 @@ def build_query_service(app: DaemonAppContext) -> GraphQueryService:
         repo_root=str(Path.cwd()),
         ingestion_meta_path=str(app.data_root / "ingestion_meta.json"),
         ingestion_progress_path=str(app.data_root / "ingestion_progress.json"),
+    )
+
+
+async def _run_isolated_job(
+    *,
+    job_type: str,
+    data_root: Path,
+    export_dir: str,
+    options: dict[str, Any],
+):
+    graph = DuckPGQStore(db_path=str(data_root / "sfgraph.duckdb"))
+    vectors = VectorStore(path=str(data_root / "vectors"))
+    manifest = ManifestStore(db_path=str(data_root / "manifest.sqlite"))
+    parse_cache = ParseCache(db_path=str(data_root / "parse_cache.sqlite"))
+    pool = NodeParserPool()
+    await manifest.initialize()
+    await parse_cache.initialize()
+    await vectors.initialize()
+    await pool.start()
+    try:
+        mode = str(options.get("mode", "full"))
+        include_globs = _as_string_list(options.get("include_globs"))
+        exclude_globs = _as_string_list(options.get("exclude_globs"))
+        service = build_ingestion_service_from_parts(
+            graph=graph,
+            manifest=manifest,
+            parse_cache=parse_cache,
+            pool=pool,
+            vectors=vectors,
+            data_root=data_root,
+            mode="full" if job_type == "vectorize" else mode,
+            include_globs=[] if job_type == "vectorize" else include_globs,
+            exclude_globs=[] if job_type == "vectorize" else exclude_globs,
+        )
+        if job_type == "ingest":
+            return await service.ingest(export_dir)
+        if job_type == "refresh":
+            return await service.refresh(export_dir)
+        if job_type == "vectorize":
+            return await service.vectorize(export_dir)
+        raise ValueError(f"Unsupported job type: {job_type}")
+    finally:
+        await _close_runtime_parts(
+            graph=graph,
+            manifest=manifest,
+            parse_cache=parse_cache,
+            pool=pool,
+        )
+
+
+async def _run_job_in_worker_thread(
+    *,
+    job_type: str,
+    data_root: Path,
+    export_dir: str,
+    options: dict[str, Any],
+):
+    return await asyncio.to_thread(
+        lambda: asyncio.run(
+            _run_isolated_job(
+                job_type=job_type,
+                data_root=data_root,
+                export_dir=export_dir,
+                options=dict(options),
+            )
+        )
     )
 
 
