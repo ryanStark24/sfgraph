@@ -15,6 +15,7 @@ from sfgraph.parser.pool import NodeParserPool
 from sfgraph.query.graph_query_service import GraphQueryService
 from sfgraph.storage.duckpgq_store import DuckPGQStore
 from sfgraph.storage.manifest_store import ManifestStore
+from sfgraph.storage.parse_cache import ParseCache
 from sfgraph.storage.vector_store import VectorStore
 
 
@@ -25,19 +26,25 @@ def _build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="Run MCP server")
     serve.set_defaults(func=_cmd_serve)
 
-    ingest = sub.add_parser("ingest", help="Run full ingest for an export directory")
+    daemon = sub.add_parser("daemon", help="Run the local sfgraph daemon")
+    daemon.add_argument("--data-dir", default="./data")
+    daemon.add_argument("--host", default="127.0.0.1")
+    daemon.add_argument("--port", type=int, required=True)
+    daemon.set_defaults(func=_cmd_daemon)
+
+    ingest = sub.add_parser("ingest", help="Run full ingest for an export directory (defaults to workspace-root force-app/ and vlocity/ when present)")
     ingest.add_argument("export_dir")
     ingest.add_argument("--data-dir", default="./data")
     ingest.add_argument("--mode", choices=("full", "graph_only"), default="full")
-    ingest.add_argument("--include", action="append", default=[], help="Include glob relative to export root")
+    ingest.add_argument("--include", action="append", default=[], help="Include glob relative to export root. Overrides the default force-app/vlocity root selection.")
     ingest.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root")
     ingest.set_defaults(func=_cmd_ingest)
 
-    refresh = sub.add_parser("refresh", help="Run incremental refresh for an export directory")
+    refresh = sub.add_parser("refresh", help="Run incremental refresh for an export directory (defaults to workspace-root force-app/ and vlocity/ when present)")
     refresh.add_argument("export_dir")
     refresh.add_argument("--data-dir", default="./data")
     refresh.add_argument("--mode", choices=("full", "graph_only"), default="full")
-    refresh.add_argument("--include", action="append", default=[], help="Include glob relative to export root")
+    refresh.add_argument("--include", action="append", default=[], help="Include glob relative to export root. Overrides the default force-app/vlocity root selection.")
     refresh.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root")
     refresh.set_defaults(func=_cmd_refresh)
 
@@ -84,19 +91,22 @@ async def _build_runtime(data_dir: str, needs_pool: bool = False, enable_vectors
     graph = DuckPGQStore(db_path=str(data_path / "sfgraph.duckdb"))
     vectors = VectorStore(path=str(data_path / "vectors")) if enable_vectors else None
     manifest = ManifestStore(db_path=str(data_path / "manifest.sqlite"))
+    parse_cache = ParseCache(db_path=str(data_path / "parse_cache.sqlite"))
     await manifest.initialize()
+    await parse_cache.initialize()
     if vectors is not None:
         await vectors.initialize()
 
     pool = NodeParserPool()
     if needs_pool:
         await pool.start()
-    return {"graph": graph, "vectors": vectors, "manifest": manifest, "pool": pool, "needs_pool": needs_pool}
+    return {"graph": graph, "vectors": vectors, "manifest": manifest, "parse_cache": parse_cache, "pool": pool, "needs_pool": needs_pool}
 
 
 async def _close_runtime(runtime: dict[str, Any]) -> None:
     if runtime.get("needs_pool"):
         await runtime["pool"].shutdown()
+    await runtime["parse_cache"].close()
     await runtime["manifest"].close()
     await runtime["graph"].close()
 
@@ -108,12 +118,19 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_daemon(args: argparse.Namespace) -> int:
+    from sfgraph.daemon import main as daemon_main
+
+    return daemon_main(["--data-dir", args.data_dir, "--host", args.host, "--port", str(args.port)])
+
+
 async def _cmd_ingest(args: argparse.Namespace) -> int:
     runtime = await _build_runtime(args.data_dir, needs_pool=True, enable_vectors=args.mode != "graph_only")
     try:
         service = IngestionService(
             graph=runtime["graph"],
             manifest=runtime["manifest"],
+            parse_cache=runtime["parse_cache"],
             pool=runtime["pool"],
             vectors=runtime["vectors"],
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
@@ -134,6 +151,7 @@ async def _cmd_refresh(args: argparse.Namespace) -> int:
         service = IngestionService(
             graph=runtime["graph"],
             manifest=runtime["manifest"],
+            parse_cache=runtime["parse_cache"],
             pool=runtime["pool"],
             vectors=runtime["vectors"],
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
@@ -176,6 +194,7 @@ async def _cmd_vectorize(args: argparse.Namespace) -> int:
         service = IngestionService(
             graph=runtime["graph"],
             manifest=runtime["manifest"],
+            parse_cache=runtime["parse_cache"],
             pool=runtime["pool"],
             vectors=runtime["vectors"],
             ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),

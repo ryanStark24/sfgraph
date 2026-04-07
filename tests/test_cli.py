@@ -20,6 +20,7 @@ def test_cli_help_exits_zero():
     assert "refresh" in result.stdout
     assert "progress" in result.stdout
     assert "vectorize" in result.stdout
+    assert "daemon" in result.stdout
 
 
 def test_cli_query_help_exits_zero():
@@ -44,6 +45,23 @@ def test_cli_serve_runs_without_asyncio_wrapping(monkeypatch):
 
     assert result == 0
     assert called["run"] == 1
+
+
+def test_cli_daemon_runs_main(monkeypatch):
+    called = {"main": 0, "argv": None}
+
+    def fake_main(argv):
+        called["main"] += 1
+        called["argv"] = argv
+        return 0
+
+    monkeypatch.setitem(sys.modules, "sfgraph.daemon", types.SimpleNamespace(main=fake_main))
+
+    result = cli.main(["daemon", "--port", "31337"])
+
+    assert result == 0
+    assert called["main"] == 1
+    assert "--port" in called["argv"]
 
 
 def test_cli_progress_help_exits_zero():
