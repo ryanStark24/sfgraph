@@ -15,9 +15,11 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP, Context
 
+from sfgraph.ingestion.job_manager import IngestJobManager
 from sfgraph.ingestion.scope_migration import ScopeMigrationService
 from sfgraph.ingestion.snapshot import GraphSnapshotService
 from sfgraph.ingestion.service import IngestionService
@@ -47,6 +49,7 @@ class AppContext:
     manifest: ManifestStore
     pool: NodeParserPool
     data_root: Path
+    jobs: IngestJobManager
 
 
 @asynccontextmanager
@@ -58,13 +61,29 @@ async def lifespan(server: FastMCP):
     vectors = VectorStore(path=str(data_root / "vectors"))
     manifest = ManifestStore(db_path=str(data_root / "manifest.sqlite"))
     pool = NodeParserPool()
+    jobs = IngestJobManager(
+        ingest_factory=lambda export_dir: _build_ingestion_service_from_parts(
+            graph=graph,
+            manifest=manifest,
+            pool=pool,
+            vectors=vectors,
+            data_root=data_root,
+        ).ingest(export_dir),
+        refresh_factory=lambda export_dir: _build_ingestion_service_from_parts(
+            graph=graph,
+            manifest=manifest,
+            pool=pool,
+            vectors=vectors,
+            data_root=data_root,
+        ).refresh(export_dir),
+    )
 
     await manifest.initialize()
     await vectors.initialize()
     await pool.start()
     logger.info("All storage engines initialized")
 
-    yield AppContext(graph=graph, vectors=vectors, manifest=manifest, pool=pool, data_root=data_root)
+    yield AppContext(graph=graph, vectors=vectors, manifest=manifest, pool=pool, data_root=data_root, jobs=jobs)
 
     await pool.shutdown()
     await manifest.close()
@@ -76,13 +95,30 @@ mcp = FastMCP("sfgraph", lifespan=lifespan)
 
 
 def _build_ingestion_service(app: AppContext) -> IngestionService:
-    return IngestionService(
+    return _build_ingestion_service_from_parts(
         graph=app.graph,
         manifest=app.manifest,
         pool=app.pool,
         vectors=app.vectors,
-        ingestion_meta_path=str(app.data_root / "ingestion_meta.json"),
-        ingestion_progress_path=str(app.data_root / "ingestion_progress.json"),
+        data_root=app.data_root,
+    )
+
+
+def _build_ingestion_service_from_parts(
+    *,
+    graph: DuckPGQStore,
+    manifest: ManifestStore,
+    pool: NodeParserPool,
+    vectors: VectorStore,
+    data_root: Path,
+) -> IngestionService:
+    return IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        vectors=vectors,
+        ingestion_meta_path=str(data_root / "ingestion_meta.json"),
+        ingestion_progress_path=str(data_root / "ingestion_progress.json"),
     )
 
 
@@ -95,6 +131,28 @@ def _build_query_service(app: AppContext) -> GraphQueryService:
         ingestion_meta_path=str(app.data_root / "ingestion_meta.json"),
         ingestion_progress_path=str(app.data_root / "ingestion_progress.json"),
     )
+
+
+def _merge_job_with_progress(job: dict[str, Any], progress: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(job)
+    if progress.get("available"):
+        payload["progress"] = progress
+    return payload
+
+
+def _read_progress_snapshot(data_root: Path) -> dict[str, Any]:
+    progress_path = data_root / "ingestion_progress.json"
+    if not progress_path.exists():
+        return {"available": False, "state": "idle"}
+    try:
+        payload = json.loads(progress_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"available": False, "state": "idle"}
+    if not isinstance(payload, dict):
+        return {"available": False, "state": "idle"}
+    payload = dict(payload)
+    payload["available"] = True
+    return payload
 
 
 @mcp.tool()
@@ -128,6 +186,58 @@ async def ingest_org(export_dir: str, ctx: Context) -> str:
         },
         indent=2,
     )
+
+
+@mcp.tool()
+async def start_ingest_job(export_dir: str, ctx: Context) -> str:
+    """Start a background full ingest and return a pollable job record."""
+    app: AppContext = ctx.request_context.lifespan_context
+    export_dir = _validate_workspace_export_dir(export_dir)
+    payload = await app.jobs.start_job(job_type="ingest", export_dir=export_dir)
+    return json.dumps(payload, indent=2)
+
+
+@mcp.tool()
+async def start_refresh_job(export_dir: str, ctx: Context) -> str:
+    """Start a background refresh and return a pollable job record."""
+    app: AppContext = ctx.request_context.lifespan_context
+    export_dir = _validate_workspace_export_dir(export_dir)
+    payload = await app.jobs.start_job(job_type="refresh", export_dir=export_dir)
+    return json.dumps(payload, indent=2)
+
+
+@mcp.tool()
+async def get_ingest_job(job_id: str, ctx: Context) -> str:
+    """Return job state for a background ingest or refresh."""
+    app: AppContext = ctx.request_context.lifespan_context
+    job = await app.jobs.get_job(job_id)
+    if job is None:
+        return json.dumps({"job_id": job_id, "available": False, "error": "job_not_found"}, indent=2)
+    progress = _read_progress_snapshot(app.data_root)
+    if app.jobs.active_job_id == job_id and progress.get("state") == "running":
+        job = _merge_job_with_progress(job, progress)
+    job["available"] = True
+    return json.dumps(job, indent=2)
+
+
+@mcp.tool()
+async def list_ingest_jobs(ctx: Context) -> str:
+    """List recent background ingest jobs for this workspace process."""
+    app: AppContext = ctx.request_context.lifespan_context
+    jobs = await app.jobs.list_jobs()
+    active_job_id = app.jobs.active_job_id
+    return json.dumps({"active_job_id": active_job_id, "jobs": jobs}, indent=2)
+
+
+@mcp.tool()
+async def cancel_ingest_job(job_id: str, ctx: Context) -> str:
+    """Best-effort cancellation for a background ingest or refresh."""
+    app: AppContext = ctx.request_context.lifespan_context
+    try:
+        payload = await app.jobs.cancel_job(job_id)
+    except KeyError:
+        payload = {"job_id": job_id, "available": False, "error": "job_not_found"}
+    return json.dumps(payload, indent=2)
 
 
 @mcp.tool()
@@ -186,6 +296,12 @@ async def get_ingestion_status(ctx: Context) -> str:
     app: AppContext = ctx.request_context.lifespan_context
     service = _build_query_service(app)
     status = await service.get_ingestion_status()
+    active_job = await app.jobs.get_active_job()
+    if active_job is not None:
+        progress = _read_progress_snapshot(app.data_root)
+        status["active_job"] = _merge_job_with_progress(active_job, progress)
+    else:
+        status["active_job"] = None
     return json.dumps(status, indent=2)
 
 
@@ -195,6 +311,9 @@ async def get_ingestion_progress(ctx: Context) -> str:
     app: AppContext = ctx.request_context.lifespan_context
     service = _build_query_service(app)
     payload = await service.get_ingestion_progress()
+    active_job = await app.jobs.get_active_job()
+    if active_job is not None:
+        payload["active_job"] = active_job
     return json.dumps(payload, indent=2)
 
 
