@@ -61,6 +61,14 @@ function fileExists(filePath) {
   }
 }
 
+function readTextIfExists(filePath) {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch (_error) {
+    return "";
+  }
+}
+
 function run(command, args, options = {}) {
   const printable = [command, ...args].join(" ");
   process.stderr.write(`[sfgraph-mcp] ${printable}\n`);
@@ -79,6 +87,84 @@ function run(command, args, options = {}) {
     throw new Error(`Command failed (${result.status}): ${printable}${stderr ? `\n${stderr}` : ""}`);
   }
   return result;
+}
+
+function getWorkspacePaths(runtimeDir, workspaceRoot) {
+  const workspaceHash = crypto.createHash("sha1").update(workspaceRoot).digest("hex").slice(0, 12);
+  const workspaceDir = path.join(runtimeDir, "workspaces", workspaceHash);
+  const dataDir = path.join(workspaceDir, "data");
+  const pidFile = path.join(workspaceDir, "server.pid");
+  return { workspaceDir, dataDir, pidFile };
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function looksLikeSfgraphServerPid(pid) {
+  if (!Number.isInteger(pid) || pid <= 0 || !processExists(pid)) {
+    return false;
+  }
+  if (process.platform === "win32") {
+    return true;
+  }
+  try {
+    const result = run("ps", ["-p", String(pid), "-o", "command="], { capture: true });
+    const command = (result.stdout || "").trim();
+    return command.includes("sfgraph.server");
+  } catch (_error) {
+    return false;
+  }
+}
+
+function sleep(ms) {
+  const sab = new SharedArrayBuffer(4);
+  const int32 = new Int32Array(sab);
+  Atomics.wait(int32, 0, 0, ms);
+}
+
+function cleanupExistingServer(pidFile) {
+  if (!fileExists(pidFile)) {
+    return;
+  }
+  const raw = readTextIfExists(pidFile).trim();
+  const pid = Number.parseInt(raw, 10);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    fs.rmSync(pidFile, { force: true });
+    return;
+  }
+  if (!looksLikeSfgraphServerPid(pid)) {
+    fs.rmSync(pidFile, { force: true });
+    return;
+  }
+
+  process.stderr.write(`[sfgraph-mcp] stopping existing sfgraph.server pid ${pid}\n`);
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (_error) {
+    fs.rmSync(pidFile, { force: true });
+    return;
+  }
+
+  for (let i = 0; i < 20; i += 1) {
+    if (!processExists(pid)) {
+      fs.rmSync(pidFile, { force: true });
+      return;
+    }
+    sleep(100);
+  }
+
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (_error) {
+    // Best-effort cleanup only.
+  }
+  fs.rmSync(pidFile, { force: true });
 }
 
 function resolveNodeModulesDir() {
@@ -201,13 +287,14 @@ function bootstrapRuntime(runtimeDir, packageSpec, reinstall) {
   return { pythonPath, venvDir };
 }
 
-function startServer(pythonPath) {
+function startServer(pythonPath, runtimeDir) {
   const nodePath = resolveNodeModulesDir();
   const sfapexPackage = path.join(nodePath, "web-tree-sitter-sfapex");
   const workspaceRoot = process.cwd();
-  const workspaceHash = crypto.createHash("sha1").update(workspaceRoot).digest("hex").slice(0, 12);
-  const dataDir = path.join(DEFAULT_RUNTIME_DIR, "workspaces", workspaceHash, "data");
+  const { workspaceDir, dataDir, pidFile } = getWorkspacePaths(runtimeDir, workspaceRoot);
+  ensureDir(workspaceDir);
   ensureDir(dataDir);
+  cleanupExistingServer(pidFile);
   const env = {
     ...process.env,
     NODE_PATH: process.env.NODE_PATH ? `${nodePath}${path.delimiter}${process.env.NODE_PATH}` : nodePath,
@@ -221,8 +308,10 @@ function startServer(pythonPath) {
     env,
     stdio: "inherit"
   });
+  fs.writeFileSync(pidFile, `${child.pid}\n`, "utf8");
 
   child.on("exit", (code, signal) => {
+    fs.rmSync(pidFile, { force: true });
     if (signal) {
       process.kill(process.pid, signal);
       return;
@@ -235,7 +324,7 @@ function main() {
   try {
     const options = parseArgs(process.argv.slice(2));
     const { pythonPath } = bootstrapRuntime(options.runtimeDir, options.packageSpec, options.reinstall);
-    startServer(pythonPath);
+    startServer(pythonPath, options.runtimeDir);
   } catch (error) {
     process.stderr.write(`[sfgraph-mcp] ${error.message}\n`);
     process.exit(1);
