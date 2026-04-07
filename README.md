@@ -142,6 +142,8 @@ uv run sfgraph benchmark /absolute/path/to/export --data-dir ./data
 uv run sfgraph acceptance --data-dir ./data --suite docs/acceptance_question_suite.json
 ```
 
+For public Apex+Vlocity dry runs, see [`docs/ONLINE_DATASET_BENCHMARK.md`](docs/ONLINE_DATASET_BENCHMARK.md).
+
 Available commands:
 
 - `serve`

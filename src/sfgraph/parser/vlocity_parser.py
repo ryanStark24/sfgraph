@@ -211,6 +211,7 @@ def _parse_integration_procedure(
     )
 
     steps = data.get("Steps") or data.get("steps") or []
+    known_steps: set[str] = set()
     if isinstance(steps, list):
         for step in steps:
             if not isinstance(step, dict):
@@ -218,6 +219,7 @@ def _parse_integration_procedure(
             step_name = step.get("Name") or step.get("name")
             if not step_name:
                 continue
+            known_steps.add(step_name)
             step_qname = f"{name}.{step_name}"
             nodes.append(
                 _node(
@@ -231,24 +233,79 @@ def _parse_integration_procedure(
                     source_file,
                 )
             )
+            edges.append(
+                _edge(
+                    name,
+                    "IntegrationProcedure",
+                    "HAS_STEP",
+                    step_qname,
+                    "IPElement",
+                    1.0,
+                    "direct",
+                    "STRUCTURAL",
+                    f"step {step_name}",
+                )
+            )
+            edges.extend(_collect_reference_edges(step_qname, "IPElement", step, namespace, "step"))
 
     text_blob = json.dumps(data)
+    variable_nodes: set[str] = set()
+    seen_merge_edges: set[tuple[str, str, str]] = set()
     for step_name, field_name in _MERGE_FIELD_RE.findall(text_blob):
-        step_qname = f"{name}.{step_name}"
-        edges.append(
-            _edge(
-                name,
-                "IntegrationProcedure",
-                "REFERENCES_STEP_OUTPUT",
-                step_qname,
-                "IPElement",
-                0.85,
-                "regex_merge_field",
-                "DATA_FLOW",
-                f"%{step_name}:{field_name}%",
+        snippet = f"%{step_name}:{field_name}%"
+        if step_name in known_steps:
+            step_qname = f"{name}.{step_name}"
+            edge_key = ("REFERENCES_STEP_OUTPUT", step_qname, snippet)
+            if edge_key in seen_merge_edges:
+                continue
+            seen_merge_edges.add(edge_key)
+            edges.append(
+                _edge(
+                    name,
+                    "IntegrationProcedure",
+                    "REFERENCES_STEP_OUTPUT",
+                    step_qname,
+                    "IPElement",
+                    0.85,
+                    "regex_merge_field",
+                    "DATA_FLOW",
+                    snippet,
+                )
             )
-        )
+        else:
+            variable_qname = f"{name}.var.{step_name}"
+            if variable_qname not in variable_nodes:
+                variable_nodes.add(variable_qname)
+                nodes.append(
+                    _node(
+                        "IPVariable",
+                        variable_qname,
+                        {
+                            "name": step_name,
+                            "integrationProcedure": name,
+                        },
+                        source_file,
+                    )
+                )
+            edge_key = ("READS_VALUE", variable_qname, snippet)
+            if edge_key in seen_merge_edges:
+                continue
+            seen_merge_edges.add(edge_key)
+            edges.append(
+                _edge(
+                    name,
+                    "IntegrationProcedure",
+                    "READS_VALUE",
+                    variable_qname,
+                    "IPVariable",
+                    0.75,
+                    "regex_merge_field",
+                    "DATA_FLOW",
+                    snippet,
+                )
+            )
 
+    edges.extend(_collect_reference_edges(name, "IntegrationProcedure", data, namespace, "integration_procedure"))
     return nodes, edges
 
 

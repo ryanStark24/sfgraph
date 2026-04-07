@@ -40,7 +40,63 @@ def test_integration_procedure_nodes_and_merge_field_edges(tmp_path):
     nodes, edges = parse_vlocity_json(str(file))
     assert any(n.label == "IntegrationProcedure" and n.key_props["qualifiedName"] == "AccountIP" for n in nodes)
     assert any(n.label == "IPElement" and n.key_props["qualifiedName"] == "AccountIP.FetchAccount" for n in nodes)
+    assert any(e.rel_type == "HAS_STEP" and e.dst_qualified_name == "AccountIP.FetchAccount" for e in edges)
     assert any(e.rel_type == "REFERENCES_STEP_OUTPUT" for e in edges)
+
+
+def test_integration_procedure_merge_fields_create_ip_variables(tmp_path):
+    file = tmp_path / "ServiceabilityIP_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "IntegrationProcedure",
+            "Name": "ServiceabilityIP",
+            "Steps": [{"Name": "FetchOrder", "Type": "DataRaptor Extract"}],
+            "Template": "%FetchOrder:Status__c% + %accessId:value%",
+        },
+    )
+
+    nodes, edges = parse_vlocity_json(str(file))
+    assert any(n.label == "IPVariable" and n.key_props["qualifiedName"] == "ServiceabilityIP.var.accessId" for n in nodes)
+    assert any(
+        e.rel_type == "READS_VALUE"
+        and e.dst_label == "IPVariable"
+        and e.dst_qualified_name == "ServiceabilityIP.var.accessId"
+        for e in edges
+    )
+    assert any(
+        e.rel_type == "REFERENCES_STEP_OUTPUT"
+        and e.dst_qualified_name == "ServiceabilityIP.FetchOrder"
+        for e in edges
+    )
+
+
+def test_integration_procedure_step_level_references_emit_calls(tmp_path):
+    file = tmp_path / "OrderNowIP_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "IntegrationProcedure",
+            "Name": "OrderNowIP",
+            "Steps": [
+                {
+                    "Name": "ApplyAdjustments",
+                    "Type": "DataRaptor Post",
+                    "DataRaptorName": "DROrderNowUpdateAttributes",
+                }
+            ],
+        },
+    )
+
+    _, edges = parse_vlocity_json(str(file))
+    assert any(
+        e.rel_type == "CALLS"
+        and e.src_label == "IPElement"
+        and e.src_qualified_name == "OrderNowIP.ApplyAdjustments"
+        and e.dst_label == "DataRaptor"
+        and e.dst_qualified_name == "DROrderNowUpdateAttributes"
+        for e in edges
+    )
 
 
 def test_dataraptor_extract_reads_fields(tmp_path):

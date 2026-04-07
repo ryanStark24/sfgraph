@@ -2,11 +2,18 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from sfgraph.ingestion.models import EdgeFact, NodeFact
 
 logger = logging.getLogger(__name__)
+_VAR_DECL_RE = re.compile(
+    r"\b([A-Z][A-Za-z0-9_]*(?:__c|__mdt|__e)?)\s+([a-zA-Z_][A-Za-z0-9_]*)\b"
+)
+_FIELD_ACCESS_RE = re.compile(
+    r"\b([a-zA-Z_][A-Za-z0-9_]*)\.([A-Za-z][A-Za-z0-9_]*__(?:c|r|mdt|e))\b"
+)
 
 
 def _is_probable_sobject_name(name: str) -> bool:
@@ -23,6 +30,62 @@ def _is_probable_sobject_name(name: str) -> bool:
 
 class ApexExtractor:
     """Convert worker.js output payload into ingestion model facts."""
+
+    @staticmethod
+    def _extract_variable_types(source: str) -> dict[str, str]:
+        var_types: dict[str, str] = {}
+        for line in source.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//"):
+                continue
+            for match in _VAR_DECL_RE.finditer(stripped):
+                var_type = match.group(1)
+                var_name = match.group(2)
+                if _is_probable_sobject_name(var_type):
+                    var_types[var_name] = var_type
+        return var_types
+
+    @staticmethod
+    def _extract_inferred_field_edges(
+        source: str,
+        *,
+        src_qname: str,
+        src_label: str,
+    ) -> list[EdgeFact]:
+        var_types = ApexExtractor._extract_variable_types(source)
+        inferred: list[EdgeFact] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for line in source.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//"):
+                continue
+            for match in _FIELD_ACCESS_RE.finditer(stripped):
+                var_name = match.group(1)
+                field_name = match.group(2)
+                obj_type = var_types.get(var_name)
+                if not obj_type:
+                    continue
+                dst_qname = f"{obj_type}.{field_name}"
+                is_write = bool(re.search(rf"\b{re.escape(var_name)}\.{re.escape(field_name)}\s*=", stripped))
+                rel_type = "WRITES_FIELD" if is_write else "READS_FIELD"
+                edge_key = (rel_type, src_qname, dst_qname, stripped[:120])
+                if edge_key in seen:
+                    continue
+                seen.add(edge_key)
+                inferred.append(
+                    EdgeFact(
+                        src_qualified_name=src_qname,
+                        src_label=src_label,
+                        rel_type=rel_type,
+                        dst_qualified_name=dst_qname,
+                        dst_label="SFField",
+                        confidence=0.7,
+                        resolutionMethod="regex_inferred",
+                        edgeCategory="DATA_FLOW",
+                        contextSnippet=stripped[:120],
+                    )
+                )
+        return inferred
 
     def extract(self, payload: dict, file_path: str) -> tuple[list[NodeFact], list[EdgeFact]]:
         if not payload or payload.get("hasError"):
@@ -280,5 +343,20 @@ class ApexExtractor:
                             contextSnippet=snippet,
                         )
                     )
+
+        # Best-effort local dataflow inference from source text.
+        # This catches common "SObject var + field assignment" patterns missed by CST refs.
+        try:
+            source = Path(file_path).read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            source = ""
+        if source:
+            edges.extend(
+                self._extract_inferred_field_edges(
+                    source,
+                    src_qname=primary_class_name,
+                    src_label="ApexClass",
+                )
+            )
 
         return nodes, edges

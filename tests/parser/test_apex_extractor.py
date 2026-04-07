@@ -36,7 +36,11 @@ def get_worker_payload(cls_path: Path) -> dict:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip(), f"No stdout from worker, stderr={result.stderr}"
-    resp = json.loads(result.stdout.strip())
+    raw_stdout = result.stdout.strip()
+    if raw_stdout.startswith("@@SFGRAPH_LEN@@"):
+        parts = raw_stdout.splitlines()
+        raw_stdout = "\n".join(parts[1:]).strip()
+    resp = json.loads(raw_stdout)
     assert resp["ok"], f"Worker returned error: {resp.get('error')}"
     return resp["payload"]
 
@@ -201,3 +205,28 @@ def test_dml_keyword_target_is_ignored():
     }
     _, edges = extractor.extract(payload, "Demo.cls")
     assert not [e for e in edges if e.rel_type == "DML_ON"]
+
+
+def test_regex_inferred_field_edges_from_local_assignments(tmp_path: Path):
+    cls_file = tmp_path / "OrderExtensionEngine.cls"
+    cls_file.write_text(
+        "public class OrderExtensionEngine {\n"
+        "  public static void apply() {\n"
+        "    OrderItem oi = new OrderItem();\n"
+        "    oi.Service_Id__c = 'abc';\n"
+        "    String value = oi.Service_Id__c;\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    payload = {
+        "hasError": False,
+        "nodes": [{"nodeType": "ApexClass", "name": "OrderExtensionEngine"}],
+        "potential_refs": [],
+    }
+    extractor = ApexExtractor()
+    _, edges = extractor.extract(payload, str(cls_file))
+    writes = [e for e in edges if e.rel_type == "WRITES_FIELD" and e.dst_qualified_name == "OrderItem.Service_Id__c"]
+    reads = [e for e in edges if e.rel_type == "READS_FIELD" and e.dst_qualified_name == "OrderItem.Service_Id__c"]
+    assert writes
+    assert reads
