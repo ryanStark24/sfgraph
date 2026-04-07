@@ -11,7 +11,13 @@ def test_ensure_daemon_client_retries_after_stale_metadata(monkeypatch, tmp_path
     cleared: list[Path] = []
     health_calls: list[str] = []
 
-    def fake_start_daemon_subprocess(data_root: Path, host: str = "127.0.0.1", *, ignore_existing: bool = False):
+    def fake_start_daemon_subprocess(
+        data_root: Path,
+        host: str = "127.0.0.1",
+        *,
+        workspace_root: Path | None = None,
+        ignore_existing: bool = False,
+    ):
         starts.append(ignore_existing)
         port = 1111 if not ignore_existing else 2222
         return {"base_url": f"http://127.0.0.1:{port}", "pid": 123, "data_root": str(data_root)}

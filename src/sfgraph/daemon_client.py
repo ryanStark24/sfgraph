@@ -43,10 +43,10 @@ class DaemonClient:
         return self._post(f"/rpc/{method}", params)
 
 
-def ensure_daemon_client(data_root: Path) -> DaemonClient:
+def ensure_daemon_client(data_root: Path, workspace_root: Path | None = None) -> DaemonClient:
     last_error: urllib.error.URLError | None = None
     for attempt in range(2):
-        meta = start_daemon_subprocess(data_root, ignore_existing=attempt > 0)
+        meta = start_daemon_subprocess(data_root, workspace_root=workspace_root, ignore_existing=attempt > 0)
         client = DaemonClient(str(meta["base_url"]), data_root)
         try:
             client.health()

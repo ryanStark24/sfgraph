@@ -114,7 +114,7 @@ class _DaemonServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-async def run_daemon(data_root: Path, host: str, port: int) -> None:
+async def run_daemon(data_root: Path, host: str, port: int, workspace_root: str | None = None) -> None:
     app = await create_app_context(data_root)
     loop = asyncio.get_running_loop()
     server = _DaemonServer((host, port), _DaemonHandler)
@@ -124,6 +124,7 @@ async def run_daemon(data_root: Path, host: str, port: int) -> None:
         "base_url": f"http://{host}:{port}",
         "pid": os.getpid(),
         "data_root": str(data_root),
+        "workspace_root": workspace_root,
     }
     meta_path = _daemon_meta_path(data_root)
     server.loop = loop  # type: ignore[attr-defined]
@@ -172,6 +173,7 @@ def start_daemon_subprocess(
     data_root: Path,
     host: str = _DEFAULT_HOST,
     *,
+    workspace_root: Path | None = None,
     ignore_existing: bool = False,
 ) -> dict[str, Any]:
     data_root = data_root.expanduser().resolve()
@@ -189,7 +191,11 @@ def start_daemon_subprocess(
     port = _free_port()
     env = os.environ.copy()
     env["SFGRAPH_DATA_DIR"] = str(data_root)
+    if workspace_root is not None:
+        env["SFGRAPH_WORKSPACE_ROOT"] = str(workspace_root.expanduser().resolve())
     cmd = [sys.executable, "-m", "sfgraph.daemon", "--data-dir", str(data_root), "--host", host, "--port", str(port)]
+    if workspace_root is not None:
+        cmd.extend(["--workspace-root", str(workspace_root.expanduser().resolve())])
     subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     for _ in range(50):
         if meta_path.exists():
@@ -209,6 +215,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", default=os.getenv("SFGRAPH_DATA_DIR", "./data"))
     parser.add_argument("--host", default=_DEFAULT_HOST)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--workspace-root", default=os.getenv("SFGRAPH_WORKSPACE_ROOT"))
     return parser.parse_args(argv)
 
 
@@ -216,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = parse_args(argv)
     data_root = Path(args.data_dir).expanduser().resolve()
-    asyncio.run(run_daemon(data_root=data_root, host=args.host, port=args.port))
+    asyncio.run(run_daemon(data_root=data_root, host=args.host, port=args.port, workspace_root=args.workspace_root))
     return 0
 
 
