@@ -629,6 +629,36 @@ async def test_parse_file_uses_cache_for_duplicate_content(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_parse_file_uses_path_scoped_cache_for_flow_and_lwc(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    parse_cache = AsyncMock()
+    parse_cache.get = AsyncMock(return_value=None)
+    parse_cache.put = AsyncMock(return_value=None)
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        parse_cache=parse_cache,
+        pool=pool,
+    )
+
+    flow_a = tmp_path / "force-app" / "main" / "default" / "flows" / "One.flow-meta.xml"
+    flow_b = tmp_path / "force-app" / "main" / "default" / "flows" / "Two.flow-meta.xml"
+    flow_a.parent.mkdir(parents=True, exist_ok=True)
+    flow_xml = "<Flow xmlns=\"http://soap.sforce.com/2006/04/metadata\"><label>X</label><status>Active</status></Flow>"
+    flow_a.write_text(flow_xml, encoding="utf-8")
+    flow_b.write_text(flow_xml, encoding="utf-8")
+
+    await service._parse_file(str(flow_a), sha256="same-sha")
+    await service._parse_file(str(flow_b), sha256="same-sha")
+
+    get_keys = [call.args[0] for call in parse_cache.get.await_args_list]
+    assert len(get_keys) == 2
+    assert get_keys[0] != get_keys[1]
+
+
+@pytest.mark.asyncio
 async def test_refresh_includes_affected_neighbor_files(svc):
     service, _, manifest, _ = svc
     changed = str((Path(FIXTURE_EXPORT) / "classes" / "AccountService.cls").resolve())

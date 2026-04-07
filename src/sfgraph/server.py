@@ -389,6 +389,7 @@ async def refresh(
     service = _build_ingestion_service_from_parts(
         graph=app.graph,
         manifest=app.manifest,
+        parse_cache=app.parse_cache,
         pool=app.pool,
         vectors=app.vectors,
         data_root=app.data_root,
@@ -430,6 +431,7 @@ async def vectorize(export_dir: str, ctx: Context) -> str:
     service = _build_ingestion_service_from_parts(
         graph=app.graph,
         manifest=app.manifest,
+        parse_cache=app.parse_cache,
         pool=app.pool,
         vectors=app.vectors,
         data_root=app.data_root,

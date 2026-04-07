@@ -170,6 +170,16 @@ class IngestionService:
         return parser_name not in {"object", "unknown"}
 
     @staticmethod
+    def _parse_cache_namespace(parser_name: str, fpath: str) -> str:
+        # Some parsers derive stable identities from the file path rather than
+        # only the file content. Keep those cache entries path-scoped so
+        # identical content in different files cannot alias to the same graph ids.
+        if parser_name in {"flow", "lwc"}:
+            path_digest = hashlib.sha1(str(Path(fpath).resolve()).encode("utf-8")).hexdigest()[:16]
+            return f"{parser_name}@{path_digest}"
+        return parser_name
+
+    @staticmethod
     def _rebind_cached_nodes(nodes: list[NodeFact], fpath: str) -> list[NodeFact]:
         rebound: list[NodeFact] = []
         for node in nodes:
@@ -1467,9 +1477,10 @@ class IngestionService:
     async def _parse_file(self, fpath: str, *, sha256: str | None = None) -> tuple[list[NodeFact], list[EdgeFact]]:
         path = Path(fpath)
         parser_name = self._parser_name_for_file(fpath)
+        cache_namespace = self._parse_cache_namespace(parser_name, fpath)
         can_cache = self._cacheable_parser(parser_name)
         if self._parse_cache and sha256 and can_cache:
-            cached = await self._parse_cache.get(parser_name, sha256)
+            cached = await self._parse_cache.get(cache_namespace, sha256)
             if cached is not None:
                 nodes, edges = self._deserialize_parse_result(cached)
                 return self._rebind_cached_nodes(nodes, fpath), edges
@@ -1510,31 +1521,31 @@ class IngestionService:
                 )
 
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
             return nodes, edges
 
         if path.suffix in {".js", ".html"} and "lwc" in {part.lower() for part in path.parts}:
             nodes, edges = parse_lwc_file(fpath)
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
             return nodes, edges
 
         if fpath.endswith(".flow-meta.xml"):
             nodes, edges = parse_flow_xml(fpath)
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
             return nodes, edges
 
         if fpath.endswith(".object-meta.xml"):
             nodes, edges = parse_object_dir(str(path.parent))
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
             return nodes, edges
 
         if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
             nodes, edges = parse_labels_xml(fpath)
             if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
             return nodes, edges
 
         if path.suffix == ".json" and is_vlocity_datapack_file(path):
