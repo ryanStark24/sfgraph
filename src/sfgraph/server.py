@@ -185,6 +185,18 @@ def _read_progress_snapshot(data_root: Path) -> dict[str, Any]:
     return payload
 
 
+def _deprecated_tool_payload(*, tool_name: str, replacement: str) -> dict[str, Any]:
+    return {
+        "deprecated": True,
+        "tool": tool_name,
+        "replacement_tool": replacement,
+        "message": (
+            f"{tool_name} is deprecated and will be removed in a future release. "
+            f"Use {replacement} for background execution and progress polling."
+        ),
+    }
+
+
 @mcp.tool()
 async def ping(ctx: Context) -> str:
     """Health check tool — confirms lifespan context is wired correctly."""
@@ -201,9 +213,13 @@ async def ingest_org(
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
 ) -> str:
-    """Ingest a Salesforce metadata export directory into the local graph."""
+    """Deprecated: use start_ingest_job for non-blocking ingest with polling."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
+    logger.warning(
+        "Deprecated MCP tool ingest_org called for %s. Use start_ingest_job instead.",
+        export_dir,
+    )
     service = _build_ingestion_service_from_parts(
         graph=app.graph,
         manifest=app.manifest,
@@ -217,6 +233,7 @@ async def ingest_org(
     summary = await service.ingest(export_dir)
     return json.dumps(
         {
+            **_deprecated_tool_payload(tool_name="ingest_org", replacement="start_ingest_job"),
             "run_id": summary.run_id,
             "export_dir": summary.export_dir,
             "duration_seconds": summary.duration_seconds,
@@ -337,9 +354,13 @@ async def refresh(
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
 ) -> str:
-    """Run incremental refresh for changed/new/deleted files."""
+    """Deprecated: use start_refresh_job for non-blocking refresh with polling."""
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
+    logger.warning(
+        "Deprecated MCP tool refresh called for %s. Use start_refresh_job instead.",
+        export_dir,
+    )
     service = _build_ingestion_service_from_parts(
         graph=app.graph,
         manifest=app.manifest,
@@ -353,6 +374,7 @@ async def refresh(
     summary = await service.refresh(export_dir)
     return json.dumps(
         {
+            **_deprecated_tool_payload(tool_name="refresh", replacement="start_refresh_job"),
             "run_id": summary.run_id,
             "export_dir": summary.export_dir,
             "duration_seconds": summary.duration_seconds,
