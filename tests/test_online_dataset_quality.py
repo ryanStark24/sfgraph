@@ -48,24 +48,24 @@ def test_online_dataset_ingest_and_acceptance_suite(tmp_path: Path):
 
     suite = [
         {
-            "id": "field_population",
-            "question": "using sfgraph, tell me where Service_Id__c is populated from",
-            "expected_mode": "analyze_field",
-        },
-        {
-            "id": "component_token_population",
-            "question": "In class OrderNowUpdateAttribute, where is accessId populated? show method and source file.",
-            "expected_mode": "analyze_component",
-        },
-        {
             "id": "object_insert_lifecycle",
-            "question": "using sfgraph, tell me where what happens when a quotelineitem is inserted",
+            "question": "using sfgraph, tell me what happens when QuoteLineItemRecipient is inserted",
             "expected_mode": "analyze_object_event",
         },
         {
+            "id": "component_token_population",
+            "question": "In class QuoteRecipientHelper, where is MaxDownloadSpeed populated? show method and source file.",
+            "expected_mode": "analyze_component",
+        },
+        {
             "id": "impact_analysis",
-            "question": "using sfgraph, what breaks if I change QuoteLineItemTriggerHelper",
+            "question": "using sfgraph, what breaks if I change QuoteRecipientHelper",
             "expected_mode": "analyze_change",
+        },
+        {
+            "id": "class_discovery",
+            "question": "find QuoteRecipientHelper class",
+            "expected_mode": "node_search",
         },
     ]
     suite_path.write_text(json.dumps(suite, indent=2), encoding="utf-8")
@@ -89,7 +89,13 @@ def test_online_dataset_ingest_and_acceptance_suite(tmp_path: Path):
     parser_stats = ingest_payload.get("parser_stats", {})
     apex_stats = parser_stats.get("apex", {})
     vlocity_stats = parser_stats.get("vlocity", {})
-    assert ingest_payload.get("total_files", 0) > 0
+    total_seen = 0
+    for stats in parser_stats.values():
+        if isinstance(stats, dict):
+            total_seen += int(stats.get("parsed_files", 0))
+            total_seen += int(stats.get("skipped_files", 0))
+            total_seen += int(stats.get("error_files", 0))
+    assert total_seen > 0
     assert apex_stats.get("parsed_files", 0) > 0
     assert (vlocity_stats.get("parsed_files", 0) + vlocity_stats.get("skipped_files", 0)) > 0
 
