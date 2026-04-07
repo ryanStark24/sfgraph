@@ -20,15 +20,16 @@ async def test_initialize_creates_tables(store: ManifestStore):
 
 async def test_upsert_file_inserts_new(store: ManifestStore, sample_file_path: str):
     sha = ManifestStore.compute_sha256(sample_file_path)
-    await store.upsert_file(sample_file_path, sha, "run-001", size_bytes=12, mtime_ns=34)
+    await store.upsert_file(sample_file_path, sha, "run-001", size_bytes=12, mtime_ns=34, ctime_ns=56)
     cursor = await store._conn.execute(
-        "SELECT status, size_bytes, mtime_ns FROM files WHERE path=?", (sample_file_path,)
+        "SELECT status, size_bytes, mtime_ns, ctime_ns FROM files WHERE path=?", (sample_file_path,)
     )
     row = await cursor.fetchone()
     assert row is not None
     assert row[0] == "PENDING"
     assert row[1] == 12
     assert row[2] == 34
+    assert row[3] == 56
 
 
 async def test_upsert_file_updates_existing(store: ManifestStore, sample_file_path: str):
@@ -153,9 +154,10 @@ async def test_get_pending_files_and_latest_completed_run(store: ManifestStore, 
 
 async def test_get_tracked_files_returns_file_metadata(store: ManifestStore, sample_file_path: str):
     sha = ManifestStore.compute_sha256(sample_file_path)
-    await store.upsert_file(sample_file_path, sha, "run-001", size_bytes=99, mtime_ns=123456)
+    await store.upsert_file(sample_file_path, sha, "run-001", size_bytes=99, mtime_ns=123456, ctime_ns=654321)
 
     tracked = await store.get_tracked_files()
     assert tracked[sample_file_path]["sha256"] == sha
     assert tracked[sample_file_path]["size_bytes"] == 99
     assert tracked[sample_file_path]["mtime_ns"] == 123456
+    assert tracked[sample_file_path]["ctime_ns"] == 654321

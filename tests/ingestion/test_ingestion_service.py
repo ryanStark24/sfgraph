@@ -588,6 +588,7 @@ async def test_discovery_reuses_manifest_hash_when_stats_match(tmp_path):
                 "sha256": "abc123",
                 "size_bytes": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
+                "ctime_ns": stat.st_ctime_ns,
                 "status": "EDGES_WRITTEN",
             }
         }
@@ -595,6 +596,36 @@ async def test_discovery_reuses_manifest_hash_when_stats_match(tmp_path):
 
     discovered = await service._discover_file_records(tmp_path)
     assert discovered[str(apex_file)]["sha256"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_discovery_rehashes_when_ctime_differs(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+    )
+    apex_file = tmp_path / "force-app" / "main" / "default" / "classes" / "Rehash.cls"
+    apex_file.parent.mkdir(parents=True, exist_ok=True)
+    apex_file.write_text("public class Rehash {}", encoding="utf-8")
+    stat = apex_file.stat()
+    manifest.get_tracked_files = AsyncMock(
+        return_value={
+            str(apex_file): {
+                "sha256": "stale-sha",
+                "size_bytes": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "ctime_ns": stat.st_ctime_ns - 1,
+                "status": "EDGES_WRITTEN",
+            }
+        }
+    )
+
+    discovered = await service._discover_file_records(tmp_path)
+    assert discovered[str(apex_file)]["sha256"] != "stale-sha"
 
 
 @pytest.mark.asyncio
@@ -656,6 +687,49 @@ async def test_parse_file_uses_path_scoped_cache_for_flow_and_lwc(tmp_path):
     get_keys = [call.args[0] for call in parse_cache.get.await_args_list]
     assert len(get_keys) == 2
     assert get_keys[0] != get_keys[1]
+
+
+@pytest.mark.asyncio
+async def test_parse_file_uses_path_scoped_cache_for_apex_and_vlocity(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    parse_cache = AsyncMock()
+    parse_cache.get = AsyncMock(return_value=None)
+    parse_cache.put = AsyncMock(return_value=None)
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        parse_cache=parse_cache,
+        pool=pool,
+    )
+
+    apex_a = tmp_path / "force-app" / "main" / "default" / "classes" / "One.cls"
+    apex_b = tmp_path / "force-app" / "main" / "default" / "classes" / "Two.cls"
+    apex_a.parent.mkdir(parents=True, exist_ok=True)
+    source = "public class SameBody {}"
+    apex_a.write_text(source, encoding="utf-8")
+    apex_b.write_text(source, encoding="utf-8")
+
+    vlocity_a = tmp_path / "vlocity" / "DataPackA_DataPack.json"
+    vlocity_b = tmp_path / "vlocity" / "DataPackB_DataPack.json"
+    vlocity_a.parent.mkdir(parents=True, exist_ok=True)
+    datapack = '{"VlocityDataPackType":"IntegrationProcedure","Name":"Same"}'
+    vlocity_a.write_text(datapack, encoding="utf-8")
+    vlocity_b.write_text(datapack, encoding="utf-8")
+
+    await service._parse_file(str(apex_a), sha256="same-apex-sha")
+    await service._parse_file(str(apex_b), sha256="same-apex-sha")
+    await service._parse_file(str(vlocity_a), sha256="same-vlocity-sha")
+    await service._parse_file(str(vlocity_b), sha256="same-vlocity-sha")
+
+    get_keys = [call.args[0] for call in parse_cache.get.await_args_list]
+    apex_keys = [key for key in get_keys if str(key).startswith("apex@")]
+    vlocity_keys = [key for key in get_keys if str(key).startswith("vlocity@")]
+    assert len(apex_keys) == 2
+    assert len(set(apex_keys)) == 2
+    assert len(vlocity_keys) == 2
+    assert len(set(vlocity_keys)) == 2
 
 
 @pytest.mark.asyncio

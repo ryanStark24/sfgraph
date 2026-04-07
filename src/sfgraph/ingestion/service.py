@@ -174,7 +174,7 @@ class IngestionService:
         # Some parsers derive stable identities from the file path rather than
         # only the file content. Keep those cache entries path-scoped so
         # identical content in different files cannot alias to the same graph ids.
-        if parser_name in {"flow", "lwc"}:
+        if parser_name in {"apex", "flow", "lwc", "vlocity"}:
             path_digest = hashlib.sha1(str(Path(fpath).resolve()).encode("utf-8")).hexdigest()[:16]
             return f"{parser_name}@{path_digest}"
         return parser_name
@@ -192,6 +192,22 @@ class IngestionService:
     def _compute_project_scope(export_dir: str) -> str:
         export_path = Path(export_dir).expanduser().resolve()
         return hashlib.sha1(str(export_path).encode("utf-8")).hexdigest()[:12]
+
+    @staticmethod
+    def _stat_fingerprint_matches(tracked_file: dict[str, Any] | None, stat_result: os.stat_result) -> bool:
+        if not tracked_file:
+            return False
+        if tracked_file.get("sha256") in {None, ""}:
+            return False
+        if tracked_file.get("size_bytes") != stat_result.st_size:
+            return False
+        if tracked_file.get("mtime_ns") != stat_result.st_mtime_ns:
+            return False
+        tracked_ctime = tracked_file.get("ctime_ns")
+        current_ctime = getattr(stat_result, "st_ctime_ns", None)
+        if tracked_ctime is None or current_ctime is None:
+            return False
+        return tracked_ctime == current_ctime
 
     def _activate_scope(self, export_dir: str) -> str:
         resolved = str(Path(export_dir).expanduser().resolve())
@@ -930,12 +946,7 @@ class IngestionService:
                     stat = path.stat()
                     tracked_file = tracked.get(str(path))
                     sha = None
-                    if (
-                        tracked_file
-                        and tracked_file.get("size_bytes") == stat.st_size
-                        and tracked_file.get("mtime_ns") == stat.st_mtime_ns
-                        and tracked_file.get("sha256")
-                    ):
+                    if self._stat_fingerprint_matches(tracked_file, stat):
                         sha = str(tracked_file["sha256"])
                         reused_hashes += 1
                     else:
@@ -945,6 +956,7 @@ class IngestionService:
                         "sha256": sha,
                         "size_bytes": stat.st_size,
                         "mtime_ns": stat.st_mtime_ns,
+                        "ctime_ns": getattr(stat, "st_ctime_ns", None),
                     }
                     if run_id:
                         self._write_progress_snapshot(

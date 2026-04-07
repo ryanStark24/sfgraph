@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS files (
     run_id          TEXT,
     last_ingested_at REAL,
     size_bytes      INTEGER,
-    mtime_ns        INTEGER
+    mtime_ns        INTEGER,
+    ctime_ns        INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -51,6 +52,7 @@ class ManifestStore:
         await self._conn.executescript(_SCHEMA)
         await self._ensure_column("files", "size_bytes", "INTEGER")
         await self._ensure_column("files", "mtime_ns", "INTEGER")
+        await self._ensure_column("files", "ctime_ns", "INTEGER")
         await self._conn.commit()
 
     async def _ensure_column(self, table: str, column: str, ddl: str) -> None:
@@ -68,6 +70,7 @@ class ManifestStore:
         *,
         size_bytes: int | None = None,
         mtime_ns: int | None = None,
+        ctime_ns: int | None = None,
     ) -> None:
         """Insert or update a file record, always resetting status to PENDING.
 
@@ -76,17 +79,18 @@ class ManifestStore:
         """
         await self._conn.execute(
             """
-            INSERT INTO files (path, sha256, status, run_id, last_ingested_at, size_bytes, mtime_ns)
-            VALUES (?, ?, 'PENDING', ?, ?, ?, ?)
+            INSERT INTO files (path, sha256, status, run_id, last_ingested_at, size_bytes, mtime_ns, ctime_ns)
+            VALUES (?, ?, 'PENDING', ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 sha256 = excluded.sha256,
                 status = 'PENDING',
                 run_id = excluded.run_id,
                 last_ingested_at = excluded.last_ingested_at,
                 size_bytes = excluded.size_bytes,
-                mtime_ns = excluded.mtime_ns
+                mtime_ns = excluded.mtime_ns,
+                ctime_ns = excluded.ctime_ns
             """,
-            (path, sha256, run_id, time.time(), size_bytes, mtime_ns),
+            (path, sha256, run_id, time.time(), size_bytes, mtime_ns, ctime_ns),
         )
         await self._conn.commit()
 
@@ -149,7 +153,7 @@ class ManifestStore:
         """Return stored file metadata keyed by path."""
         cursor = await self._conn.execute(
             """
-            SELECT path, sha256, status, size_bytes, mtime_ns, run_id, last_ingested_at
+            SELECT path, sha256, status, size_bytes, mtime_ns, ctime_ns, run_id, last_ingested_at
             FROM files
             """
         )
@@ -161,8 +165,9 @@ class ManifestStore:
                 "status": row[2],
                 "size_bytes": row[3],
                 "mtime_ns": row[4],
-                "run_id": row[5],
-                "last_ingested_at": row[6],
+                "ctime_ns": row[5],
+                "run_id": row[6],
+                "last_ingested_at": row[7],
             }
         return tracked
 
