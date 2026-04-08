@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sfgraph.common import compute_sha256, parse_json_props
+from sfgraph.common import compute_sha256, descope_qname, parse_json_props, scope_qname
 from sfgraph.ingestion.constants import NODE_WRITE_ORDER
 from sfgraph.ingestion.models import (
     EdgeFact,
@@ -224,18 +224,10 @@ class IngestionService:
 
     @staticmethod
     def _descope_qname(qualified_name: str) -> str:
-        if "::" not in qualified_name:
-            return qualified_name
-        return qualified_name.split("::", 1)[1]
+        return descope_qname(qualified_name)
 
     def _scope_qname(self, qualified_name: str) -> str:
-        if not qualified_name:
-            return qualified_name
-        if "::" in qualified_name:
-            return qualified_name
-        if not self._active_project_scope:
-            return qualified_name
-        return f"{self._active_project_scope}::{qualified_name}"
+        return scope_qname(self._active_project_scope, qualified_name)
 
     def _scope_node_fact(self, node_fact: NodeFact) -> NodeFact:
         key_props = dict(node_fact.key_props)

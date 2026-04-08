@@ -10,7 +10,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from sfgraph.common import parse_json_props
+from sfgraph.common import descope_qname, parse_json_props, scope_qname
 from sfgraph.query.agents import (
     QueryCorrectorAgent,
     QueryPlannerAgent,
@@ -145,19 +145,10 @@ class GraphQueryService:
 
     @staticmethod
     def _descope_qname(qualified_name: str) -> str:
-        if "::" not in qualified_name:
-            return qualified_name
-        return qualified_name.split("::", 1)[1]
+        return descope_qname(qualified_name)
 
     def _scope_qname(self, qualified_name: str) -> str:
-        if not qualified_name:
-            return qualified_name
-        if "::" in qualified_name:
-            return qualified_name
-        scope = self._current_scope()
-        if not scope:
-            return qualified_name
-        return f"{scope}::{qualified_name}"
+        return scope_qname(self._current_scope(), qualified_name)
 
     def _is_in_scope(self, qualified_name: str) -> bool:
         scope = self._current_scope()
@@ -550,6 +541,73 @@ class GraphQueryService:
             return "mention", 0.7
         return "mention", 0.65
 
+    @staticmethod
+    def _extract_component_write_expression(token: str, line: str) -> str | None:
+        escaped = re.escape(token)
+        patterns = (
+            rf"\b{escaped}\b\s*=\s*(?P<expr>[^;]+)",
+            rf"\.\s*{escaped}\s*=\s*(?P<expr>[^;]+)",
+            rf"\.put\(\s*['\"]{escaped}['\"]\s*,\s*(?P<expr>[^)]+)\)",
+            rf"['\"]{escaped}['\"]\s*:\s*(?P<expr>[^,}}]+)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, line)
+            if not match:
+                continue
+            expr = str(match.group("expr")).strip()
+            if expr:
+                return expr
+        return None
+
+    @staticmethod
+    def _trace_variable_origin(symbol: str, lines: list[str], write_line: int) -> dict[str, Any] | None:
+        escaped = re.escape(symbol)
+        assign_pattern = re.compile(rf"\b{escaped}\b\s*=\s*(?P<expr>[^;]+)")
+        decl_assign_pattern = re.compile(
+            rf"\b(?:final\s+)?[A-Za-z_][A-Za-z0-9_<>,.\[\]]*\s+{escaped}\b\s*=\s*(?P<expr>[^;]+)"
+        )
+        for idx in range(write_line - 2, -1, -1):
+            candidate = lines[idx]
+            match = decl_assign_pattern.search(candidate) or assign_pattern.search(candidate)
+            if not match:
+                continue
+            expr = str(match.group("expr")).strip()
+            return {
+                "source_symbol": symbol,
+                "source_expression": expr,
+                "source_line": idx + 1,
+                "source_context": candidate.strip()[:240],
+                "confidence": 0.92,
+                "resolution": "intra_file_backtrack",
+            }
+        return None
+
+    def _origin_for_component_write(
+        self,
+        token: str,
+        line: str,
+        lines: list[str],
+        write_line: int,
+    ) -> dict[str, Any] | None:
+        expr = self._extract_component_write_expression(token, line)
+        if not expr:
+            return None
+        rhs_symbol_match = re.fullmatch(r"\(?\s*(?:String|Id|Object|Decimal|Integer|Long|Double|Boolean)?\s*\)?\s*([A-Za-z_][A-Za-z0-9_]*)", expr)
+        if rhs_symbol_match:
+            symbol = rhs_symbol_match.group(1)
+            traced = self._trace_variable_origin(symbol, lines, write_line)
+            if traced:
+                traced["write_expression"] = expr
+                return traced
+        return {
+            "source_symbol": None,
+            "source_expression": expr,
+            "source_line": write_line,
+            "source_context": line.strip()[:240],
+            "confidence": 0.97,
+            "resolution": "direct_rhs_expression",
+        }
+
     async def _find_component_nodes(self, component_name: str, max_results: int = 20) -> list[dict[str, Any]]:
         search = component_name.strip()
         if not search:
@@ -604,8 +662,10 @@ class GraphQueryService:
                     }
                 )
         exact_matches: list[dict[str, Any]] = []
+        variable_origins: list[dict[str, Any]] = []
         graph_relations: list[dict[str, Any]] = []
         seen_exact: set[tuple[str, int, str]] = set()
+        seen_origins: set[tuple[str, int, str]] = set()
         seen_sources: set[str] = set()
 
         for node in resolved_nodes:
@@ -656,6 +716,26 @@ class GraphQueryService:
                 if key in seen_exact:
                     continue
                 seen_exact.add(key)
+                origin = None
+                if token and kind == "write":
+                    origin = self._origin_for_component_write(token_matcher, line, lines, idx)
+                    if origin:
+                        origin_key = (
+                            str(source_path),
+                            int(origin.get("source_line") or idx),
+                            str(origin.get("source_expression") or ""),
+                        )
+                        if origin_key not in seen_origins:
+                            seen_origins.add(origin_key)
+                            variable_origins.append(
+                                {
+                                    "component": qname,
+                                    "token": token_matcher,
+                                    "file": str(source_path),
+                                    "write_line": idx,
+                                    **origin,
+                                }
+                            )
                 exact_matches.append(
                     {
                         "component": qname,
@@ -665,10 +745,12 @@ class GraphQueryService:
                         "line": idx,
                         "context": line.strip()[:240],
                         "confidence": confidence,
+                        "origin": origin,
                     }
                 )
 
         exact_matches.sort(key=lambda item: (0 if item["kind"] == "write" else 1, -float(item["confidence"])))
+        variable_origins.sort(key=lambda item: (-float(item.get("confidence", 0.0)), int(item.get("write_line", 0))))
         partial = len(exact_matches) > max_results or len(graph_relations) > max_results
         return {
             "mode": "analyze_component",
@@ -677,6 +759,7 @@ class GraphQueryService:
             "token": token,
             "focus": focus,
             "exact_matches": exact_matches[:max_results],
+            "variable_origins": variable_origins[:max_results],
             "graph_relations": graph_relations[:max_results],
             "freshness": await self.freshness(partial_results=partial),
             "partial_results": partial,

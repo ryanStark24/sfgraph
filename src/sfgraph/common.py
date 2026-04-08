@@ -28,3 +28,18 @@ def compute_sha256(path: str) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
+
+def descope_qname(qualified_name: str) -> str:
+    """Drop project scope prefix (`scope::`) when present."""
+    if "::" not in qualified_name:
+        return qualified_name
+    return qualified_name.split("::", 1)[1]
+
+
+def scope_qname(scope: str | None, qualified_name: str) -> str:
+    """Apply project scope prefix when needed."""
+    if not qualified_name:
+        return qualified_name
+    if "::" in qualified_name or not scope:
+        return qualified_name
+    return f"{scope}::{qualified_name}"

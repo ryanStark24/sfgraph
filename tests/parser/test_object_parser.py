@@ -236,6 +236,51 @@ def test_formula_depends_on_edge(account_edges):
     assert any("Date_Listed__c" in n for n in dst_names)
 
 
+def test_formula_dependency_parser_ignores_functions_and_literals(tmp_path):
+    field_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>ComplexFormula__c</fullName>
+    <label>Complex Formula</label>
+    <type>Formula</type>
+    <formula>
+        IF(ISBLANK(Text_Field__c), "CreatedDate", DATEVALUE(CreatedDate)) + Value__c
+    </formula>
+</CustomField>"""
+    field_file = tmp_path / "ComplexFormula__c.field-meta.xml"
+    field_file.write_text(field_xml, encoding="utf-8")
+
+    _, edges = parse_field_xml(str(field_file), "Account")
+    formula_edges = [e for e in edges if e.rel_type == "FORMULA_DEPENDS_ON"]
+    dst_names = {e.dst_qualified_name for e in formula_edges}
+
+    assert "Account.Text_Field__c" in dst_names
+    assert "Account.CreatedDate" in dst_names
+    assert "Account.Value__c" in dst_names
+    assert "Account.IF" not in dst_names
+    assert "Account.ISBLANK" not in dst_names
+    assert "Account.DATEVALUE" not in dst_names
+
+
+def test_formula_dependency_parser_handles_cross_object_tokens(tmp_path):
+    field_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>CrossObjectFormula__c</fullName>
+    <label>Cross Object Formula</label>
+    <type>Formula</type>
+    <formula>
+        Parent__r.Name &amp; '-' &amp; Parent__r.External_Id__c
+    </formula>
+</CustomField>"""
+    field_file = tmp_path / "CrossObjectFormula__c.field-meta.xml"
+    field_file.write_text(field_xml, encoding="utf-8")
+
+    _, edges = parse_field_xml(str(field_file), "Case")
+    dst_names = {e.dst_qualified_name for e in edges if e.rel_type == "FORMULA_DEPENDS_ON"}
+
+    assert "Case.Name" in dst_names
+    assert "Case.External_Id__c" in dst_names
+
+
 # OBJ-07: Custom labels
 def test_labels_xml_parse(tmp_path):
     """OBJ-07: .labels-meta.xml -> multiple CustomLabel nodes."""

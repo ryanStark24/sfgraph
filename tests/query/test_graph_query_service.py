@@ -398,6 +398,8 @@ async def test_analyze_component_token_traces_exact_assignments(tmp_path: Path):
     assert payload["exact_matches"]
     assert any(item["kind"] == "write" for item in payload["exact_matches"])
     assert any(item["file"].endswith("OrderNowUpdateAttribute.cls") for item in payload["exact_matches"])
+    assert payload["variable_origins"]
+    assert any("qliId" in str(item.get("source_expression", "")) for item in payload["variable_origins"])
     await manifest.close()
     await graph.close()
 
@@ -469,6 +471,43 @@ async def test_analyze_component_supports_sfdx_package_directories(tmp_path: Pat
     assert payload["resolved_components"]
     assert any(str(match["file"]).endswith("PkgHelper.cls") for match in payload["exact_matches"])
     assert any(match["kind"] == "write" for match in payload["exact_matches"])
+
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_component_variable_origin_backtracks_symbol(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_component_origin.db"))
+    await manifest.initialize()
+
+    class_file = tmp_path / "force-app" / "main" / "default" / "classes" / "OriginHelper.cls"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_text(
+        "public class OriginHelper {\n"
+        "  public static void apply(Map<String, Object> input, Map<String, Object> output) {\n"
+        "    String serviceId = (String) input.get('Service_Id__c');\n"
+        "    output.put('accessId', serviceId);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_component("OriginHelper", token="accessId", focus="writes")
+
+    assert payload["variable_origins"]
+    first = payload["variable_origins"][0]
+    assert first["source_symbol"] == "serviceId"
+    assert "input.get('Service_Id__c')" in first["source_expression"]
+    assert first["resolution"] == "intra_file_backtrack"
+    assert first["write_line"] > first["source_line"]
 
     await manifest.close()
     await graph.close()

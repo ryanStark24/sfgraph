@@ -11,7 +11,6 @@ PITFALL: Field files can be in <object_dir>/fields/<field>.field-meta.xml
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
@@ -25,8 +24,112 @@ def _tag(name: str) -> str:
     return f"{{{NS}}}{name}"
 
 
-# Regex to find field references in formula text (e.g. Date_Listed__c, Name)
-_FORMULA_FIELD_RE = re.compile(r'\b([A-Z][A-Za-z0-9_]*(?:__c|__r)?)\b')
+_FORMULA_KEYWORDS = {
+    "ABS",
+    "AND",
+    "BEGINS",
+    "BLANKVALUE",
+    "BR",
+    "CASE",
+    "CONTAINS",
+    "DATE",
+    "DATEVALUE",
+    "DATETIMEVALUE",
+    "FALSE",
+    "IF",
+    "IMAGE",
+    "ISBLANK",
+    "ISCHANGED",
+    "ISCLONE",
+    "ISNEW",
+    "ISPICKVAL",
+    "LEFT",
+    "LEN",
+    "LOWER",
+    "MID",
+    "NOT",
+    "NOW",
+    "NULL",
+    "OR",
+    "PRIORVALUE",
+    "RIGHT",
+    "ROUND",
+    "TEXT",
+    "TODAY",
+    "TRIM",
+    "TRUE",
+    "UPPER",
+    "VALUE",
+}
+
+
+def _normalize_formula_identifier(token: str, trailing_char: str) -> str | None:
+    candidate = token.strip().strip(".")
+    if not candidate:
+        return None
+    if candidate.startswith("$"):
+        return None
+    candidate = candidate.split(":")[-1]
+    segments = [part for part in candidate.split(".") if part]
+    if not segments:
+        return None
+    candidate = segments[-1]
+    if not candidate or candidate[0].isdigit():
+        return None
+    # Formula function call (e.g. TEXT(...), IF(...)).
+    if trailing_char == "(":
+        return None
+    upper = candidate.upper()
+    if upper in _FORMULA_KEYWORDS:
+        return None
+    if candidate.endswith(("__c", "__r", "__pc", "__mdt", "__e")):
+        return candidate
+    if candidate[0].isupper() and all(ch.isalnum() or ch == "_" for ch in candidate):
+        return candidate
+    return None
+
+
+def _extract_formula_field_references(formula_text: str) -> list[str]:
+    refs: list[str] = []
+    seen: set[str] = set()
+    token_chars: list[str] = []
+    in_single = False
+    in_double = False
+
+    def _flush_token(next_char: str) -> None:
+        if not token_chars:
+            return
+        token = "".join(token_chars)
+        token_chars.clear()
+        normalized = _normalize_formula_identifier(token, next_char)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            refs.append(normalized)
+
+    for ch in formula_text:
+        if in_single:
+            if ch == "'":
+                in_single = False
+            continue
+        if in_double:
+            if ch == '"':
+                in_double = False
+            continue
+        if ch == "'":
+            _flush_token(ch)
+            in_single = True
+            continue
+        if ch == '"':
+            _flush_token(ch)
+            in_double = True
+            continue
+        if ch.isalnum() or ch in {"_", ".", "$", ":"}:
+            token_chars.append(ch)
+            continue
+        _flush_token(ch)
+
+    _flush_token("")
+    return refs
 
 
 def _detect_object_node_type(obj_xml_path: Path) -> str:
@@ -106,12 +209,8 @@ def parse_field_xml(
 
     # OBJ-06: Formula field dependencies
     if is_formula and formula_text:
-        refs = set(_FORMULA_FIELD_RE.findall(formula_text))
-        # Filter out obvious non-field tokens (functions, keywords)
-        skip = {"TODAY", "NOW", "DATE", "DATEVALUE", "IF", "AND", "OR", "NOT", "TRUE", "FALSE", "NULL"}
+        refs = _extract_formula_field_references(formula_text)
         for ref in refs:
-            if ref in skip:
-                continue
             dst_qname = f"{object_api_name}.{ref}"
             edges.append(EdgeFact(
                 src_qualified_name=field_qname, src_label="SFField",
