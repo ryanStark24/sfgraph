@@ -405,6 +405,28 @@ def test_product_child_items_array_emits_typed_nodes(tmp_path):
     assert any(e.rel_type == "CALLS" and e.dst_label == "IntegrationProcedure" for e in edges)
 
 
+def test_supported_non_object_vlocity_arrays_wrapped_in_dict_are_parsed(tmp_path):
+    file = tmp_path / "Offer_PromotionItems.json"
+    _write_json(
+        file,
+        {
+            "records": [
+                {
+                    "Name": "PromoItemB",
+                    "ApexClassName": "PromoPricingService",
+                }
+            ]
+        },
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.pack_type == "PromotionItems"
+    assert any(n.label == "PromotionItem" and n.all_props.get("name") == "PromoItemB" for n in nodes)
+    assert any(e.rel_type == "HAS_PROMOTION_ITEM" for e in edges)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "ApexClass" and e.dst_qualified_name == "PromoPricingService" for e in edges)
+
+
 def test_supported_vlocity_registry_matches_upstream_inventory_size():
     assert len(SUPPORTED_VLOCITY_DATAPACK_TYPES) == 55
     assert "DataRaptor" in SUPPORTED_VLOCITY_DATAPACK_TYPES

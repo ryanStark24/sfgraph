@@ -1461,14 +1461,58 @@ class GraphQueryService:
                         allow_vector_fallback=not strict,
                     )
         else:
-            result = await self.query(
-                question=q,
-                max_hops=max_hops,
-                max_results=max_results,
-                time_budget_ms=time_budget_ms,
-                offset=offset,
-                allow_vector_fallback=not strict,
-            )
+            # Auto mode routes to intent-specific analyzers first to improve precision and reduce
+            # follow-up tool calls for common Salesforce investigation questions.
+            component_token = self._component_token_query_parts(q)
+            if component_token:
+                component_name, token = component_token
+                routed_to = "analyze_component"
+                result = await self.analyze_component(
+                    component_name=component_name,
+                    token=token,
+                    focus="writes" if strict else "both",
+                    max_results=max_results,
+                )
+            else:
+                object_event = self._object_event_query_parts(q)
+                if object_event:
+                    object_name, event = object_event
+                    routed_to = "analyze_object_event"
+                    result = await self.analyze_object_event(
+                        object_name=object_name,
+                        event=event,
+                        max_results=max_results,
+                    )
+                else:
+                    change_target = self._change_query_target(q)
+                    if change_target:
+                        routed_to = "analyze_change"
+                        result = await self.analyze_change(
+                            target=change_target,
+                            max_hops=max_hops,
+                            max_results_per_component=max_results,
+                        )
+                    else:
+                        field_targets = await self._field_targets_for_question(q)
+                        if field_targets:
+                            routed_to = "analyze_field"
+                            field_mode = self._field_query_mode(q)
+                            focus = "writes" if strict and field_mode in {"writes", "explain"} else (field_mode or "both")
+                            result = await self.analyze_field(
+                                field_name=q,
+                                focus=focus,
+                                max_results=max_results,
+                            )
+                        else:
+                            routed_to = "query"
+                            result = await self.query(
+                                question=q,
+                                max_hops=max_hops,
+                                max_results=max_results,
+                                time_budget_ms=time_budget_ms,
+                                offset=offset,
+                                allow_vector_fallback=not strict,
+                            )
 
         evidence = self._collect_analyze_evidence(result, max_items=max_results)
         if "confidence_tiers" in result:

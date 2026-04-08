@@ -4,11 +4,14 @@ import asyncio
 import inspect
 import json
 import logging
+import multiprocessing as mp
+import queue
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sfgraph.ingestion.models import IngestionSummary, RefreshSummary, VectorizeSummary
 from sfgraph.ingestion.job_manager import IngestJobManager
 from sfgraph.ingestion.scope_migration import ScopeMigrationService
 from sfgraph.ingestion.snapshot import GraphSnapshotService
@@ -106,21 +109,21 @@ async def create_app_context(data_root: Path) -> DaemonAppContext:
     parse_cache = ParseCache(db_path=str(data_root / "parse_cache.sqlite"))
     pool = NodeParserPool()
     jobs = IngestJobManager(
-        ingest_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_thread(
+        ingest_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_process(
             job_type="ingest",
             data_root=data_root,
             export_dir=export_dir,
             options=options,
             cancel_event=cancel_event,
         ),
-        refresh_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_thread(
+        refresh_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_process(
             job_type="refresh",
             data_root=data_root,
             export_dir=export_dir,
             options=options,
             cancel_event=cancel_event,
         ),
-        vectorize_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_thread(
+        vectorize_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_process(
             job_type="vectorize",
             data_root=data_root,
             export_dir=export_dir,
@@ -272,7 +275,41 @@ async def _run_isolated_job(
         )
 
 
-async def _run_job_in_worker_thread(
+def _run_isolated_job_entrypoint(
+    *,
+    result_queue: mp.Queue,
+    job_type: str,
+    data_root: str,
+    export_dir: str,
+    options: dict[str, Any],
+) -> None:
+    try:
+        summary = asyncio.run(
+            _run_isolated_job(
+                job_type=job_type,
+                data_root=Path(data_root),
+                export_dir=export_dir,
+                options=dict(options),
+                cancel_event=threading.Event(),
+            )
+        )
+        payload = summary.model_dump() if hasattr(summary, "model_dump") else dict(summary)
+        result_queue.put({"ok": True, "payload": payload})
+    except Exception as exc:  # noqa: BLE001
+        result_queue.put({"ok": False, "error": str(exc)})
+
+
+def _hydrate_job_summary(job_type: str, payload: dict[str, Any]):
+    if job_type == "ingest":
+        return IngestionSummary.model_validate(payload)
+    if job_type == "refresh":
+        return RefreshSummary.model_validate(payload)
+    if job_type == "vectorize":
+        return VectorizeSummary.model_validate(payload)
+    raise ValueError(f"Unsupported job type: {job_type}")
+
+
+async def _run_job_in_worker_process(
     *,
     job_type: str,
     data_root: Path,
@@ -280,17 +317,53 @@ async def _run_job_in_worker_thread(
     options: dict[str, Any],
     cancel_event: threading.Event,
 ):
-    return await asyncio.to_thread(
-        lambda: asyncio.run(
-            _run_isolated_job(
-                job_type=job_type,
-                data_root=data_root,
-                export_dir=export_dir,
-                options=dict(options),
-                cancel_event=cancel_event,
-            )
-        )
+    ctx = mp.get_context("spawn")
+    result_queue: mp.Queue = ctx.Queue(maxsize=1)
+    process = ctx.Process(
+        target=_run_isolated_job_entrypoint,
+        kwargs={
+            "result_queue": result_queue,
+            "job_type": job_type,
+            "data_root": str(data_root),
+            "export_dir": export_dir,
+            "options": dict(options),
+        },
+        daemon=True,
     )
+    process.start()
+
+    try:
+        while True:
+            if cancel_event.is_set():
+                if process.is_alive():
+                    process.terminate()
+                    await asyncio.to_thread(process.join, 5.0)
+                raise asyncio.CancelledError()
+
+            try:
+                message = result_queue.get_nowait()
+            except queue.Empty:
+                if not process.is_alive():
+                    raise RuntimeError(
+                        f"Background {job_type} process exited before emitting a result payload."
+                    )
+                await asyncio.sleep(0.1)
+                continue
+
+            if not isinstance(message, dict):
+                raise RuntimeError(f"Background {job_type} process returned malformed payload.")
+            if message.get("ok"):
+                payload = message.get("payload")
+                if not isinstance(payload, dict):
+                    raise RuntimeError(f"Background {job_type} process returned invalid summary payload.")
+                return _hydrate_job_summary(job_type, payload)
+            raise RuntimeError(str(message.get("error") or f"{job_type} process failed"))
+    finally:
+        if process.is_alive():
+            process.terminate()
+            await asyncio.to_thread(process.join, 2.0)
+        result_queue.close()
+        result_queue.join_thread()
 
 
 async def assert_no_active_background_job(app: DaemonAppContext, tool_name: str) -> None:

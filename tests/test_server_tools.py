@@ -168,6 +168,28 @@ async def test_analyze_proxies_to_current_daemon():
 
 
 @pytest.mark.asyncio
+async def test_ask_proxies_to_analyze_with_strict_defaults():
+    export_dir = str(Path("/tmp/repo").resolve())
+    daemon = _FakeDaemon()
+    app = SimpleNamespace(
+        runtime_root=Path("/tmp/runtime/workspaces"),
+        session_data_root=Path("/tmp/runtime/session/data"),
+        daemons={export_dir: daemon},
+        job_routes={},
+        active_export_dir=export_dir,
+    )
+    payload = await server.ask(
+        "where is Service_Id__c populated?",
+        _ctx(app),
+    )
+    decoded = json.loads(payload)
+    assert decoded["method"] == "analyze"
+    assert decoded["params"]["question"] == "where is Service_Id__c populated?"
+    assert decoded["params"]["mode"] == "auto"
+    assert decoded["params"]["strict"] is True
+
+
+@pytest.mark.asyncio
 async def test_query_proxies_allow_vector_fallback_flag():
     export_dir = str(Path("/tmp/repo").resolve())
     daemon = _FakeDaemon()

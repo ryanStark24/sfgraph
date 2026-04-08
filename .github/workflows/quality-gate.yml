@@ -49,3 +49,9 @@ jobs:
             --acceptance "$RUNNER_TEMP/acceptance.json" \
             --min-pass-rate 1.0 \
             --max-avg-duration-ms 3000
+
+      - name: Compare sfgraph answers against native code search
+        run: |
+          uv run python bin/compare_sfgraph_vs_native.py \
+            --repo-root tests/fixtures/metadata \
+            --data-dir "$RUNNER_TEMP/sfgraph-accept-data"

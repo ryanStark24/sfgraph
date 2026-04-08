@@ -467,7 +467,7 @@ async def query(
     offset: int = 0,
     allow_vector_fallback: bool = True,
 ) -> str:
-    """Generic fallback query. Prefer intent tools (`analyze_*`) when question is specific."""
+    """Legacy generic query endpoint. Prefer `analyze` for one-shot Q&A with exact-first routing."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app)
     return _daemon_call(
@@ -501,6 +501,40 @@ async def analyze(
     - auto: route based on question intent
     - exact: prefer exact/token-level evidence
     - lineage: prefer transitive lineage/impact analysis
+    """
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app, export_dir)
+    return _daemon_call(
+        daemon,
+        "analyze",
+        question=question,
+        mode=mode,
+        strict=strict,
+        max_results=max_results,
+        max_hops=max_hops,
+        time_budget_ms=time_budget_ms,
+        offset=offset,
+    )
+
+
+@mcp.tool()
+async def ask(
+    question: str,
+    ctx: Context,
+    export_dir: str | None = None,
+    mode: str = "auto",
+    strict: bool = True,
+    max_results: int = 50,
+    max_hops: int = 3,
+    time_budget_ms: int = 1500,
+    offset: int = 0,
+) -> str:
+    """
+    Primary one-call Q&A entrypoint for MCP clients.
+
+    Defaults are tuned for high precision:
+    - `strict=True` to favor exact/token-level evidence over vector-only recall
+    - `mode=auto` to route field/object-event/component/change questions
     """
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app, export_dir)

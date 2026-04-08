@@ -99,6 +99,10 @@ class VectorStore:
         if self._embedder is None:
             if self._embedder_load_error:
                 raise RuntimeError(self._embedder_load_error)
+            # FastEmbed can emit repetitive INFO/WARNING logs while probing cache/network.
+            # Keep server logs actionable by default.
+            logging.getLogger("fastembed").setLevel(logging.ERROR)
+            logging.getLogger("onnxruntime").setLevel(logging.ERROR)
             from fastembed import TextEmbedding
             if not network_allowed():
                 # Hard privacy default: never fetch model artifacts over the network

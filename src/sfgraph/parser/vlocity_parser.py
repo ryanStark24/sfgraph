@@ -669,6 +669,37 @@ def _parse_non_object_vlocity_array(
     return nodes, edges
 
 
+def _extract_non_object_vlocity_array_from_dict(
+    data: dict[str, Any],
+    pack_type: str,
+) -> list[Any] | None:
+    """Extract known non-object array payloads wrapped by vendor export envelopes."""
+    direct = data.get(pack_type)
+    if isinstance(direct, list):
+        return direct
+
+    candidates = (
+        data.get("records"),
+        data.get("items"),
+        data.get("data"),
+        data.get("values"),
+        data.get("children"),
+        data.get("result"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            return candidate
+        if isinstance(candidate, dict):
+            nested = candidate.get(pack_type)
+            if isinstance(nested, list):
+                return nested
+            for nested_key in ("records", "items", "data", "values", "children", "result"):
+                nested_list = candidate.get(nested_key)
+                if isinstance(nested_list, list):
+                    return nested_list
+    return None
+
+
 def parse_vlocity_json_detailed(
     file_path: str,
     namespace: str = "vlocity_cmt",
@@ -693,8 +724,42 @@ def parse_vlocity_json_detailed(
                 )
         return [], [], VlocityParseMetadata(outcome="non_object_json")
 
+    explicit_type_marker = any(key in data for key in ("VlocityDataPackType", "DataPackType", "Type", "type"))
     raw_pack_type = _pack_type(data, file_path)
-    if not raw_pack_type and not any(key in data for key in ("VlocityDataPackType", "DataPackType", "Type", "type")):
+    non_object_pack_type = _supported_non_object_pack_type(file_path)
+    candidate_non_object_type = raw_pack_type if raw_pack_type in _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES else non_object_pack_type
+    if candidate_non_object_type and (not explicit_type_marker or raw_pack_type in _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES):
+        maybe_items = _extract_non_object_vlocity_array_from_dict(data, candidate_non_object_type)
+        if isinstance(maybe_items, list):
+            nodes, edges = _parse_non_object_vlocity_array(
+                maybe_items,
+                file_path,
+                namespace,
+                candidate_non_object_type,
+            )
+            return nodes, edges, VlocityParseMetadata(
+                outcome="parsed_specialized",
+                pack_type=candidate_non_object_type,
+                parser_strategy="specialized",
+                node_label="VlocityDataPack",
+            )
+
+    if not raw_pack_type and not explicit_type_marker:
+        if non_object_pack_type:
+            maybe_items = _extract_non_object_vlocity_array_from_dict(data, non_object_pack_type)
+            if isinstance(maybe_items, list):
+                nodes, edges = _parse_non_object_vlocity_array(
+                    maybe_items,
+                    file_path,
+                    namespace,
+                    non_object_pack_type,
+                )
+                return nodes, edges, VlocityParseMetadata(
+                    outcome="parsed_specialized",
+                    pack_type=non_object_pack_type,
+                    parser_strategy="specialized",
+                    node_label="VlocityDataPack",
+                )
         return [], [], VlocityParseMetadata(outcome="non_datapack_json")
 
     ptype = raw_pack_type.lower()

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from sfgraph.daemon_service import DaemonOperations
+from sfgraph.daemon_service import DaemonOperations, _run_job_in_worker_process
 
 
 class _FakeJobs:
@@ -126,3 +128,18 @@ async def test_resume_ingest_job_dispatch():
 
     assert payload["job_id"] == "job-resumed"
     assert payload["options"]["resume_checkpoint"] is True
+
+
+@pytest.mark.asyncio
+async def test_worker_process_runner_hard_cancels_when_event_is_set(tmp_path: Path):
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run_job_in_worker_process(
+            job_type="ingest",
+            data_root=tmp_path / "data",
+            export_dir=str(tmp_path / "repo"),
+            options={"mode": "graph_only"},
+            cancel_event=cancel_event,
+        )

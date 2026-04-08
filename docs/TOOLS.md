@@ -112,14 +112,18 @@ Key fields:
 
 ## Query and Lineage
 
-Preferred intent tools (use these first):
+Preferred entrypoint (use this first):
+
+- `ask(question, ...)` one-call router for most Q&A
+
+Intent tools (use directly when your client can classify intent):
 
 - `analyze_field(...)` for "where is field populated/assigned/used"
 - `analyze_object_event(...)` for "what happens when Object is inserted/updated/deleted"
 - `analyze_component(...)` for "in class/flow/IP/DR where is token set or used"
 - `analyze_change(...)` for "what breaks if I change X"
 
-Use `query(...)` as a fallback when the question is broad or exploratory.
+Use `query(...)` as a compatibility fallback only when you explicitly want broad node discovery.
 
 ## Deprecated Blocking Tools
 
@@ -134,7 +138,39 @@ These still exist for compatibility, but new clients should prefer job-native to
 Purpose:
 
 - natural-language-ish entry point for common lineage/impact questions
-- generic fallback for ambiguous questions; internally routes to intent analyzers for recognized patterns
+- compatibility fallback for ambiguous questions; `ask(...)`/`analyze(...)` should be preferred in new clients
+
+### `ask(question, ...)`
+
+Purpose:
+
+- primary one-call Q&A endpoint for MCP clients
+- routes to exact-first analyzers for field/object-event/component/change questions
+- uses strict mode by default to reduce semantic-noise answers
+
+Typical use:
+
+- `ask("where is Service_Id__c populated?")`
+- `ask("what happens when QuoteLineItem is inserted?")`
+- `ask("in class OSS_ServiceabilityTask, where is accessId populated?")`
+
+## LLM Prompt Contract (Recommended)
+
+To reduce tool-call cost and round trips, use this request shape:
+
+1. Set workspace context once:
+- `set_active_export_dir(export_dir)`
+
+2. Ask one focused question at a time:
+- `ask(question="...single question...", strict=true, mode="auto")`
+
+3. Only call deep tools if evidence is insufficient:
+- fallback order: `analyze_component` / `analyze_field` -> `trace_upstream` -> `query`
+
+Prompting tips:
+- include concrete object/class/field/token names
+- ask for `method + source file + line` when you need exact evidence
+- avoid multi-question prompts ("and also ...") in one call
 
 Behavior:
 

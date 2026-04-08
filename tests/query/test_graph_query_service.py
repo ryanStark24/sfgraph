@@ -861,6 +861,19 @@ async def test_analyze_exact_routes_to_field_analysis(svc: GraphQueryService):
 
 
 @pytest.mark.asyncio
+async def test_analyze_auto_routes_to_component_for_token_population(svc: GraphQueryService):
+    payload = await svc.analyze(
+        "In class OSS_ServiceabilityTask, where is accessId populated? show method and source file.",
+        mode="auto",
+        strict=True,
+    )
+    assert payload["mode"] == "analyze"
+    assert payload["analysis_mode"] == "auto"
+    assert payload["routed_to"] == "analyze_component"
+    assert payload["result"]["mode"] == "analyze_component"
+
+
+@pytest.mark.asyncio
 async def test_analyze_lineage_routes_to_object_event(tmp_path: Path):
     graph = DuckPGQStore()
     manifest = ManifestStore(str(tmp_path / "manifest_analyze_lineage.db"))

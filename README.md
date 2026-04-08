@@ -174,11 +174,12 @@ The server stores graph data under `./data` relative to the repo root by default
 ## Core MCP Tools
 
 - Preferred for specific questions:
+  - `ask` (recommended one-call Q&A entrypoint)
   - `analyze_field`
   - `analyze_object_event`
   - `analyze_component`
   - `analyze_change`
-- Generic fallback:
+- Compatibility fallback:
   - `query`
 
 - `ingest_org(export_dir)`
@@ -186,6 +187,7 @@ The server stores graph data under `./data` relative to the repo root by default
 - `watch_refresh(export_dir, duration_seconds?, poll_interval?, debounce_seconds?, max_refreshes?)`
 - `get_ingestion_progress()`
 - `get_ingestion_status()`
+- `ask(question, export_dir?, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?)`
 - `query(question, max_hops?, max_results?, time_budget_ms?, offset?)`
 - `trace_upstream(node_id, max_hops?, max_results?, time_budget_ms?, offset?)`
 - `trace_downstream(node_id, max_hops?, max_results?, time_budget_ms?, offset?)`
