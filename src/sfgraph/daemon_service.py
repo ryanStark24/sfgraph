@@ -527,6 +527,18 @@ class DaemonOperations:
             offset=int(params.get("offset", 0)),
         )
 
+    async def analyze(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = build_query_service(self.app)
+        return await service.analyze(
+            question=str(params["question"]),
+            mode=str(params.get("mode", "auto")),
+            strict=bool(params.get("strict", True)),
+            max_results=int(params.get("max_results", 50)),
+            max_hops=int(params.get("max_hops", 3)),
+            time_budget_ms=int(params.get("time_budget_ms", 1500)),
+            offset=int(params.get("offset", 0)),
+        )
+
     async def impact_from_git_diff(self, params: dict[str, Any]) -> dict[str, Any]:
         service = build_query_service(self.app)
         return await service.impact_from_git_diff(

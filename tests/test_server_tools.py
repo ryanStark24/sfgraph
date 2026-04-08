@@ -141,6 +141,33 @@ async def test_analyze_change_proxies_to_current_daemon():
 
 
 @pytest.mark.asyncio
+async def test_analyze_proxies_to_current_daemon():
+    export_dir = str(Path("/tmp/repo").resolve())
+    daemon = _FakeDaemon()
+    app = SimpleNamespace(
+        runtime_root=Path("/tmp/runtime/workspaces"),
+        session_data_root=Path("/tmp/runtime/session/data"),
+        daemons={export_dir: daemon},
+        job_routes={},
+        active_export_dir=export_dir,
+    )
+    payload = await server.analyze(
+        "where is Service_Id__c populated?",
+        _ctx(app),
+        mode="exact",
+        strict=True,
+        max_results=20,
+        max_hops=2,
+        time_budget_ms=1200,
+    )
+    decoded = json.loads(payload)
+    assert decoded["method"] == "analyze"
+    assert decoded["params"]["question"] == "where is Service_Id__c populated?"
+    assert decoded["params"]["mode"] == "exact"
+    assert decoded["params"]["strict"] is True
+
+
+@pytest.mark.asyncio
 async def test_status_uses_session_daemon_before_export_activation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "repo"
     workspace.mkdir(parents=True, exist_ok=True)

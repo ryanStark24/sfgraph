@@ -1216,6 +1216,159 @@ class GraphQueryService:
         }
 
     @staticmethod
+    def _collect_analyze_evidence(result: dict[str, Any], max_items: int = 50) -> list[dict[str, Any]]:
+        evidence: list[dict[str, Any]] = []
+
+        for item in result.get("exact_matches", [])[:max_items]:
+            evidence.append(
+                {
+                    "source": "exact",
+                    "kind": item.get("kind", "mention"),
+                    "confidence": float(item.get("confidence", 0.7)),
+                    "file": item.get("file"),
+                    "line": item.get("line"),
+                    "context": item.get("context"),
+                }
+            )
+
+        for item in result.get("graph_findings", [])[:max_items]:
+            path = item.get("path", [])
+            step = path[-1] if path else {}
+            evidence.append(
+                {
+                    "source": "graph",
+                    "kind": item.get("kind", "relation"),
+                    "confidence": float(item.get("confidence", 0.6)),
+                    "file": step.get("source_file"),
+                    "line": step.get("source_line"),
+                    "context": step.get("contextSnippet"),
+                    "rel_type": step.get("rel_type"),
+                }
+            )
+
+        for item in result.get("findings", [])[:max_items]:
+            path = item.get("path", [])
+            step = path[-1] if path else {}
+            evidence.append(
+                {
+                    "source": "graph",
+                    "kind": "path",
+                    "confidence": float(item.get("confidence", 0.6)),
+                    "file": step.get("source_file"),
+                    "line": step.get("source_line"),
+                    "context": step.get("contextSnippet"),
+                    "rel_type": step.get("rel_type"),
+                }
+            )
+
+        return evidence[:max_items]
+
+    async def analyze(
+        self,
+        question: str,
+        mode: str = "auto",
+        strict: bool = True,
+        max_results: int = 50,
+        max_hops: int = 3,
+        time_budget_ms: int = 1500,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        q = question.strip()
+        selected_mode = (mode or "auto").strip().lower()
+        if selected_mode not in {"auto", "exact", "lineage"}:
+            raise ValueError("mode must be one of: auto, exact, lineage")
+
+        routed_to = "query"
+        result: dict[str, Any]
+
+        if selected_mode == "exact":
+            component_token = self._component_token_query_parts(q)
+            if component_token:
+                component_name, token = component_token
+                routed_to = "analyze_component"
+                result = await self.analyze_component(
+                    component_name=component_name,
+                    token=token,
+                    focus="writes" if strict else "both",
+                    max_results=max_results,
+                )
+            else:
+                field_targets = await self._field_targets_for_question(q)
+                if field_targets:
+                    field_mode = self._field_query_mode(q)
+                    focus = "writes" if strict and field_mode in {"writes", "explain"} else (field_mode or "both")
+                    routed_to = "analyze_field"
+                    result = await self.analyze_field(
+                        field_name=q,
+                        focus=focus,
+                        max_results=max_results,
+                    )
+                else:
+                    routed_to = "query"
+                    result = await self.query(
+                        question=q,
+                        max_hops=max_hops,
+                        max_results=max_results,
+                        time_budget_ms=time_budget_ms,
+                        offset=offset,
+                    )
+        elif selected_mode == "lineage":
+            object_event = self._object_event_query_parts(q)
+            if object_event:
+                object_name, event = object_event
+                routed_to = "analyze_object_event"
+                result = await self.analyze_object_event(
+                    object_name=object_name,
+                    event=event,
+                    max_results=max_results,
+                )
+            else:
+                change_target = self._change_query_target(q)
+                if change_target:
+                    routed_to = "analyze_change"
+                    result = await self.analyze_change(
+                        target=change_target,
+                        max_hops=max_hops,
+                        max_results_per_component=max_results,
+                    )
+                else:
+                    routed_to = "query"
+                    result = await self.query(
+                        question=q,
+                        max_hops=max_hops,
+                        max_results=max_results,
+                        time_budget_ms=time_budget_ms,
+                        offset=offset,
+                    )
+        else:
+            result = await self.query(
+                question=q,
+                max_hops=max_hops,
+                max_results=max_results,
+                time_budget_ms=time_budget_ms,
+                offset=offset,
+            )
+
+        evidence = self._collect_analyze_evidence(result, max_items=max_results)
+        if "confidence_tiers" in result:
+            confidence_tiers = result["confidence_tiers"]
+        else:
+            confidence_tiers = self._confidence_tiers(evidence)
+
+        return {
+            "mode": "analyze",
+            "question": q,
+            "analysis_mode": selected_mode,
+            "strict": strict,
+            "routed_to": routed_to,
+            "result": result,
+            "evidence": evidence,
+            "confidence_tiers": confidence_tiers,
+            "freshness": result.get("freshness", await self.freshness(partial_results=False)),
+            "partial_results": bool(result.get("partial_results", False)),
+        }
+
+    @staticmethod
     def _field_query_mode(question: str) -> str | None:
         q = question.lower()
         if any(phrase in q for phrase in ("what uses", "who uses", "used by")):

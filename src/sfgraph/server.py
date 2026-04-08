@@ -460,6 +460,41 @@ async def query(
 
 
 @mcp.tool()
+async def analyze(
+    question: str,
+    ctx: Context,
+    mode: str = "auto",
+    strict: bool = True,
+    max_results: int = 50,
+    max_hops: int = 3,
+    time_budget_ms: int = 1500,
+    offset: int = 0,
+    export_dir: str | None = None,
+) -> str:
+    """
+    Unified analysis entrypoint.
+
+    Modes:
+    - auto: route based on question intent
+    - exact: prefer exact/token-level evidence
+    - lineage: prefer transitive lineage/impact analysis
+    """
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app, export_dir)
+    return _daemon_call(
+        daemon,
+        "analyze",
+        question=question,
+        mode=mode,
+        strict=strict,
+        max_results=max_results,
+        max_hops=max_hops,
+        time_budget_ms=time_budget_ms,
+        offset=offset,
+    )
+
+
+@mcp.tool()
 async def analyze_change(
     ctx: Context,
     target: str | None = None,
