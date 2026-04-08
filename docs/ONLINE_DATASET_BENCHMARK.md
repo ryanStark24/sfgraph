@@ -21,3 +21,15 @@ uv run pytest tests/test_online_dataset_quality.py -m online_dataset -q
 - The suite runs `sfgraph ingest --mode graph_only` then `sfgraph acceptance`.
 - Default dataset URL is `pradhanTejeshwar/OmnistudioComponents`.
 - For very large repos (for example `OmnistudioComponents`), expect longer ingest time.
+
+## Compare sfgraph vs native code search (local quality check)
+
+After ingest, run:
+
+```bash
+uv run python bin/compare_sfgraph_vs_native.py \
+  --repo-root /absolute/path/to/cloned/repo \
+  --data-dir /absolute/path/to/data-dir
+```
+
+This checks that sfgraph returns exact evidence for representative questions where native lexical search has concrete hits.

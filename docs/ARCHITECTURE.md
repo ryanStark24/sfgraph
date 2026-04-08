@@ -208,9 +208,9 @@ The current system already does a few important things well:
 
 ## Current Weaknesses
 
-The current ingest architecture still has practical limitations:
+The current ingest architecture has moved to durable background jobs with per-workspace isolation, but still has practical limits.
 
-### 1. Legacy blocking tools still exist
+### 1. Legacy blocking tools still exist (compatibility only)
 
 `ingest_org(...)` and `refresh(...)` are still available for backward compatibility.
 
@@ -219,7 +219,7 @@ Consequences:
 - clients that use legacy tools can still hit long-running blocking calls
 - new integrations should prefer `start_*_job` + polling APIs
 
-### 2. Job model is now first-class, with persisted state
+### 2. Job model is first-class, with persisted state and resume support
 
 Ingest/refresh/vectorize are job-native with durable metadata in SQLite (`ingest_jobs.sqlite`) and persisted progress snapshots.
 
@@ -227,16 +227,18 @@ Consequences:
 
 - stable `job_id` for polling and cancellation
 - `list_ingest_jobs` and `get_ingest_job` survive daemon restart
-- queued/running jobs are marked failed as `daemon_restarted` on recovery (resume is not yet implemented)
+- queued/running jobs are marked failed as `daemon_restarted` on recovery
+- `resume_ingest_job(job_id)` can create a checkpoint-aware resumed job (`resume_checkpoint=true`)
 
-### 3. Vector work can slow the critical path
+### 3. Vector work can still influence critical-path behavior
 
-Today vector updates happen during ingest.
+Vector updates currently still happen in the ingest flow (except explicit `graph_only` mode), but status now reports vector health explicitly.
 
 Consequences:
 
 - graph ingest latency can be coupled to embedding availability
 - first-use model readiness can delay ingest unless pre-cached
+- status endpoints now expose `vector_health` so failures are visible instead of silent
 
 ### 4. Discovery is still heavier than it should be
 
@@ -251,14 +253,29 @@ Consequences:
 - file hashing and traversal can dominate ingest time
 - users perceive “slow ingest” before parser throughput is even the bottleneck
 
-### 5. Vlocity coverage is broad but not yet deep
+### 5. Vlocity coverage is broader, but semantic depth still varies
 
-We now recognize the upstream-supported type inventory, but only a subset has rich domain-specific graph extraction.
+We recognize the upstream-supported type inventory and now parse additional non-object array families used in real OmniStudio exports, including wrapped-array forms:
+
+- `*_PromotionItems.json`
+- `*_PriceListEntries.json`
+- `*_InterfaceImplementationDetails.json`
+- `*_ProductChildItems.json`
 
 Consequences:
 
 - baseline coverage exists
 - full semantic richness does not yet exist across all Vlocity types
+
+### 6. Job execution model
+
+Background jobs run in isolated subprocesses (not worker threads) so cancellation can terminate active work deterministically.
+
+Consequences:
+
+- API status/health endpoints stay responsive during long ingests
+- cancellation now performs hard-stop process termination for active background jobs
+- no same-process thread linger after `cancel_ingest_job`
 
 ## Target Ingest Architecture
 

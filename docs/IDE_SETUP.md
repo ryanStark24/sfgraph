@@ -190,7 +190,8 @@ Once the IDE detects the server, try:
 
 - `ping`
 - `get_ingestion_status`
-- `ingest_org("/absolute/path/to/export")`
-- `query("what writes to Account.Status__c?")`
+- `start_ingest_job("/absolute/path/to/export", mode="graph_only")`
+- `ask("where is Account.Status__c populated?")`
+- `get_ingest_job("<job_id from start_ingest_job>")`
 
 If the server starts but queries are empty, ingest the export first.

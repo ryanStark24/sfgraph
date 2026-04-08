@@ -1,5 +1,33 @@
 # Release Notes
 
+## 0.1.0-beta.5
+
+This beta focuses on job isolation/cancellation correctness, lower-noise query workflows, and better OmniStudio array-pack ingestion.
+
+### Added
+
+- `ask(question, ...)` MCP entrypoint as the recommended one-call Q&A tool (exact-first auto routing).
+- `resume_ingest_job(job_id)` support for checkpoint-aware job resume.
+- CI quality comparator script: `bin/compare_sfgraph_vs_native.py`, wired into `.github/workflows/quality-gate.yml`.
+
+### Changed
+
+- Background ingest/refresh/vectorize execution moved to subprocess isolation for stronger cancellation behavior and better API responsiveness.
+- `analyze(mode="auto")` now routes to intent analyzers first (`analyze_field`, `analyze_component`, `analyze_object_event`, `analyze_change`) before generic search fallback.
+- FastEmbed/ONNX runtime logging is reduced to avoid repetitive offline/noise logs in normal operation.
+
+### Fixed
+
+- Supported non-object Vlocity array families now parse when exports are wrapped in envelope objects (not only top-level arrays), including:
+  - `PromotionItems`
+  - `PriceListEntries`
+  - `InterfaceImplementationDetails`
+  - `ProductChildItems`
+
+### Notes
+
+- Legacy tools (`ingest_org`, `refresh`, `vectorize`, `query`) remain for compatibility, but `start_*_job` + `ask/analyze` are the preferred paths.
+
 ## 0.1.0-beta.4
 
 This beta is focused on production-scale ingest reliability, broader OmniStudio/Vlocity coverage, and stricter local-only defaults.
