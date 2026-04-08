@@ -403,6 +403,41 @@ async def test_analyze_component_token_traces_exact_assignments(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_analyze_component_falls_back_to_source_file_without_graph_node(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_component_fallback.db"))
+    await manifest.initialize()
+
+    class_file = tmp_path / "force-app" / "main" / "default" / "classes" / "QuoteRecipientHelper.cls"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_text(
+        "public class QuoteRecipientHelper {\n"
+        "  public static void performBeforeInsertLogic(List<QuoteLineItemRecipient> records) {\n"
+        "    for (QuoteLineItemRecipient obj : records) {\n"
+        "      obj.MaxDownloadSpeed = '500 Mpbs';\n"
+        "    }\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_component("QuoteRecipientHelper", token="MaxDownloadSpeed", focus="writes")
+
+    assert payload["resolved_components"]
+    assert any(str(match["file"]).endswith("QuoteRecipientHelper.cls") for match in payload["exact_matches"])
+    assert any(match["kind"] == "write" for match in payload["exact_matches"])
+
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
 async def test_get_node_returns_adjacent_edges(svc: GraphQueryService):
     payload = await svc.get_node("Account.Status__c")
     assert payload["node"] is not None

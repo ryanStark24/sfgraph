@@ -561,21 +561,33 @@ class GraphQueryService:
         max_results: int = 100,
     ) -> dict[str, Any]:
         resolved_nodes = await self._find_component_nodes(component_name, max_results=25)
+        if not resolved_nodes:
+            for source_path in self._find_component_source_files(component_name, max_results=25):
+                resolved_nodes.append(
+                    {
+                        "qualifiedName": component_name.strip(),
+                        "scopedQualifiedName": "",
+                        "label": "SourceFile",
+                        "props": {"sourceFile": str(source_path)},
+                    }
+                )
         exact_matches: list[dict[str, Any]] = []
         graph_relations: list[dict[str, Any]] = []
         seen_exact: set[tuple[str, int, str]] = set()
+        seen_sources: set[str] = set()
 
         for node in resolved_nodes:
             qname = node["qualifiedName"]
-            outgoing = await self._edges_for_node(qname, "out")
-            incoming = await self._edges_for_node(qname, "in")
-            graph_relations.append(
-                {
-                    "node": qname,
-                    "outgoing": outgoing[:25],
-                    "incoming": incoming[:25],
-                }
-            )
+            if node.get("scopedQualifiedName"):
+                outgoing = await self._edges_for_node(qname, "out")
+                incoming = await self._edges_for_node(qname, "in")
+                graph_relations.append(
+                    {
+                        "node": qname,
+                        "outgoing": outgoing[:25],
+                        "incoming": incoming[:25],
+                    }
+                )
 
             source_file = str(node.get("props", {}).get("sourceFile", ""))
             if not source_file:
@@ -583,6 +595,10 @@ class GraphQueryService:
             source_path = Path(source_file)
             if not source_path.is_absolute():
                 source_path = (self._repo_root / source_path).resolve()
+            source_key = str(source_path)
+            if source_key in seen_sources:
+                continue
+            seen_sources.add(source_key)
             text = self._read_text_safe(source_path)
             if not text:
                 continue
@@ -637,6 +653,50 @@ class GraphQueryService:
                 "Graph relations provide neighboring context for impact and lineage."
             ),
         }
+
+    def _find_component_source_files(self, component_name: str, max_results: int = 20) -> list[Path]:
+        name = component_name.strip()
+        if not name:
+            return []
+        out: list[Path] = []
+        seen: set[str] = set()
+
+        def _add(path: Path) -> None:
+            resolved = path.resolve()
+            key = str(resolved)
+            if not resolved.exists() or key in seen:
+                return
+            seen.add(key)
+            out.append(resolved)
+
+        for suffix in (".cls", ".trigger", ".js", ".ts", ".xml", ".json"):
+            _add(self._repo_root / "force-app" / "main" / "default" / "classes" / f"{name}{suffix}")
+            _add(self._repo_root / "force-app" / "main" / "default" / "triggers" / f"{name}{suffix}")
+            _add(self._repo_root / "vlocity" / f"{name}{suffix}")
+            if len(out) >= max_results:
+                return out[:max_results]
+
+        class_pattern = re.compile(rf"\b(?:class|trigger)\s+{re.escape(name)}\b", re.IGNORECASE)
+        search_roots = [
+            self._repo_root / "force-app" / "main" / "default" / "classes",
+            self._repo_root / "force-app" / "main" / "default" / "triggers",
+            self._repo_root / "vlocity",
+        ]
+        allowed_exts = {".cls", ".trigger", ".js", ".ts", ".xml", ".json"}
+        for root in search_roots:
+            if not root.exists():
+                continue
+            for path in root.rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in allowed_exts:
+                    continue
+                text = self._read_text_safe(path)
+                if not text:
+                    continue
+                if class_pattern.search(text) or name in text:
+                    _add(path)
+                    if len(out) >= max_results:
+                        return out[:max_results]
+        return out[:max_results]
 
     @staticmethod
     def _component_token_query_parts(question: str) -> tuple[str, str] | None:
