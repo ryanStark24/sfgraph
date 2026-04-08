@@ -363,6 +363,47 @@ class IngestJobManager:
                 self._log_transition(job, "cancel_requested")
             return job.to_dict()
 
+    async def resume_job(self, job_id: str) -> dict[str, Any]:
+        """Start a new job from a terminal job using checkpoint-aware options."""
+        await self._ensure_initialized()
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if job.state not in TERMINAL_JOB_STATES:
+                raise RuntimeError(f"Cannot resume job {job_id} while state={job.state}")
+            if job.job_type not in {"ingest", "refresh", "vectorize"}:
+                raise RuntimeError(f"Cannot resume unsupported job type: {job.job_type}")
+            active = self._get_active_job_locked()
+            if active is not None:
+                raise RuntimeError(
+                    f"Job {active.job_id} is already {active.state} for {active.export_dir}. "
+                    "Only one active ingest job is supported per workspace right now."
+                )
+
+            resumed_options = dict(job.options or {})
+            resumed_options["resume_checkpoint"] = True
+            resumed_options["resumed_from_job_id"] = job.job_id
+
+            resumed = IngestJobRecord(
+                job_id=str(uuid.uuid4()),
+                job_type=job.job_type,
+                export_dir=job.export_dir,
+                options=resumed_options,
+                recovery_reason="checkpoint_resume",
+            )
+            self._jobs[resumed.job_id] = resumed
+            self._active_job_id = resumed.job_id
+            resumed.updated_at = _utc_now()
+            await self._persist_job_locked(resumed)
+            await self._persist_active_job_locked(resumed.job_id)
+            resumed._task = asyncio.create_task(
+                self._run_job(resumed),
+                name=f"sfgraph-{resumed.job_type}-{resumed.job_id}",
+            )
+            self._log_transition(resumed, "job_resumed")
+            return resumed.to_dict()
+
     async def _run_job(self, job: IngestJobRecord) -> None:
         async with self._lock:
             job.state = "running"

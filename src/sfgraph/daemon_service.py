@@ -235,6 +235,7 @@ async def _run_isolated_job(
     await pool.start()
     try:
         mode = str(options.get("mode", "full"))
+        resume_checkpoint = bool(options.get("resume_checkpoint", False))
         include_globs = _as_string_list(options.get("include_globs"))
         exclude_globs = _as_string_list(options.get("exclude_globs"))
         service = build_ingestion_service_from_parts(
@@ -249,6 +250,12 @@ async def _run_isolated_job(
             include_globs=[] if job_type == "vectorize" else include_globs,
             exclude_globs=[] if job_type == "vectorize" else exclude_globs,
         )
+        if job_type == "ingest" and resume_checkpoint:
+            logger.info(
+                "Resuming ingest job via incremental refresh strategy for export_dir=%s",
+                export_dir,
+            )
+            return await service.refresh(export_dir)
         if job_type == "ingest":
             return await service.ingest(export_dir)
         if job_type == "refresh":
@@ -392,6 +399,13 @@ class DaemonOperations:
         job_id = str(params["job_id"])
         try:
             return await self.app.jobs.cancel_job(job_id)
+        except KeyError:
+            return {"job_id": job_id, "available": False, "error": "job_not_found"}
+
+    async def resume_ingest_job(self, params: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(params["job_id"])
+        try:
+            return await self.app.jobs.resume_job(job_id)
         except KeyError:
             return {"job_id": job_id, "available": False, "error": "job_not_found"}
 

@@ -284,6 +284,19 @@ async def cancel_ingest_job(job_id: str, ctx: Context) -> str:
 
 
 @mcp.tool()
+async def resume_ingest_job(job_id: str, ctx: Context) -> str:
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _find_daemon_for_job(app, job_id)
+    result = daemon.call("resume_ingest_job", job_id=job_id)
+    resumed_job_id = str(result.get("job_id") or "")
+    if resumed_job_id:
+        export_dir = str(result.get("export_dir") or "")
+        if export_dir:
+            app.job_routes[resumed_job_id] = str(Path(export_dir).expanduser().resolve())
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
 async def refresh(
     export_dir: str,
     ctx: Context,

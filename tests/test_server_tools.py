@@ -189,6 +189,38 @@ async def test_query_proxies_allow_vector_fallback_flag():
 
 
 @pytest.mark.asyncio
+async def test_resume_ingest_job_proxies_and_tracks_route():
+    export_dir = str(Path("/tmp/repo").resolve())
+    daemon = _FakeDaemon()
+
+    def call_with_resume(method: str, **params):
+        daemon.calls.append((method, params))
+        if method == "resume_ingest_job":
+            return {
+                "job_id": "job-resumed",
+                "job_type": "ingest",
+                "export_dir": export_dir,
+                "state": "queued",
+            }
+        if method == "list_ingest_jobs":
+            return {"active_job_id": None, "jobs": []}
+        return {"method": method, "params": params, "daemon": daemon.name}
+
+    daemon.call = call_with_resume  # type: ignore[method-assign]
+    app = SimpleNamespace(
+        runtime_root=Path("/tmp/runtime/workspaces"),
+        session_data_root=Path("/tmp/runtime/session/data"),
+        daemons={export_dir: daemon},
+        job_routes={"job-old": export_dir},
+        active_export_dir=export_dir,
+    )
+    payload = await server.resume_ingest_job("job-old", _ctx(app))
+    decoded = json.loads(payload)
+    assert decoded["job_id"] == "job-resumed"
+    assert app.job_routes["job-resumed"] == export_dir
+
+
+@pytest.mark.asyncio
 async def test_status_uses_session_daemon_before_export_activation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "repo"
     workspace.mkdir(parents=True, exist_ok=True)

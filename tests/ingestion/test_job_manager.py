@@ -342,3 +342,37 @@ async def test_job_manager_marks_stale_running_job_as_daemon_restarted(tmp_path:
     assert restored["recovery_reason"] == "daemon_restarted"
     assert manager2.active_job_id is None
     await manager2.close()
+
+
+@pytest.mark.asyncio
+async def test_job_manager_resume_job_creates_checkpoint_resume(tmp_path: Path):
+    async def fake_ingest(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        await asyncio.sleep(0.01)
+        return _ingest_summary(export_dir)
+
+    async def fake_refresh(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        return _refresh_summary(export_dir)
+
+    async def fake_vectorize(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        return _refresh_summary(export_dir)
+
+    manager = IngestJobManager(
+        ingest_factory=fake_ingest,
+        refresh_factory=fake_refresh,
+        vectorize_factory=fake_vectorize,
+    )
+    original = await manager.start_job(job_type="ingest", export_dir=str(tmp_path))
+    await asyncio.sleep(0.05)
+    completed = await manager.get_job(original["job_id"])
+    assert completed is not None
+    assert completed["state"] == "completed"
+
+    resumed = await manager.resume_job(original["job_id"])
+    assert resumed["options"]["resume_checkpoint"] is True
+    assert resumed["options"]["resumed_from_job_id"] == original["job_id"]
+    assert resumed["recovery_reason"] == "checkpoint_resume"
+
+    await asyncio.sleep(0.05)
+    resumed_record = await manager.get_job(resumed["job_id"])
+    assert resumed_record is not None
+    assert resumed_record["state"] == "completed"

@@ -148,6 +148,7 @@ class IngestionService:
         self._exclude_globs = exclude_globs or []
         self._vector_upsert_failures = 0
         self._vector_last_error: str | None = None
+        self._vector_failure_logged = False
 
     def _raise_if_cancelled(self) -> None:
         if self._cancel_event is not None and self._cancel_event.is_set():
@@ -310,12 +311,17 @@ class IngestionService:
         except Exception as exc:  # noqa: BLE001
             self._vector_upsert_failures += 1
             self._vector_last_error = str(exc)
-            logger.warning("Vector upsert failed for %s: %s", scoped_qname, exc)
+            if not self._vector_failure_logged:
+                logger.warning("Vector upsert failed: %s", exc)
+                self._vector_failure_logged = True
+            else:
+                logger.debug("Vector upsert failed for %s: %s", scoped_qname, exc)
             return False
 
     def _reset_vector_health(self) -> None:
         self._vector_upsert_failures = 0
         self._vector_last_error = None
+        self._vector_failure_logged = False
 
     def _vector_health_snapshot(self) -> dict[str, Any]:
         if not self._vectors:
@@ -413,7 +419,10 @@ class IngestionService:
                     processed_nodes += 1
                 else:
                     failed_nodes += 1
-                    warnings.append(f"Vector upsert failed for {qname}")
+                    if failed_nodes <= 3:
+                        warnings.append(f"Vector upsert failed for {qname}")
+                    elif failed_nodes == 4:
+                        warnings.append("Additional vector upsert failures omitted from warnings list.")
                 self._write_progress_snapshot(
                     {
                         "run_id": run_id,
