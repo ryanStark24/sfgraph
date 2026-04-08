@@ -15,8 +15,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sfgraph.common import compute_sha256, parse_json_props
 from sfgraph.ingestion.constants import NODE_WRITE_ORDER
-from sfgraph.ingestion.models import EdgeFact, IngestionSummary, NodeFact, RefreshSummary, VectorizeSummary
+from sfgraph.ingestion.models import (
+    EdgeFact,
+    IngestionPhase,
+    IngestionSummary,
+    NodeFact,
+    RefreshSummary,
+    VectorizeSummary,
+)
 from sfgraph.ingestion.schema_index import materialize_schema_index
 from sfgraph.parser.apex_extractor import ApexExtractor
 from sfgraph.parser.dynamic_accessor import DynamicAccessorRegistry
@@ -40,28 +48,6 @@ from sfgraph.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 TRANSIENT_WORKER_ERRORS = frozenset({"worker_restarting", "worker_exited", "timeout", "no_workers"})
-
-
-def _sha256(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _parse_props(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            payload = json.loads(value)
-            if isinstance(payload, dict):
-                return payload
-        except Exception:
-            return {}
-    return {}
-
 
 def _format_parser_failure_details(payload: Any) -> str:
     if not isinstance(payload, dict):
@@ -980,7 +966,7 @@ class IngestionService:
                         sha = str(tracked_file["sha256"])
                         reused_hashes += 1
                     else:
-                        sha = _sha256(str(path))
+                        sha = compute_sha256(str(path))
                         hashed_files += 1
                     files[str(path)] = {
                         "sha256": sha,
@@ -1284,6 +1270,12 @@ class IngestionService:
     def _write_progress_snapshot(self, payload: dict[str, Any], *, force: bool = False) -> None:
         now = datetime.now(timezone.utc).isoformat()
         payload = dict(payload)
+        phase = payload.get("phase")
+        if phase is not None:
+            try:
+                IngestionPhase(str(phase))
+            except ValueError as exc:
+                raise ValueError(f"Invalid ingestion phase: {phase!r}") from exc
         payload.setdefault("updated_at", now)
         payload.setdefault("last_progress_at", now)
         payload.setdefault("last_job_heartbeat_at", now)
@@ -1336,7 +1328,7 @@ class IngestionService:
                 qn = str(row.get("qualified_name", ""))
                 if not qn:
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 if self._belongs_to_active_scope(qn, props):
                     kept.append((qn, props))
             rows_by_label[label] = kept
@@ -1406,7 +1398,7 @@ class IngestionService:
                 qn = str(row.get("qualified_name", ""))
                 if not qn:
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 if self._belongs_to_active_scope(qn, props):
                     registry[qn] = label
         return registry
@@ -1427,7 +1419,7 @@ class IngestionService:
                 qn = str(row.get("qualified_name", ""))
                 if not qn:
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 if not self._belongs_to_active_scope(qn, props):
                     continue
                 if props.get("sourceFile") in source_set:
@@ -1480,7 +1472,7 @@ class IngestionService:
                 qn = str(row.get("qualified_name", ""))
                 if qn not in qn_set:
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 if not self._belongs_to_active_scope(qn, props):
                     continue
                 source = props.get("sourceFile")
@@ -1505,7 +1497,7 @@ class IngestionService:
             to_delete: list[str] = []
             for row in rows:
                 qn = str(row.get("qualified_name", ""))
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 source = props.get("sourceFile")
                 if qn and source in source_set and self._belongs_to_active_scope(qn, props):
                     to_delete.append(qn)

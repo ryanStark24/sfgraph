@@ -2,26 +2,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
+from sfgraph.common import parse_json_props
 from sfgraph.storage.base import GraphStore
 from sfgraph.storage.vector_store import VectorStore
-
-
-def _parse_props(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            return {}
-    return {}
-
 
 class ScopeMigrationService:
     """Migrate graph entities from legacy unscoped keys to project scope keys."""
@@ -89,7 +75,7 @@ class ScopeMigrationService:
                 if "::" in old_qn:
                     skipped_nodes += 1
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 if not self._source_in_export(props.get("sourceFile"), export_root):
                     skipped_nodes += 1
                     continue
@@ -151,7 +137,7 @@ class ScopeMigrationService:
 
                 new_src = src_new or src
                 new_dst = dst_new or dst
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 props["projectScope"] = scope
                 migrated_edges += 1
 
@@ -183,7 +169,7 @@ class ScopeMigrationService:
                     qn = str(row.get("qualified_name", ""))
                     if not qn or "::" in qn:
                         continue
-                    props = _parse_props(row.get("props"))
+                    props = parse_json_props(row.get("props"))
                     if not self._source_in_export(props.get("sourceFile"), export_root):
                         continue
                     pruned_legacy_nodes += 1

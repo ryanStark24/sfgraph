@@ -26,6 +26,7 @@ Query method accepts DuckDB SQL or PGQ SQL (FROM GRAPH_TABLE syntax).
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 
 import duckdb
@@ -33,6 +34,7 @@ import duckdb
 from sfgraph.storage.base import GraphStore
 
 logger = logging.getLogger(__name__)
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class DuckPGQStore(GraphStore):
@@ -70,16 +72,33 @@ class DuckPGQStore(GraphStore):
             "SELECT table_name, kind FROM _sfgraph_schema"
         ).fetchall()
         for table_name, kind in rows:
+            if not self._is_valid_identifier(str(table_name)):
+                logger.warning("Skipping invalid schema identifier from registry: %r", table_name)
+                continue
             if kind == "node":
                 self._node_labels.add(table_name)
             elif kind == "edge":
                 self._edge_types.add(table_name)
+
+    @staticmethod
+    def _is_valid_identifier(name: str) -> bool:
+        return bool(_IDENTIFIER_RE.match(name))
+
+    @classmethod
+    def _ensure_valid_identifier(cls, name: str, *, kind: str) -> str:
+        if not cls._is_valid_identifier(name):
+            raise ValueError(
+                f"Invalid {kind} identifier {name!r}. "
+                "Only [A-Za-z_][A-Za-z0-9_]* are allowed."
+            )
+        return name
 
     # ------------------------------------------------------------------
     # Schema helpers (synchronous — called inside async lock)
     # ------------------------------------------------------------------
 
     def _ensure_node_table(self, label: str) -> None:
+        label = self._ensure_valid_identifier(label, kind="label")
         if label in self._node_labels:
             return
         self._conn.execute(
@@ -94,6 +113,7 @@ class DuckPGQStore(GraphStore):
         logger.debug("Created node table: %s", label)
 
     def _ensure_edge_table(self, rel_type: str) -> None:
+        rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
         if rel_type in self._edge_types:
             return
         self._conn.execute(
@@ -125,6 +145,7 @@ class DuckPGQStore(GraphStore):
             key_props.get("qualifiedName") or all_props.get("qualifiedName", "")
         )
         async with self._lock:
+            label = self._ensure_valid_identifier(label, kind="label")
             self._ensure_node_table(label)
             self._conn.execute(
                 f'INSERT OR REPLACE INTO "{label}" (qualified_name, props) VALUES (?, ?)',
@@ -143,6 +164,7 @@ class DuckPGQStore(GraphStore):
     ) -> None:
         """Upsert a directed edge into the rel_type-specific table."""
         async with self._lock:
+            rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
             self._ensure_edge_table(rel_type)
             self._conn.execute(
                 f'INSERT OR REPLACE INTO "{rel_type}" '

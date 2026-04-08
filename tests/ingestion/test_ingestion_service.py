@@ -872,6 +872,30 @@ async def test_collect_facts_tracks_vlocity_outcomes(tmp_path):
     assert parser_stats["vlocity"]["skipped_files"] == 2
 
 
+def test_progress_snapshot_rejects_invalid_phase(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+    )
+    with pytest.raises(ValueError, match="Invalid ingestion phase"):
+        service._write_progress_snapshot(  # noqa: SLF001
+            {
+                "mode": "full_ingest",
+                "state": "running",
+                "phase": "typo_phase",
+                "total_files": 0,
+                "processed_files": 0,
+                "failed_files": 0,
+            },
+            force=True,
+        )
+
+
 def test_discovery_roots_honor_sfdx_package_directories(tmp_path):
     graph = make_mock_graph()
     manifest = make_mock_manifest()

@@ -10,6 +10,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from sfgraph.common import parse_json_props
 from sfgraph.query.agents import (
     QueryCorrectorAgent,
     QueryPlannerAgent,
@@ -20,20 +21,6 @@ from sfgraph.query.rules_registry import RulesRegistry
 from sfgraph.storage.base import GraphStore
 from sfgraph.storage.manifest_store import ManifestStore
 from sfgraph.storage.vector_store import VectorStore
-
-
-def _parse_props(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            return {}
-    return {}
-
 
 def _semantic_kind(rel_type: str, context: str) -> str:
     ctx = context.lower()
@@ -221,7 +208,7 @@ class GraphQueryService:
                         continue
                     if not self._is_in_scope(row_qname):
                         continue
-                    props = _parse_props(row.get("props"))
+                    props = parse_json_props(row.get("props"))
                     result = {
                         "qualifiedName": self._descope_qname(row_qname),
                         "scopedQualifiedName": row_qname,
@@ -235,7 +222,7 @@ class GraphQueryService:
             row_qname = str(rows[0].get("qualified_name", ""))
             if not row_qname:
                 continue
-            props = _parse_props(rows[0].get("props"))
+            props = parse_json_props(rows[0].get("props"))
             result = {
                 "qualifiedName": self._descope_qname(row_qname),
                 "scopedQualifiedName": row_qname,
@@ -272,7 +259,7 @@ class GraphQueryService:
                     continue
                 if not self._is_in_scope(src_scoped) or not self._is_in_scope(dst_scoped):
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 context = str(props.get("contextSnippet", ""))
                 semantic = self._rules.semantic_override(rel, context) or _semantic_kind(rel, context)
                 resolution_method = str(props.get("resolutionMethod", "unknown"))
@@ -546,7 +533,7 @@ class GraphQueryService:
                         "qualifiedName": descoped,
                         "scopedQualifiedName": scoped_qname,
                         "label": label,
-                        "props": _parse_props(row.get("props")),
+                        "props": parse_json_props(row.get("props")),
                     }
                 )
                 if len(out) >= max_results:
@@ -1524,7 +1511,7 @@ class GraphQueryService:
                         "qualifiedName": self._descope_qname(scoped_qname),
                         "scopedQualifiedName": scoped_qname,
                         "label": label,
-                        "props": _parse_props(row.get("props")),
+                        "props": parse_json_props(row.get("props")),
                         "confidence": 0.6,
                     }
                 )
@@ -1646,7 +1633,7 @@ class GraphQueryService:
                 rows = []
 
             for row in rows:
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 resolution_method = str(props.get("resolutionMethod", "unknown"))
                 src = str(row.get("src_qualified_name", ""))
                 dst = str(row.get("dst_qualified_name", ""))
@@ -1750,7 +1737,7 @@ class GraphQueryService:
                 rows = []
             for row in rows:
                 qn = str(row.get("qualified_name", ""))
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 source = str(props.get("sourceFile", "")).replace("\\", "/")
                 if not qn or not source:
                     continue
@@ -1788,7 +1775,7 @@ class GraphQueryService:
                 scoped_qn = str(row.get("qualified_name", ""))
                 if not scoped_qn or not self._is_in_scope(scoped_qn):
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 unscoped = self._descope_qname(scoped_qn)
                 if props.get("isTest") is True or self._looks_like_test_name(unscoped):
                     tests.append(

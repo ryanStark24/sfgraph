@@ -6,20 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sfgraph.common import parse_json_props
 from sfgraph.storage.base import GraphStore
-
-
-def _parse_props(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            payload = json.loads(value)
-            if isinstance(payload, dict):
-                return payload
-        except Exception:
-            return {}
-    return {}
 
 
 def _stable_json(value: dict[str, Any]) -> str:
@@ -50,7 +38,7 @@ class GraphSnapshotService:
                     {
                         "label": label,
                         "qualified_name": row.get("qualified_name"),
-                        "props": _parse_props(row.get("props")),
+                        "props": parse_json_props(row.get("props")),
                     }
                 )
 
@@ -65,7 +53,7 @@ class GraphSnapshotService:
                         "rel_type": rel,
                         "src_qualified_name": row.get("src_qualified_name"),
                         "dst_qualified_name": row.get("dst_qualified_name"),
-                        "props": _parse_props(row.get("props")),
+                        "props": parse_json_props(row.get("props")),
                     }
                 )
 

@@ -22,7 +22,6 @@ from pathlib import Path
 from uuid import uuid4
 
 # Module-level constants
-NODE_BINARY = "/opt/homebrew/opt/node@22/bin/node"
 WORKER_JS = str(Path(__file__).parent / "worker" / "worker.js")
 logger = logging.getLogger(__name__)
 RESPONSE_PREFIX = "@@SFGRAPH_LEN@@"
@@ -31,20 +30,30 @@ RESPONSE_PREFIX = "@@SFGRAPH_LEN@@"
 def _resolve_node() -> str:
     """Resolve the Node.js binary path.
 
-    Returns the configured NODE_BINARY if it exists, otherwise falls back
-    to shutil.which('node').
+    Resolution order:
+    1. SFGRAPH_NODE_BINARY if set (absolute path or command name)
+    2. shutil.which('node')
 
     Raises:
         RuntimeError: If no Node.js binary can be found.
     """
-    if Path(NODE_BINARY).exists():
-        return NODE_BINARY
+    configured = os.getenv("SFGRAPH_NODE_BINARY", "").strip()
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if configured_path.exists():
+            return str(configured_path)
+        configured_cmd = shutil.which(configured)
+        if configured_cmd:
+            return configured_cmd
     fallback = shutil.which("node")
     if fallback:
         return fallback
+    candidates = ["SFGRAPH_NODE_BINARY", "node in PATH"]
     raise RuntimeError(
-        f"Node.js binary not found. Tried: {NODE_BINARY!r} and shutil.which('node'). "
-        "Install Node.js 22 LTS via: brew install node@22"
+        "Node.js binary not found. "
+        f"Tried: {', '.join(candidates)}. "
+        "Install Node.js 22 LTS and ensure it is on PATH, "
+        "or set SFGRAPH_NODE_BINARY to the node executable."
     )
 
 

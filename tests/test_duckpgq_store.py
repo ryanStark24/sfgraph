@@ -207,3 +207,19 @@ async def test_close_is_idempotent():
     store = DuckPGQStore()
     await store.close()
     await store.close()  # second close must not raise
+
+
+async def test_merge_node_rejects_invalid_label(store):
+    with pytest.raises(ValueError, match="Invalid label identifier"):
+        await store.merge_node(
+            'Bad"Label',
+            {"qualifiedName": "Q"},
+            {"qualifiedName": "Q"},
+        )
+
+
+async def test_merge_edge_rejects_invalid_relationship_type(store):
+    await store.merge_node("ApexClass", {"qualifiedName": "A"}, {"qualifiedName": "A"})
+    await store.merge_node("ApexClass", {"qualifiedName": "B"}, {"qualifiedName": "B"})
+    with pytest.raises(ValueError, match="Invalid relationship type identifier"):
+        await store.merge_edge("A", "ApexClass", 'BAD"REL', "B", "ApexClass", {})
