@@ -34,6 +34,14 @@ _SPECIALIZED_UI_PACK_TYPES: frozenset[str] = frozenset(
         "VlocityUITemplate",
     }
 )
+_SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES: frozenset[str] = frozenset(
+    {
+        "PromotionItems",
+        "PriceListEntries",
+        "InterfaceImplementationDetails",
+        "ProductChildItems",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -101,6 +109,16 @@ def _pack_type(data: dict[str, Any], file_path: str) -> str:
     for supported in SUPPORTED_VLOCITY_DATAPACK_TYPE_SET:
         if supported.lower() in lower_name:
             return supported
+    return ""
+
+
+def _supported_non_object_pack_type(file_path: str) -> str:
+    stem = Path(file_path).stem
+    if "_" not in stem:
+        return ""
+    suffix = stem.rsplit("_", 1)[-1]
+    if suffix in _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES:
+        return suffix
     return ""
 
 
@@ -551,6 +569,70 @@ def _parse_component_datapack(
     return nodes, edges
 
 
+def _parse_non_object_vlocity_array(
+    data: list[Any],
+    source_file: str,
+    namespace: str,
+    pack_type: str,
+) -> tuple[list[NodeFact], list[EdgeFact]]:
+    stem = Path(source_file).stem
+    parent_name = stem.rsplit("_", 1)[0] if "_" in stem else stem
+    container_qname = f"{_safe_pack_type_for_qname(pack_type)}.{parent_name}"
+    nodes: list[NodeFact] = [
+        _node(
+            "VlocityDataPack",
+            container_qname,
+            {
+                "name": parent_name,
+                "dataPackType": pack_type,
+                "sourceShape": "non_object_json_array",
+            },
+            source_file,
+        )
+    ]
+    edges: list[EdgeFact] = []
+
+    for idx, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            continue
+        item_name = _first_string(
+            item.get("Name"),
+            item.get("DeveloperName"),
+            item.get("Id"),
+            f"item_{idx}",
+        )
+        child_qname = f"{container_qname}.{item_name}"
+        nodes.append(
+            _node(
+                "VlocityDataPack",
+                child_qname,
+                {
+                    "name": item_name,
+                    "dataPackType": f"{pack_type}Item",
+                    "parentDataPack": container_qname,
+                },
+                source_file,
+            )
+        )
+        edges.append(
+            _edge(
+                container_qname,
+                "VlocityDataPack",
+                "CONTAINS_CHILD",
+                child_qname,
+                "VlocityDataPack",
+                0.85,
+                "array_item",
+                "STRUCTURAL",
+                f"{pack_type} item {idx}",
+            )
+        )
+        edges.extend(_collect_reference_edges(child_qname, "VlocityDataPack", item, namespace, pack_type))
+
+    edges.extend(_collect_reference_edges(container_qname, "VlocityDataPack", {"items": data}, namespace, pack_type))
+    return nodes, edges
+
+
 def parse_vlocity_json_detailed(
     file_path: str,
     namespace: str = "vlocity_cmt",
@@ -563,6 +645,16 @@ def parse_vlocity_json_detailed(
         return [], [], VlocityParseMetadata(outcome="invalid_json")
 
     if not isinstance(data, dict):
+        if isinstance(data, list):
+            non_object_pack_type = _supported_non_object_pack_type(file_path)
+            if non_object_pack_type:
+                nodes, edges = _parse_non_object_vlocity_array(data, file_path, namespace, non_object_pack_type)
+                return nodes, edges, VlocityParseMetadata(
+                    outcome="parsed_specialized",
+                    pack_type=non_object_pack_type,
+                    parser_strategy="specialized",
+                    node_label="VlocityDataPack",
+                )
         return [], [], VlocityParseMetadata(outcome="non_object_json")
 
     raw_pack_type = _pack_type(data, file_path)

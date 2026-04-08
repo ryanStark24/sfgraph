@@ -310,6 +310,33 @@ def test_vlocity_candidate_detection_accepts_generic_datapack_names(tmp_path):
     assert is_vlocity_datapack_file(candidate) is True
 
 
+def test_supported_non_object_vlocity_arrays_are_parsed(tmp_path):
+    file = tmp_path / "Offer_PromotionItems.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "PromoItemA",
+                    "DataRaptorName": "PromoLoadDR",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.pack_type == "PromotionItems"
+    assert any(n.label == "VlocityDataPack" and n.key_props["qualifiedName"] == "PromotionItems.Offer" for n in nodes)
+    assert any(e.rel_type == "CONTAINS_CHILD" for e in edges)
+    assert any(
+        e.rel_type == "CALLS"
+        and e.dst_label == "DataRaptor"
+        and e.dst_qualified_name == "PromoLoadDR"
+        for e in edges
+    )
+
+
 def test_supported_vlocity_registry_matches_upstream_inventory_size():
     assert len(SUPPORTED_VLOCITY_DATAPACK_TYPES) == 55
     assert "DataRaptor" in SUPPORTED_VLOCITY_DATAPACK_TYPES
