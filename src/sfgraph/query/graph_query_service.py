@@ -1060,6 +1060,7 @@ class GraphQueryService:
         max_results: int = 50,
         time_budget_ms: int = 1500,
         offset: int = 0,
+        allow_vector_fallback: bool = True,
     ) -> dict[str, Any]:
         q = question.strip()
         change_target = self._change_query_target(q)
@@ -1204,7 +1205,7 @@ class GraphQueryService:
             max_attempts=4,
         )
         used_vector_fallback = False
-        if not candidates:
+        if not candidates and allow_vector_fallback:
             vector_hits = await self._vector_fallback(question=q, limit=max_results)
             if vector_hits:
                 candidates = vector_hits
@@ -1239,7 +1240,11 @@ class GraphQueryService:
                 ],
                 "hint": "No lexical candidates; used semantic vector fallback."
                 if used_vector_fallback
-                else "Lexical label-filtered search succeeded.",
+                else (
+                    "No lexical candidates and vector fallback disabled."
+                    if not allow_vector_fallback
+                    else "Lexical label-filtered search succeeded."
+                ),
             },
             "freshness": await self.freshness(partial_results=partial),
             "partial_results": partial,
@@ -1341,6 +1346,7 @@ class GraphQueryService:
                         max_results=max_results,
                         time_budget_ms=time_budget_ms,
                         offset=offset,
+                        allow_vector_fallback=not strict,
                     )
         elif selected_mode == "lineage":
             object_event = self._object_event_query_parts(q)
@@ -1369,6 +1375,7 @@ class GraphQueryService:
                         max_results=max_results,
                         time_budget_ms=time_budget_ms,
                         offset=offset,
+                        allow_vector_fallback=not strict,
                     )
         else:
             result = await self.query(
@@ -1377,6 +1384,7 @@ class GraphQueryService:
                 max_results=max_results,
                 time_budget_ms=time_budget_ms,
                 offset=offset,
+                allow_vector_fallback=not strict,
             )
 
         evidence = self._collect_analyze_evidence(result, max_items=max_results)

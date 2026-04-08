@@ -852,6 +852,39 @@ async def test_analyze_lineage_routes_to_object_event(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_analyze_exact_disables_vector_fallback_for_unresolved_queries(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_analyze_exact_no_vector.db"))
+    await manifest.initialize()
+    vectors = AsyncMock()
+    vectors.search = AsyncMock(
+        return_value=[
+            {
+                "node_id": "scope::ApexClass:Fallback",
+                "score": 0.88,
+                "payload": {"label": "ApexClass", "sourceFile": "classes/Fallback.cls"},
+            }
+        ]
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        vectors=vectors,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "meta_vec.json"),
+    )
+    payload = await service.analyze("find nonexistingthing", mode="exact", strict=True, max_results=10)
+    assert payload["mode"] == "analyze"
+    assert payload["analysis_mode"] == "exact"
+    assert payload["result"]["mode"] == "node_search"
+    assert payload["result"]["candidates"] == []
+    assert "vector fallback disabled" in payload["result"]["pipeline"]["hint"].lower()
+    vectors.search.assert_not_called()
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
 async def test_test_gap_intelligence_from_changed_files(svc: GraphQueryService):
     payload = await svc.test_gap_intelligence_from_changed_files(
         changed_files=["classes/AccountService.cls"],

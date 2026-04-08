@@ -60,9 +60,9 @@ class IngestJobManager:
 
     def __init__(
         self,
-        ingest_factory: Callable[[str, dict[str, Any]], Awaitable[IngestResult]],
-        refresh_factory: Callable[[str, dict[str, Any]], Awaitable[IngestResult]],
-        vectorize_factory: Callable[[str, dict[str, Any]], Awaitable[IngestResult]],
+        ingest_factory: IngestCallable,
+        refresh_factory: IngestCallable,
+        vectorize_factory: IngestCallable,
         db_path: str | None = None,
     ) -> None:
         self._ingest_factory = ingest_factory
@@ -359,7 +359,11 @@ class IngestJobManager:
         else:
             payload = summary.model_dump()
             async with self._lock:
-                job.state = "completed"
+                if job._cancel_event.is_set():
+                    job.state = "cancelled"
+                    job.error = job.error or "cancelled"
+                else:
+                    job.state = "completed"
                 job.completed_at = _utc_now()
                 job.run_id = payload.get("run_id")
                 job.result_summary = payload

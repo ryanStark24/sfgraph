@@ -452,11 +452,21 @@ async def query(
     max_results: int = 50,
     time_budget_ms: int = 1500,
     offset: int = 0,
+    allow_vector_fallback: bool = True,
 ) -> str:
     """Generic fallback query. Prefer intent tools (`analyze_*`) when question is specific."""
     app: AppContext = ctx.request_context.lifespan_context
     daemon = _current_daemon(app)
-    return _daemon_call(daemon, "query", question=question, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
+    return _daemon_call(
+        daemon,
+        "query",
+        question=question,
+        max_hops=max_hops,
+        max_results=max_results,
+        time_budget_ms=time_budget_ms,
+        offset=offset,
+        allow_vector_fallback=allow_vector_fallback,
+    )
 
 
 @mcp.tool()

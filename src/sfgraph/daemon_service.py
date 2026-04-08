@@ -525,6 +525,7 @@ class DaemonOperations:
             max_results=int(params.get("max_results", 50)),
             time_budget_ms=int(params.get("time_budget_ms", 1500)),
             offset=int(params.get("offset", 0)),
+            allow_vector_fallback=bool(params.get("allow_vector_fallback", True)),
         )
 
     async def analyze(self, params: dict[str, Any]) -> dict[str, Any]:

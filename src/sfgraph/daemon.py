@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,7 @@ class _DaemonHandler(BaseHTTPRequestHandler):
                 try:
                     progress = json.loads(progress_path.read_text(encoding="utf-8"))
                 except Exception:
+                    logger.debug("Failed to parse progress snapshot at %s", progress_path, exc_info=True)
                     progress = {}
                 if isinstance(progress, dict):
                     payload["progress_available"] = True
@@ -83,6 +85,7 @@ class _DaemonHandler(BaseHTTPRequestHandler):
             try:
                 payload = json.loads(progress_path.read_text(encoding="utf-8"))
             except Exception:
+                logger.debug("Failed to parse progress snapshot at %s", progress_path, exc_info=True)
                 self._send_json(200, {"available": False, "state": "idle"})
                 return
             if not isinstance(payload, dict):
@@ -103,6 +106,7 @@ class _DaemonHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(raw.decode("utf-8") or "{}")
         except Exception:
+            logger.debug("Invalid daemon RPC JSON payload", exc_info=True)
             self._send_json(400, {"error": "invalid_json"})
             return
         if not isinstance(payload, dict):
@@ -173,7 +177,7 @@ async def run_daemon(data_root: Path, host: str, port: int, workspace_root: str 
         try:
             meta_path.unlink(missing_ok=True)
         except Exception:
-            pass
+            logger.debug("Failed to unlink daemon metadata at %s", meta_path, exc_info=True)
 
 
 def clear_daemon_metadata(data_root: Path) -> None:
@@ -200,7 +204,7 @@ def start_daemon_subprocess(
             if pid and _is_process_alive(pid):
                 return meta
         except Exception:
-            pass
+            logger.debug("Failed reading daemon metadata at %s; will start a new daemon", meta_path, exc_info=True)
     elif ignore_existing:
         clear_daemon_metadata(data_root)
     port = _free_port()
@@ -219,8 +223,7 @@ def start_daemon_subprocess(
                 if int(meta.get("port", 0)) == port:
                     return meta
             except Exception:
-                pass
-        import time
+                logger.debug("Daemon metadata not ready yet at %s", meta_path, exc_info=True)
         time.sleep(0.1)
     raise RuntimeError(f"Timed out starting sfgraph daemon for {data_root}")
 

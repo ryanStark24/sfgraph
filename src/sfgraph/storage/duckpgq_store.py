@@ -298,4 +298,4 @@ class DuckPGQStore(GraphStore):
             self._conn.close()
             logger.debug("DuckPGQStore closed: %s", self._db_path)
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("DuckPGQStore close failed: %s", self._db_path, exc_info=True)

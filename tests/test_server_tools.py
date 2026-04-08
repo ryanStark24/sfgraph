@@ -168,6 +168,27 @@ async def test_analyze_proxies_to_current_daemon():
 
 
 @pytest.mark.asyncio
+async def test_query_proxies_allow_vector_fallback_flag():
+    export_dir = str(Path("/tmp/repo").resolve())
+    daemon = _FakeDaemon()
+    app = SimpleNamespace(
+        runtime_root=Path("/tmp/runtime/workspaces"),
+        session_data_root=Path("/tmp/runtime/session/data"),
+        daemons={export_dir: daemon},
+        job_routes={},
+        active_export_dir=export_dir,
+    )
+    payload = await server.query(
+        "find missing symbol",
+        _ctx(app),
+        allow_vector_fallback=False,
+    )
+    decoded = json.loads(payload)
+    assert decoded["method"] == "query"
+    assert decoded["params"]["allow_vector_fallback"] is False
+
+
+@pytest.mark.asyncio
 async def test_status_uses_session_daemon_before_export_activation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "repo"
     workspace.mkdir(parents=True, exist_ok=True)

@@ -207,6 +207,41 @@ async def test_job_manager_runs_vectorize_job(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_job_manager_marks_cancelled_when_cancel_requested_but_runner_returns_summary(tmp_path: Path):
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def fake_ingest(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        started.set()
+        await proceed.wait()
+        # Simulate a runner that exits cleanly despite cancellation request.
+        return _ingest_summary(export_dir)
+
+    async def fake_refresh(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        return _refresh_summary(export_dir)
+
+    async def fake_vectorize(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        return _refresh_summary(export_dir)
+
+    manager = IngestJobManager(
+        ingest_factory=fake_ingest,
+        refresh_factory=fake_refresh,
+        vectorize_factory=fake_vectorize,
+    )
+    job = await manager.start_job(job_type="ingest", export_dir=str(tmp_path))
+    await started.wait()
+    cancelled = await manager.cancel_job(job["job_id"])
+    assert cancelled["state"] == "cancelling"
+
+    proceed.set()
+    await asyncio.sleep(0.05)
+    record = await manager.get_job(job["job_id"])
+    assert record is not None
+    assert record["state"] == "cancelled"
+    assert manager.active_job_id is None
+
+
+@pytest.mark.asyncio
 async def test_job_manager_persists_jobs_across_restarts(tmp_path: Path):
     db_path = tmp_path / "jobs.sqlite"
 
