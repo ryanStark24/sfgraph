@@ -438,6 +438,43 @@ async def test_analyze_component_falls_back_to_source_file_without_graph_node(tm
 
 
 @pytest.mark.asyncio
+async def test_analyze_component_supports_sfdx_package_directories(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_component_pkg.db"))
+    await manifest.initialize()
+
+    (tmp_path / "sfdx-project.json").write_text(
+        json.dumps({"packageDirectories": [{"path": "packages/sales"}]}),
+        encoding="utf-8",
+    )
+    class_file = tmp_path / "packages" / "sales" / "main" / "default" / "classes" / "PkgHelper.cls"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_text(
+        "public class PkgHelper {\n"
+        "  public static void apply(Map<String, Object> output, Id qliId) {\n"
+        "    output.put('accessId', qliId);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_component("PkgHelper", token="accessId", focus="writes")
+
+    assert payload["resolved_components"]
+    assert any(str(match["file"]).endswith("PkgHelper.cls") for match in payload["exact_matches"])
+    assert any(match["kind"] == "write" for match in payload["exact_matches"])
+
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
 async def test_get_node_returns_adjacent_edges(svc: GraphQueryService):
     payload = await svc.get_node("Account.Status__c")
     assert payload["node"] is not None

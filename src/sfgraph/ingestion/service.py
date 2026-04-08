@@ -299,12 +299,12 @@ class IngestionService:
         ]
         return " | ".join(p for p in parts if p)
 
-    async def _upsert_vector_for_node(self, scoped_qname: str, props: dict[str, Any]) -> None:
+    async def _upsert_vector_for_node(self, scoped_qname: str, props: dict[str, Any]) -> bool:
         if not self._vectors:
-            return
+            return False
         text = self._node_vector_text(props)
         if not text:
-            return
+            return False
         payload = {
             "qualifiedName": props.get("qualifiedName"),
             "scopedQualifiedName": scoped_qname,
@@ -319,8 +319,10 @@ class IngestionService:
                 payload=payload,
                 project_scope=self._active_project_scope,
             )
+            return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("Vector upsert failed for %s: %s", scoped_qname, exc)
+            return False
 
     async def _delete_vectors_for_nodes(self, node_qnames: set[str]) -> None:
         if not self._vectors or not node_qnames:
@@ -375,6 +377,7 @@ class IngestionService:
                 logger.info("Deleted %d existing vectors for project scope %s", deleted, self._active_project_scope)
 
         processed_nodes = 0
+        failed_nodes = 0
         skipped_nodes = 0
         node_counts_by_type: dict[str, int] = {}
         for label, rows in rows_by_label.items():
@@ -384,11 +387,12 @@ class IngestionService:
                 if not text:
                     skipped_nodes += 1
                     continue
-                try:
-                    await self._upsert_vector_for_node(qname, props | {"label": label})
+                upserted = await self._upsert_vector_for_node(qname, props | {"label": label})
+                if upserted:
                     processed_nodes += 1
-                except Exception as exc:  # noqa: BLE001
-                    warnings.append(f"Vector upsert failed for {qname}: {exc}")
+                else:
+                    failed_nodes += 1
+                    warnings.append(f"Vector upsert failed for {qname}")
                 self._write_progress_snapshot(
                     {
                         "run_id": run_id,
@@ -400,7 +404,7 @@ class IngestionService:
                         "started_at": self._progress_started_at,
                         "total_files": total_nodes,
                         "processed_files": processed_nodes + skipped_nodes,
-                        "failed_files": 0,
+                        "failed_files": failed_nodes,
                         "current_file": qname,
                         "current_parser": "vector",
                         "parser_stats": self._empty_parser_stats(),
@@ -423,6 +427,7 @@ class IngestionService:
             export_dir=export_dir,
             duration_seconds=duration,
             processed_nodes=processed_nodes,
+            failed_nodes=failed_nodes,
             skipped_nodes=skipped_nodes,
             warnings=warnings,
         )
@@ -439,7 +444,7 @@ class IngestionService:
                 "duration_seconds": duration,
                 "total_files": total_nodes,
                 "processed_files": processed_nodes + skipped_nodes,
-                "failed_files": 0,
+                "failed_files": failed_nodes,
                 "current_file": None,
                 "current_parser": "vector",
                 "parser_stats": self._empty_parser_stats(),
@@ -1013,11 +1018,52 @@ class IngestionService:
             return [root]
         if root.name in self.DEFAULT_DISCOVERY_ROOTS:
             return [root]
-        discovered = [
-            child for child in sorted(root.iterdir())
-            if child.is_dir() and child.name in self.DEFAULT_DISCOVERY_ROOTS
-        ]
+        discovered: list[Path] = []
+        seen: set[str] = set()
+
+        def _add(candidate: Path) -> None:
+            resolved = candidate.resolve()
+            key = str(resolved)
+            if not resolved.exists() or not resolved.is_dir() or key in seen:
+                return
+            seen.add(key)
+            discovered.append(resolved)
+
+        for package_dir in self._sfdx_package_directories(root):
+            _add(package_dir)
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and child.name in self.DEFAULT_DISCOVERY_ROOTS:
+                _add(child)
         return discovered or [root]
+
+    @staticmethod
+    def _sfdx_package_directories(root: Path) -> list[Path]:
+        config_path = root / "sfdx-project.json"
+        if not config_path.exists():
+            return []
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        package_dirs = payload.get("packageDirectories")
+        if not isinstance(package_dirs, list):
+            return []
+        discovered: list[Path] = []
+        seen: set[str] = set()
+        for entry in package_dirs:
+            if not isinstance(entry, dict):
+                continue
+            rel_path = entry.get("path")
+            if not isinstance(rel_path, str) or not rel_path.strip():
+                continue
+            candidate = (root / rel_path).expanduser()
+            resolved = candidate.resolve()
+            key = str(resolved)
+            if key in seen or not resolved.exists() or not resolved.is_dir():
+                continue
+            seen.add(key)
+            discovered.append(resolved)
+        return discovered
 
     @classmethod
     def _should_skip_file(cls, path: Path) -> bool:

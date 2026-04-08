@@ -13,6 +13,32 @@ import pytest
 from sfgraph.storage.vector_store import VectorStore
 
 
+@pytest.fixture(autouse=True)
+def fake_fastembed(monkeypatch):
+    """Use a deterministic local embedder for unit tests."""
+
+    class _Vector:
+        def __init__(self, values):
+            self._values = values
+
+        def tolist(self):
+            return self._values
+
+    class FakeTextEmbedding:
+        def __init__(self, model_name, **kwargs):
+            self.model_name = model_name
+            self.kwargs = kwargs
+
+        def embed(self, texts):
+            for text in texts:
+                basis = sum(ord(ch) for ch in str(text)) % 997
+                values = [float((basis + idx) % 101) / 100.0 for idx in range(384)]
+                yield _Vector(values)
+
+    fake_module = types.SimpleNamespace(TextEmbedding=FakeTextEmbedding)
+    monkeypatch.setitem(sys.modules, "fastembed", fake_module)
+
+
 @pytest.fixture
 async def store() -> VectorStore:
     """Fixture: VectorStore with in-memory Qdrant (no disk I/O)."""

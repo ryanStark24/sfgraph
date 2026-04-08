@@ -210,8 +210,54 @@ async def test_vectorize_rebuilds_vectors_for_active_scope(tmp_path):
 
     summary = await service.vectorize(scope)
     assert summary.processed_nodes == 1
+    assert summary.failed_nodes == 0
     vectors.delete_by_project_scope.assert_awaited()
     vectors.upsert.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_vectorize_counts_failed_upserts(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    vectors = AsyncMock()
+    vectors.delete_by_project_scope = AsyncMock(return_value=0)
+    vectors.upsert = AsyncMock(side_effect=RuntimeError("vector backend unavailable"))
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        vectors=vectors,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+    )
+    export_dir = str(tmp_path / "repo")
+    Path(export_dir).mkdir(parents=True, exist_ok=True)
+    scope = service._activate_scope(export_dir)
+    scoped_qname = f"{service._active_project_scope}::AccountService"
+    graph.get_labels = AsyncMock(return_value=["ApexClass"])
+    graph.query = AsyncMock(
+        return_value=[
+            {
+                "qualified_name": scoped_qname,
+                "props": json.dumps(
+                    {
+                        "qualifiedName": "AccountService",
+                        "sourceFile": "classes/AccountService.cls",
+                        "parserType": "apex_cst",
+                        "projectScope": service._active_project_scope,
+                        "label": "ApexClass",
+                    }
+                ),
+            }
+        ]
+    )
+
+    summary = await service.vectorize(scope)
+    assert summary.processed_nodes == 0
+    assert summary.failed_nodes == 1
+    assert summary.skipped_nodes == 0
+    assert len(summary.warnings) == 1
+    assert "Vector upsert failed for" in summary.warnings[0]
 
 
 @pytest.mark.asyncio
@@ -810,3 +856,32 @@ async def test_collect_facts_tracks_vlocity_outcomes(tmp_path):
     assert parser_stats["vlocity"]["invalid_json_files"] == 1
     assert parser_stats["vlocity"]["non_datapack_json_files"] == 1
     assert parser_stats["vlocity"]["skipped_files"] == 2
+
+
+def test_discovery_roots_honor_sfdx_package_directories(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(graph=graph, manifest=manifest, pool=pool)
+
+    (tmp_path / "packages" / "core").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "packages" / "domain").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "vlocity").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "sfdx-project.json").write_text(
+        json.dumps(
+            {
+                "packageDirectories": [
+                    {"path": "packages/core"},
+                    {"path": "packages/domain"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    roots = service._discovery_roots(tmp_path)
+    root_paths = {str(path) for path in roots}
+    assert str((tmp_path / "packages" / "core").resolve()) in root_paths
+    assert str((tmp_path / "packages" / "domain").resolve()) in root_paths
+    # Keep vlocity as a first-class discovery root even with package directories.
+    assert str((tmp_path / "vlocity").resolve()) in root_paths

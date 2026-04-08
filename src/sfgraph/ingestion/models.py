@@ -134,5 +134,6 @@ class VectorizeSummary(BaseModel):
     export_dir: str
     duration_seconds: float
     processed_nodes: int
+    failed_nodes: int = 0
     skipped_nodes: int
     warnings: list[str]

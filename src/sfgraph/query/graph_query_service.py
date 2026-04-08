@@ -669,19 +669,21 @@ class GraphQueryService:
             seen.add(key)
             out.append(resolved)
 
+        package_metadata_roots = self._package_metadata_roots()
+        exact_roots: list[Path] = []
+        for metadata_root in package_metadata_roots:
+            exact_roots.append(metadata_root / "classes")
+            exact_roots.append(metadata_root / "triggers")
+        exact_roots.append(self._repo_root / "vlocity")
+
         for suffix in (".cls", ".trigger", ".js", ".ts", ".xml", ".json"):
-            _add(self._repo_root / "force-app" / "main" / "default" / "classes" / f"{name}{suffix}")
-            _add(self._repo_root / "force-app" / "main" / "default" / "triggers" / f"{name}{suffix}")
-            _add(self._repo_root / "vlocity" / f"{name}{suffix}")
+            for root in exact_roots:
+                _add(root / f"{name}{suffix}")
             if len(out) >= max_results:
                 return out[:max_results]
 
         class_pattern = re.compile(rf"\b(?:class|trigger)\s+{re.escape(name)}\b", re.IGNORECASE)
-        search_roots = [
-            self._repo_root / "force-app" / "main" / "default" / "classes",
-            self._repo_root / "force-app" / "main" / "default" / "triggers",
-            self._repo_root / "vlocity",
-        ]
+        search_roots = exact_roots
         allowed_exts = {".cls", ".trigger", ".js", ".ts", ".xml", ".json"}
         for root in search_roots:
             if not root.exists():
@@ -697,6 +699,51 @@ class GraphQueryService:
                     if len(out) >= max_results:
                         return out[:max_results]
         return out[:max_results]
+
+    def _package_metadata_roots(self) -> list[Path]:
+        candidates = self._sfdx_package_directories()
+        if not candidates:
+            candidates = [self._repo_root / "force-app"]
+        roots: list[Path] = []
+        seen: set[str] = set()
+        for package_dir in candidates:
+            metadata_root = package_dir / "main" / "default"
+            if not metadata_root.exists():
+                metadata_root = package_dir
+            resolved = metadata_root.resolve()
+            key = str(resolved)
+            if not resolved.exists() or key in seen:
+                continue
+            seen.add(key)
+            roots.append(resolved)
+        return roots
+
+    def _sfdx_package_directories(self) -> list[Path]:
+        config_path = self._repo_root / "sfdx-project.json"
+        if not config_path.exists():
+            return []
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        package_dirs = payload.get("packageDirectories")
+        if not isinstance(package_dirs, list):
+            return []
+        out: list[Path] = []
+        seen: set[str] = set()
+        for entry in package_dirs:
+            if not isinstance(entry, dict):
+                continue
+            rel_path = entry.get("path")
+            if not isinstance(rel_path, str) or not rel_path.strip():
+                continue
+            candidate = (self._repo_root / rel_path).expanduser().resolve()
+            key = str(candidate)
+            if not candidate.exists() or not candidate.is_dir() or key in seen:
+                continue
+            seen.add(key)
+            out.append(candidate)
+        return out
 
     @staticmethod
     def _component_token_query_parts(question: str) -> tuple[str, str] | None:
