@@ -88,6 +88,7 @@ class DuckPGQStore(GraphStore):
             elif kind == "edge":
                 self._edge_types.add(table_name)
         self._backfill_node_index()
+        self._refresh_all_edges_view()
 
     def _backfill_node_index(self) -> None:
         """Populate node index entries for legacy tables if missing."""
@@ -154,7 +155,30 @@ class DuckPGQStore(GraphStore):
             f'ON "{rel_type}" (dst_qualified_name)'
         )
         self._edge_types.add(rel_type)
+        self._refresh_all_edges_view()
         logger.debug("Created edge table: %s", rel_type)
+
+    def _refresh_all_edges_view(self) -> None:
+        """(Re)create a unified edge view for fast multi-hop traversal queries."""
+        if not self._edge_types:
+            self._conn.execute(
+                "CREATE OR REPLACE VIEW _sfgraph_all_edges AS "
+                "SELECT "
+                "CAST(NULL AS VARCHAR) AS src_qualified_name, "
+                "CAST(NULL AS VARCHAR) AS dst_qualified_name, "
+                "CAST(NULL AS JSON) AS props, "
+                "CAST(NULL AS VARCHAR) AS rel_type "
+                "WHERE FALSE"
+            )
+            return
+
+        selects = []
+        for rel_type in sorted(self._edge_types):
+            selects.append(
+                f"SELECT src_qualified_name, dst_qualified_name, props, '{rel_type}' AS rel_type FROM \"{rel_type}\""
+            )
+        sql = "CREATE OR REPLACE VIEW _sfgraph_all_edges AS " + " UNION ALL ".join(selects)
+        self._conn.execute(sql)
 
     # ------------------------------------------------------------------
     # GraphStore ABC implementation

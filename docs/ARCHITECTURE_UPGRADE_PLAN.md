@@ -48,6 +48,25 @@ The independent review findings are tracked in three buckets:
   - formula parser/tokenizer upgrade
   - advanced test-gap intelligence
 
+## Industry Best-Practice Alignment
+
+This plan is aligned with external architecture patterns used by CodeQL/Semgrep/Kythe-style systems and modern code-intelligence tools.
+
+- already aligned:
+  - local-first embedded runtime
+  - content-hash incremental ingestion
+  - hybrid lexical/graph/semantic retrieval path
+- adopted now:
+  - node index acceleration
+  - edge indexing
+  - batch write paths
+- adopted next:
+  - unified edge-view traversal path for multi-hop queries
+  - stricter agent-driven correction loop that changes retrieval strategy (not trace-only)
+  - stronger evidence/confidence fusion before final answer
+- intentionally deferred:
+  - storage engine migration (e.g., Kuzu) until DuckDB optimizations are saturated
+
 ## Core Product Direction
 
 `sfgraph` should be a **hybrid evidence engine**, not “graph for every query.”

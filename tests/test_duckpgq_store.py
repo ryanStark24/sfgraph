@@ -263,3 +263,31 @@ async def test_merge_edges_batch_upserts_edges(store):
     assert inserted == 2
     rows = await store.query('SELECT src_qualified_name, dst_qualified_name FROM "CALLS" ORDER BY dst_qualified_name')
     assert [r["dst_qualified_name"] for r in rows] == ["Dst", "Dst2"]
+
+
+async def test_unified_edge_view_contains_multiple_relationship_types(store):
+    await store.merge_node("ApexClass", {"qualifiedName": "Caller"}, {"qualifiedName": "Caller"})
+    await store.merge_node("ApexClass", {"qualifiedName": "Callee"}, {"qualifiedName": "Callee"})
+    await store.merge_node("SFField", {"qualifiedName": "Account.Name"}, {"qualifiedName": "Account.Name"})
+    await store.merge_edge(
+        "Caller",
+        "ApexClass",
+        "CALLS",
+        "Callee",
+        "ApexClass",
+        {"confidence": 0.9},
+    )
+    await store.merge_edge(
+        "Caller",
+        "ApexClass",
+        "READS_FIELD",
+        "Account.Name",
+        "SFField",
+        {"confidence": 0.8},
+    )
+    rows = await store.query(
+        "SELECT rel_type, src_qualified_name, dst_qualified_name "
+        "FROM _sfgraph_all_edges WHERE src_qualified_name = $src ORDER BY rel_type",
+        {"src": "Caller"},
+    )
+    assert [row["rel_type"] for row in rows] == ["CALLS", "READS_FIELD"]

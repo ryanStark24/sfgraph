@@ -253,6 +253,65 @@ class GraphQueryService:
     async def _edges_for_node(self, qualified_name: str, direction: str) -> list[dict[str, Any]]:
         rows_out: list[dict[str, Any]] = []
         scoped_qname = self._scope_qname(qualified_name)
+        used_unified_view = False
+        try:
+            if direction == "out":
+                unified_rows = await self._graph.query(
+                    "SELECT src_qualified_name, dst_qualified_name, props, rel_type "
+                    "FROM _sfgraph_all_edges WHERE src_qualified_name = $qn",
+                    {"qn": scoped_qname},
+                )
+            else:
+                unified_rows = await self._graph.query(
+                    "SELECT src_qualified_name, dst_qualified_name, props, rel_type "
+                    "FROM _sfgraph_all_edges WHERE dst_qualified_name = $qn",
+                    {"qn": scoped_qname},
+                )
+            used_unified_view = True
+        except Exception:
+            unified_rows = []
+
+        def _append_edge_row(row: dict[str, Any], rel: str) -> None:
+            src_scoped = str(row.get("src_qualified_name", ""))
+            dst_scoped = str(row.get("dst_qualified_name", ""))
+            if not src_scoped or not dst_scoped:
+                return
+            if not self._is_in_scope(src_scoped) or not self._is_in_scope(dst_scoped):
+                return
+            props = parse_json_props(row.get("props"))
+            context = str(props.get("contextSnippet", ""))
+            semantic = self._rules.semantic_override(rel, context) or _semantic_kind(rel, context)
+            resolution_method = str(props.get("resolutionMethod", "unknown"))
+            unresolved_dynamic = (
+                resolution_method in {"dynamic", "unknown", "traced_limit", "regex"}
+                or self._descope_qname(src_scoped).startswith("UNRESOLVED.")
+                or self._descope_qname(dst_scoped).startswith("UNRESOLVED.")
+            )
+            rows_out.append(
+                {
+                    "src": self._descope_qname(src_scoped),
+                    "dst": self._descope_qname(dst_scoped),
+                    "src_scoped": src_scoped,
+                    "dst_scoped": dst_scoped,
+                    "rel_type": rel,
+                    "confidence": float(props.get("confidence", 0.5)),
+                    "resolutionMethod": resolution_method,
+                    "edgeCategory": props.get("edgeCategory", "DATA_FLOW"),
+                    "contextSnippet": context,
+                    "semantic": semantic,
+                    "is_unresolved_dynamic": unresolved_dynamic,
+                }
+            )
+
+        if used_unified_view:
+            for row in unified_rows:
+                rel = str(row.get("rel_type", ""))
+                if not rel:
+                    continue
+                _append_edge_row(row, rel)
+            return rows_out
+
+        # Backward-compatible fallback when unified view is unavailable.
         for rel in await self._rel_types():
             try:
                 if direction == "out":
@@ -268,36 +327,7 @@ class GraphQueryService:
             except Exception:
                 rows = []
             for row in rows:
-                src_scoped = str(row.get("src_qualified_name", ""))
-                dst_scoped = str(row.get("dst_qualified_name", ""))
-                if not src_scoped or not dst_scoped:
-                    continue
-                if not self._is_in_scope(src_scoped) or not self._is_in_scope(dst_scoped):
-                    continue
-                props = parse_json_props(row.get("props"))
-                context = str(props.get("contextSnippet", ""))
-                semantic = self._rules.semantic_override(rel, context) or _semantic_kind(rel, context)
-                resolution_method = str(props.get("resolutionMethod", "unknown"))
-                unresolved_dynamic = (
-                    resolution_method in {"dynamic", "unknown", "traced_limit", "regex"}
-                    or self._descope_qname(src_scoped).startswith("UNRESOLVED.")
-                    or self._descope_qname(dst_scoped).startswith("UNRESOLVED.")
-                )
-                rows_out.append(
-                    {
-                        "src": self._descope_qname(src_scoped),
-                        "dst": self._descope_qname(dst_scoped),
-                        "src_scoped": src_scoped,
-                        "dst_scoped": dst_scoped,
-                        "rel_type": rel,
-                        "confidence": float(props.get("confidence", 0.5)),
-                        "resolutionMethod": resolution_method,
-                        "edgeCategory": props.get("edgeCategory", "DATA_FLOW"),
-                        "contextSnippet": context,
-                        "semantic": semantic,
-                        "is_unresolved_dynamic": unresolved_dynamic,
-                    }
-                )
+                _append_edge_row(row, rel)
         return rows_out
 
     async def _trace(
@@ -1791,21 +1821,23 @@ class GraphQueryService:
         """Return unresolved/dynamic edges explicitly for honesty in impact output."""
         findings: list[dict[str, Any]] = []
         matched = 0
+        try:
+            rows = await self._graph.query(
+                "SELECT src_qualified_name, dst_qualified_name, props, rel_type FROM _sfgraph_all_edges"
+            )
+            source_is_unified_view = True
+        except Exception:
+            rows = []
+            source_is_unified_view = False
 
-        for rel in await self._rel_types():
-            try:
-                rows = await self._graph.query(
-                    f'SELECT src_qualified_name, dst_qualified_name, props FROM "{rel}"'
-                )
-            except Exception:
-                rows = []
-
+        if source_is_unified_view:
             for row in rows:
                 props = parse_json_props(row.get("props"))
                 resolution_method = str(props.get("resolutionMethod", "unknown"))
                 src = str(row.get("src_qualified_name", ""))
                 dst = str(row.get("dst_qualified_name", ""))
-                if not src or not dst:
+                rel = str(row.get("rel_type", ""))
+                if not src or not dst or not rel:
                     continue
                 if not self._is_in_scope(src) or not self._is_in_scope(dst):
                     continue
@@ -1834,8 +1866,51 @@ class GraphQueryService:
                 )
                 if len(findings) >= limit:
                     break
-            if len(findings) >= limit:
-                break
+        else:
+            for rel in await self._rel_types():
+                try:
+                    rel_rows = await self._graph.query(
+                        f'SELECT src_qualified_name, dst_qualified_name, props FROM "{rel}"'
+                    )
+                except Exception:
+                    rel_rows = []
+
+                for row in rel_rows:
+                    props = parse_json_props(row.get("props"))
+                    resolution_method = str(props.get("resolutionMethod", "unknown"))
+                    src = str(row.get("src_qualified_name", ""))
+                    dst = str(row.get("dst_qualified_name", ""))
+                    if not src or not dst:
+                        continue
+                    if not self._is_in_scope(src) or not self._is_in_scope(dst):
+                        continue
+                    unresolved_dynamic = (
+                        resolution_method in {"dynamic", "unknown", "traced_limit", "regex"}
+                        or self._descope_qname(src).startswith("UNRESOLVED.")
+                        or self._descope_qname(dst).startswith("UNRESOLVED.")
+                    )
+                    if not unresolved_dynamic:
+                        continue
+                    if matched < offset:
+                        matched += 1
+                        continue
+                    matched += 1
+                    findings.append(
+                        {
+                            "rel_type": rel,
+                            "src_qualified_name": self._descope_qname(src),
+                            "dst_qualified_name": self._descope_qname(dst),
+                            "src_scoped_qualified_name": src,
+                            "dst_scoped_qualified_name": dst,
+                            "resolutionMethod": resolution_method,
+                            "confidence": float(props.get("confidence", 0.0)),
+                            "contextSnippet": props.get("contextSnippet", ""),
+                        }
+                    )
+                    if len(findings) >= limit:
+                        break
+                if len(findings) >= limit:
+                    break
 
         visible = findings[:limit]
         partial = matched > (offset + len(visible))
