@@ -1337,44 +1337,45 @@ class IngestionService:
     async def _write_nodes(self, facts_by_type: dict[str, list[NodeFact]]) -> tuple[dict[str, int], set[str]]:
         node_counts: dict[str, int] = defaultdict(int)
         written_qnames: set[str] = set()
+        merge_nodes_batch = getattr(self._graph, "merge_nodes_batch", None)
+        has_batch_nodes = callable(merge_nodes_batch)
 
-        for label in NODE_WRITE_ORDER:
+        ordered_labels = list(NODE_WRITE_ORDER)
+        ordered_labels.extend(label for label in facts_by_type if label not in set(NODE_WRITE_ORDER))
+        for label in ordered_labels:
             self._raise_if_cancelled()
+            pending_facts: list[NodeFact] = []
+            batch_rows: list[tuple[str, dict[str, Any]]] = []
             for node_fact in facts_by_type.get(label, []):
                 self._raise_if_cancelled()
                 scoped_fact = self._scope_node_fact(node_fact)
                 qname = scoped_fact.key_props.get("qualifiedName")
                 if qname and qname in written_qnames:
                     continue
-                merged_qname = await self._graph.merge_node(
-                    scoped_fact.label,
-                    scoped_fact.key_props,
-                    scoped_fact.all_props,
-                )
-                actual_qname = qname or merged_qname
-                if actual_qname:
+                pending_facts.append(scoped_fact)
+                if qname:
+                    batch_rows.append((qname, scoped_fact.all_props))
+
+            if has_batch_nodes and pending_facts and len(batch_rows) == len(pending_facts):
+                await merge_nodes_batch(label, batch_rows)
+                for scoped_fact in pending_facts:
+                    actual_qname = str(scoped_fact.key_props.get("qualifiedName", ""))
+                    if not actual_qname:
+                        continue
                     written_qnames.add(actual_qname)
                     vector_props = dict(scoped_fact.all_props)
                     vector_props.setdefault("label", scoped_fact.label)
                     await self._upsert_vector_for_node(actual_qname, vector_props)
-                node_counts[scoped_fact.label] += 1
-
-        known_labels = set(NODE_WRITE_ORDER)
-        for label, node_facts in facts_by_type.items():
-            self._raise_if_cancelled()
-            if label in known_labels:
+                    node_counts[scoped_fact.label] += 1
                 continue
-            for node_fact in node_facts:
-                self._raise_if_cancelled()
-                scoped_fact = self._scope_node_fact(node_fact)
-                qname = scoped_fact.key_props.get("qualifiedName")
-                if qname and qname in written_qnames:
-                    continue
+
+            for scoped_fact in pending_facts:
                 merged_qname = await self._graph.merge_node(
                     scoped_fact.label,
                     scoped_fact.key_props,
                     scoped_fact.all_props,
                 )
+                qname = scoped_fact.key_props.get("qualifiedName")
                 actual_qname = qname or merged_qname
                 if actual_qname:
                     written_qnames.add(actual_qname)
@@ -1570,6 +1571,9 @@ class IngestionService:
         edge_count = 0
         orphaned_edges = 0
         warnings: list[str] = []
+        merge_edges_batch = getattr(self._graph, "merge_edges_batch", None)
+        has_batch_edges = callable(merge_edges_batch)
+        batch_edges: dict[str, list[tuple[str, str, dict[str, Any]]]] = defaultdict(list)
 
         for edge_fact in edge_facts:
             self._raise_if_cancelled()
@@ -1612,15 +1616,29 @@ class IngestionService:
             edge_props = edge_fact.to_merge_props()
             if self._active_project_scope:
                 edge_props["projectScope"] = self._active_project_scope
-            await self._graph.merge_edge(
-                edge_fact.src_qualified_name,
-                edge_fact.src_label,
-                edge_fact.rel_type,
-                edge_fact.dst_qualified_name,
-                edge_fact.dst_label,
-                edge_props,
-            )
+            if has_batch_edges:
+                batch_edges[edge_fact.rel_type].append(
+                    (
+                        edge_fact.src_qualified_name,
+                        edge_fact.dst_qualified_name,
+                        edge_props,
+                    )
+                )
+            else:
+                await self._graph.merge_edge(
+                    edge_fact.src_qualified_name,
+                    edge_fact.src_label,
+                    edge_fact.rel_type,
+                    edge_fact.dst_qualified_name,
+                    edge_fact.dst_label,
+                    edge_props,
+                )
             edge_count += 1
+
+        if has_batch_edges:
+            for rel_type, rows in batch_edges.items():
+                self._raise_if_cancelled()
+                await merge_edges_batch(rel_type, rows)
 
         return edge_count, orphaned_edges, warnings
 

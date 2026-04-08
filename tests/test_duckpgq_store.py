@@ -196,6 +196,12 @@ async def test_schema_registry_persists_across_reconnect(tmp_path):
     assert "ApexClass" in labels
     assert "SFObject" in labels
     assert "CALLS" in rel_types
+    idx = await store2.query(
+        "SELECT label FROM _sfgraph_node_index WHERE qualified_name = $qn",
+        {"qn": "Foo"},
+    )
+    assert idx
+    assert idx[0]["label"] == "ApexClass"
     await store2.close()
 
 
@@ -223,3 +229,37 @@ async def test_merge_edge_rejects_invalid_relationship_type(store):
     await store.merge_node("ApexClass", {"qualifiedName": "B"}, {"qualifiedName": "B"})
     with pytest.raises(ValueError, match="Invalid relationship type identifier"):
         await store.merge_edge("A", "ApexClass", 'BAD"REL', "B", "ApexClass", {})
+
+
+async def test_merge_nodes_batch_upserts_nodes_and_index(store):
+    inserted = await store.merge_nodes_batch(
+        "ApexClass",
+        [
+            ("BatchA", {"qualifiedName": "BatchA"}),
+            ("BatchB", {"qualifiedName": "BatchB"}),
+        ],
+    )
+    assert inserted == 2
+    rows = await store.query('SELECT qualified_name FROM "ApexClass" ORDER BY qualified_name')
+    assert [r["qualified_name"] for r in rows] == ["BatchA", "BatchB"]
+    idx = await store.query(
+        "SELECT qualified_name, label FROM _sfgraph_node_index WHERE qualified_name IN ($a, $b) ORDER BY qualified_name",
+        {"a": "BatchA", "b": "BatchB"},
+    )
+    assert len(idx) == 2
+    assert all(row["label"] == "ApexClass" for row in idx)
+
+
+async def test_merge_edges_batch_upserts_edges(store):
+    await store.merge_node("ApexClass", {"qualifiedName": "Src"}, {"qualifiedName": "Src"})
+    await store.merge_node("ApexClass", {"qualifiedName": "Dst"}, {"qualifiedName": "Dst"})
+    inserted = await store.merge_edges_batch(
+        "CALLS",
+        [
+            ("Src", "Dst", {"confidence": 0.8}),
+            ("Src", "Dst2", {"confidence": 0.6}),
+        ],
+    )
+    assert inserted == 2
+    rows = await store.query('SELECT src_qualified_name, dst_qualified_name FROM "CALLS" ORDER BY dst_qualified_name')
+    assert [r["dst_qualified_name"] for r in rows] == ["Dst", "Dst2"]

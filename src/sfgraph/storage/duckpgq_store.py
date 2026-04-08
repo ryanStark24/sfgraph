@@ -68,6 +68,14 @@ class DuckPGQStore(GraphStore):
             "CREATE TABLE IF NOT EXISTS _sfgraph_schema "
             "(table_name VARCHAR PRIMARY KEY, kind VARCHAR)"
         )
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS _sfgraph_node_index "
+            "(qualified_name VARCHAR PRIMARY KEY, label VARCHAR NOT NULL)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sfgraph_node_index_label "
+            "ON _sfgraph_node_index (label)"
+        )
         rows = self._conn.execute(
             "SELECT table_name, kind FROM _sfgraph_schema"
         ).fetchall()
@@ -79,6 +87,16 @@ class DuckPGQStore(GraphStore):
                 self._node_labels.add(table_name)
             elif kind == "edge":
                 self._edge_types.add(table_name)
+        self._backfill_node_index()
+
+    def _backfill_node_index(self) -> None:
+        """Populate node index entries for legacy tables if missing."""
+        for label in self._node_labels:
+            self._conn.execute(
+                f'INSERT OR REPLACE INTO _sfgraph_node_index (qualified_name, label) '
+                f'SELECT qualified_name, ? FROM "{label}"',
+                [label],
+            )
 
     @staticmethod
     def _is_valid_identifier(name: str) -> bool:
@@ -127,6 +145,14 @@ class DuckPGQStore(GraphStore):
             "INSERT OR IGNORE INTO _sfgraph_schema (table_name, kind) VALUES (?, ?)",
             [rel_type, "edge"],
         )
+        self._conn.execute(
+            f'CREATE INDEX IF NOT EXISTS "idx_{rel_type}_src" '
+            f'ON "{rel_type}" (src_qualified_name)'
+        )
+        self._conn.execute(
+            f'CREATE INDEX IF NOT EXISTS "idx_{rel_type}_dst" '
+            f'ON "{rel_type}" (dst_qualified_name)'
+        )
         self._edge_types.add(rel_type)
         logger.debug("Created edge table: %s", rel_type)
 
@@ -151,7 +177,32 @@ class DuckPGQStore(GraphStore):
                 f'INSERT OR REPLACE INTO "{label}" (qualified_name, props) VALUES (?, ?)',
                 [qualified_name, json.dumps(all_props)],
             )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO _sfgraph_node_index (qualified_name, label) VALUES (?, ?)",
+                [qualified_name, label],
+            )
         return qualified_name
+
+    async def merge_nodes_batch(
+        self,
+        label: str,
+        nodes: list[tuple[str, dict[str, Any]]],
+    ) -> int:
+        """Batch upsert nodes for a single label."""
+        if not nodes:
+            return 0
+        async with self._lock:
+            label = self._ensure_valid_identifier(label, kind="label")
+            self._ensure_node_table(label)
+            self._conn.executemany(
+                f'INSERT OR REPLACE INTO "{label}" (qualified_name, props) VALUES (?, ?)',
+                [(qualified_name, json.dumps(props)) for qualified_name, props in nodes],
+            )
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO _sfgraph_node_index (qualified_name, label) VALUES (?, ?)",
+                [(qualified_name, label) for qualified_name, _ in nodes],
+            )
+        return len(nodes)
 
     async def merge_edge(
         self,
@@ -171,6 +222,24 @@ class DuckPGQStore(GraphStore):
                 f"(src_qualified_name, dst_qualified_name, props) VALUES (?, ?, ?)",
                 [src_qualified_name, dst_qualified_name, json.dumps(props)],
             )
+
+    async def merge_edges_batch(
+        self,
+        rel_type: str,
+        edges: list[tuple[str, str, dict[str, Any]]],
+    ) -> int:
+        """Batch upsert edges for a single relationship type."""
+        if not edges:
+            return 0
+        async with self._lock:
+            rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
+            self._ensure_edge_table(rel_type)
+            self._conn.executemany(
+                f'INSERT OR REPLACE INTO "{rel_type}" '
+                f"(src_qualified_name, dst_qualified_name, props) VALUES (?, ?, ?)",
+                [(src_qn, dst_qn, json.dumps(props)) for src_qn, dst_qn, props in edges],
+            )
+        return len(edges)
 
     async def query(
         self,

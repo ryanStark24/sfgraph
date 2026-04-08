@@ -184,7 +184,22 @@ class GraphQueryService:
 
         scoped_qname = self._scope_qname(qualified_name)
 
-        for label in await self._labels():
+        # Fast path via DuckPGQ node index (when available).
+        indexed_labels: list[str] = []
+        for candidate_qname in (scoped_qname, qualified_name):
+            try:
+                idx_rows = await self._graph.query(
+                    "SELECT label FROM _sfgraph_node_index WHERE qualified_name = $qn LIMIT 1",
+                    {"qn": candidate_qname},
+                )
+            except Exception:
+                idx_rows = []
+            if idx_rows:
+                label = str(idx_rows[0].get("label", ""))
+                if label:
+                    indexed_labels.append(label)
+        label_order = indexed_labels + [label for label in await self._labels() if label not in indexed_labels]
+        for label in label_order:
             try:
                 rows = await self._graph.query(
                     f'SELECT qualified_name, props FROM "{label}" WHERE qualified_name = $qn LIMIT 1',
