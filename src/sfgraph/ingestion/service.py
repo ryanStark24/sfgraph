@@ -22,7 +22,12 @@ from sfgraph.parser.apex_extractor import ApexExtractor
 from sfgraph.parser.dynamic_accessor import DynamicAccessorRegistry
 from sfgraph.parser.flow_parser import parse_flow_xml
 from sfgraph.parser.lwc_parser import parse_lwc_file
-from sfgraph.parser.object_parser import parse_labels_xml, parse_object_dir
+from sfgraph.parser.object_parser import (
+    parse_custom_metadata_record_xml,
+    parse_global_value_set_xml,
+    parse_labels_xml,
+    parse_object_dir,
+)
 from sfgraph.parser.pool import NodeParserPool
 from sfgraph.parser.vlocity_parser import (
     is_vlocity_datapack_file,
@@ -963,6 +968,8 @@ class IngestionService:
                             ".flow-meta.xml",
                             ".labels-meta.xml",
                             ".label-meta.xml",
+                            ".globalValueSet-meta.xml",
+                            ".md-meta.xml",
                         )
                     ):
                         continue
@@ -1160,6 +1167,10 @@ class IngestionService:
         if fpath.endswith(".flow-meta.xml"):
             return "flow"
         if fpath.endswith(".object-meta.xml"):
+            return "object"
+        if fpath.endswith(".globalValueSet-meta.xml"):
+            return "object"
+        if fpath.endswith(".md-meta.xml"):
             return "object"
         if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
             return "labels"
@@ -1695,6 +1706,18 @@ class IngestionService:
 
         if fpath.endswith(".object-meta.xml"):
             nodes, edges = parse_object_dir(str(path.parent))
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
+            return nodes, edges, {"outcome": "parsed"}
+
+        if fpath.endswith(".globalValueSet-meta.xml"):
+            nodes, edges = parse_global_value_set_xml(fpath)
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
+            return nodes, edges, {"outcome": "parsed"}
+
+        if fpath.endswith(".md-meta.xml"):
+            nodes, edges = parse_custom_metadata_record_xml(fpath)
             if self._parse_cache and sha256 and can_cache:
                 await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
             return nodes, edges, {"outcome": "parsed"}

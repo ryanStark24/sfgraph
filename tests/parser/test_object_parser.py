@@ -3,7 +3,14 @@ import pytest
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-from sfgraph.parser.object_parser import parse_object_dir, parse_field_xml, parse_labels_xml, ObjectParser
+from sfgraph.parser.object_parser import (
+    ObjectParser,
+    parse_custom_metadata_record_xml,
+    parse_field_xml,
+    parse_global_value_set_xml,
+    parse_labels_xml,
+    parse_object_dir,
+)
 from sfgraph.ingestion.models import NodeFact, EdgeFact
 from sfgraph.ingestion.constants import EDGE_CATEGORIES
 
@@ -142,6 +149,71 @@ def test_custom_metadata_type_detection(tmp_path):
     nodes, _ = parse_object_dir(str(obj_dir))
     cmt_nodes = [n for n in nodes if n.label == "CustomMetadataType"]
     assert len(cmt_nodes) == 1
+
+
+def test_custom_metadata_field_nodes_emitted_for_mdt(tmp_path):
+    obj_dir = tmp_path / "FeatureFlag__mdt"
+    fields_dir = obj_dir / "fields"
+    fields_dir.mkdir(parents=True)
+    (obj_dir / "FeatureFlag__mdt.object-meta.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Feature Flag</label>
+</CustomObject>""",
+        encoding="utf-8",
+    )
+    (fields_dir / "Enabled__c.field-meta.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Enabled__c</fullName>
+    <label>Enabled</label>
+    <type>Checkbox</type>
+</CustomField>""",
+        encoding="utf-8",
+    )
+
+    nodes, _ = parse_object_dir(str(obj_dir))
+    assert any(n.label == "CustomMetadataField" and n.key_props["qualifiedName"] == "FeatureFlag__mdt.Enabled__c" for n in nodes)
+
+
+def test_parse_custom_metadata_record_xml(tmp_path):
+    record = tmp_path / "FeatureFlag.Default.md-meta.xml"
+    record.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>FeatureFlag.Default</fullName>
+</CustomMetadata>""",
+        encoding="utf-8",
+    )
+    nodes, edges = parse_custom_metadata_record_xml(str(record))
+    assert len(nodes) == 1
+    assert nodes[0].label == "CustomMetadataRecord"
+    assert nodes[0].key_props["qualifiedName"] == "FeatureFlag.Default"
+    assert len(edges) == 1
+    assert edges[0].src_qualified_name == "FeatureFlag__mdt"
+    assert edges[0].dst_qualified_name == "FeatureFlag.Default"
+    assert edges[0].rel_type == "CONTAINS_CHILD"
+
+
+def test_parse_global_value_set_xml(tmp_path):
+    gvs = tmp_path / "Priority.globalValueSet-meta.xml"
+    gvs.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<GlobalValueSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Priority</fullName>
+    <masterLabel>Priority</masterLabel>
+    <customValue>
+        <fullName>High</fullName>
+        <label>High</label>
+        <default>true</default>
+    </customValue>
+</GlobalValueSet>""",
+        encoding="utf-8",
+    )
+    nodes, edges = parse_global_value_set_xml(str(gvs))
+    assert any(n.label == "GlobalValueSet" and n.key_props["qualifiedName"] == "Priority" for n in nodes)
+    assert any(n.label == "SFPicklistValue" and n.key_props["qualifiedName"] == "Priority.High" for n in nodes)
+    assert any(e.rel_type == "GLOBAL_VALUE_SET_HAS_VALUE" for e in edges)
 
 
 # OBJ-06: Formula field

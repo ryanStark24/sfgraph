@@ -14,32 +14,59 @@ Typical use:
 
 - confirm the server is alive and the parser pool initialized
 
-### `ingest_org(export_dir)`
+### `start_ingest_job(export_dir, mode?, include_globs?, exclude_globs?)`
 
 Purpose:
 
-- full ingest of a Salesforce export directory
+- start full ingest in the background and return immediately with a `job_id`
 
 Returns:
 
-- run id
-- total nodes and edges
-- parser stats
-- unresolved symbol count
-- warnings
+- `job_id`
+- `state`
+- `created_at`
 
-### `refresh(export_dir)`
+### `start_refresh_job(export_dir, mode?, include_globs?, exclude_globs?)`
 
 Purpose:
 
-- incremental re-ingest for changed/new/deleted files
+- start incremental re-ingest in the background
 
 Returns:
 
-- changed files
-- deleted files
-- affected neighbor files
-- updated graph counts
+- `job_id`
+- `state`
+- `created_at`
+
+### `start_vectorize_job(export_dir)`
+
+Purpose:
+
+- rebuild vectors in the background
+
+Returns:
+
+- `job_id`
+- `state`
+- `created_at`
+
+### `get_ingest_job(job_id)`
+
+Purpose:
+
+- fetch status/result for one job
+
+### `list_ingest_jobs()`
+
+Purpose:
+
+- list jobs across known workspaces
+
+### `cancel_ingest_job(job_id)`
+
+Purpose:
+
+- request cancellation of a running job
 
 ### `watch_refresh(export_dir, ...)`
 
@@ -93,6 +120,14 @@ Preferred intent tools (use these first):
 - `analyze_change(...)` for "what breaks if I change X"
 
 Use `query(...)` as a fallback when the question is broad or exploratory.
+
+## Deprecated Blocking Tools
+
+- `ingest_org(export_dir)`
+- `refresh(export_dir, ...)`
+- `vectorize(export_dir)`
+
+These still exist for compatibility, but new clients should prefer job-native tools above.
 
 ### `query(question, ...)`
 

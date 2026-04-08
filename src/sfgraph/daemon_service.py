@@ -104,11 +104,13 @@ async def create_app_context(data_root: Path) -> DaemonAppContext:
             options=options,
             cancel_event=cancel_event,
         ),
+        db_path=str(data_root / "ingest_jobs.sqlite"),
     )
     await manifest.initialize()
     await parse_cache.initialize()
     await vectors.initialize()
     await pool.start()
+    await jobs.initialize()
     return DaemonAppContext(
         graph=graph,
         vectors=vectors,
@@ -122,6 +124,7 @@ async def create_app_context(data_root: Path) -> DaemonAppContext:
 
 async def close_app_context(app: DaemonAppContext) -> None:
     await app.pool.shutdown()
+    await app.jobs.close()
     await app.parse_cache.close()
     await app.manifest.close()
     await app.graph.close()

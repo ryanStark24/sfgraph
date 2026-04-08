@@ -210,25 +210,24 @@ The current system already does a few important things well:
 
 The current ingest architecture still has practical limitations:
 
-### 1. Ingest is too synchronous
+### 1. Legacy blocking tools still exist
 
-Today `ingest_org(...)` is a long-running blocking tool call.
-
-Consequences:
-
-- some MCP clients cannot poll progress effectively during the run
-- UX appears frozen even when work is happening
-- job cancellation/resume semantics are weak
-
-### 2. Progress is persisted but not job-native
-
-Today progress exists as a snapshot file and helper tools, but not as a first-class ingest job model.
+`ingest_org(...)` and `refresh(...)` are still available for backward compatibility.
 
 Consequences:
 
-- progress polling is client-dependent
-- no stable `job_id`
-- no robust cancellation or resume story
+- clients that use legacy tools can still hit long-running blocking calls
+- new integrations should prefer `start_*_job` + polling APIs
+
+### 2. Job model is now first-class, with persisted state
+
+Ingest/refresh/vectorize are job-native with durable metadata in SQLite (`ingest_jobs.sqlite`) and persisted progress snapshots.
+
+Consequences:
+
+- stable `job_id` for polling and cancellation
+- `list_ingest_jobs` and `get_ingest_job` survive daemon restart
+- queued/running jobs are marked failed as `daemon_restarted` on recovery (resume is not yet implemented)
 
 ### 3. Vector work can slow the critical path
 

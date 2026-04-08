@@ -1,6 +1,7 @@
 """Object metadata XML parser for Salesforce.
 
-Parses .object-meta.xml, .field-meta.xml, .labels-meta.xml, and .label-meta.xml files.
+Parses .object-meta.xml, .field-meta.xml, .labels-meta.xml/.label-meta.xml,
+.globalValueSet-meta.xml, and customMetadata/*.md-meta.xml files.
 Returns NodeFact + EdgeFact lists consumed by IngestionService.
 
 PITFALL: All elements are in NS="http://soap.sforce.com/2006/04/metadata"
@@ -81,6 +82,27 @@ def parse_field_xml(
         sourceFile=field_path, lineNumber=0, parserType="xml_object",
     )
     nodes.append(field_node)
+    # Emit CustomMetadataField nodes for __mdt objects so the declared graph
+    # labels are actually populated during ingestion.
+    if object_api_name.endswith("__mdt"):
+        nodes.append(
+            NodeFact(
+                label="CustomMetadataField",
+                key_props={"qualifiedName": field_qname},
+                all_props={
+                    "qualifiedName": field_qname,
+                    "apiName": full_name,
+                    "objectApiName": object_api_name,
+                    "apiLabel": label,
+                    "fieldType": field_type,
+                    "required": required,
+                    "isFormula": is_formula,
+                },
+                sourceFile=field_path,
+                lineNumber=0,
+                parserType="xml_object",
+            )
+        )
 
     # OBJ-06: Formula field dependencies
     if is_formula and formula_text:
@@ -267,6 +289,103 @@ def parse_labels_xml(labels_path: str) -> tuple[list[NodeFact], list[EdgeFact]]:
                 sourceFile=labels_path, lineNumber=0, parserType="xml_object",
             ))
 
+    return nodes, edges
+
+
+def parse_global_value_set_xml(gvs_path: str) -> tuple[list[NodeFact], list[EdgeFact]]:
+    """Parse a .globalValueSet-meta.xml file."""
+    nodes: list[NodeFact] = []
+    edges: list[EdgeFact] = []
+    tree = ET.parse(gvs_path)
+    root = tree.getroot()
+    full_name = root.findtext(_tag("fullName")) or Path(gvs_path).stem.replace(".globalValueSet-meta", "")
+    label = root.findtext(_tag("masterLabel")) or full_name
+
+    nodes.append(
+        NodeFact(
+            label="GlobalValueSet",
+            key_props={"qualifiedName": full_name},
+            all_props={"qualifiedName": full_name, "apiName": full_name, "apiLabel": label},
+            sourceFile=gvs_path,
+            lineNumber=0,
+            parserType="xml_object",
+        )
+    )
+
+    for value in root.findall(_tag("customValue")):
+        val_name = value.findtext(_tag("fullName")) or ""
+        val_label = value.findtext(_tag("label")) or val_name
+        is_default = value.findtext(_tag("default")) == "true"
+        if not val_name:
+            continue
+        val_qname = f"{full_name}.{val_name}"
+        nodes.append(
+            NodeFact(
+                label="SFPicklistValue",
+                key_props={"qualifiedName": val_qname},
+                all_props={
+                    "qualifiedName": val_qname,
+                    "apiName": val_name,
+                    "apiLabel": val_label,
+                    "isDefault": is_default,
+                    "globalValueSet": full_name,
+                },
+                sourceFile=gvs_path,
+                lineNumber=0,
+                parserType="xml_object",
+            )
+        )
+        edges.append(
+            EdgeFact(
+                src_qualified_name=full_name,
+                src_label="GlobalValueSet",
+                rel_type="GLOBAL_VALUE_SET_HAS_VALUE",
+                dst_qualified_name=val_qname,
+                dst_label="SFPicklistValue",
+                confidence=1.0,
+                resolutionMethod="direct",
+                edgeCategory="STRUCTURAL",
+                contextSnippet=f"global value set value: {val_name}",
+            )
+        )
+    return nodes, edges
+
+
+def parse_custom_metadata_record_xml(record_path: str) -> tuple[list[NodeFact], list[EdgeFact]]:
+    """Parse a customMetadata/*.md-meta.xml record file."""
+    nodes: list[NodeFact] = []
+    edges: list[EdgeFact] = []
+    tree = ET.parse(record_path)
+    root = tree.getroot()
+    full_name = root.findtext(_tag("fullName")) or Path(record_path).stem.replace(".md-meta", "")
+    if "." not in full_name:
+        return nodes, edges
+    type_api, _record_name = full_name.split(".", 1)
+    type_qname = f"{type_api}__mdt" if not type_api.endswith("__mdt") else type_api
+
+    nodes.append(
+        NodeFact(
+            label="CustomMetadataRecord",
+            key_props={"qualifiedName": full_name},
+            all_props={"qualifiedName": full_name, "typeQualifiedName": type_qname},
+            sourceFile=record_path,
+            lineNumber=0,
+            parserType="xml_object",
+        )
+    )
+    edges.append(
+        EdgeFact(
+            src_qualified_name=type_qname,
+            src_label="CustomMetadataType",
+            rel_type="CONTAINS_CHILD",
+            dst_qualified_name=full_name,
+            dst_label="CustomMetadataRecord",
+            confidence=1.0,
+            resolutionMethod="direct",
+            edgeCategory="STRUCTURAL",
+            contextSnippet=f"custom metadata record: {full_name}",
+        )
+    )
     return nodes, edges
 
 

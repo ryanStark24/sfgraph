@@ -614,6 +614,20 @@ def test_discover_files_falls_back_to_root_when_default_roots_missing(tmp_path):
     assert str(loose_cls) in discovered
 
 
+def test_discover_files_includes_global_value_set_and_custom_metadata_record(svc, tmp_path):
+    service, _, _, _ = svc
+    gvs = tmp_path / "force-app" / "main" / "default" / "globalValueSets" / "Priority.globalValueSet-meta.xml"
+    cmt = tmp_path / "force-app" / "main" / "default" / "customMetadata" / "FeatureFlag.Default.md-meta.xml"
+    gvs.parent.mkdir(parents=True, exist_ok=True)
+    cmt.parent.mkdir(parents=True, exist_ok=True)
+    gvs.write_text("<GlobalValueSet xmlns=\"http://soap.sforce.com/2006/04/metadata\"/>", encoding="utf-8")
+    cmt.write_text("<CustomMetadata xmlns=\"http://soap.sforce.com/2006/04/metadata\"/>", encoding="utf-8")
+
+    discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
+    assert str(gvs) in discovered
+    assert str(cmt) in discovered
+
+
 @pytest.mark.asyncio
 async def test_discovery_reuses_manifest_hash_when_stats_match(tmp_path):
     graph = make_mock_graph()

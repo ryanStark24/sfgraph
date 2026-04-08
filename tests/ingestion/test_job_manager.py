@@ -204,3 +204,41 @@ async def test_job_manager_runs_vectorize_job(tmp_path: Path):
     record = await manager.get_job(job["job_id"])
     assert record is not None
     assert record["state"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_job_manager_persists_jobs_across_restarts(tmp_path: Path):
+    db_path = tmp_path / "jobs.sqlite"
+
+    async def fake_ingest(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        return _ingest_summary(export_dir)
+
+    async def fake_refresh(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        return _refresh_summary(export_dir)
+
+    async def fake_vectorize(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        return _refresh_summary(export_dir)
+
+    manager = IngestJobManager(
+        ingest_factory=fake_ingest,
+        refresh_factory=fake_refresh,
+        vectorize_factory=fake_vectorize,
+        db_path=str(db_path),
+    )
+    await manager.initialize()
+    job = await manager.start_job(job_type="ingest", export_dir=str(tmp_path))
+    await asyncio.sleep(0.05)
+    await manager.close()
+
+    manager2 = IngestJobManager(
+        ingest_factory=fake_ingest,
+        refresh_factory=fake_refresh,
+        vectorize_factory=fake_vectorize,
+        db_path=str(db_path),
+    )
+    await manager2.initialize()
+    restored = await manager2.get_job(job["job_id"])
+    assert restored is not None
+    assert restored["state"] == "completed"
+    assert restored["run_id"] == "run-1"
+    await manager2.close()
