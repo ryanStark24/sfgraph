@@ -256,7 +256,7 @@ async def test_vectorize_counts_failed_upserts(tmp_path):
     assert summary.processed_nodes == 0
     assert summary.failed_nodes == 1
     assert summary.skipped_nodes == 0
-    assert len(summary.warnings) == 1
+    assert len(summary.warnings) == 2
     assert "Vector upsert failed for" in summary.warnings[0]
 
 
@@ -830,6 +830,8 @@ async def test_ingest_writes_progress_snapshot(svc, tmp_path):
     assert payload["total_files"] >= 1
     assert "last_progress_at" in payload
     assert "last_job_heartbeat_at" in payload
+    assert "vector_health" in payload
+    assert payload["vector_health"]["enabled"] is False
 
 
 @pytest.mark.asyncio
@@ -888,6 +890,30 @@ def test_progress_snapshot_rejects_invalid_phase(tmp_path):
                 "mode": "full_ingest",
                 "state": "running",
                 "phase": "typo_phase",
+                "total_files": 0,
+                "processed_files": 0,
+                "failed_files": 0,
+            },
+            force=True,
+        )
+
+
+def test_progress_snapshot_rejects_invalid_state(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+    )
+    with pytest.raises(ValueError, match="Invalid ingestion state"):
+        service._write_progress_snapshot(  # noqa: SLF001
+            {
+                "mode": "full_ingest",
+                "state": "typo_state",
+                "phase": "discovering",
                 "total_files": 0,
                 "processed_files": 0,
                 "failed_files": 0,

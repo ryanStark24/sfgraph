@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -20,6 +21,7 @@ from sfgraph.ingestion.constants import NODE_WRITE_ORDER
 from sfgraph.ingestion.models import (
     EdgeFact,
     IngestionPhase,
+    IngestionState,
     IngestionSummary,
     NodeFact,
     RefreshSummary,
@@ -144,6 +146,8 @@ class IngestionService:
         self._last_progress_flush_at: float = 0.0
         self._include_globs = include_globs or []
         self._exclude_globs = exclude_globs or []
+        self._vector_upsert_failures = 0
+        self._vector_last_error: str | None = None
 
     def _raise_if_cancelled(self) -> None:
         if self._cancel_event is not None and self._cancel_event.is_set():
@@ -304,8 +308,41 @@ class IngestionService:
             )
             return True
         except Exception as exc:  # noqa: BLE001
+            self._vector_upsert_failures += 1
+            self._vector_last_error = str(exc)
             logger.warning("Vector upsert failed for %s: %s", scoped_qname, exc)
             return False
+
+    def _reset_vector_health(self) -> None:
+        self._vector_upsert_failures = 0
+        self._vector_last_error = None
+
+    def _vector_health_snapshot(self) -> dict[str, Any]:
+        if not self._vectors:
+            return {"enabled": False, "status": "disabled", "upsert_failures": 0}
+        provider_snapshot: dict[str, Any] = {}
+        provider_probe = getattr(self._vectors, "health_snapshot", None)
+        if callable(provider_probe):
+            try:
+                raw = provider_probe()
+                if inspect.isawaitable(raw):
+                    close = getattr(raw, "close", None)
+                    if callable(close):
+                        close()
+                    raw = None
+                if isinstance(raw, dict):
+                    provider_snapshot = raw
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Vector health probe failed", exc_info=True)
+                provider_snapshot = {"probe_error": str(exc)}
+        status = "ok" if self._vector_upsert_failures == 0 else "degraded"
+        return {
+            "enabled": True,
+            "status": status,
+            "upsert_failures": self._vector_upsert_failures,
+            "last_error": self._vector_last_error,
+            **provider_snapshot,
+        }
 
     async def _delete_vectors_for_nodes(self, node_qnames: set[str]) -> None:
         if not self._vectors or not node_qnames:
@@ -318,6 +355,7 @@ class IngestionService:
     async def vectorize(self, export_dir: str) -> VectorizeSummary:
         """Rebuild vectors for all nodes in the active project scope."""
         export_dir = self._activate_scope(export_dir)
+        self._reset_vector_health()
         start = time.monotonic()
         run_id = await self._manifest.create_run()
         warnings: list[str] = []
@@ -405,6 +443,11 @@ class IngestionService:
             phase_2_complete=True,
         )
         duration = round(time.monotonic() - start, 3)
+        if self._vector_upsert_failures > 0:
+            warnings.append(
+                f"Vector upsert failures detected: {self._vector_upsert_failures}. "
+                "Check vector_health.last_error for details."
+            )
         summary = VectorizeSummary(
             run_id=run_id,
             export_dir=export_dir,
@@ -436,6 +479,7 @@ class IngestionService:
                 "edge_count": 0,
                 "orphaned_edges": 0,
                 "warnings_count": len(warnings),
+                "vector_health": self._vector_health_snapshot(),
             },
             force=True,
         )
@@ -464,6 +508,7 @@ class IngestionService:
     async def ingest(self, export_dir: str) -> IngestionSummary:
         """Ingest a metadata export directory and return summary statistics."""
         export_dir = self._activate_scope(export_dir)
+        self._reset_vector_health()
         start = time.monotonic()
         run_id = await self._manifest.create_run()
         warnings: list[str] = []
@@ -588,6 +633,11 @@ class IngestionService:
             warnings.append(f"Schema index failed: {exc}")
 
         duration = round(time.monotonic() - start, 3)
+        if self._vector_upsert_failures > 0:
+            warnings.append(
+                f"Vector upsert failures detected: {self._vector_upsert_failures}. "
+                "Check vector_health.last_error for details."
+            )
         summary = IngestionSummary(
             run_id=run_id,
             export_dir=export_dir,
@@ -622,6 +672,7 @@ class IngestionService:
                 "edge_count": edge_count,
                 "orphaned_edges": orphaned_edges,
                 "warnings_count": len(warnings),
+                "vector_health": self._vector_health_snapshot(),
             },
             force=True,
         )
@@ -630,6 +681,7 @@ class IngestionService:
     async def refresh(self, export_dir: str) -> RefreshSummary:
         """Incrementally refresh changed/new/deleted files based on manifest delta."""
         export_dir = self._activate_scope(export_dir)
+        self._reset_vector_health()
         start = time.monotonic()
         run_id = await self._manifest.create_run()
         warnings: list[str] = []
@@ -810,6 +862,11 @@ class IngestionService:
             warnings.append(f"Schema index failed: {exc}")
 
         duration = round(time.monotonic() - start, 3)
+        if self._vector_upsert_failures > 0:
+            warnings.append(
+                f"Vector upsert failures detected: {self._vector_upsert_failures}. "
+                "Check vector_health.last_error for details."
+            )
         summary = RefreshSummary(
             run_id=run_id,
             export_dir=export_dir,
@@ -850,6 +907,7 @@ class IngestionService:
                 "edge_count": edge_count,
                 "orphaned_edges": orphaned_edges,
                 "warnings_count": len(warnings),
+                "vector_health": self._vector_health_snapshot(),
             },
             force=True,
         )
@@ -1268,6 +1326,12 @@ class IngestionService:
                 IngestionPhase(str(phase))
             except ValueError as exc:
                 raise ValueError(f"Invalid ingestion phase: {phase!r}") from exc
+        state = payload.get("state")
+        if state is not None:
+            try:
+                IngestionState(str(state))
+            except ValueError as exc:
+                raise ValueError(f"Invalid ingestion state: {state!r}") from exc
         payload.setdefault("updated_at", now)
         payload.setdefault("last_progress_at", now)
         payload.setdefault("last_job_heartbeat_at", now)

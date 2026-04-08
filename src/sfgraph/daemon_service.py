@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import threading
@@ -58,6 +59,28 @@ def _merge_job_with_progress(job: dict[str, Any], progress: dict[str, Any]) -> d
     if progress.get("available"):
         payload["progress"] = progress
     return payload
+
+
+def _vector_health_payload(app: DaemonAppContext, progress: dict[str, Any] | None = None) -> dict[str, Any]:
+    progress = progress or {}
+    progress_health = progress.get("vector_health")
+    if isinstance(progress_health, dict):
+        return dict(progress_health)
+    probe = getattr(app.vectors, "health_snapshot", None)
+    if callable(probe):
+        try:
+            raw = probe()
+            if inspect.isawaitable(raw):
+                close = getattr(raw, "close", None)
+                if callable(close):
+                    close()
+                raw = None
+            if isinstance(raw, dict):
+                return raw
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("vector health probe failed", exc_info=True)
+            return {"enabled": True, "status": "probe_failed", "error": str(exc)}
+    return {"enabled": True, "status": "unknown"}
 
 
 def read_progress_snapshot(data_root: Path) -> dict[str, Any]:
@@ -316,6 +339,7 @@ class DaemonOperations:
             "mode": mode,
             "include_globs": include_globs,
             "exclude_globs": exclude_globs,
+            "vector_health": _vector_health_payload(self.app),
         }
 
     async def start_ingest_job(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -355,6 +379,7 @@ class DaemonOperations:
         progress = read_progress_snapshot(self.app.data_root)
         if self.app.jobs.active_job_id == job_id and progress.get("state") == "running":
             job = _merge_job_with_progress(job, progress)
+        job["vector_health"] = _vector_health_payload(self.app, progress)
         job["available"] = True
         return job
 
@@ -406,6 +431,7 @@ class DaemonOperations:
             "mode": mode,
             "include_globs": include_globs,
             "exclude_globs": exclude_globs,
+            "vector_health": _vector_health_payload(self.app),
         }
 
     async def vectorize(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -420,7 +446,9 @@ class DaemonOperations:
             mode="full",
         )
         summary = await service.vectorize(str(params["export_dir"]))
-        return summary.model_dump()
+        payload = summary.model_dump()
+        payload["vector_health"] = _vector_health_payload(self.app)
+        return payload
 
     async def watch_refresh(self, params: dict[str, Any]) -> dict[str, Any]:
         await assert_no_active_background_job(self.app, "watch_refresh")
@@ -438,11 +466,12 @@ class DaemonOperations:
         service = build_query_service(self.app)
         status = await service.get_ingestion_status()
         active_job = await self.app.jobs.get_active_job()
+        progress = read_progress_snapshot(self.app.data_root)
         if active_job is not None:
-            progress = read_progress_snapshot(self.app.data_root)
             status["active_job"] = _merge_job_with_progress(active_job, progress)
         else:
             status["active_job"] = None
+        status["vector_health"] = _vector_health_payload(self.app, progress)
         return status
 
     async def get_ingestion_progress(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -452,6 +481,7 @@ class DaemonOperations:
         active_job = await self.app.jobs.get_active_job()
         if active_job is not None:
             payload["active_job"] = active_job
+        payload["vector_health"] = _vector_health_payload(self.app, payload)
         return payload
 
     async def trace_upstream(self, params: dict[str, Any]) -> dict[str, Any]:

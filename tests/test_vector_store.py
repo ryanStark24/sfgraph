@@ -217,3 +217,21 @@ def test_vector_store_uses_offline_embedder_by_default(monkeypatch):
     assert embedder is not None
     assert calls[0]["model_name"] == "BAAI/bge-small-en-v1.5"
     assert calls[0]["local_files_only"] is True
+
+
+def test_vector_store_health_snapshot_reports_lazy_or_ready(monkeypatch):
+    monkeypatch.setenv("SFGRAPH_ALLOW_NETWORK", "1")
+    store = VectorStore(path=":memory:")
+    snap = store.health_snapshot()
+    assert snap["provider"] == "qdrant+fastembed"
+    assert snap["status"] == "lazy"
+    assert snap["embedder_loaded"] is False
+
+
+def test_vector_store_health_snapshot_reports_ready_when_embedder_loaded(monkeypatch):
+    monkeypatch.setenv("SFGRAPH_ALLOW_NETWORK", "1")
+    store = VectorStore(path=":memory:")
+    store._embedder = object()
+    snap = store.health_snapshot()
+    assert snap["status"] == "ready"
+    assert snap["embedder_loaded"] is True

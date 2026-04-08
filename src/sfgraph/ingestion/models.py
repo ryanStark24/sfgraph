@@ -28,6 +28,16 @@ class IngestionPhase(str, Enum):
     CANCELLED = "cancelled"
 
 
+class IngestionState(str, Enum):
+    IDLE = "idle"
+    QUEUED = "queued"
+    RUNNING = "running"
+    CANCELLING = "cancelling"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class NodeFact(BaseModel):
     """A parsed node ready to be written via GraphStore.merge_node().
 

@@ -277,3 +277,68 @@ async def test_job_manager_persists_jobs_across_restarts(tmp_path: Path):
     assert restored["state"] == "completed"
     assert restored["run_id"] == "run-1"
     await manager2.close()
+
+
+@pytest.mark.asyncio
+async def test_job_manager_marks_stale_running_job_as_daemon_restarted(tmp_path: Path):
+    db_path = tmp_path / "jobs.sqlite"
+
+    async def fake_ingest(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        return _ingest_summary(export_dir)
+
+    async def fake_refresh(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        return _refresh_summary(export_dir)
+
+    async def fake_vectorize(export_dir: str, options: dict[str, object], cancel_event: threading.Event):
+        return _refresh_summary(export_dir)
+
+    manager = IngestJobManager(
+        ingest_factory=fake_ingest,
+        refresh_factory=fake_refresh,
+        vectorize_factory=fake_vectorize,
+        db_path=str(db_path),
+    )
+    await manager.initialize()
+    await manager._db.execute(  # noqa: SLF001
+        """
+        INSERT INTO ingest_jobs (
+            job_id, job_type, export_dir, state, created_at, started_at, completed_at,
+            error, run_id, options_json, result_summary_json, updated_at, recovery_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "job-stale-running",
+            "ingest",
+            str(tmp_path),
+            "running",
+            "2026-04-07T00:00:00+00:00",
+            "2026-04-07T00:00:05+00:00",
+            None,
+            None,
+            None,
+            "{}",
+            None,
+            "2026-04-07T00:00:05+00:00",
+            None,
+        ),
+    )
+    await manager._db.execute(  # noqa: SLF001
+        "UPDATE ingest_job_state SET value = 'job-stale-running' WHERE key = 'active_job_id'"
+    )
+    await manager._db.commit()  # noqa: SLF001
+    await manager.close()
+
+    manager2 = IngestJobManager(
+        ingest_factory=fake_ingest,
+        refresh_factory=fake_refresh,
+        vectorize_factory=fake_vectorize,
+        db_path=str(db_path),
+    )
+    await manager2.initialize()
+    restored = await manager2.get_job("job-stale-running")
+    assert restored is not None
+    assert restored["state"] == "failed"
+    assert restored["error"] == "daemon_restarted"
+    assert restored["recovery_reason"] == "daemon_restarted"
+    assert manager2.active_job_id is None
+    await manager2.close()

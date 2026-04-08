@@ -57,6 +57,8 @@ class VectorStore:
         Raises:
             ValueError: If neither path nor url is provided.
         """
+        self._path = path
+        self._url = url
         if url:
             self._client = QdrantClient(url=url)
         elif path is not None:
@@ -65,6 +67,26 @@ class VectorStore:
             raise ValueError("Either path or url must be provided to VectorStore")
         # Lazy-load embedder to defer model download until first upsert/search
         self._embedder = None
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Lightweight vector health snapshot safe for status endpoints."""
+        online = network_allowed()
+        mode = "remote" if self._url else ("memory" if self._path == ":memory:" else "local")
+        embedder_loaded = self._embedder is not None
+        if embedder_loaded:
+            status = "ready"
+        elif online:
+            status = "lazy"
+        else:
+            status = "offline_model_unverified"
+        return {
+            "provider": "qdrant+fastembed",
+            "model": "BAAI/bge-small-en-v1.5",
+            "mode": mode,
+            "network_allowed": online,
+            "embedder_loaded": embedder_loaded,
+            "status": status,
+        }
 
     def _get_embedder(self):
         """Return the fastembed TextEmbedding model, loading on first call."""

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -36,6 +37,8 @@ class IngestJobRecord:
     run_id: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
     result_summary: dict[str, Any] | None = None
+    updated_at: str = field(default_factory=_utc_now)
+    recovery_reason: str | None = None
     _task: asyncio.Task[None] | None = field(default=None, repr=False, compare=False)
     _cancel_event: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
 
@@ -52,6 +55,8 @@ class IngestJobRecord:
             "run_id": self.run_id,
             "options": self.options,
             "result_summary": self.result_summary,
+            "updated_at": self.updated_at,
+            "recovery_reason": self.recovery_reason,
         }
 
 
@@ -100,7 +105,8 @@ class IngestJobManager:
                 run_id TEXT,
                 options_json TEXT NOT NULL,
                 result_summary_json TEXT,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                recovery_reason TEXT
             )
             """
         )
@@ -113,8 +119,21 @@ class IngestJobManager:
             """
         )
         await self._db.commit()
+        await self._ensure_schema_columns()
         await self._load_state_from_db()
         self._initialized = True
+
+    async def _ensure_schema_columns(self) -> None:
+        if self._db is None:
+            return
+        cursor = await self._db.execute("PRAGMA table_info(ingest_jobs)")
+        columns = {str(row[1]) for row in await cursor.fetchall()}
+        await cursor.close()
+        if "updated_at" not in columns:
+            await self._db.execute("ALTER TABLE ingest_jobs ADD COLUMN updated_at TEXT")
+        if "recovery_reason" not in columns:
+            await self._db.execute("ALTER TABLE ingest_jobs ADD COLUMN recovery_reason TEXT")
+        await self._db.commit()
 
     async def close(self) -> None:
         if self._db is not None:
@@ -131,7 +150,7 @@ class IngestJobManager:
         cursor = await self._db.execute(
             """
             SELECT job_id, job_type, export_dir, state, created_at, started_at, completed_at,
-                   error, run_id, options_json, result_summary_json
+                   error, run_id, options_json, result_summary_json, updated_at, recovery_reason
             FROM ingest_jobs
             ORDER BY created_at DESC
             """
@@ -151,6 +170,8 @@ class IngestJobManager:
                 run_id,
                 options_json,
                 result_summary_json,
+                updated_at,
+                recovery_reason,
             ) = row
             options = {}
             summary = None
@@ -177,6 +198,8 @@ class IngestJobManager:
                 run_id=str(run_id) if run_id else None,
                 options=options,
                 result_summary=summary,
+                updated_at=str(updated_at) if updated_at else _utc_now(),
+                recovery_reason=str(recovery_reason) if recovery_reason else None,
             )
 
         active_cursor = await self._db.execute(
@@ -188,10 +211,13 @@ class IngestJobManager:
 
         # Jobs cannot resume across daemon restarts. Mark prior active/running jobs failed.
         for job in self._jobs.values():
-            if job.state in {"queued", "running", "cancelling"}:
+            if job.state in ACTIVE_JOB_STATES:
                 job.state = "failed"
                 job.completed_at = job.completed_at or _utc_now()
                 job.error = job.error or "daemon_restarted"
+                job.recovery_reason = "daemon_restarted"
+                job.updated_at = _utc_now()
+                self._log_transition(job, "recovered_after_restart")
                 await self._persist_job_locked(job)
         active = self._get_active_job_locked()
         await self._persist_active_job_locked(active.job_id if active else None)
@@ -217,8 +243,9 @@ class IngestJobManager:
             INSERT INTO ingest_jobs (
                 job_id, job_type, export_dir, state, created_at, started_at, completed_at,
                 error, run_id, options_json, result_summary_json, updated_at
+                , recovery_reason
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 job_type = excluded.job_type,
                 export_dir = excluded.export_dir,
@@ -230,7 +257,8 @@ class IngestJobManager:
                 run_id = excluded.run_id,
                 options_json = excluded.options_json,
                 result_summary_json = excluded.result_summary_json,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                recovery_reason = excluded.recovery_reason
             """,
             (
                 job.job_id,
@@ -244,10 +272,23 @@ class IngestJobManager:
                 job.run_id,
                 json.dumps(job.options or {}),
                 json.dumps(job.result_summary) if job.result_summary is not None else None,
-                _utc_now(),
+                job.updated_at or _utc_now(),
+                job.recovery_reason,
             ),
         )
         await self._db.commit()
+
+    @staticmethod
+    def _log_transition(job: IngestJobRecord, event: str) -> None:
+        logger.info(
+            "ingest_job_transition event=%s job_id=%s type=%s state=%s export_dir=%s recovery=%s",
+            event,
+            job.job_id,
+            job.job_type,
+            job.state,
+            job.export_dir,
+            job.recovery_reason or "",
+        )
 
     async def start_job(
         self,
@@ -277,9 +318,11 @@ class IngestJobManager:
             )
             self._jobs[job.job_id] = job
             self._active_job_id = job.job_id
+            job.updated_at = _utc_now()
             await self._persist_job_locked(job)
             await self._persist_active_job_locked(job.job_id)
             job._task = asyncio.create_task(self._run_job(job), name=f"sfgraph-{job_type}-{job.job_id}")
+            self._log_transition(job, "job_started")
             return job.to_dict()
 
     async def list_jobs(self) -> list[dict[str, Any]]:
@@ -310,19 +353,23 @@ class IngestJobManager:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
-            if job.state in {"completed", "failed", "cancelled"}:
+            if job.state in TERMINAL_JOB_STATES:
                 return job.to_dict()
             if job._task is not None and not job._task.done():
                 job.state = "cancelling"
                 job._cancel_event.set()
+                job.updated_at = _utc_now()
                 await self._persist_job_locked(job)
+                self._log_transition(job, "cancel_requested")
             return job.to_dict()
 
     async def _run_job(self, job: IngestJobRecord) -> None:
         async with self._lock:
             job.state = "running"
             job.started_at = _utc_now()
+            job.updated_at = _utc_now()
             await self._persist_job_locked(job)
+            self._log_transition(job, "job_running")
 
         if job.job_type == "ingest":
             runner = self._ingest_factory
@@ -342,20 +389,24 @@ class IngestJobManager:
                 job.state = "cancelled"
                 job.completed_at = _utc_now()
                 job.error = "cancelled"
+                job.updated_at = _utc_now()
                 if self._active_job_id == job.job_id:
                     self._active_job_id = None
                 await self._persist_job_locked(job)
                 await self._persist_active_job_locked(self._active_job_id)
+                self._log_transition(job, "job_cancelled")
             raise
         except Exception as exc:  # noqa: BLE001
             async with self._lock:
                 job.state = "failed"
                 job.completed_at = _utc_now()
                 job.error = str(exc)
+                job.updated_at = _utc_now()
                 if self._active_job_id == job.job_id:
                     self._active_job_id = None
                 await self._persist_job_locked(job)
                 await self._persist_active_job_locked(self._active_job_id)
+                self._log_transition(job, "job_failed")
         else:
             payload = summary.model_dump()
             async with self._lock:
@@ -367,10 +418,12 @@ class IngestJobManager:
                 job.completed_at = _utc_now()
                 job.run_id = payload.get("run_id")
                 job.result_summary = payload
+                job.updated_at = _utc_now()
                 if self._active_job_id == job.job_id:
                     self._active_job_id = None
                 await self._persist_job_locked(job)
                 await self._persist_active_job_locked(self._active_job_id)
+                self._log_transition(job, f"job_{job.state}")
 
     def _get_active_job_locked(self) -> IngestJobRecord | None:
         if not self._active_job_id:
@@ -379,7 +432,11 @@ class IngestJobManager:
         if job is None:
             self._active_job_id = None
             return None
-        if job.state in {"completed", "failed", "cancelled"}:
+        if job.state in TERMINAL_JOB_STATES:
             self._active_job_id = None
             return None
         return job
+logger = logging.getLogger(__name__)
+
+TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
+ACTIVE_JOB_STATES = frozenset({"queued", "running", "cancelling"})
