@@ -328,13 +328,81 @@ def test_supported_non_object_vlocity_arrays_are_parsed(tmp_path):
     assert meta.outcome == "parsed_specialized"
     assert meta.pack_type == "PromotionItems"
     assert any(n.label == "VlocityDataPack" and n.key_props["qualifiedName"] == "PromotionItems.Offer" for n in nodes)
+    assert any(n.label == "PromotionItem" for n in nodes)
     assert any(e.rel_type == "CONTAINS_CHILD" for e in edges)
+    assert any(e.rel_type == "HAS_PROMOTION_ITEM" for e in edges)
     assert any(
         e.rel_type == "CALLS"
         and e.dst_label == "DataRaptor"
         and e.dst_qualified_name == "PromoLoadDR"
         for e in edges
     )
+
+
+def test_price_list_entries_array_emits_typed_nodes(tmp_path):
+    file = tmp_path / "Catalog_PriceListEntries.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "EnterprisePriceEntry",
+                    "DataRaptorName": "PriceListSyncDR",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.pack_type == "PriceListEntries"
+    assert any(n.label == "PriceListEntryItem" for n in nodes)
+    assert any(e.rel_type == "HAS_PRICE_LIST_ENTRY" for e in edges)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "DataRaptor" for e in edges)
+
+
+def test_interface_implementation_details_array_emits_typed_nodes(tmp_path):
+    file = tmp_path / "Interface_InterfaceImplementationDetails.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "ServiceabilityImplDetail",
+                    "ApexClassName": "OSS_ServiceabilityTask",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.pack_type == "InterfaceImplementationDetails"
+    assert any(n.label == "InterfaceImplementationDetail" for n in nodes)
+    assert any(e.rel_type == "HAS_INTERFACE_IMPLEMENTATION_DETAIL" for e in edges)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "ApexClass" for e in edges)
+
+
+def test_product_child_items_array_emits_typed_nodes(tmp_path):
+    file = tmp_path / "Bundle_ProductChildItems.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "AddonFiber",
+                    "IntegrationProcedureName": "ResolveProductChildItems",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.pack_type == "ProductChildItems"
+    assert any(n.label == "ProductChildItem" for n in nodes)
+    assert any(e.rel_type == "HAS_PRODUCT_CHILD_ITEM" for e in edges)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "IntegrationProcedure" for e in edges)
 
 
 def test_supported_vlocity_registry_matches_upstream_inventory_size():

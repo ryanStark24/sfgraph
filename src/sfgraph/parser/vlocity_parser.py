@@ -42,6 +42,18 @@ _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES: frozenset[str] = frozenset(
         "ProductChildItems",
     }
 )
+_SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_NODE_LABELS: dict[str, str] = {
+    "PromotionItems": "PromotionItem",
+    "PriceListEntries": "PriceListEntryItem",
+    "InterfaceImplementationDetails": "InterfaceImplementationDetail",
+    "ProductChildItems": "ProductChildItem",
+}
+_SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_REL_TYPES: dict[str, str] = {
+    "PromotionItems": "HAS_PROMOTION_ITEM",
+    "PriceListEntries": "HAS_PRICE_LIST_ENTRY",
+    "InterfaceImplementationDetails": "HAS_INTERFACE_IMPLEMENTATION_DETAIL",
+    "ProductChildItems": "HAS_PRODUCT_CHILD_ITEM",
+}
 
 
 @dataclass(frozen=True)
@@ -591,6 +603,8 @@ def _parse_non_object_vlocity_array(
         )
     ]
     edges: list[EdgeFact] = []
+    item_label = _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_NODE_LABELS.get(pack_type, "VlocityDataPack")
+    item_rel_type = _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_REL_TYPES.get(pack_type, "CONTAINS_CHILD")
 
     for idx, item in enumerate(data, start=1):
         if not isinstance(item, dict):
@@ -604,12 +618,21 @@ def _parse_non_object_vlocity_array(
         child_qname = f"{container_qname}.{item_name}"
         nodes.append(
             _node(
-                "VlocityDataPack",
+                item_label,
                 child_qname,
                 {
                     "name": item_name,
                     "dataPackType": f"{pack_type}Item",
                     "parentDataPack": container_qname,
+                    "sourceShape": "non_object_json_array_item",
+                    "globalKey": _first_string(item.get("GlobalKey"), item.get("globalKey")),
+                    "sobjectType": _first_string(
+                        item.get("VlocityRecordSObjectType"),
+                        item.get("SObjectType"),
+                        item.get("sObjectType"),
+                        item.get("ObjectType"),
+                        item.get("objectType"),
+                    ),
                 },
                 source_file,
             )
@@ -620,14 +643,27 @@ def _parse_non_object_vlocity_array(
                 "VlocityDataPack",
                 "CONTAINS_CHILD",
                 child_qname,
-                "VlocityDataPack",
+                item_label,
                 0.85,
                 "array_item",
                 "STRUCTURAL",
                 f"{pack_type} item {idx}",
             )
         )
-        edges.extend(_collect_reference_edges(child_qname, "VlocityDataPack", item, namespace, pack_type))
+        edges.append(
+            _edge(
+                container_qname,
+                "VlocityDataPack",
+                item_rel_type,
+                child_qname,
+                item_label,
+                0.95,
+                "array_item",
+                "STRUCTURAL",
+                f"{pack_type} typed item {idx}",
+            )
+        )
+        edges.extend(_collect_reference_edges(child_qname, item_label, item, namespace, pack_type))
 
     edges.extend(_collect_reference_edges(container_qname, "VlocityDataPack", {"items": data}, namespace, pack_type))
     return nodes, edges
