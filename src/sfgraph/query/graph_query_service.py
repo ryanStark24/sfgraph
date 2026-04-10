@@ -1381,6 +1381,54 @@ class GraphQueryService:
 
         return evidence[:max_items]
 
+    @staticmethod
+    def _has_material_result_evidence(result: dict[str, Any]) -> bool:
+        """Return True when a routed payload contains actionable evidence."""
+        if not isinstance(result, dict):
+            return False
+        keys_with_lists = (
+            "evidence",
+            "exact_matches",
+            "graph_findings",
+            "findings",
+            "candidates",
+            "writers",
+            "readers",
+            "dependents",
+            "resolved_components",
+        )
+        for key in keys_with_lists:
+            value = result.get(key)
+            if isinstance(value, list) and value:
+                return True
+        fields = result.get("fields")
+        if isinstance(fields, list):
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                for nested in ("writers", "readers", "dependents"):
+                    nested_value = field.get(nested)
+                    if isinstance(nested_value, list) and nested_value:
+                        return True
+        return False
+
+    @staticmethod
+    def _is_exact_first_question(question: str) -> bool:
+        q = question.lower()
+        signal_phrases = (
+            "where is",
+            "where does",
+            "populated",
+            "assigned",
+            "written",
+            "set in",
+            "set by",
+            "show method",
+            "source file",
+            "line number",
+        )
+        return any(phrase in q for phrase in signal_phrases)
+
     async def analyze(
         self,
         question: str,
@@ -1398,6 +1446,27 @@ class GraphQueryService:
 
         routed_to = "query"
         result: dict[str, Any]
+        routing_stages: list[dict[str, Any]] = []
+
+        async def _query_stage(*, allow_vector_fallback: bool, stage: str) -> dict[str, Any]:
+            payload = await self.query(
+                question=q,
+                max_hops=max_hops,
+                max_results=max_results,
+                time_budget_ms=time_budget_ms,
+                offset=offset,
+                allow_vector_fallback=allow_vector_fallback,
+            )
+            routing_stages.append(
+                {
+                    "stage": stage,
+                    "tool": "query",
+                    "allow_vector_fallback": allow_vector_fallback,
+                    "result_mode": payload.get("mode"),
+                    "has_evidence": self._has_material_result_evidence(payload),
+                }
+            )
+            return payload
 
         if selected_mode == "exact":
             component_token = self._component_token_query_parts(q)
@@ -1410,6 +1479,20 @@ class GraphQueryService:
                     focus="writes" if strict else "both",
                     max_results=max_results,
                 )
+                routing_stages.append(
+                    {
+                        "stage": "exact_component",
+                        "tool": "analyze_component",
+                        "allow_vector_fallback": False,
+                        "result_mode": result.get("mode"),
+                        "has_evidence": self._has_material_result_evidence(result),
+                    }
+                )
+                if not self._has_material_result_evidence(result):
+                    routed_to = "query"
+                    result = await _query_stage(allow_vector_fallback=False, stage="exact_lexical_graph")
+                    if not strict and not self._has_material_result_evidence(result):
+                        result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
             else:
                 field_targets = await self._field_targets_for_question(q)
                 if field_targets:
@@ -1421,16 +1504,25 @@ class GraphQueryService:
                         focus=focus,
                         max_results=max_results,
                     )
+                    routing_stages.append(
+                        {
+                            "stage": "exact_field",
+                            "tool": "analyze_field",
+                            "allow_vector_fallback": False,
+                            "result_mode": result.get("mode"),
+                            "has_evidence": self._has_material_result_evidence(result),
+                        }
+                    )
+                    if not self._has_material_result_evidence(result):
+                        routed_to = "query"
+                        result = await _query_stage(allow_vector_fallback=False, stage="exact_lexical_graph")
+                        if not strict and not self._has_material_result_evidence(result):
+                            result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
                 else:
                     routed_to = "query"
-                    result = await self.query(
-                        question=q,
-                        max_hops=max_hops,
-                        max_results=max_results,
-                        time_budget_ms=time_budget_ms,
-                        offset=offset,
-                        allow_vector_fallback=not strict,
-                    )
+                    result = await _query_stage(allow_vector_fallback=False, stage="exact_lexical_graph")
+                    if not strict and not self._has_material_result_evidence(result):
+                        result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
         elif selected_mode == "lineage":
             object_event = self._object_event_query_parts(q)
             if object_event:
@@ -1441,6 +1533,15 @@ class GraphQueryService:
                     event=event,
                     max_results=max_results,
                 )
+                routing_stages.append(
+                    {
+                        "stage": "lineage_object_event",
+                        "tool": "analyze_object_event",
+                        "allow_vector_fallback": False,
+                        "result_mode": result.get("mode"),
+                        "has_evidence": self._has_material_result_evidence(result),
+                    }
+                )
             else:
                 change_target = self._change_query_target(q)
                 if change_target:
@@ -1450,19 +1551,22 @@ class GraphQueryService:
                         max_hops=max_hops,
                         max_results_per_component=max_results,
                     )
+                    routing_stages.append(
+                        {
+                            "stage": "lineage_change",
+                            "tool": "analyze_change",
+                            "allow_vector_fallback": False,
+                            "result_mode": result.get("mode"),
+                            "has_evidence": self._has_material_result_evidence(result),
+                        }
+                    )
                 else:
                     routed_to = "query"
-                    result = await self.query(
-                        question=q,
-                        max_hops=max_hops,
-                        max_results=max_results,
-                        time_budget_ms=time_budget_ms,
-                        offset=offset,
-                        allow_vector_fallback=not strict,
-                    )
+                    result = await _query_stage(allow_vector_fallback=not strict, stage="lineage_query")
         else:
             # Auto mode routes to intent-specific analyzers first to improve precision and reduce
             # follow-up tool calls for common Salesforce investigation questions.
+            exact_first = self._is_exact_first_question(q)
             component_token = self._component_token_query_parts(q)
             if component_token:
                 component_name, token = component_token
@@ -1472,6 +1576,15 @@ class GraphQueryService:
                     token=token,
                     focus="writes" if strict else "both",
                     max_results=max_results,
+                )
+                routing_stages.append(
+                    {
+                        "stage": "auto_component",
+                        "tool": "analyze_component",
+                        "allow_vector_fallback": False,
+                        "result_mode": result.get("mode"),
+                        "has_evidence": self._has_material_result_evidence(result),
+                    }
                 )
             else:
                 object_event = self._object_event_query_parts(q)
@@ -1483,6 +1596,15 @@ class GraphQueryService:
                         event=event,
                         max_results=max_results,
                     )
+                    routing_stages.append(
+                        {
+                            "stage": "auto_object_event",
+                            "tool": "analyze_object_event",
+                            "allow_vector_fallback": False,
+                            "result_mode": result.get("mode"),
+                            "has_evidence": self._has_material_result_evidence(result),
+                        }
+                    )
                 else:
                     change_target = self._change_query_target(q)
                     if change_target:
@@ -1491,6 +1613,15 @@ class GraphQueryService:
                             target=change_target,
                             max_hops=max_hops,
                             max_results_per_component=max_results,
+                        )
+                        routing_stages.append(
+                            {
+                                "stage": "auto_change",
+                                "tool": "analyze_change",
+                                "allow_vector_fallback": False,
+                                "result_mode": result.get("mode"),
+                                "has_evidence": self._has_material_result_evidence(result),
+                            }
                         )
                     else:
                         field_targets = await self._field_targets_for_question(q)
@@ -1503,16 +1634,32 @@ class GraphQueryService:
                                 focus=focus,
                                 max_results=max_results,
                             )
+                            routing_stages.append(
+                                {
+                                    "stage": "auto_field",
+                                    "tool": "analyze_field",
+                                    "allow_vector_fallback": False,
+                                    "result_mode": result.get("mode"),
+                                    "has_evidence": self._has_material_result_evidence(result),
+                                }
+                            )
                         else:
                             routed_to = "query"
-                            result = await self.query(
-                                question=q,
-                                max_hops=max_hops,
-                                max_results=max_results,
-                                time_budget_ms=time_budget_ms,
-                                offset=offset,
-                                allow_vector_fallback=not strict,
+                            result = await _query_stage(
+                                allow_vector_fallback=False if exact_first else (not strict),
+                                stage="auto_query",
                             )
+
+            if (
+                exact_first
+                and routed_to == "query"
+                and not self._has_material_result_evidence(result)
+            ):
+                # Exact-first questions should only use semantic fallback when explicitly non-strict.
+                routed_to = "query"
+                result = await _query_stage(allow_vector_fallback=False, stage="auto_exact_lexical_graph")
+                if not strict and not self._has_material_result_evidence(result):
+                    result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
 
         evidence = self._collect_analyze_evidence(result, max_items=max_results)
         if "confidence_tiers" in result:
@@ -1529,6 +1676,10 @@ class GraphQueryService:
             "result": result,
             "evidence": evidence,
             "confidence_tiers": confidence_tiers,
+            "routing": {
+                "policy": "exact_then_graph_then_semantic",
+                "stages": routing_stages,
+            },
             "freshness": result.get("freshness", await self.freshness(partial_results=False)),
             "partial_results": bool(result.get("partial_results", False)),
         }
