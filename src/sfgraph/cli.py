@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from sfgraph.benchmark import run_benchmark
+from sfgraph.mcp_selftest import run_mcp_selftest
 from sfgraph.ingestion.scope_migration import ScopeMigrationService
 from sfgraph.ingestion.service import IngestionService
 from sfgraph.parser.pool import NodeParserPool
@@ -92,6 +93,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to JSON suite file with an array of {id, question, expected_mode?}",
     )
     acceptance.set_defaults(func=_cmd_acceptance)
+
+    selftest = sub.add_parser("selftest", help="Run MCP/daemon-level ingest + analyze benchmark against a repo and suite")
+    selftest.add_argument("export_dir")
+    selftest.add_argument("--data-dir", default="./data")
+    selftest.add_argument("--suite", default="docs/acceptance_quality_gate_suite.json")
+    selftest.add_argument("--mode", choices=("full", "graph_only"), default="graph_only")
+    selftest.add_argument("--include", action="append", default=[], help="Include glob relative to export root.")
+    selftest.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root.")
+    selftest.add_argument("--poll-interval", type=float, default=0.5)
+    selftest.add_argument("--timeout-seconds", type=float, default=3600.0)
+    selftest.set_defaults(func=_cmd_selftest)
     return parser
 
 
@@ -355,6 +367,21 @@ async def _cmd_acceptance(args: argparse.Namespace) -> int:
         return 0
     finally:
         await _close_runtime(runtime)
+
+
+def _cmd_selftest(args: argparse.Namespace) -> int:
+    payload = run_mcp_selftest(
+        export_dir=args.export_dir,
+        data_dir=args.data_dir,
+        suite_path=args.suite,
+        include_globs=args.include,
+        exclude_globs=args.exclude,
+        mode=args.mode,
+        poll_interval_seconds=float(args.poll_interval),
+        timeout_seconds=float(args.timeout_seconds),
+    )
+    print(json.dumps(payload, indent=2))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

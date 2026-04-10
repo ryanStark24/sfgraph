@@ -22,6 +22,7 @@ def test_cli_help_exits_zero():
     assert "vectorize" in result.stdout
     assert "daemon" in result.stdout
     assert "acceptance" in result.stdout
+    assert "selftest" in result.stdout
 
 
 def test_cli_query_help_exits_zero():
@@ -94,3 +95,14 @@ def test_cli_acceptance_help_exits_zero():
     )
     assert result.returncode == 0
     assert "--suite" in result.stdout
+
+
+def test_cli_selftest_help_exits_zero():
+    result = subprocess.run(
+        [sys.executable, "-m", "sfgraph.cli", "selftest", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--suite" in result.stdout
+    assert "--poll-interval" in result.stdout

@@ -33,3 +33,22 @@ uv run python bin/compare_sfgraph_vs_native.py \
 ```
 
 This checks that sfgraph returns exact evidence for representative questions where native lexical search has concrete hits.
+
+## MCP/Daemon self-test (real tool-call path)
+
+Run the end-to-end benchmark through the daemon tool surface (the same path MCP tools use):
+
+```bash
+uv run sfgraph selftest /absolute/path/to/cloned/repo \
+  --data-dir /absolute/path/to/data-dir \
+  --suite docs/acceptance_quality_gate_suite.json \
+  --mode graph_only
+```
+
+What this reports:
+
+- ingest completion state and parser stats
+- RPC latency (`median`/`p95`) across all tool calls
+- `analyze` latency per case
+- expected mode pass-rate from the suite
+- native `rg` token lookup timings for quick side-by-side checks
