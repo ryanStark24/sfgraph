@@ -157,7 +157,7 @@ def run_mcp_selftest(
         analyze_ms = (time.perf_counter() - started) * 1000.0
         analyze_latencies_ms.append(analyze_ms)
 
-        actual_mode = str(payload.get("mode") or payload.get("routed_to") or "unknown")
+        actual_mode = str(payload.get("routed_to") or payload.get("mode") or "unknown")
         expected_mode = case.get("expected_mode")
         mode_pass = None
         if expected_mode is not None:

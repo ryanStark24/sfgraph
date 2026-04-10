@@ -50,9 +50,10 @@ class DuckPGQStore(GraphStore):
         await store.close()
     """
 
-    def __init__(self, db_path: str = ":memory:") -> None:
+    def __init__(self, db_path: str = ":memory:", read_only: bool = False) -> None:
         self._db_path = db_path
-        self._conn = duckdb.connect(db_path)
+        self._read_only = read_only
+        self._conn = duckdb.connect(db_path, read_only=read_only)
         self._node_labels: set[str] = set()
         self._edge_types: set[str] = set()
         self._lock = asyncio.Lock()
@@ -64,21 +65,25 @@ class DuckPGQStore(GraphStore):
 
     def _init_schema_registry(self) -> None:
         """Create the schema registry table and reload any tables from a prior session."""
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS _sfgraph_schema "
-            "(table_name VARCHAR PRIMARY KEY, kind VARCHAR)"
-        )
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS _sfgraph_node_index "
-            "(qualified_name VARCHAR PRIMARY KEY, label VARCHAR NOT NULL)"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sfgraph_node_index_label "
-            "ON _sfgraph_node_index (label)"
-        )
-        rows = self._conn.execute(
-            "SELECT table_name, kind FROM _sfgraph_schema"
-        ).fetchall()
+        if not self._read_only:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS _sfgraph_schema "
+                "(table_name VARCHAR PRIMARY KEY, kind VARCHAR)"
+            )
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS _sfgraph_node_index "
+                "(qualified_name VARCHAR PRIMARY KEY, label VARCHAR NOT NULL)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sfgraph_node_index_label "
+                "ON _sfgraph_node_index (label)"
+            )
+        try:
+            rows = self._conn.execute(
+                "SELECT table_name, kind FROM _sfgraph_schema"
+            ).fetchall()
+        except Exception:
+            rows = []
         for table_name, kind in rows:
             if not self._is_valid_identifier(str(table_name)):
                 logger.warning("Skipping invalid schema identifier from registry: %r", table_name)
@@ -87,8 +92,9 @@ class DuckPGQStore(GraphStore):
                 self._node_labels.add(table_name)
             elif kind == "edge":
                 self._edge_types.add(table_name)
-        self._backfill_node_index()
-        self._refresh_all_edges_view()
+        if not self._read_only:
+            self._backfill_node_index()
+            self._refresh_all_edges_view()
 
     def _backfill_node_index(self) -> None:
         """Populate node index entries for legacy tables if missing."""

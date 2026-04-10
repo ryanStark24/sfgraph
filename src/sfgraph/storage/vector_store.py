@@ -264,3 +264,9 @@ class VectorStore:
             wait=True,
         )
         return len(point_ids)
+
+    async def close(self) -> None:
+        """Release underlying client resources when supported."""
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            close()
