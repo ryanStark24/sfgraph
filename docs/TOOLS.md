@@ -114,7 +114,7 @@ Key fields:
 
 Preferred entrypoint (use this first):
 
-- `ask(question, ...)` one-call router for most Q&A
+- `analyze(question, ...)` one-call router for most Q&A
 
 Intent tools (use directly when your client can classify intent):
 
@@ -138,9 +138,9 @@ These still exist for compatibility, but new clients should prefer job-native to
 Purpose:
 
 - natural-language-ish entry point for common lineage/impact questions
-- compatibility fallback for ambiguous questions; `ask(...)`/`analyze(...)` should be preferred in new clients
+- compatibility fallback for ambiguous questions; `analyze(...)` should be preferred in new clients
 
-### `ask(question, ...)`
+### `analyze(question, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?)`
 
 Purpose:
 
@@ -150,9 +150,9 @@ Purpose:
 
 Typical use:
 
-- `ask("where is Service_Id__c populated?")`
-- `ask("what happens when QuoteLineItem is inserted?")`
-- `ask("in class OSS_ServiceabilityTask, where is accessId populated?")`
+- `analyze("where is Service_Id__c populated?")`
+- `analyze("what happens when QuoteLineItem is inserted?")`
+- `analyze("in class OSS_ServiceabilityTask, where is accessId populated?")`
 
 ## LLM Prompt Contract (Recommended)
 
@@ -162,7 +162,7 @@ To reduce tool-call cost and round trips, use this request shape:
 - `set_active_export_dir(export_dir)`
 
 2. Ask one focused question at a time:
-- `ask(question="...single question...", strict=true, mode="auto")`
+- `analyze(question="...single question...", strict=true, mode="auto")`
 
 3. Only call deep tools if evidence is insufficient:
 - fallback order: `analyze_component` / `analyze_field` -> `trace_upstream` -> `query`
@@ -316,8 +316,9 @@ Recommended default:
 For a new workspace, a good smoke test order is:
 
 1. `ping`
-2. `ingest_org(...)`
-3. `get_ingestion_progress()` while ingest is running
+2. `start_ingest_job(...)`
+3. `get_ingest_job(job_id)` while ingest is running
+4. `analyze(...)` for primary Q&A checks
 4. `get_ingestion_status()`
 5. `query("what writes to Account.Status__c?")`
 6. `list_unknown_dynamic_edges(limit=10)`

@@ -141,6 +141,9 @@ uv run sfgraph benchmark /absolute/path/to/export --data-dir ./data
 
 # Run acceptance suite (quality + latency + token-size estimates)
 uv run sfgraph acceptance --data-dir ./data --suite docs/acceptance_question_suite.json
+
+# Run MCP/daemon self-test (real tool-call path)
+uv run python -m sfgraph.cli selftest /absolute/path/to/export --data-dir ./data --suite docs/acceptance_quality_gate_suite.json --mode graph_only
 ```
 
 For public Apex+Vlocity dry runs, see [`docs/ONLINE_DATASET_BENCHMARK.md`](docs/ONLINE_DATASET_BENCHMARK.md).
@@ -156,6 +159,7 @@ Available commands:
 - `migrate-scope`
 - `benchmark`
 - `acceptance`
+- `selftest`
 
 ### MCP server
 
@@ -174,7 +178,7 @@ The server stores graph data under `./data` relative to the repo root by default
 ## Core MCP Tools
 
 - Preferred for specific questions:
-  - `ask` (recommended one-call Q&A entrypoint)
+  - `analyze` (recommended one-call Q&A entrypoint)
   - `analyze_field`
   - `analyze_object_event`
   - `analyze_component`
@@ -182,12 +186,19 @@ The server stores graph data under `./data` relative to the repo root by default
 - Compatibility fallback:
   - `query`
 
-- `ingest_org(export_dir)`
-- `refresh(export_dir)`
+- `start_ingest_job(export_dir, mode?, include_globs?, exclude_globs?)`
+- `start_refresh_job(export_dir, mode?, include_globs?, exclude_globs?)`
+- `start_vectorize_job(export_dir)`
+- `get_ingest_job(job_id)`
+- `list_ingest_jobs()`
+- `cancel_ingest_job(job_id)`
+- `resume_ingest_job(job_id)`
+- `ingest_org(export_dir)` (deprecated compatibility)
+- `refresh(export_dir)` (deprecated compatibility)
 - `watch_refresh(export_dir, duration_seconds?, poll_interval?, debounce_seconds?, max_refreshes?)`
 - `get_ingestion_progress()`
 - `get_ingestion_status()`
-- `ask(question, export_dir?, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?)`
+- `analyze(question, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?)`
 - `query(question, max_hops?, max_results?, time_budget_ms?, offset?)`
 - `trace_upstream(node_id, max_hops?, max_results?, time_budget_ms?, offset?)`
 - `trace_downstream(node_id, max_hops?, max_results?, time_budget_ms?, offset?)`
