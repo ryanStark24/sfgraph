@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from concurrent.futures import CancelledError as FutureCancelledError
+from concurrent.futures import TimeoutError as FutureTimeoutError
 import json
 import logging
 import os
@@ -120,6 +122,21 @@ class _DaemonHandler(BaseHTTPRequestHandler):
             result = future.result(timeout=3600)
         except KeyError:
             self._send_json(404, {"error": "unknown_method", "method": method})
+            return
+        except FutureTimeoutError:
+            future.cancel()
+            self._send_json(504, {"error": "timeout", "method": method})
+            return
+        except FutureCancelledError:
+            self._send_json(499, {"error": "cancelled", "method": method})
+            return
+        except RuntimeError as exc:
+            logger.exception("daemon rpc runtime failure for %s", method)
+            self._send_json(500, {"error": "RuntimeError", "message": str(exc)})
+            return
+        except ValueError as exc:
+            logger.exception("daemon rpc value failure for %s", method)
+            self._send_json(400, {"error": "ValueError", "message": str(exc)})
             return
         except Exception as exc:  # noqa: BLE001
             logger.exception("daemon rpc failed for %s", method)

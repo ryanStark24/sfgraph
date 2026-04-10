@@ -17,7 +17,12 @@ FIXTURE_EXPORT = "tests/fixtures/metadata"
 def make_mock_graph() -> AsyncMock:
     graph = AsyncMock()
     graph.merge_node = AsyncMock(side_effect=lambda label, key_props, all_props: key_props.get("qualifiedName", "qn"))
+    graph.merge_nodes_batch = AsyncMock(side_effect=lambda label, nodes: len(nodes))
     graph.merge_edge = AsyncMock(return_value=None)
+    graph.merge_edges_batch = AsyncMock(side_effect=lambda rel_type, edges: len(edges))
+    graph.delete_node = AsyncMock(return_value=True)
+    graph.delete_edge = AsyncMock(return_value=True)
+    graph.delete_edges_for_node = AsyncMock(return_value=1)
     graph.get_labels = AsyncMock(return_value=["ApexClass", "SFObject", "SFField", "Flow"])
     graph.get_relationship_types = AsyncMock(return_value=["CALLS", "QUERIES_OBJECT", "FLOW_CALLS_APEX"])
     graph.query = AsyncMock(return_value=[])

@@ -132,13 +132,96 @@ class FalkorDBStore(GraphStore):
         params = {"src_qn": src_qualified_name, "dst_qn": dst_qualified_name, **prefixed_props}
         await self._write(cypher, params)
 
+    async def merge_nodes_batch(
+        self,
+        label: str,
+        nodes: list[tuple[str, dict[str, Any]]],
+    ) -> int:
+        """Batch upsert nodes for a single label."""
+        count = 0
+        for qualified_name, props in nodes:
+            key_props = {"qualifiedName": qualified_name}
+            all_props = {"qualifiedName": qualified_name, **props}
+            await self.merge_node(label, key_props, all_props)
+            count += 1
+        return count
+
+    async def merge_edges_batch(
+        self,
+        rel_type: str,
+        edges: list[tuple[str, str, dict[str, Any]]],
+    ) -> int:
+        """Batch upsert edges for a single relationship type."""
+        count = 0
+        for src_qn, dst_qn, props in edges:
+            set_props = ", ".join(f"r.{k} = $prop_{k}" for k in props)
+            prefixed_props = {f"prop_{k}": v for k, v in props.items()}
+            cypher = (
+                f"MATCH (src {{qualifiedName: $src_qn}}) "
+                f"MATCH (dst {{qualifiedName: $dst_qn}}) "
+                f"MERGE (src)-[r:{rel_type}]->(dst)"
+            )
+            if set_props:
+                cypher += f" SET {set_props}"
+            params = {"src_qn": src_qn, "dst_qn": dst_qn, **prefixed_props}
+            await self._write(cypher, params)
+            count += 1
+        return count
+
+    async def delete_node(self, label: str, qualified_name: str) -> bool:
+        """Delete one node by label + qualified name."""
+        result = await self._write(
+            f"MATCH (n:{label} {{qualifiedName: $qn}}) DELETE n RETURN COUNT(n) AS c",
+            {"qn": qualified_name},
+        )
+        if result and result.result_set:
+            row = result.result_set[0]
+            if isinstance(row, (list, tuple)) and row:
+                return int(row[0]) > 0
+        return False
+
+    async def delete_edge(
+        self,
+        rel_type: str,
+        src_qualified_name: str,
+        dst_qualified_name: str,
+    ) -> bool:
+        """Delete one edge row."""
+        result = await self._write(
+            f"MATCH (src {{qualifiedName: $src}})-[r:{rel_type}]->(dst {{qualifiedName: $dst}}) "
+            "DELETE r RETURN COUNT(r) AS c",
+            {"src": src_qualified_name, "dst": dst_qualified_name},
+        )
+        if result and result.result_set:
+            row = result.result_set[0]
+            if isinstance(row, (list, tuple)) and row:
+                return int(row[0]) > 0
+        return False
+
+    async def delete_edges_for_node(self, rel_type: str, qualified_name: str) -> int:
+        """Delete all edges of a relationship touching qualified_name."""
+        result = await self._write(
+            f"MATCH (n {{qualifiedName: $qn}})-[r:{rel_type}]-(m) DELETE r RETURN COUNT(r) AS c",
+            {"qn": qualified_name},
+        )
+        if result and result.result_set:
+            row = result.result_set[0]
+            if isinstance(row, (list, tuple)) and row:
+                return int(row[0])
+        return 0
+
     async def query(
         self,
-        cypher: str,
+        query_text: str | None = None,
         params: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Execute a read-only Cypher query bypassing the write queue."""
-        result = self._graph.ro_query(cypher, params or {})
+        if query_text is None:
+            query_text = kwargs.pop("cypher", None)
+        if query_text is None:
+            raise ValueError("query_text is required")
+        result = self._graph.ro_query(query_text, params or {})
         rows = []
         if result and result.result_set:
             header = result.header if hasattr(result, "header") and result.header else []

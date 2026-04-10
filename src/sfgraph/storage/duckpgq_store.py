@@ -265,20 +265,85 @@ class DuckPGQStore(GraphStore):
             )
         return len(edges)
 
+    async def delete_node(self, label: str, qualified_name: str) -> bool:
+        """Delete one node by label + qualified name."""
+        async with self._lock:
+            label = self._ensure_valid_identifier(label, kind="label")
+            if label not in self._node_labels:
+                return False
+            before = self._conn.execute(
+                f'SELECT COUNT(*) FROM "{label}" WHERE qualified_name = $qn',
+                {"qn": qualified_name},
+            ).fetchone()
+            self._conn.execute(
+                f'DELETE FROM "{label}" WHERE qualified_name = $qn',
+                {"qn": qualified_name},
+            )
+            self._conn.execute(
+                "DELETE FROM _sfgraph_node_index WHERE qualified_name = $qn",
+                {"qn": qualified_name},
+            )
+            return bool(before and int(before[0]) > 0)
+
+    async def delete_edge(
+        self,
+        rel_type: str,
+        src_qualified_name: str,
+        dst_qualified_name: str,
+    ) -> bool:
+        """Delete one edge row."""
+        async with self._lock:
+            rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
+            if rel_type not in self._edge_types:
+                return False
+            before = self._conn.execute(
+                f'SELECT COUNT(*) FROM "{rel_type}" '
+                "WHERE src_qualified_name = $src AND dst_qualified_name = $dst",
+                {"src": src_qualified_name, "dst": dst_qualified_name},
+            ).fetchone()
+            self._conn.execute(
+                f'DELETE FROM "{rel_type}" '
+                "WHERE src_qualified_name = $src AND dst_qualified_name = $dst",
+                {"src": src_qualified_name, "dst": dst_qualified_name},
+            )
+            return bool(before and int(before[0]) > 0)
+
+    async def delete_edges_for_node(self, rel_type: str, qualified_name: str) -> int:
+        """Delete all edges in rel_type touching qualified_name."""
+        async with self._lock:
+            rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
+            if rel_type not in self._edge_types:
+                return 0
+            before = self._conn.execute(
+                f'SELECT COUNT(*) FROM "{rel_type}" '
+                "WHERE src_qualified_name = $qn OR dst_qualified_name = $qn",
+                {"qn": qualified_name},
+            ).fetchone()
+            self._conn.execute(
+                f'DELETE FROM "{rel_type}" '
+                "WHERE src_qualified_name = $qn OR dst_qualified_name = $qn",
+                {"qn": qualified_name},
+            )
+            return int(before[0]) if before else 0
+
     async def query(
         self,
-        cypher: str,
+        query_text: str | None = None,
         params: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Execute a DuckDB SQL or PGQ SQL statement and return rows as dicts.
 
         Note: This store uses DuckDB SQL / PGQ syntax, not Cypher.
-        The parameter name 'cypher' is inherited from the GraphStore ABC;
-        pass DuckDB SQL (including FROM GRAPH_TABLE(...) PGQ queries) here.
+        Pass DuckDB SQL (including FROM GRAPH_TABLE(...) PGQ queries) here.
         Named params use $name syntax: {'name': 'Foo'} binds $name.
         """
+        if query_text is None:
+            query_text = kwargs.pop("cypher", None)
+        if query_text is None:
+            raise ValueError("query_text is required")
         async with self._lock:
-            result = self._conn.execute(cypher, params or {})
+            result = self._conn.execute(query_text, params or {})
             if result.description is None:
                 return []
             columns = [desc[0] for desc in result.description]

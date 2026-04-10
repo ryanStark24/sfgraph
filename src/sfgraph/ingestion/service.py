@@ -373,29 +373,27 @@ class IngestionService:
 
         rows_by_label = await self._load_scoped_nodes_with_props()
         total_nodes = sum(len(rows) for rows in rows_by_label.values())
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "vectorize",
-                "state": "running",
-                "phase": "vectorizing",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "updated_at": self._progress_started_at,
-                "total_files": total_nodes,
-                "processed_files": 0,
-                "failed_files": 0,
-                "current_file": None,
-                "current_parser": "vector",
-                "parser_stats": self._empty_parser_stats(),
-                "unresolved_symbols": 0,
-                "node_counts_by_type": {},
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": 0,
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="vectorize",
+                state="running",
+                phase="vectorizing",
+                export_dir=export_dir,
+                total_files=total_nodes,
+                processed_files=0,
+                failed_files=0,
+                current_file=None,
+                current_parser="vector",
+                parser_stats=self._empty_parser_stats(),
+                unresolved_symbols=0,
+                node_counts_by_type={},
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=0,
+                updated_at=self._progress_started_at,
+            ),
         )
 
         if self._active_project_scope:
@@ -423,27 +421,25 @@ class IngestionService:
                         warnings.append(f"Vector upsert failed for {qname}")
                     elif failed_nodes == 4:
                         warnings.append("Additional vector upsert failures omitted from warnings list.")
-                self._write_progress_snapshot(
-                    {
-                        "run_id": run_id,
-                        "mode": "vectorize",
-                        "state": "running",
-                        "phase": "vectorizing",
-                        "export_dir": export_dir,
-                        "project_scope": self._active_project_scope,
-                        "started_at": self._progress_started_at,
-                        "total_files": total_nodes,
-                        "processed_files": processed_nodes + skipped_nodes,
-                        "failed_files": failed_nodes,
-                        "current_file": qname,
-                        "current_parser": "vector",
-                        "parser_stats": self._empty_parser_stats(),
-                        "unresolved_symbols": 0,
-                        "node_counts_by_type": node_counts_by_type,
-                        "edge_count": 0,
-                        "orphaned_edges": 0,
-                        "warnings_count": len(warnings),
-                    }
+                self._emit_progress(
+                    **self._progress_payload(
+                        run_id=run_id,
+                        mode="vectorize",
+                        state="running",
+                        phase="vectorizing",
+                        export_dir=export_dir,
+                        total_files=total_nodes,
+                        processed_files=processed_nodes + skipped_nodes,
+                        failed_files=failed_nodes,
+                        current_file=qname,
+                        current_parser="vector",
+                        parser_stats=self._empty_parser_stats(),
+                        unresolved_symbols=0,
+                        node_counts_by_type=node_counts_by_type,
+                        edge_count=0,
+                        orphaned_edges=0,
+                        warnings_count=len(warnings),
+                    )
                 )
 
         await self._manifest.mark_run_complete(
@@ -466,31 +462,29 @@ class IngestionService:
             skipped_nodes=skipped_nodes,
             warnings=warnings,
         )
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "vectorize",
-                "state": "completed",
-                "phase": "completed",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "duration_seconds": duration,
-                "total_files": total_nodes,
-                "processed_files": processed_nodes + skipped_nodes,
-                "failed_files": failed_nodes,
-                "current_file": None,
-                "current_parser": "vector",
-                "parser_stats": self._empty_parser_stats(),
-                "unresolved_symbols": 0,
-                "node_counts_by_type": node_counts_by_type,
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": len(warnings),
-                "vector_health": self._vector_health_snapshot(),
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="vectorize",
+                state="completed",
+                phase="completed",
+                export_dir=export_dir,
+                total_files=total_nodes,
+                processed_files=processed_nodes + skipped_nodes,
+                failed_files=failed_nodes,
+                current_file=None,
+                current_parser="vector",
+                parser_stats=self._empty_parser_stats(),
+                unresolved_symbols=0,
+                node_counts_by_type=node_counts_by_type,
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=len(warnings),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                duration_seconds=duration,
+                vector_health=self._vector_health_snapshot(),
+            ),
         )
         return summary
 
@@ -528,28 +522,26 @@ class IngestionService:
             run_id=run_id,
             mode="full_ingest",
         )
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "full_ingest",
-                "state": "running",
-                "phase": "discovering",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "updated_at": self._progress_started_at,
-                "total_files": len(discovered_files),
-                "processed_files": 0,
-                "failed_files": 0,
-                "current_file": None,
-                "parser_stats": self._empty_parser_stats(),
-                "unresolved_symbols": 0,
-                "node_counts_by_type": {},
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": 0,
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="full_ingest",
+                state="running",
+                phase="discovering",
+                export_dir=export_dir,
+                total_files=len(discovered_files),
+                processed_files=0,
+                failed_files=0,
+                current_file=None,
+                parser_stats=self._empty_parser_stats(),
+                unresolved_symbols=0,
+                node_counts_by_type={},
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=0,
+                updated_at=self._progress_started_at,
+            ),
         )
         for fpath, meta in discovered_files.items():
             await self._manifest.upsert_file(
@@ -568,27 +560,25 @@ class IngestionService:
             total_files=len(discovered_files),
         )
 
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "full_ingest",
-                "state": "running",
-                "phase": "writing_nodes",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "total_files": len(discovered_files),
-                "processed_files": len(discovered_files),
-                "failed_files": len(parse_failures),
-                "current_file": None,
-                "parser_stats": parser_stats,
-                "unresolved_symbols": unresolved_symbols,
-                "node_counts_by_type": {},
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": len(warnings),
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="full_ingest",
+                state="running",
+                phase="writing_nodes",
+                export_dir=export_dir,
+                total_files=len(discovered_files),
+                processed_files=len(discovered_files),
+                failed_files=len(parse_failures),
+                current_file=None,
+                parser_stats=parser_stats,
+                unresolved_symbols=unresolved_symbols,
+                node_counts_by_type={},
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=len(warnings),
+            ),
         )
         node_counts, written_qnames = await self._write_nodes(facts_by_type)
 
@@ -598,27 +588,25 @@ class IngestionService:
 
         node_registry = await self._load_node_registry()
         scoped_edges = [self._scope_edge_fact(edge) for edge in self._apply_picklist_guard(all_edges, facts_by_type)]
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "full_ingest",
-                "state": "running",
-                "phase": "writing_edges",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "total_files": len(discovered_files),
-                "processed_files": len(discovered_files),
-                "failed_files": len(parse_failures),
-                "current_file": None,
-                "parser_stats": parser_stats,
-                "unresolved_symbols": unresolved_symbols,
-                "node_counts_by_type": dict(node_counts),
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": len(warnings),
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="full_ingest",
+                state="running",
+                phase="writing_edges",
+                export_dir=export_dir,
+                total_files=len(discovered_files),
+                processed_files=len(discovered_files),
+                failed_files=len(parse_failures),
+                current_file=None,
+                parser_stats=parser_stats,
+                unresolved_symbols=unresolved_symbols,
+                node_counts_by_type=dict(node_counts),
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=len(warnings),
+            ),
         )
         edge_count, orphaned_edges, edge_warnings = await self._write_edges(
             scoped_edges,
@@ -660,30 +648,28 @@ class IngestionService:
             unresolved_symbols=unresolved_symbols,
         )
         self._write_ingestion_meta(summary)
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "full_ingest",
-                "state": "completed",
-                "phase": "completed",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "duration_seconds": duration,
-                "total_files": len(discovered_files),
-                "processed_files": len(discovered_files),
-                "failed_files": len(parse_failures),
-                "current_file": None,
-                "parser_stats": parser_stats,
-                "unresolved_symbols": unresolved_symbols,
-                "node_counts_by_type": dict(node_counts),
-                "edge_count": edge_count,
-                "orphaned_edges": orphaned_edges,
-                "warnings_count": len(warnings),
-                "vector_health": self._vector_health_snapshot(),
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="full_ingest",
+                state="completed",
+                phase="completed",
+                export_dir=export_dir,
+                total_files=len(discovered_files),
+                processed_files=len(discovered_files),
+                failed_files=len(parse_failures),
+                current_file=None,
+                parser_stats=parser_stats,
+                unresolved_symbols=unresolved_symbols,
+                node_counts_by_type=dict(node_counts),
+                edge_count=edge_count,
+                orphaned_edges=orphaned_edges,
+                warnings_count=len(warnings),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                duration_seconds=duration,
+                vector_health=self._vector_health_snapshot(),
+            ),
         )
         return summary
 
@@ -715,31 +701,29 @@ class IngestionService:
             if fpath in current_files and fpath not in deleted_files and fpath not in changed_files:
                 affected_neighbor_files.append(fpath)
         reparse_files = sorted(set(changed_files + affected_neighbor_files))
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "incremental_refresh",
-                "state": "running",
-                "phase": "planning_refresh",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "updated_at": self._progress_started_at,
-                "total_files": len(reparse_files),
-                "processed_files": 0,
-                "failed_files": 0,
-                "current_file": None,
-                "changed_files": changed_files,
-                "deleted_files": deleted_files,
-                "affected_neighbor_files": affected_neighbor_files,
-                "parser_stats": self._empty_parser_stats(),
-                "unresolved_symbols": 0,
-                "node_count": 0,
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": 0,
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="incremental_refresh",
+                state="running",
+                phase="planning_refresh",
+                export_dir=export_dir,
+                total_files=len(reparse_files),
+                processed_files=0,
+                failed_files=0,
+                current_file=None,
+                changed_files=changed_files,
+                deleted_files=deleted_files,
+                affected_neighbor_files=affected_neighbor_files,
+                parser_stats=self._empty_parser_stats(),
+                unresolved_symbols=0,
+                node_count=0,
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=0,
+                updated_at=self._progress_started_at,
+            ),
         )
 
         # Deleted files: drop sourced nodes and manifest entries.
@@ -784,30 +768,28 @@ class IngestionService:
                 deleted_files=deleted_files,
                 affected_neighbor_files=affected_neighbor_files,
             )
-            self._write_progress_snapshot(
-                {
-                    "run_id": run_id,
-                    "mode": "incremental_refresh",
-                    "state": "running",
-                    "phase": "writing_nodes",
-                    "export_dir": export_dir,
-                    "project_scope": self._active_project_scope,
-                    "started_at": self._progress_started_at,
-                    "total_files": len(reparse_files),
-                    "processed_files": len(reparse_files),
-                    "failed_files": len(parse_failures),
-                    "current_file": None,
-                    "changed_files": changed_files,
-                    "deleted_files": deleted_files,
-                    "affected_neighbor_files": affected_neighbor_files,
-                    "parser_stats": parser_stats,
-                    "unresolved_symbols": unresolved_symbols,
-                    "node_count": 0,
-                    "edge_count": 0,
-                    "orphaned_edges": 0,
-                    "warnings_count": len(warnings),
-                },
+            self._emit_progress(
                 force=True,
+                **self._progress_payload(
+                    run_id=run_id,
+                    mode="incremental_refresh",
+                    state="running",
+                    phase="writing_nodes",
+                    export_dir=export_dir,
+                    total_files=len(reparse_files),
+                    processed_files=len(reparse_files),
+                    failed_files=len(parse_failures),
+                    current_file=None,
+                    changed_files=changed_files,
+                    deleted_files=deleted_files,
+                    affected_neighbor_files=affected_neighbor_files,
+                    parser_stats=parser_stats,
+                    unresolved_symbols=unresolved_symbols,
+                    node_count=0,
+                    edge_count=0,
+                    orphaned_edges=0,
+                    warnings_count=len(warnings),
+                ),
             )
             node_counts, written_qnames = await self._write_nodes(facts_by_type)
             node_count = sum(node_counts.values())
@@ -821,30 +803,28 @@ class IngestionService:
 
             node_registry = await self._load_node_registry()
             scoped_edges = [self._scope_edge_fact(edge) for edge in self._apply_picklist_guard(all_edges, facts_by_type)]
-            self._write_progress_snapshot(
-                {
-                    "run_id": run_id,
-                    "mode": "incremental_refresh",
-                    "state": "running",
-                    "phase": "writing_edges",
-                    "export_dir": export_dir,
-                    "project_scope": self._active_project_scope,
-                    "started_at": self._progress_started_at,
-                    "total_files": len(reparse_files),
-                    "processed_files": len(reparse_files),
-                    "failed_files": len(parse_failures),
-                    "current_file": None,
-                    "changed_files": changed_files,
-                    "deleted_files": deleted_files,
-                    "affected_neighbor_files": affected_neighbor_files,
-                    "parser_stats": parser_stats,
-                    "unresolved_symbols": unresolved_symbols,
-                    "node_count": node_count,
-                    "edge_count": 0,
-                    "orphaned_edges": 0,
-                    "warnings_count": len(warnings),
-                },
+            self._emit_progress(
                 force=True,
+                **self._progress_payload(
+                    run_id=run_id,
+                    mode="incremental_refresh",
+                    state="running",
+                    phase="writing_edges",
+                    export_dir=export_dir,
+                    total_files=len(reparse_files),
+                    processed_files=len(reparse_files),
+                    failed_files=len(parse_failures),
+                    current_file=None,
+                    changed_files=changed_files,
+                    deleted_files=deleted_files,
+                    affected_neighbor_files=affected_neighbor_files,
+                    parser_stats=parser_stats,
+                    unresolved_symbols=unresolved_symbols,
+                    node_count=node_count,
+                    edge_count=0,
+                    orphaned_edges=0,
+                    warnings_count=len(warnings),
+                ),
             )
             edge_count, orphaned_edges, edge_warnings = await self._write_edges(
                 scoped_edges,
@@ -892,33 +872,31 @@ class IngestionService:
             unresolved_symbols=unresolved_symbols,
         )
         self._write_refresh_meta(summary)
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "incremental_refresh",
-                "state": "completed",
-                "phase": "completed",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "duration_seconds": duration,
-                "total_files": len(reparse_files),
-                "processed_files": len(reparse_files),
-                "failed_files": len(parse_failures),
-                "current_file": None,
-                "changed_files": changed_files,
-                "deleted_files": deleted_files,
-                "affected_neighbor_files": affected_neighbor_files,
-                "parser_stats": parser_stats,
-                "unresolved_symbols": unresolved_symbols,
-                "node_count": node_count,
-                "edge_count": edge_count,
-                "orphaned_edges": orphaned_edges,
-                "warnings_count": len(warnings),
-                "vector_health": self._vector_health_snapshot(),
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="incremental_refresh",
+                state="completed",
+                phase="completed",
+                export_dir=export_dir,
+                total_files=len(reparse_files),
+                processed_files=len(reparse_files),
+                failed_files=len(parse_failures),
+                current_file=None,
+                changed_files=changed_files,
+                deleted_files=deleted_files,
+                affected_neighbor_files=affected_neighbor_files,
+                parser_stats=parser_stats,
+                unresolved_symbols=unresolved_symbols,
+                node_count=node_count,
+                edge_count=edge_count,
+                orphaned_edges=orphaned_edges,
+                warnings_count=len(warnings),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                duration_seconds=duration,
+                vector_health=self._vector_health_snapshot(),
+            ),
         )
         return summary
 
@@ -1034,28 +1012,26 @@ class IngestionService:
                         "ctime_ns": getattr(stat, "st_ctime_ns", None),
                     }
                     if run_id:
-                        self._write_progress_snapshot(
-                            {
-                                "run_id": run_id,
-                                "mode": mode,
-                                "state": "running",
-                                "phase": "discovering",
-                                "export_dir": str(root),
-                                "project_scope": self._active_project_scope,
-                                "started_at": self._progress_started_at,
-                                "total_files": max(scanned_files, 1),
-                                "processed_files": hashed_files + reused_hashes,
-                                "failed_files": 0,
-                                "current_file": str(path),
-                                "current_parser": "discovery",
-                                "parser_stats": self._empty_parser_stats(),
-                                "unresolved_symbols": 0,
-                                "warnings_count": 0,
-                                "discovery_scanned_files": scanned_files,
-                                "discovery_discovered_files": len(files),
-                                "discovery_hashed_files": hashed_files,
-                                "discovery_reused_hashes": reused_hashes,
-                            }
+                        self._emit_progress(
+                            **self._progress_payload(
+                                run_id=run_id,
+                                mode=mode,
+                                state="running",
+                                phase="discovering",
+                                export_dir=str(root),
+                                total_files=max(scanned_files, 1),
+                                processed_files=hashed_files + reused_hashes,
+                                failed_files=0,
+                                current_file=str(path),
+                                current_parser="discovery",
+                                parser_stats=self._empty_parser_stats(),
+                                unresolved_symbols=0,
+                                warnings_count=0,
+                                discovery_scanned_files=scanned_files,
+                                discovery_discovered_files=len(files),
+                                discovery_hashed_files=hashed_files,
+                                discovery_reused_hashes=reused_hashes,
+                            )
                         )
         return files
 
@@ -1155,6 +1131,42 @@ class IngestionService:
             },
             "unknown": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
         }
+
+    def _progress_payload(
+        self,
+        *,
+        run_id: str,
+        mode: str,
+        state: str,
+        phase: str,
+        total_files: int,
+        processed_files: int,
+        failed_files: int,
+        current_file: str | None = None,
+        current_parser: str | None = None,
+        export_dir: str | None = None,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "run_id": run_id,
+            "mode": mode,
+            "state": state,
+            "phase": phase,
+            "export_dir": export_dir if export_dir is not None else (str(self._active_export_root) if self._active_export_root else None),
+            "project_scope": self._active_project_scope,
+            "started_at": self._progress_started_at,
+            "total_files": total_files,
+            "processed_files": processed_files,
+            "failed_files": failed_files,
+            "current_file": current_file,
+        }
+        if current_parser is not None:
+            payload["current_parser"] = current_parser
+        payload.update(extra)
+        return payload
+
+    def _emit_progress(self, *, force: bool = False, **payload: Any) -> None:
+        self._write_progress_snapshot(payload, force=force)
 
     @staticmethod
     def _record_parser_outcome(
@@ -1266,28 +1278,25 @@ class IngestionService:
                 await self._manifest.set_status(fpath, "FAILED")
                 parser_stats[parser_name]["error_files"] += 1
                 if run_id:
-                    self._write_progress_snapshot(
-                        {
-                            "run_id": run_id,
-                            "mode": mode,
-                            "state": "running",
-                            "phase": "parsing",
-                            "export_dir": str(self._active_export_root) if self._active_export_root else None,
-                            "project_scope": self._active_project_scope,
-                            "started_at": self._progress_started_at,
-                            "total_files": total,
-                            "processed_files": index,
-                            "failed_files": len(parse_failures),
-                            "current_file": fpath,
-                            "current_parser": parser_name,
-                            "changed_files": changed_files or [],
-                            "deleted_files": deleted_files or [],
-                            "affected_neighbor_files": affected_neighbor_files or [],
-                            "parser_stats": parser_stats,
-                            "unresolved_symbols": unresolved_symbols,
-                            "warnings_count": 0,
-                            "cache_enabled": bool(self._parse_cache),
-                        }
+                    self._emit_progress(
+                        **self._progress_payload(
+                            run_id=run_id,
+                            mode=mode,
+                            state="running",
+                            phase="parsing",
+                            total_files=total,
+                            processed_files=index,
+                            failed_files=len(parse_failures),
+                            current_file=fpath,
+                            current_parser=parser_name,
+                            changed_files=changed_files or [],
+                            deleted_files=deleted_files or [],
+                            affected_neighbor_files=affected_neighbor_files or [],
+                            parser_stats=parser_stats,
+                            unresolved_symbols=unresolved_symbols,
+                            warnings_count=0,
+                            cache_enabled=bool(self._parse_cache),
+                        )
                     )
                 continue
 
@@ -1300,28 +1309,25 @@ class IngestionService:
                     unresolved_symbols += 1
             all_edges.extend(file_edges)
             if run_id:
-                self._write_progress_snapshot(
-                    {
-                        "run_id": run_id,
-                        "mode": mode,
-                        "state": "running",
-                        "phase": "parsing",
-                        "export_dir": str(self._active_export_root) if self._active_export_root else None,
-                        "project_scope": self._active_project_scope,
-                        "started_at": self._progress_started_at,
-                        "total_files": total,
-                        "processed_files": index,
-                        "failed_files": len(parse_failures),
-                        "current_file": fpath,
-                        "current_parser": parser_name,
-                        "changed_files": changed_files or [],
-                        "deleted_files": deleted_files or [],
-                        "affected_neighbor_files": affected_neighbor_files or [],
-                        "parser_stats": parser_stats,
-                        "unresolved_symbols": unresolved_symbols,
-                        "warnings_count": 0,
-                        "cache_enabled": bool(self._parse_cache),
-                    }
+                self._emit_progress(
+                    **self._progress_payload(
+                        run_id=run_id,
+                        mode=mode,
+                        state="running",
+                        phase="parsing",
+                        total_files=total,
+                        processed_files=index,
+                        failed_files=len(parse_failures),
+                        current_file=fpath,
+                        current_parser=parser_name,
+                        changed_files=changed_files or [],
+                        deleted_files=deleted_files or [],
+                        affected_neighbor_files=affected_neighbor_files or [],
+                        parser_stats=parser_stats,
+                        unresolved_symbols=unresolved_symbols,
+                        warnings_count=0,
+                        cache_enabled=bool(self._parse_cache),
+                    )
                 )
 
         return facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols
@@ -1570,11 +1576,9 @@ class IngestionService:
             for qn in to_delete:
                 self._raise_if_cancelled()
                 try:
-                    await self._graph.query(
-                        f'DELETE FROM "{label}" WHERE qualified_name = $qn',
-                        {"qn": qn},
-                    )
-                    removed_qnames.add(qn)
+                    deleted = await self._graph.delete_node(label, qn)
+                    if deleted:
+                        removed_qnames.add(qn)
                 except Exception:
                     continue
 
@@ -1589,10 +1593,7 @@ class IngestionService:
             for qn in node_qnames:
                 self._raise_if_cancelled()
                 try:
-                    await self._graph.query(
-                        f'DELETE FROM "{rel}" WHERE src_qualified_name = $qn OR dst_qualified_name = $qn',
-                        {"qn": qn},
-                    )
+                    await self._graph.delete_edges_for_node(rel, qn)
                 except Exception:
                     continue
 
@@ -1621,10 +1622,7 @@ class IngestionService:
                 if src in registry and dst in registry:
                     continue
                 try:
-                    await self._graph.query(
-                        f'DELETE FROM "{rel}" WHERE src_qualified_name = $src AND dst_qualified_name = $dst',
-                        {"src": src, "dst": dst},
-                    )
+                    await self._graph.delete_edge(rel, src, dst)
                 except Exception:
                     continue
 

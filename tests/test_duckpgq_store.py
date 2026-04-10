@@ -291,3 +291,33 @@ async def test_unified_edge_view_contains_multiple_relationship_types(store):
         {"src": "Caller"},
     )
     assert [row["rel_type"] for row in rows] == ["CALLS", "READS_FIELD"]
+
+
+async def test_delete_node_removes_row_and_index(store):
+    await store.merge_node("ApexClass", {"qualifiedName": "DeleteMe"}, {"qualifiedName": "DeleteMe"})
+    deleted = await store.delete_node("ApexClass", "DeleteMe")
+    assert deleted is True
+    rows = await store.query('SELECT qualified_name FROM "ApexClass" WHERE qualified_name = $qn', {"qn": "DeleteMe"})
+    assert rows == []
+    idx = await store.query(
+        "SELECT qualified_name FROM _sfgraph_node_index WHERE qualified_name = $qn",
+        {"qn": "DeleteMe"},
+    )
+    assert idx == []
+
+
+async def test_delete_edge_and_delete_edges_for_node(store):
+    await store.merge_node("ApexClass", {"qualifiedName": "A"}, {"qualifiedName": "A"})
+    await store.merge_node("ApexClass", {"qualifiedName": "B"}, {"qualifiedName": "B"})
+    await store.merge_node("ApexClass", {"qualifiedName": "C"}, {"qualifiedName": "C"})
+    await store.merge_edge("A", "ApexClass", "CALLS", "B", "ApexClass", {})
+    await store.merge_edge("C", "ApexClass", "CALLS", "A", "ApexClass", {})
+
+    deleted_single = await store.delete_edge("CALLS", "A", "B")
+    assert deleted_single is True
+
+    deleted_count = await store.delete_edges_for_node("CALLS", "A")
+    assert deleted_count == 1
+
+    rows = await store.query('SELECT src_qualified_name, dst_qualified_name FROM "CALLS"')
+    assert rows == []
