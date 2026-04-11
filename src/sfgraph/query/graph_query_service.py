@@ -1429,6 +1429,17 @@ class GraphQueryService:
         )
         return any(phrase in q for phrase in signal_phrases)
 
+    @staticmethod
+    def _is_discovery_query(question: str) -> bool:
+        q = question.strip().lower()
+        return q.startswith("find ") or q.startswith("search ") or q.startswith("list ")
+
+    @staticmethod
+    def _contains_field_token(question: str) -> bool:
+        if re.search(r"\b[A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)?\b", question):
+            return True
+        return bool(re.search(r"\b[A-Za-z][A-Za-z0-9_]*__(?:c|r|mdt|e)\b", question))
+
     async def analyze(
         self,
         question: str,
@@ -1495,7 +1506,8 @@ class GraphQueryService:
                         result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
             else:
                 field_targets = await self._field_targets_for_question(q)
-                if field_targets:
+                field_mode = self._field_query_mode(q)
+                if field_targets or (field_mode is not None and self._contains_field_token(q)):
                     field_mode = self._field_query_mode(q)
                     focus = "writes" if strict and field_mode in {"writes", "explain"} else (field_mode or "both")
                     routed_to = "analyze_field"
@@ -1567,6 +1579,30 @@ class GraphQueryService:
             # Auto mode routes to intent-specific analyzers first to improve precision and reduce
             # follow-up tool calls for common Salesforce investigation questions.
             exact_first = self._is_exact_first_question(q)
+            if self._is_discovery_query(q):
+                routed_to = "query"
+                result = await _query_stage(allow_vector_fallback=not strict, stage="auto_discovery_query")
+                evidence = self._collect_analyze_evidence(result, max_items=max_results)
+                if "confidence_tiers" in result:
+                    confidence_tiers = result["confidence_tiers"]
+                else:
+                    confidence_tiers = self._confidence_tiers(evidence)
+                return {
+                    "mode": "analyze",
+                    "question": q,
+                    "analysis_mode": selected_mode,
+                    "strict": strict,
+                    "routed_to": routed_to,
+                    "result": result,
+                    "evidence": evidence,
+                    "confidence_tiers": confidence_tiers,
+                    "routing": {
+                        "policy": "exact_then_graph_then_semantic",
+                        "stages": routing_stages,
+                    },
+                    "freshness": result.get("freshness", await self.freshness(partial_results=False)),
+                    "partial_results": bool(result.get("partial_results", False)),
+                }
             component_token = self._component_token_query_parts(q)
             if component_token:
                 component_name, token = component_token
@@ -1625,9 +1661,9 @@ class GraphQueryService:
                         )
                     else:
                         field_targets = await self._field_targets_for_question(q)
-                        if field_targets:
+                        field_mode = self._field_query_mode(q)
+                        if field_targets or (field_mode is not None and self._contains_field_token(q)):
                             routed_to = "analyze_field"
-                            field_mode = self._field_query_mode(q)
                             focus = "writes" if strict and field_mode in {"writes", "explain"} else (field_mode or "both")
                             result = await self.analyze_field(
                                 field_name=q,

@@ -63,6 +63,30 @@ def _extract_token(question: str) -> str | None:
     return None
 
 
+def _normalize_actual_mode(payload: dict[str, Any]) -> str:
+    routed = str(payload.get("routed_to") or "").strip()
+    if routed == "query":
+        result_mode = payload.get("result", {}).get("mode") if isinstance(payload.get("result"), dict) else None
+        if isinstance(result_mode, str) and result_mode:
+            return result_mode
+        return "query"
+    if routed == "analyze_field":
+        result_payload = payload.get("result")
+        if isinstance(result_payload, dict):
+            focus = str(result_payload.get("focus") or "").strip().lower()
+            if focus == "writes":
+                return "field_writes"
+            if focus == "reads":
+                return "field_reads"
+            if focus == "explain":
+                return "field_explain"
+        return "analyze_field"
+    if routed:
+        return routed
+    fallback = payload.get("mode")
+    return str(fallback) if fallback is not None else "unknown"
+
+
 def _native_search(repo_root: Path, token: str) -> tuple[int, float]:
     started = time.perf_counter()
     proc = subprocess.run(
@@ -157,7 +181,7 @@ def run_mcp_selftest(
         analyze_ms = (time.perf_counter() - started) * 1000.0
         analyze_latencies_ms.append(analyze_ms)
 
-        actual_mode = str(payload.get("routed_to") or payload.get("mode") or "unknown")
+        actual_mode = _normalize_actual_mode(payload)
         expected_mode = case.get("expected_mode")
         mode_pass = None
         if expected_mode is not None:
