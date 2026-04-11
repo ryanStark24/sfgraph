@@ -42,7 +42,8 @@ Run the end-to-end benchmark through the daemon tool surface (the same path MCP 
 uv run sfgraph selftest /absolute/path/to/cloned/repo \
   --data-dir /absolute/path/to/data-dir \
   --suite docs/acceptance_quality_gate_suite.json \
-  --mode graph_only
+  --mode graph_only \
+  --report-md /absolute/path/to/selftest-report.md
 ```
 
 What this reports:
@@ -51,4 +52,16 @@ What this reports:
 - RPC latency (`median`/`p95`) across all tool calls
 - `analyze` latency per case
 - expected mode pass-rate from the suite
+- estimated token/cost metrics by route
+- evidence quality scoring and semantic fallback frequency
 - native `rg` token lookup timings for quick side-by-side checks
+
+For broader query coverage, run:
+
+```bash
+uv run sfgraph selftest /absolute/path/to/cloned/repo \
+  --data-dir /absolute/path/to/data-dir \
+  --suite docs/acceptance_question_suite_expanded.json \
+  --mode graph_only \
+  --report-md /absolute/path/to/selftest-expanded-report.md
+```

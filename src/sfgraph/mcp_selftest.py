@@ -53,6 +53,12 @@ def _p95(values: list[float]) -> float:
     return float(statistics.quantiles(values, n=20)[18])
 
 
+def _mean(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
+
+
 def _extract_token(question: str) -> str | None:
     field_match = re.search(r"\b([A-Za-z][A-Za-z0-9_]*__c)\b", question)
     if field_match:
@@ -90,6 +96,33 @@ def _normalize_actual_mode(payload: dict[str, Any]) -> str:
 def _estimate_tokens_from_text(text: str) -> int:
     # Lightweight approximation for benchmark trend tracking (not billing-accurate).
     return max(1, int(round(len(text) / 4.0)))
+
+
+def _score_evidence_quality(payload: dict[str, Any]) -> float:
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, list) or not evidence:
+        return 0.0
+    score = 0.0
+    has_file_line = any(isinstance(item, dict) and item.get("file") and item.get("line") for item in evidence)
+    if has_file_line:
+        score += 0.4
+    if len(evidence) >= 3:
+        score += 0.2
+    max_confidence = 0.0
+    sources: set[str] = set()
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        sources.add(str(item.get("source", "")))
+        try:
+            max_confidence = max(max_confidence, float(item.get("confidence", 0.0)))
+        except Exception:
+            continue
+    if max_confidence >= 0.9:
+        score += 0.2
+    if "exact" in sources and "graph" in sources:
+        score += 0.2
+    return round(min(1.0, score), 3)
 
 
 def _native_search(repo_root: Path, token: str) -> tuple[int, float]:
@@ -175,6 +208,7 @@ def run_mcp_selftest(
     route_counts: dict[str, int] = {}
     semantic_fallback_count = 0
     low_confidence_count = 0
+    evidence_quality_scores: list[float] = []
     estimated_prompt_tokens_total = 0
     estimated_response_tokens_total = 0
     route_latency_ms: dict[str, list[float]] = {}
@@ -208,6 +242,8 @@ def run_mcp_selftest(
             has_material_evidence = bool(evidence) if isinstance(evidence, list) else None
         if has_material_evidence is False:
             low_confidence_count += 1
+        evidence_quality_score = _score_evidence_quality(payload)
+        evidence_quality_scores.append(evidence_quality_score)
         prompt_tokens_est = _estimate_tokens_from_text(case["question"])
         response_tokens_est = _estimate_tokens_from_text(json.dumps(payload, ensure_ascii=False, default=str))
         estimated_prompt_tokens_total += prompt_tokens_est
@@ -248,6 +284,7 @@ def run_mcp_selftest(
                 "semantic_fallback": semantic_invoked,
                 "fallback_reason": fallback_reason,
                 "has_material_evidence": has_material_evidence,
+                "evidence_quality_score": evidence_quality_score,
                 "prompt_tokens_est": prompt_tokens_est,
                 "response_tokens_est": response_tokens_est,
                 "total_tokens_est": prompt_tokens_est + response_tokens_est,
@@ -303,6 +340,7 @@ def run_mcp_selftest(
             "expected_mode_pass_rate": round(expected_passed / expected_checks, 3) if expected_checks else None,
             "semantic_fallback_count": semantic_fallback_count,
             "low_confidence_count": low_confidence_count,
+            "avg_evidence_quality_score": round(_mean(evidence_quality_scores), 3) if evidence_quality_scores else 0.0,
             "route_counts": route_counts,
         },
         "cost": {
@@ -318,3 +356,62 @@ def run_mcp_selftest(
         },
         "cases": analyze_results,
     }
+
+
+def render_selftest_markdown(payload: dict[str, Any]) -> str:
+    meta = payload.get("meta", {})
+    ingest = payload.get("ingest", {})
+    latency = payload.get("latency", {})
+    quality = payload.get("quality", {})
+    cost = payload.get("cost", {})
+    cases = payload.get("cases", [])
+
+    lines: list[str] = []
+    lines.append("# SFGraph Selftest Report")
+    lines.append("")
+    lines.append("## Run Meta")
+    lines.append(f"- export_dir: `{meta.get('export_dir')}`")
+    lines.append(f"- data_dir: `{meta.get('data_dir')}`")
+    lines.append(f"- suite: `{meta.get('suite_path')}`")
+    lines.append(f"- job_id: `{meta.get('job_id')}`")
+    lines.append(f"- ingest_mode: `{meta.get('ingest_mode')}`")
+    lines.append("")
+    lines.append("## Ingest")
+    lines.append(f"- state: `{ingest.get('state')}`")
+    lines.append(f"- elapsed_seconds: `{ingest.get('elapsed_seconds')}`")
+    lines.append("")
+    lines.append("## Quality")
+    lines.append(f"- expected_mode_pass_rate: `{quality.get('expected_mode_pass_rate')}`")
+    lines.append(f"- semantic_fallback_count: `{quality.get('semantic_fallback_count')}`")
+    lines.append(f"- low_confidence_count: `{quality.get('low_confidence_count')}`")
+    lines.append(f"- avg_evidence_quality_score: `{quality.get('avg_evidence_quality_score')}`")
+    lines.append("")
+    lines.append("## Latency")
+    lines.append(f"- analyze_median_ms: `{latency.get('analyze_median_ms')}`")
+    lines.append(f"- analyze_p95_ms: `{latency.get('analyze_p95_ms')}`")
+    lines.append(f"- native_search_median_ms: `{latency.get('native_search_median_ms')}`")
+    lines.append("")
+    if isinstance(cost, dict) and cost:
+        lines.append("## Cost (Estimated)")
+        lines.append(f"- total_tokens_est_total: `{cost.get('total_tokens_est_total')}`")
+        lines.append(f"- avg_tokens_est_per_case: `{cost.get('avg_tokens_est_per_case')}`")
+        lines.append("")
+    lines.append("## Cases")
+    lines.append("| id | expected | actual | match | latency_ms | evidence_quality | semantic_fallback |")
+    lines.append("| --- | --- | --- | --- | ---: | ---: | --- |")
+    for case in cases if isinstance(cases, list) else []:
+        if not isinstance(case, dict):
+            continue
+        lines.append(
+            "| {id} | {expected} | {actual} | {match} | {latency} | {eq} | {sf} |".format(
+                id=case.get("id"),
+                expected=case.get("expected_mode"),
+                actual=case.get("actual_mode"),
+                match=case.get("mode_match"),
+                latency=case.get("latency_ms"),
+                eq=case.get("evidence_quality_score"),
+                sf=case.get("semantic_fallback"),
+            )
+        )
+    lines.append("")
+    return "\n".join(lines)

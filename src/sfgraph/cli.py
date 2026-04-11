@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from sfgraph.benchmark import run_benchmark
-from sfgraph.mcp_selftest import run_mcp_selftest
+from sfgraph.mcp_selftest import render_selftest_markdown, run_mcp_selftest
 from sfgraph.ingestion.scope_migration import ScopeMigrationService
 from sfgraph.ingestion.service import IngestionService
 from sfgraph.parser.pool import NodeParserPool
@@ -103,6 +103,7 @@ def _build_parser() -> argparse.ArgumentParser:
     selftest.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root.")
     selftest.add_argument("--poll-interval", type=float, default=0.5)
     selftest.add_argument("--timeout-seconds", type=float, default=3600.0)
+    selftest.add_argument("--report-md", default=None, help="Optional path to write a markdown selftest report.")
     selftest.set_defaults(func=_cmd_selftest)
     return parser
 
@@ -381,6 +382,10 @@ def _cmd_selftest(args: argparse.Namespace) -> int:
         timeout_seconds=float(args.timeout_seconds),
     )
     print(json.dumps(payload, indent=2))
+    if args.report_md:
+        report_path = Path(args.report_md).expanduser().resolve()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(render_selftest_markdown(payload), encoding="utf-8")
     return 0
 
 

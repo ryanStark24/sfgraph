@@ -829,6 +829,11 @@ async def test_query_routes_object_event_questions_to_event_analysis(tmp_path: P
     assert payload["event"] == "insert"
     assert payload["triggers"]
     assert payload["pipeline"]["intent"] == "object_event"
+
+    updated_payload = await service.query("what runs when QuoteLineItem is updated?")
+    assert updated_payload["mode"] == "analyze_object_event"
+    assert updated_payload["event"] == "update"
+    assert updated_payload["pipeline"]["intent"] == "object_event"
     await manifest.close()
     await graph.close()
 

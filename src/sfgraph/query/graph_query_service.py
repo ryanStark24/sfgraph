@@ -486,14 +486,25 @@ class GraphQueryService:
             assignment_patterns = (
                 rf"\b{re.escape(field_token)}\b\s*=",
                 rf"\.\s*{re.escape(field_token)}\s*=",
+                rf"\.put\(\s*['\"]{re.escape(field_token)}['\"]\s*,",
             )
             if any(re.search(pattern, line) for pattern in assignment_patterns):
                 return "write", 0.98
+            if re.search(rf"\.\s*get\(\s*['\"]{re.escape(field_token)}['\"]\s*\)", line):
+                return "read", 0.95
             if any(keyword in lower_window for keyword in ("select ", "where ", ".get(", "map<", "jsonattribute", "serviceid")):
                 return "read", 0.9
             return "mention", 0.75
 
         if file_path.suffix == ".json":
+            if any(
+                re.search(pattern, lower_line)
+                for pattern in (
+                    rf'"destinationfield"\s*:\s*"[^"]*{re.escape(field_token.lower())}[^"]*"',
+                    rf'"destinationfields"\s*:\s*\[[^\]]*{re.escape(field_token.lower())}[^\]]*\]',
+                )
+            ):
+                return "write", 0.92
             if any(keyword in lower_window for keyword in ("destinationfield", "destinationfields", "targetfield", "updateablefields")):
                 return "write", 0.9
             if any(keyword in lower_window for keyword in ("sourcefield", "sourcefields", "input", "query", "extract")):
@@ -552,6 +563,24 @@ class GraphQueryService:
         )
         for pattern in patterns:
             match = re.search(pattern, line)
+            if not match:
+                continue
+            expr = str(match.group("expr")).strip()
+            if expr:
+                return expr
+        return None
+
+    @staticmethod
+    def _extract_field_write_expression(field_token: str, line: str) -> str | None:
+        escaped = re.escape(field_token)
+        patterns = (
+            rf"\.\s*{escaped}\s*=\s*(?P<expr>[^;]+)",
+            rf"\b{escaped}\b\s*=\s*(?P<expr>[^;]+)",
+            rf"\.put\(\s*['\"]{escaped}['\"]\s*,\s*(?P<expr>[^)]+)\)",
+            rf'"destinationfield"\s*:\s*"(?P<expr>[^"]+)"',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, line, flags=re.IGNORECASE)
             if not match:
                 continue
             expr = str(match.group("expr")).strip()
@@ -899,6 +928,7 @@ class GraphQueryService:
         q = " ".join(question.strip().split())
         patterns = (
             r"\bwhat\s+happens\s+when\s+(?:a|an)?\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\s+(inserted|updated|deleted|undeleted)\b",
+            r"\bwhat\s+runs\s+when\s+(?:a|an)?\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\s+(inserted|updated|deleted|undeleted)\b",
             r"\b(?:on|for)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(insert|update|delete|undelete)\b",
         )
         for pattern in patterns:
@@ -906,9 +936,18 @@ class GraphQueryService:
             if not match:
                 continue
             object_name = match.group(1)
-            event = match.group(2).lower()
-            if event.endswith("ed"):
-                event = event[:-2]
+            raw_event = match.group(2).lower()
+            event_map = {
+                "inserted": "insert",
+                "updated": "update",
+                "deleted": "delete",
+                "undeleted": "undelete",
+                "insert": "insert",
+                "update": "update",
+                "delete": "delete",
+                "undelete": "undelete",
+            }
+            event = event_map.get(raw_event, raw_event)
             return object_name, event
         return None
 
@@ -1030,6 +1069,11 @@ class GraphQueryService:
                             "line": idx,
                             "context": line.strip()[:240],
                             "confidence": confidence,
+                            "value_expression": (
+                                self._extract_field_write_expression(token, line)
+                                if kind == "write"
+                                else None
+                            ),
                         }
                     )
 
@@ -1780,7 +1824,7 @@ class GraphQueryService:
                 " consumed",
                 " depends on",
             )
-        ) or "what uses" in q or "who uses" in q or "used by" in q
+        ) or "what uses" in q or "who uses" in q or "used by" in q or q.endswith(" used")
         if write_hits and read_hits:
             return "explain"
         if write_hits:
