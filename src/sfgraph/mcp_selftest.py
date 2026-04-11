@@ -87,6 +87,11 @@ def _normalize_actual_mode(payload: dict[str, Any]) -> str:
     return str(fallback) if fallback is not None else "unknown"
 
 
+def _estimate_tokens_from_text(text: str) -> int:
+    # Lightweight approximation for benchmark trend tracking (not billing-accurate).
+    return max(1, int(round(len(text) / 4.0)))
+
+
 def _native_search(repo_root: Path, token: str) -> tuple[int, float]:
     started = time.perf_counter()
     proc = subprocess.run(
@@ -170,6 +175,11 @@ def run_mcp_selftest(
     route_counts: dict[str, int] = {}
     semantic_fallback_count = 0
     low_confidence_count = 0
+    estimated_prompt_tokens_total = 0
+    estimated_response_tokens_total = 0
+    route_latency_ms: dict[str, list[float]] = {}
+    route_prompt_tokens: dict[str, list[int]] = {}
+    route_response_tokens: dict[str, list[int]] = {}
 
     for case in cases:
         started = time.perf_counter()
@@ -198,6 +208,13 @@ def run_mcp_selftest(
             has_material_evidence = bool(evidence) if isinstance(evidence, list) else None
         if has_material_evidence is False:
             low_confidence_count += 1
+        prompt_tokens_est = _estimate_tokens_from_text(case["question"])
+        response_tokens_est = _estimate_tokens_from_text(json.dumps(payload, ensure_ascii=False, default=str))
+        estimated_prompt_tokens_total += prompt_tokens_est
+        estimated_response_tokens_total += response_tokens_est
+        route_latency_ms.setdefault(actual_mode, []).append(analyze_ms)
+        route_prompt_tokens.setdefault(actual_mode, []).append(prompt_tokens_est)
+        route_response_tokens.setdefault(actual_mode, []).append(response_tokens_est)
         expected_mode = case.get("expected_mode")
         mode_pass = None
         if expected_mode is not None:
@@ -231,11 +248,27 @@ def run_mcp_selftest(
                 "semantic_fallback": semantic_invoked,
                 "fallback_reason": fallback_reason,
                 "has_material_evidence": has_material_evidence,
+                "prompt_tokens_est": prompt_tokens_est,
+                "response_tokens_est": response_tokens_est,
+                "total_tokens_est": prompt_tokens_est + response_tokens_est,
                 "native_token": token,
                 "native_hits": native_hits,
                 "native_search_ms": round(native_ms, 2) if native_ms is not None else None,
             }
         )
+
+    by_route: dict[str, dict[str, float | int]] = {}
+    for route, latencies in route_latency_ms.items():
+        prompt_list = route_prompt_tokens.get(route, [])
+        response_list = route_response_tokens.get(route, [])
+        by_route[route] = {
+            "count": len(latencies),
+            "latency_median_ms": round(_median(latencies), 2),
+            "latency_p95_ms": round(_p95(latencies), 2),
+            "prompt_tokens_est_total": int(sum(prompt_list)),
+            "response_tokens_est_total": int(sum(response_list)),
+            "total_tokens_est_total": int(sum(prompt_list) + sum(response_list)),
+        }
 
     return {
         "meta": {
@@ -271,6 +304,17 @@ def run_mcp_selftest(
             "semantic_fallback_count": semantic_fallback_count,
             "low_confidence_count": low_confidence_count,
             "route_counts": route_counts,
+        },
+        "cost": {
+            "prompt_tokens_est_total": estimated_prompt_tokens_total,
+            "response_tokens_est_total": estimated_response_tokens_total,
+            "total_tokens_est_total": estimated_prompt_tokens_total + estimated_response_tokens_total,
+            "avg_tokens_est_per_case": round(
+                (estimated_prompt_tokens_total + estimated_response_tokens_total) / len(analyze_results), 2
+            )
+            if analyze_results
+            else 0.0,
+            "by_route": by_route,
         },
         "cases": analyze_results,
     }
