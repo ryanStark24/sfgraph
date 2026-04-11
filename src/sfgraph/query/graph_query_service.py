@@ -1458,6 +1458,7 @@ class GraphQueryService:
         routed_to = "query"
         result: dict[str, Any]
         routing_stages: list[dict[str, Any]] = []
+        semantic_fallback_reason: str | None = None
 
         async def _query_stage(*, allow_vector_fallback: bool, stage: str) -> dict[str, Any]:
             payload = await self.query(
@@ -1503,6 +1504,7 @@ class GraphQueryService:
                     routed_to = "query"
                     result = await _query_stage(allow_vector_fallback=False, stage="exact_lexical_graph")
                     if not strict and not self._has_material_result_evidence(result):
+                        semantic_fallback_reason = "exact_component_insufficient_evidence"
                         result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
             else:
                 field_targets = await self._field_targets_for_question(q)
@@ -1529,11 +1531,13 @@ class GraphQueryService:
                         routed_to = "query"
                         result = await _query_stage(allow_vector_fallback=False, stage="exact_lexical_graph")
                         if not strict and not self._has_material_result_evidence(result):
+                            semantic_fallback_reason = "exact_field_insufficient_evidence"
                             result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
                 else:
                     routed_to = "query"
                     result = await _query_stage(allow_vector_fallback=False, stage="exact_lexical_graph")
                     if not strict and not self._has_material_result_evidence(result):
+                        semantic_fallback_reason = "exact_query_insufficient_evidence"
                         result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
         elif selected_mode == "lineage":
             object_event = self._object_event_query_parts(q)
@@ -1599,6 +1603,14 @@ class GraphQueryService:
                     "routing": {
                         "policy": "exact_then_graph_then_semantic",
                         "stages": routing_stages,
+                    },
+                    "confidence_gate": {
+                        "has_material_evidence": self._has_material_result_evidence(result),
+                        "evidence_count": len(evidence),
+                    },
+                    "fallback": {
+                        "semantic_invoked": any(stage.get("stage") == "semantic_fallback" for stage in routing_stages),
+                        "reason": semantic_fallback_reason,
                     },
                     "freshness": result.get("freshness", await self.freshness(partial_results=False)),
                     "partial_results": bool(result.get("partial_results", False)),
@@ -1695,6 +1707,7 @@ class GraphQueryService:
                 routed_to = "query"
                 result = await _query_stage(allow_vector_fallback=False, stage="auto_exact_lexical_graph")
                 if not strict and not self._has_material_result_evidence(result):
+                    semantic_fallback_reason = "auto_exact_first_insufficient_evidence"
                     result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
 
         evidence = self._collect_analyze_evidence(result, max_items=max_results)
@@ -1715,6 +1728,14 @@ class GraphQueryService:
             "routing": {
                 "policy": "exact_then_graph_then_semantic",
                 "stages": routing_stages,
+            },
+            "confidence_gate": {
+                "has_material_evidence": self._has_material_result_evidence(result),
+                "evidence_count": len(evidence),
+            },
+            "fallback": {
+                "semantic_invoked": any(stage.get("stage") == "semantic_fallback" for stage in routing_stages),
+                "reason": semantic_fallback_reason,
             },
             "freshness": result.get("freshness", await self.freshness(partial_results=False)),
             "partial_results": bool(result.get("partial_results", False)),

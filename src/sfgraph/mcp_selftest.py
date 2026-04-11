@@ -167,6 +167,9 @@ def run_mcp_selftest(
     native_latencies_ms: list[float] = []
     expected_checks = 0
     expected_passed = 0
+    route_counts: dict[str, int] = {}
+    semantic_fallback_count = 0
+    low_confidence_count = 0
 
     for case in cases:
         started = time.perf_counter()
@@ -182,6 +185,19 @@ def run_mcp_selftest(
         analyze_latencies_ms.append(analyze_ms)
 
         actual_mode = _normalize_actual_mode(payload)
+        route_counts[actual_mode] = route_counts.get(actual_mode, 0) + 1
+        fallback_payload = payload.get("fallback") if isinstance(payload.get("fallback"), dict) else {}
+        semantic_invoked = bool(fallback_payload.get("semantic_invoked"))
+        fallback_reason = fallback_payload.get("reason")
+        if semantic_invoked:
+            semantic_fallback_count += 1
+        gate_payload = payload.get("confidence_gate") if isinstance(payload.get("confidence_gate"), dict) else {}
+        has_material_evidence = gate_payload.get("has_material_evidence")
+        if has_material_evidence is None:
+            evidence = payload.get("evidence")
+            has_material_evidence = bool(evidence) if isinstance(evidence, list) else None
+        if has_material_evidence is False:
+            low_confidence_count += 1
         expected_mode = case.get("expected_mode")
         mode_pass = None
         if expected_mode is not None:
@@ -212,6 +228,9 @@ def run_mcp_selftest(
                 "mode_match": mode_pass,
                 "latency_ms": round(analyze_ms, 2),
                 "result_count": len(payload.get("findings", [])) if isinstance(payload.get("findings"), list) else None,
+                "semantic_fallback": semantic_invoked,
+                "fallback_reason": fallback_reason,
+                "has_material_evidence": has_material_evidence,
                 "native_token": token,
                 "native_hits": native_hits,
                 "native_search_ms": round(native_ms, 2) if native_ms is not None else None,
@@ -249,6 +268,9 @@ def run_mcp_selftest(
             "expected_mode_checks": expected_checks,
             "expected_mode_passed": expected_passed,
             "expected_mode_pass_rate": round(expected_passed / expected_checks, 3) if expected_checks else None,
+            "semantic_fallback_count": semantic_fallback_count,
+            "low_confidence_count": low_confidence_count,
+            "route_counts": route_counts,
         },
         "cases": analyze_results,
     }

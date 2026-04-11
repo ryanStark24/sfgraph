@@ -499,6 +499,172 @@ Before release, the tool should satisfy:
 - critical-path ingest does not block on optional vector work
 - discovery cost is bounded and explainable
 
+## V3 Hybrid Retrieval Architecture (Next)
+
+This section defines the next architecture needed to consistently outperform native LLM-only repo search on both:
+
+- token-level exact lookups
+- multi-hop lineage/impact reasoning
+
+### Design Principles
+
+- exact-first for deterministic questions
+- graph-first for lifecycle/impact questions
+- semantic retrieval only as gated fallback
+- one-call UX (`analyze`) with internal orchestration
+- evidence and confidence in every answer payload
+
+### Retrieval Pipeline
+
+`analyze(...)` should execute a three-lane pipeline internally:
+
+1. lexical lane
+2. graph lane
+3. semantic lane
+
+Routing policy:
+
+- token lookup / field assignment intent:
+  - lexical lane first
+  - graph lane only if lexical confidence is low
+- object lifecycle / change impact intent:
+  - graph lane first
+  - lexical corroboration when available
+- broad discovery intent:
+  - lexical lane first
+  - semantic lane only when lexical+graph are insufficient
+
+### Lane Responsibilities
+
+#### 1) Lexical lane (fast certainty)
+
+Responsibilities:
+
+- symbol/token resolution
+- file+line extraction for direct assignment/use evidence
+- low-latency “where is X set/used” answers
+
+Target behavior:
+
+- return exact locations before any semantic ranking
+- avoid vector calls for deterministic matches
+
+#### 2) Graph lane (structured reasoning)
+
+Responsibilities:
+
+- event lifecycle analysis (`insert/update/delete`)
+- impact analysis (`what breaks if I change X`)
+- transitive upstream/downstream traversal
+
+Target behavior:
+
+- produce path evidence with relation semantics
+- separate definite/probable evidence in response
+
+#### 3) Semantic lane (fallback only)
+
+Responsibilities:
+
+- recover from sparse lexical/graph matches
+- suggest candidate components for manual review
+
+Target behavior:
+
+- only run when exact lanes fail confidence gate
+- always mark semantic-only conclusions as lower confidence
+
+### Confidence Gate Contract
+
+Before escalating to the semantic lane, evaluate:
+
+- evidence count
+- evidence quality (file+line, explicit edge path, or both)
+- intent-specific minimums
+
+If confidence threshold is met:
+
+- return immediately
+- include `routing.stages` and `confidence_tiers`
+
+If threshold is not met:
+
+- run semantic fallback
+- return explicit review guidance
+
+### Tool Surface Contract
+
+Primary query tool:
+
+- `analyze(...)`
+
+Expert/debug tools remain available but non-default:
+
+- `query(...)`
+- `trace_upstream(...)`
+- `trace_downstream(...)`
+- `get_node(...)`
+
+The default client policy should be:
+
+- call `analyze` first
+- only call expert tools when `analyze` returns insufficient evidence
+
+### LLM Integration Contract
+
+Recommended LLM request policy:
+
+- token-level asks:
+  - `mode=exact`, `strict=true`
+- impact/lifecycle asks:
+  - `mode=lineage`, `strict=true`
+- broad discovery:
+  - `mode=auto`, `strict=true`
+
+Response policy:
+
+- include claim + evidence + confidence
+- include unresolved gaps when evidence is weak
+- avoid presenting semantic candidates as definitive facts
+
+### KPI Targets
+
+Track quality and cost by question class:
+
+- exactness@1 for token-level questions
+- lineage correctness for lifecycle/impact questions
+- tool calls per user question
+- prompt/input tokens per user question
+- p50/p95 latency per route
+- follow-up clarification rate
+
+Target outcomes for next release:
+
+- 30–60% fewer tool calls
+- 40–70% lower input tokens
+- higher exactness than native search on lineage/impact questions
+- parity or better exactness on token-level lookups
+
+### Implementation Waves
+
+Wave 1 (now):
+
+- finalize route policy and confidence gating in `analyze`
+- normalize quality-gate scoring for routed responses
+- publish architecture + evaluation suites
+
+Wave 2:
+
+- strengthen lexical extraction for assignment/use questions
+- improve Vlocity semantic depth for high-value skipped families
+- expand acceptance suites by query class
+
+Wave 3:
+
+- add explicit reranking/fusion strategy for semantic fallback
+- unify observability across routing, evidence, and latency
+- harden planner with regression gates in CI
+
 ## Summary
 
 The current architecture is now substantially safer and more scalable than the original shape, but the next major win is not another parser tweak.
@@ -510,3 +676,9 @@ The next major win is a job-based ingest architecture:
 - easier to resume
 - easier to keep local-only
 - much more trustworthy for large production orgs
+
+And for query quality, the next major win is hybrid retrieval orchestration:
+
+- lexical certainty first
+- graph reasoning second
+- semantic fallback only when required
