@@ -78,7 +78,7 @@ Ingestion lives under `src/sfgraph/ingestion/`.
 Responsibilities:
 
 - discover supported files in an export
-- parse Apex, Aura, Flows, objects, permission metadata, named credentials, LWC, and Vlocity assets
+- parse Apex, Aura, Flows, objects, workflow metadata, permission metadata, reports, dashboards, named credentials, LWC, and Vlocity assets
 - normalize parser output into `NodeFact` and `EdgeFact`
 - write scoped graph rows
 - track run/file status in the manifest
@@ -102,7 +102,10 @@ Current parser coverage:
 - Aura bundle markup (`.cmp`, `.app`, `.evt`, `.intf`)
 - Flow XML
 - Object, field, formula, and validation-rule XML
+- Legacy workflow XML (`.workflow-meta.xml`)
 - Permission set and profile XML
+- Report XML
+- Dashboard XML
 - Named credential XML
 - LWC JS/HTML metadata references
 - OmniStudio / Vlocity JSON

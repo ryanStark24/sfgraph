@@ -1,6 +1,6 @@
 # sfgraph
 
-`sfgraph` is a Salesforce metadata graph and MCP server for impact analysis across Apex, Aura, Flows, LWC, object metadata, permission metadata, named credentials, and OmniStudio/Vlocity assets.
+`sfgraph` is a Salesforce metadata graph and MCP server for impact analysis across Apex, Aura, Flows, LWC, object metadata, workflow metadata, permission metadata, reports, dashboards, named credentials, and OmniStudio/Vlocity assets.
 
 It ingests a Salesforce export into a local property graph, preserves project isolation, and answers evidence-first questions such as:
 
@@ -16,7 +16,9 @@ It ingests a Salesforce export into a local property graph, preserves project is
 - Apex classes and SOQL/DML behavior
 - Object and field metadata
 - Object validation rules and formula dependencies
+- Legacy workflow rules and workflow field updates
 - Permission sets, profiles, and named credentials
+- Reports and dashboards
 - Record-triggered and screen flows
 - Aura bundles and Apex controller links
 - Lightning Web Components
