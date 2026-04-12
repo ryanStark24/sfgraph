@@ -19,6 +19,12 @@ from sfgraph.query.agents import (
     ResultFormatterAgent,
     SchemaFilterAgent,
 )
+from sfgraph.query.analyze_support import (
+    AnalyzeResponseCache,
+    build_analyze_payload,
+    candidate_qnames_for_payload,
+    render_analyze_markdown,
+)
 from sfgraph.query.graph_visualizer import render_mermaid_subgraph
 from sfgraph.query.rules_registry import RulesRegistry
 from sfgraph.storage.base import GraphStore
@@ -87,8 +93,7 @@ class GraphQueryService:
         self._labels_cache: list[str] | None = None
         self._rel_cache: list[str] | None = None
         self._node_cache: dict[str, dict[str, Any] | None] = {}
-        self._analyze_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-        self._analyze_cache_ttl_seconds = 15.0
+        self._analyze_cache = AnalyzeResponseCache(ttl_seconds=15.0)
 
     async def _labels(self) -> list[str]:
         if self._labels_cache is None:
@@ -147,134 +152,13 @@ class GraphQueryService:
             sort_keys=True,
         )
 
-    @staticmethod
-    def _render_analyze_markdown(payload: dict[str, Any]) -> str:
-        routed_to = str(payload.get("routed_to") or "")
-        section_title = "Evidence"
-        if routed_to == "analyze_field":
-            section_title = "Field Evidence"
-        elif routed_to == "analyze_object_event":
-            section_title = "Lifecycle Evidence"
-        elif routed_to == "analyze_change":
-            section_title = "Impact Evidence"
-        elif routed_to == "analyze_component":
-            section_title = "Component Evidence"
-        lines = [
-            "# Analyze Result",
-            "",
-            f"- Question: {payload.get('question', '')}",
-            f"- Routed to: {payload.get('routed_to', '')}",
-            f"- Mode: {payload.get('analysis_mode', '')}",
-            f"- Strict: {payload.get('strict', False)}",
-            "",
-            f"## {section_title}",
-        ]
-        evidence = payload.get("evidence", [])
-        if not isinstance(evidence, list) or not evidence:
-            lines.append("- No evidence found.")
-        else:
-            for item in evidence[:10]:
-                if not isinstance(item, dict):
-                    continue
-                label = str(item.get("label") or item.get("dst_label") or item.get("src_label") or "Node")
-                qname = str(
-                    item.get("qualifiedName")
-                    or item.get("scopedQualifiedName")
-                    or item.get("target_node")
-                    or item.get("dst")
-                    or item.get("src")
-                    or ""
-                )
-                source_file = str(item.get("sourceFile") or item.get("source_file") or "")
-                source_line = item.get("lineNumber") or item.get("source_line")
-                detail = f"{label}: {qname}".strip()
-                if source_file:
-                    if source_line:
-                        detail += f" ({source_file}:{source_line})"
-                    else:
-                        detail += f" ({source_file})"
-                lines.append(f"- {detail}")
-        freshness = payload.get("freshness")
-        if isinstance(freshness, dict) and freshness:
-            lines.extend(
-                [
-                    "",
-                    "## Freshness",
-                    f"- Indexed at: {freshness.get('indexed_at', '')}",
-                    f"- Dirty files pending: {freshness.get('dirty_files_pending', '')}",
-                    f"- Partial results: {freshness.get('partial_results', False)}",
-                ]
-            )
-        presentation = payload.get("presentation")
-        if isinstance(presentation, dict) and presentation.get("mermaid"):
-            lines.extend(["", "## Diagram", "```mermaid", str(presentation["mermaid"]), "```"])
-        return "\n".join(lines).strip()
-
-    @staticmethod
-    def _candidate_qname_from_item(item: dict[str, Any]) -> str:
-        return str(
-            item.get("scopedQualifiedName")
-            or item.get("qualifiedName")
-            or item.get("target_node")
-            or item.get("dst")
-            or item.get("src")
-            or item.get("field")
-            or item.get("component")
-            or ""
-        )
-
-    def _candidate_qnames_for_analyze_payload(self, payload: dict[str, Any]) -> list[str]:
-        result = payload.get("result")
-        candidates: list[str] = []
-
-        def _add(candidate: Any) -> None:
-            value = str(candidate or "").strip()
-            if value and value not in candidates:
-                candidates.append(value)
-
-        if isinstance(result, dict):
-            _add(result.get("start_node"))
-            for key in ("resolved_fields", "resolved_components"):
-                values = result.get(key)
-                if isinstance(values, list):
-                    for value in values:
-                        _add(value)
-            fields = result.get("fields")
-            if isinstance(fields, list):
-                for field in fields:
-                    if not isinstance(field, dict):
-                        continue
-                    _add(field.get("field"))
-                    for nested_key in ("writers", "readers", "dependents"):
-                        nested = field.get(nested_key)
-                        if not isinstance(nested, list):
-                            continue
-                        for item in nested:
-                            if isinstance(item, dict):
-                                _add(self._candidate_qname_from_item(item))
-            for list_key in ("graph_findings", "findings", "exact_matches"):
-                items = result.get(list_key)
-                if not isinstance(items, list):
-                    continue
-                for item in items:
-                    if isinstance(item, dict):
-                        _add(self._candidate_qname_from_item(item))
-
-        evidence = payload.get("evidence", [])
-        if isinstance(evidence, list):
-            for item in evidence:
-                if isinstance(item, dict):
-                    _add(self._candidate_qname_from_item(item))
-
-        return candidates
-
     async def _mermaid_for_analyze_payload(
         self,
         payload: dict[str, Any],
         *,
         max_hops: int,
     ) -> str | None:
-        for candidate in self._candidate_qnames_for_analyze_payload(payload):
+        for candidate in candidate_qnames_for_payload(payload):
             try:
                 graph_payload = await self.graph_subgraph(
                     node_id=candidate,
@@ -289,23 +173,6 @@ class GraphQueryService:
             if isinstance(mermaid, str) and mermaid.strip():
                 return mermaid
         return None
-
-    def _get_cached_analyze(self, cache_key: str) -> dict[str, Any] | None:
-        cached = self._analyze_cache.get(cache_key)
-        if cached is None:
-            return None
-        cached_at, payload = cached
-        if (time.monotonic() - cached_at) > self._analyze_cache_ttl_seconds:
-            self._analyze_cache.pop(cache_key, None)
-            return None
-        cloned = deepcopy(payload)
-        cloned["cache"] = {"hit": True, "ttl_seconds": self._analyze_cache_ttl_seconds}
-        return cloned
-
-    def _store_cached_analyze(self, cache_key: str, payload: dict[str, Any]) -> None:
-        if payload.get("partial_results"):
-            return
-        self._analyze_cache[cache_key] = (time.monotonic(), deepcopy(payload))
 
     @staticmethod
     def _remaining_budget_ms(deadline: float) -> int:
@@ -1718,7 +1585,7 @@ class GraphQueryService:
             render=render_mode,
             include_mermaid=include_mermaid,
         )
-        cached = self._get_cached_analyze(cache_key)
+        cached = self._analyze_cache.get(cache_key)
         if cached is not None:
             return cached
         deadline = time.monotonic() + max(time_budget_ms, 1) / 1000.0
@@ -1885,30 +1752,19 @@ class GraphQueryService:
                     confidence_tiers = result["confidence_tiers"]
                 else:
                     confidence_tiers = self._confidence_tiers(evidence)
-                final_payload = {
-                    "mode": "analyze",
-                    "question": q,
-                    "analysis_mode": selected_mode,
-                    "strict": strict,
-                    "routed_to": routed_to,
-                    "result": result,
-                    "evidence": evidence,
-                    "confidence_tiers": confidence_tiers,
-                    "routing": {
-                        "policy": "exact_then_graph_then_semantic",
-                        "stages": routing_stages,
-                    },
-                    "confidence_gate": {
-                        "has_material_evidence": self._has_material_result_evidence(result),
-                        "evidence_count": len(evidence),
-                    },
-                    "fallback": {
-                        "semantic_invoked": any(stage.get("stage") == "semantic_fallback" for stage in routing_stages),
-                        "reason": semantic_fallback_reason,
-                    },
-                    "freshness": result.get("freshness", await self.freshness(partial_results=False)),
-                    "partial_results": bool(result.get("partial_results", False)),
-                }
+                final_payload = build_analyze_payload(
+                    question=q,
+                    analysis_mode=selected_mode,
+                    strict=strict,
+                    routed_to=routed_to,
+                    result=result,
+                    evidence=evidence,
+                    confidence_tiers=confidence_tiers,
+                    routing_stages=routing_stages,
+                    semantic_fallback_reason=semantic_fallback_reason,
+                    freshness=result.get("freshness", await self.freshness(partial_results=False)),
+                )
+                final_payload["confidence_gate"]["has_material_evidence"] = self._has_material_result_evidence(result)
                 if render_mode == "markdown" or include_mermaid:
                     presentation: dict[str, Any] = {}
                     if include_mermaid:
@@ -1917,11 +1773,11 @@ class GraphQueryService:
                             presentation["mermaid"] = mermaid
                     if render_mode == "markdown":
                         presentation["format"] = "markdown"
-                        presentation["markdown"] = self._render_analyze_markdown({**final_payload, "presentation": presentation})
+                        presentation["markdown"] = render_analyze_markdown({**final_payload, "presentation": presentation})
                     if presentation:
                         final_payload["presentation"] = presentation
-                self._store_cached_analyze(cache_key, final_payload)
-                final_payload["cache"] = {"hit": False, "ttl_seconds": self._analyze_cache_ttl_seconds}
+                self._analyze_cache.store(cache_key, final_payload)
+                final_payload["cache"] = {"hit": False, "ttl_seconds": self._analyze_cache.ttl_seconds}
                 return final_payload
             component_token = self._component_token_query_parts(q)
             if component_token:
@@ -2024,30 +1880,19 @@ class GraphQueryService:
         else:
             confidence_tiers = self._confidence_tiers(evidence)
 
-        final_payload = {
-            "mode": "analyze",
-            "question": q,
-            "analysis_mode": selected_mode,
-            "strict": strict,
-            "routed_to": routed_to,
-            "result": result,
-            "evidence": evidence,
-            "confidence_tiers": confidence_tiers,
-            "routing": {
-                "policy": "exact_then_graph_then_semantic",
-                "stages": routing_stages,
-            },
-            "confidence_gate": {
-                "has_material_evidence": self._has_material_result_evidence(result),
-                "evidence_count": len(evidence),
-            },
-            "fallback": {
-                "semantic_invoked": any(stage.get("stage") == "semantic_fallback" for stage in routing_stages),
-                "reason": semantic_fallback_reason,
-            },
-            "freshness": result.get("freshness", await self.freshness(partial_results=False)),
-            "partial_results": bool(result.get("partial_results", False)),
-        }
+        final_payload = build_analyze_payload(
+            question=q,
+            analysis_mode=selected_mode,
+            strict=strict,
+            routed_to=routed_to,
+            result=result,
+            evidence=evidence,
+            confidence_tiers=confidence_tiers,
+            routing_stages=routing_stages,
+            semantic_fallback_reason=semantic_fallback_reason,
+            freshness=result.get("freshness", await self.freshness(partial_results=False)),
+        )
+        final_payload["confidence_gate"]["has_material_evidence"] = self._has_material_result_evidence(result)
         if render_mode == "markdown" or include_mermaid:
             presentation: dict[str, Any] = {}
             if include_mermaid:
@@ -2056,11 +1901,11 @@ class GraphQueryService:
                     presentation["mermaid"] = mermaid
             if render_mode == "markdown":
                 presentation["format"] = "markdown"
-                presentation["markdown"] = self._render_analyze_markdown({**final_payload, "presentation": presentation})
+                presentation["markdown"] = render_analyze_markdown({**final_payload, "presentation": presentation})
             if presentation:
                 final_payload["presentation"] = presentation
-        self._store_cached_analyze(cache_key, final_payload)
-        final_payload["cache"] = {"hit": False, "ttl_seconds": self._analyze_cache_ttl_seconds}
+        self._analyze_cache.store(cache_key, final_payload)
+        final_payload["cache"] = {"hit": False, "ttl_seconds": self._analyze_cache.ttl_seconds}
         return final_payload
 
     @staticmethod

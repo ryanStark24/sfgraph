@@ -7,7 +7,6 @@ import inspect
 import json
 import logging
 import os
-import fnmatch
 import subprocess
 import shutil
 import threading
@@ -20,6 +19,15 @@ from typing import Any
 from sfgraph.common import compute_sha256, descope_qname, parse_json_props, scope_qname
 from sfgraph.ingestion.constants import NODE_WRITE_ORDER
 from sfgraph.ingestion.diagnostics import IngestionDiagnosticsReporter
+from sfgraph.ingestion.discovery import (
+    DEFAULT_DISCOVERY_ROOTS,
+    SKIP_DIR_NAMES,
+    discover_file_records,
+    discovery_roots,
+    matches_discovery_rules,
+    sfdx_package_directories,
+    should_skip_file,
+)
 from sfgraph.ingestion.parser_dispatch import (
     AURA_MARKUP_SUFFIXES,
     is_supported_source_file,
@@ -110,27 +118,10 @@ class IngestionService:
     SCHEMA_INDEX_PATH = "./data/schema_index.json"
     INGESTION_META_PATH = "./data/ingestion_meta.json"
     INGESTION_PROGRESS_PATH = "./data/ingestion_progress.json"
-    SKIP_DIR_NAMES = frozenset(
-        {
-            ".git",
-            ".hg",
-            ".svn",
-            ".sfdx",
-            ".sf",
-            "node_modules",
-            ".venv",
-            "venv",
-            "__pycache__",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".cache",
-            "dist",
-            "build",
-        }
-    )
+    SKIP_DIR_NAMES = SKIP_DIR_NAMES
     SKIP_FILE_PREFIXES = ("~$",)
     SKIP_FILE_SUFFIXES = (".tmp", ".swp", ".swo")
-    DEFAULT_DISCOVERY_ROOTS = ("force-app", "vlocity")
+    DEFAULT_DISCOVERY_ROOTS = DEFAULT_DISCOVERY_ROOTS
     def __init__(
         self,
         graph: GraphStore,
@@ -1073,73 +1064,20 @@ class IngestionService:
         run_id: str | None = None,
         mode: str = "full_ingest",
     ) -> dict[str, dict[str, int | str]]:
-        """Discover ingestion targets and reuse stored hashes when file stats match."""
-        files: dict[str, dict[str, int | str]] = {}
-        root = export_path.resolve()
         tracked = await self._manifest.get_tracked_files()
-        scanned_files = 0
-        hashed_files = 0
-        reused_hashes = 0
-        for discovery_root in self._discovery_roots(root):
-            for current_root, dirs, filenames in os.walk(discovery_root, topdown=True):
-                self._raise_if_cancelled()
-                current_path = Path(current_root)
-                dirs[:] = [d for d in dirs if d not in self.SKIP_DIR_NAMES]
-
-                # Skip nested repositories entirely. Export roots are allowed to be repos,
-                # but cloned repos inside the export tree should not be indexed.
-                if current_path != discovery_root and any((current_path / marker).exists() for marker in (".git", ".hg", ".svn")):
-                    dirs[:] = []
-                    continue
-
-                for filename in sorted(filenames):
-                    self._raise_if_cancelled()
-                    path = current_path / filename
-                    scanned_files += 1
-                    if self._should_skip_file(path):
-                        continue
-                    if not self._matches_discovery_rules(path, root):
-                        continue
-                    if not is_supported_source_file(path):
-                        continue
-                    stat = path.stat()
-                    tracked_file = tracked.get(str(path))
-                    sha = None
-                    if self._stat_fingerprint_matches(tracked_file, stat):
-                        sha = str(tracked_file["sha256"])
-                        reused_hashes += 1
-                    else:
-                        sha = compute_sha256(str(path))
-                        hashed_files += 1
-                    files[str(path)] = {
-                        "sha256": sha,
-                        "size_bytes": stat.st_size,
-                        "mtime_ns": stat.st_mtime_ns,
-                        "ctime_ns": getattr(stat, "st_ctime_ns", None),
-                    }
-                    if run_id:
-                        self._emit_progress(
-                            **self._progress_payload(
-                                run_id=run_id,
-                                mode=mode,
-                                state="running",
-                                phase="discovering",
-                                export_dir=str(root),
-                                total_files=max(scanned_files, 1),
-                                processed_files=hashed_files + reused_hashes,
-                                failed_files=0,
-                                current_file=str(path),
-                                current_parser="discovery",
-                                parser_stats=self._empty_parser_stats(),
-                                unresolved_symbols=0,
-                                warnings_count=0,
-                                discovery_scanned_files=scanned_files,
-                                discovery_discovered_files=len(files),
-                                discovery_hashed_files=hashed_files,
-                                discovery_reused_hashes=reused_hashes,
-                            )
-                        )
-        return files
+        return await discover_file_records(
+            export_path,
+            tracked_files=tracked,
+            include_globs=self._include_globs,
+            exclude_globs=self._exclude_globs,
+            stat_fingerprint_matches=self._stat_fingerprint_matches,
+            raise_if_cancelled=self._raise_if_cancelled,
+            emit_progress=self._emit_progress,
+            progress_payload=self._progress_payload,
+            empty_parser_stats=self._empty_parser_stats,
+            run_id=run_id,
+            mode=mode,
+        )
 
     def _discover_files(self, export_path: Path) -> dict[str, str]:
         """Compatibility helper used by tests; returns path->sha mapping."""
@@ -1147,74 +1085,23 @@ class IngestionService:
         return {path: str(meta["sha256"]) for path, meta in records.items()}
 
     def _discovery_roots(self, export_path: Path) -> list[Path]:
-        root = export_path.resolve()
-        if self._include_globs:
-            return [root]
-        if root.name in self.DEFAULT_DISCOVERY_ROOTS:
-            return [root]
-        discovered: list[Path] = []
-        seen: set[str] = set()
-
-        def _add(candidate: Path) -> None:
-            resolved = candidate.resolve()
-            key = str(resolved)
-            if not resolved.exists() or not resolved.is_dir() or key in seen:
-                return
-            seen.add(key)
-            discovered.append(resolved)
-
-        for package_dir in self._sfdx_package_directories(root):
-            _add(package_dir)
-        for child in sorted(root.iterdir()):
-            if child.is_dir() and child.name in self.DEFAULT_DISCOVERY_ROOTS:
-                _add(child)
-        return discovered or [root]
+        return discovery_roots(export_path, include_globs=self._include_globs)
 
     @staticmethod
     def _sfdx_package_directories(root: Path) -> list[Path]:
-        config_path = root / "sfdx-project.json"
-        if not config_path.exists():
-            return []
-        try:
-            payload = json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-        package_dirs = payload.get("packageDirectories")
-        if not isinstance(package_dirs, list):
-            return []
-        discovered: list[Path] = []
-        seen: set[str] = set()
-        for entry in package_dirs:
-            if not isinstance(entry, dict):
-                continue
-            rel_path = entry.get("path")
-            if not isinstance(rel_path, str) or not rel_path.strip():
-                continue
-            candidate = (root / rel_path).expanduser()
-            resolved = candidate.resolve()
-            key = str(resolved)
-            if key in seen or not resolved.exists() or not resolved.is_dir():
-                continue
-            seen.add(key)
-            discovered.append(resolved)
-        return discovered
+        return sfdx_package_directories(root)
 
     @classmethod
     def _should_skip_file(cls, path: Path) -> bool:
-        name = path.name
-        if any(name.startswith(prefix) or prefix in name for prefix in cls.SKIP_FILE_PREFIXES):
-            return True
-        if any(name.endswith(suffix) for suffix in cls.SKIP_FILE_SUFFIXES):
-            return True
-        return False
+        return should_skip_file(path)
 
     def _matches_discovery_rules(self, path: Path, root: Path) -> bool:
-        relative = path.relative_to(root).as_posix()
-        if self._include_globs and not any(fnmatch.fnmatch(relative, pattern) for pattern in self._include_globs):
-            return False
-        if self._exclude_globs and any(fnmatch.fnmatch(relative, pattern) for pattern in self._exclude_globs):
-            return False
-        return True
+        return matches_discovery_rules(
+            path,
+            root,
+            include_globs=self._include_globs,
+            exclude_globs=self._exclude_globs,
+        )
 
     @staticmethod
     def _parser_name_for_file(fpath: str) -> str:
