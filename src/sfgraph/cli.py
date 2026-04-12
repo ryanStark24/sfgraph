@@ -40,6 +40,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--mode", choices=("full", "graph_only"), default="full")
     ingest.add_argument("--include", action="append", default=[], help="Include glob relative to export root. Overrides the default force-app/vlocity root selection.")
     ingest.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root")
+    ingest.add_argument("--org-alias", default=None, help="Salesforce org alias to enrich ingest metadata (optional)")
+    ingest.add_argument("--enrich-org", action="store_true", help="Use Salesforce CLI metadata probes during ingest/refresh")
     ingest.set_defaults(func=_cmd_ingest)
 
     refresh = sub.add_parser("refresh", help="Run incremental refresh for an export directory (defaults to workspace-root force-app/ and vlocity/ when present)")
@@ -48,6 +50,8 @@ def _build_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--mode", choices=("full", "graph_only"), default="full")
     refresh.add_argument("--include", action="append", default=[], help="Include glob relative to export root. Overrides the default force-app/vlocity root selection.")
     refresh.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root")
+    refresh.add_argument("--org-alias", default=None, help="Salesforce org alias to enrich ingest metadata (optional)")
+    refresh.add_argument("--enrich-org", action="store_true", help="Use Salesforce CLI metadata probes during ingest/refresh")
     refresh.set_defaults(func=_cmd_refresh)
 
     vectorize = sub.add_parser("vectorize", help="Rebuild vectors for an already ingested export")
@@ -160,6 +164,8 @@ async def _cmd_ingest(args: argparse.Namespace) -> int:
             ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
             include_globs=args.include,
             exclude_globs=args.exclude,
+            org_alias=args.org_alias,
+            enrich_org=bool(args.enrich_org),
         )
         summary = await service.ingest(args.export_dir)
         print(json.dumps(summary.model_dump(), indent=2))
@@ -181,6 +187,8 @@ async def _cmd_refresh(args: argparse.Namespace) -> int:
             ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
             include_globs=args.include,
             exclude_globs=args.exclude,
+            org_alias=args.org_alias,
+            enrich_org=bool(args.enrich_org),
         )
         summary = await service.refresh(args.export_dir)
         print(json.dumps(summary.model_dump(), indent=2))

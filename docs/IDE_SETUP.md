@@ -182,7 +182,11 @@ Example ingest commands:
 ```bash
 uv run sfgraph ingest /absolute/path/to/ProjectA/export --data-dir /absolute/path/to/ProjectA/.sfgraph-data
 uv run sfgraph ingest /absolute/path/to/ProjectB/export --data-dir /absolute/path/to/ProjectB/.sfgraph-data
+# Optional org-aware enrichment (requires Salesforce CLI + authenticated alias)
+uv run sfgraph ingest /absolute/path/to/ProjectA/export --data-dir /absolute/path/to/ProjectA/.sfgraph-data --enrich-org --org-alias my-org
 ```
+
+Recommendation: run ingestion from CLI for deterministic execution, then use MCP tools (`ask`, `analyze`, `get_ingest_job`) from the IDE for interactive analysis.
 
 ## Sanity Check After Connecting
 

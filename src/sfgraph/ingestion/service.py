@@ -9,6 +9,7 @@ import logging
 import os
 import fnmatch
 import subprocess
+import shutil
 import threading
 import time
 from collections import defaultdict
@@ -128,6 +129,8 @@ class IngestionService:
         ingestion_progress_path: str | None = None,
         include_globs: list[str] | None = None,
         exclude_globs: list[str] | None = None,
+        org_alias: str | None = None,
+        enrich_org: bool = False,
     ) -> None:
         self._graph = graph
         self._manifest = manifest
@@ -146,9 +149,149 @@ class IngestionService:
         self._last_progress_flush_at: float = 0.0
         self._include_globs = include_globs or []
         self._exclude_globs = exclude_globs or []
+        self._org_alias = (org_alias or "").strip() or None
+        self._enrich_org = bool(enrich_org)
+        self._org_enrichment_context: dict[str, Any] | None = None
         self._vector_upsert_failures = 0
         self._vector_last_error: str | None = None
         self._vector_failure_logged = False
+
+    def _resolve_target_org_alias(self) -> str | None:
+        if self._org_alias:
+            return self._org_alias
+        if not self._enrich_org:
+            return None
+        if shutil.which("sf") is None:
+            return None
+        try:
+            proc = subprocess.run(
+                ["sf", "config", "get", "target-org", "--json"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode != 0:
+                return None
+            payload = json.loads(proc.stdout or "{}")
+            result = payload.get("result")
+            if not isinstance(result, list):
+                return None
+            for item in result:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("name") or "") != "target-org":
+                    continue
+                alias = str(item.get("value") or "").strip()
+                if alias:
+                    return alias
+            return None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_count_from_sf_query(payload: dict[str, Any]) -> int | None:
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            return None
+        records = result.get("records")
+        if not isinstance(records, list) or not records:
+            return None
+        first = records[0]
+        if not isinstance(first, dict):
+            return None
+        for key in ("expr0", "total", "count", "attributes"):
+            if key == "attributes":
+                continue
+            value = first.get(key)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+        for value in first.values():
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+        return None
+
+    def _query_tooling_count(self, alias: str, soql: str) -> int | None:
+        try:
+            proc = subprocess.run(
+                [
+                    "sf",
+                    "data",
+                    "query",
+                    "--target-org",
+                    alias,
+                    "--use-tooling-api",
+                    "--query",
+                    soql,
+                    "--json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if proc.returncode != 0:
+                return None
+            payload = json.loads(proc.stdout or "{}")
+            return self._extract_count_from_sf_query(payload)
+        except Exception:
+            return None
+
+    def _prepare_org_enrichment(self, warnings: list[str]) -> None:
+        self._org_enrichment_context = None
+        if not self._enrich_org:
+            return
+        if shutil.which("sf") is None:
+            warnings.append("Org enrichment skipped: Salesforce CLI `sf` not found.")
+            return
+        alias = self._resolve_target_org_alias()
+        if not alias:
+            warnings.append("Org enrichment skipped: no org alias provided and no default target-org configured.")
+            return
+        try:
+            proc = subprocess.run(
+                ["sf", "org", "display", "--target-org", alias, "--json"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if proc.returncode != 0:
+                warnings.append(f"Org enrichment skipped: unable to resolve org alias `{alias}`.")
+                return
+            payload = json.loads(proc.stdout or "{}")
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                warnings.append(f"Org enrichment skipped: unexpected org display payload for `{alias}`.")
+                return
+            context: dict[str, Any] = {
+                "enabled": True,
+                "alias": alias,
+                "username": result.get("username"),
+                "org_id": result.get("id") or result.get("orgId"),
+                "instance_url": result.get("instanceUrl"),
+                "api_version": result.get("apiVersion"),
+            }
+            tooling_counts = {
+                "entity_definition_count": self._query_tooling_count(alias, "SELECT COUNT() total FROM EntityDefinition"),
+                "field_definition_count": self._query_tooling_count(alias, "SELECT COUNT() total FROM FieldDefinition"),
+                "metadata_component_dependency_count": self._query_tooling_count(
+                    alias, "SELECT COUNT() total FROM MetadataComponentDependency"
+                ),
+            }
+            context["tooling_counts"] = tooling_counts
+            self._org_enrichment_context = context
+            warnings.append(
+                "Org enrichment enabled via alias "
+                f"`{alias}` (EntityDefinition={tooling_counts.get('entity_definition_count')}, "
+                f"FieldDefinition={tooling_counts.get('field_definition_count')})."
+            )
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Org enrichment skipped: {exc}")
 
     def _raise_if_cancelled(self) -> None:
         if self._cancel_event is not None and self._cancel_event.is_set():
@@ -515,6 +658,7 @@ class IngestionService:
         start = time.monotonic()
         run_id = await self._manifest.create_run()
         warnings: list[str] = []
+        self._prepare_org_enrichment(warnings)
         self._progress_started_at = datetime.now(timezone.utc).isoformat()
         self._last_progress_flush_at = 0.0
         discovered_files = await self._discover_file_records(
@@ -680,6 +824,7 @@ class IngestionService:
         start = time.monotonic()
         run_id = await self._manifest.create_run()
         warnings: list[str] = []
+        self._prepare_org_enrichment(warnings)
         self._progress_started_at = datetime.now(timezone.utc).isoformat()
         self._last_progress_flush_at = 0.0
 
@@ -1873,6 +2018,7 @@ class IngestionService:
             "mode": "full_ingest",
             "parser_stats": summary.parser_stats,
             "unresolved_symbols": summary.unresolved_symbols,
+            "org_enrichment": self._org_enrichment_context or {"enabled": False},
         }
         out = Path(self._ingestion_meta_path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -1897,6 +2043,7 @@ class IngestionService:
             "mode": "incremental_refresh",
             "parser_stats": summary.parser_stats,
             "unresolved_symbols": summary.unresolved_symbols,
+            "org_enrichment": self._org_enrichment_context or {"enabled": False},
         }
         out = Path(self._ingestion_meta_path)
         out.parent.mkdir(parents=True, exist_ok=True)

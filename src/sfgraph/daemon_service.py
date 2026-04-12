@@ -213,6 +213,8 @@ def build_ingestion_service_from_parts(
     mode: str = "full",
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
+    org_alias: str | None = None,
+    enrich_org: bool = False,
 ) -> IngestionService:
     if mode == "full" and vectors is None:
         raise RuntimeError("Vector store is required for full mode ingestion.")
@@ -228,6 +230,8 @@ def build_ingestion_service_from_parts(
         ingestion_progress_path=str(data_root / "ingestion_progress.json"),
         include_globs=include_globs,
         exclude_globs=exclude_globs,
+        org_alias=org_alias,
+        enrich_org=enrich_org,
     )
 
 
@@ -268,6 +272,8 @@ async def _run_isolated_job(
         resume_checkpoint = bool(options.get("resume_checkpoint", False))
         include_globs = _as_string_list(options.get("include_globs"))
         exclude_globs = _as_string_list(options.get("exclude_globs"))
+        org_alias = str(options.get("org_alias") or "").strip() or None
+        enrich_org = bool(options.get("enrich_org", False))
         service = build_ingestion_service_from_parts(
             graph=graph,
             manifest=manifest,
@@ -279,6 +285,8 @@ async def _run_isolated_job(
             mode="full" if job_type == "vectorize" else mode,
             include_globs=[] if job_type == "vectorize" else include_globs,
             exclude_globs=[] if job_type == "vectorize" else exclude_globs,
+            org_alias=None if job_type == "vectorize" else org_alias,
+            enrich_org=False if job_type == "vectorize" else enrich_org,
         )
         if job_type == "ingest" and resume_checkpoint:
             logger.info(
@@ -444,6 +452,8 @@ class DaemonOperations:
         mode = str(params.get("mode", "full"))
         include_globs = _as_string_list(params.get("include_globs"))
         exclude_globs = _as_string_list(params.get("exclude_globs"))
+        org_alias = str(params.get("org_alias") or "").strip() or None
+        enrich_org = bool(params.get("enrich_org", False))
         export_dir = str(params["export_dir"])
         summary = await _run_job_inline_via_worker(
             job_type="ingest",
@@ -453,6 +463,8 @@ class DaemonOperations:
                 "mode": mode,
                 "include_globs": include_globs,
                 "exclude_globs": exclude_globs,
+                "org_alias": org_alias,
+                "enrich_org": enrich_org,
             },
         )
         return {
@@ -471,6 +483,8 @@ class DaemonOperations:
             "mode": mode,
             "include_globs": include_globs,
             "exclude_globs": exclude_globs,
+            "org_alias": org_alias,
+            "enrich_org": enrich_org,
             "vector_health": _vector_health_payload(self.app),
         }
 
@@ -483,6 +497,8 @@ class DaemonOperations:
                 "mode": str(params.get("mode", "full")),
                 "include_globs": _as_string_list(params.get("include_globs")),
                 "exclude_globs": _as_string_list(params.get("exclude_globs")),
+                "org_alias": str(params.get("org_alias") or "").strip() or None,
+                "enrich_org": bool(params.get("enrich_org", False)),
             },
         )
 
@@ -495,6 +511,8 @@ class DaemonOperations:
                 "mode": str(params.get("mode", "full")),
                 "include_globs": _as_string_list(params.get("include_globs")),
                 "exclude_globs": _as_string_list(params.get("exclude_globs")),
+                "org_alias": str(params.get("org_alias") or "").strip() or None,
+                "enrich_org": bool(params.get("enrich_org", False)),
             },
         )
 
@@ -542,6 +560,8 @@ class DaemonOperations:
         mode = str(params.get("mode", "full"))
         include_globs = _as_string_list(params.get("include_globs"))
         exclude_globs = _as_string_list(params.get("exclude_globs"))
+        org_alias = str(params.get("org_alias") or "").strip() or None
+        enrich_org = bool(params.get("enrich_org", False))
         export_dir = str(params["export_dir"])
         summary = await _run_job_inline_via_worker(
             job_type="refresh",
@@ -551,6 +571,8 @@ class DaemonOperations:
                 "mode": mode,
                 "include_globs": include_globs,
                 "exclude_globs": exclude_globs,
+                "org_alias": org_alias,
+                "enrich_org": enrich_org,
             },
         )
         return {
@@ -571,6 +593,8 @@ class DaemonOperations:
             "mode": mode,
             "include_globs": include_globs,
             "exclude_globs": exclude_globs,
+            "org_alias": org_alias,
+            "enrich_org": enrich_org,
             "vector_health": _vector_health_payload(self.app),
         }
 

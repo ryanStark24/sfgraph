@@ -120,12 +120,18 @@ If no `OPENAI_API_KEY` is set, the core product still works. Ingest, trace, diff
 
 ### CLI
 
+CLI is the recommended ingest path for reliability and predictable UX. Use MCP primarily for interactive querying and job polling from IDE clients.
+
 ```bash
 # Full ingest
 uv run sfgraph ingest /absolute/path/to/export --data-dir ./data
 
 # Incremental refresh
 uv run sfgraph refresh /absolute/path/to/export --data-dir ./data
+
+# Optional org-aware enrichment (uses Salesforce CLI)
+uv run sfgraph ingest /absolute/path/to/export --data-dir ./data --enrich-org --org-alias my-org
+uv run sfgraph refresh /absolute/path/to/export --data-dir ./data --enrich-org --org-alias my-org
 
 # Ask a question
 uv run sfgraph query "what uses Account.Status__c?" --data-dir ./data
@@ -186,15 +192,15 @@ The server stores graph data under `./data` relative to the repo root by default
 - Compatibility fallback:
   - `query`
 
-- `start_ingest_job(export_dir, mode?, include_globs?, exclude_globs?)`
-- `start_refresh_job(export_dir, mode?, include_globs?, exclude_globs?)`
+- `start_ingest_job(export_dir, mode?, include_globs?, exclude_globs?, org_alias?, enrich_org?)`
+- `start_refresh_job(export_dir, mode?, include_globs?, exclude_globs?, org_alias?, enrich_org?)`
 - `start_vectorize_job(export_dir)`
 - `get_ingest_job(job_id)`
 - `list_ingest_jobs()`
 - `cancel_ingest_job(job_id)`
 - `resume_ingest_job(job_id)`
-- `ingest_org(export_dir)` (deprecated compatibility)
-- `refresh(export_dir)` (deprecated compatibility)
+- `ingest_org(export_dir, ..., org_alias?, enrich_org?)` (deprecated compatibility)
+- `refresh(export_dir, ..., org_alias?, enrich_org?)` (deprecated compatibility)
 - `watch_refresh(export_dir, duration_seconds?, poll_interval?, debounce_seconds?, max_refreshes?)`
 - `get_ingestion_progress()`
 - `get_ingestion_status()`

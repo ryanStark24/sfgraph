@@ -85,6 +85,21 @@ def test_cli_ingest_help_includes_discovery_filters():
     assert result.returncode == 0
     assert "--include" in result.stdout
     assert "--exclude" in result.stdout
+    assert "--org-alias" in result.stdout
+    assert "--enrich-org" in result.stdout
+
+
+def test_cli_refresh_help_includes_discovery_filters():
+    result = subprocess.run(
+        [sys.executable, "-m", "sfgraph.cli", "refresh", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--include" in result.stdout
+    assert "--exclude" in result.stdout
+    assert "--org-alias" in result.stdout
+    assert "--enrich-org" in result.stdout
 
 
 def test_cli_acceptance_help_exits_zero():

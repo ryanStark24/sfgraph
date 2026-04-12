@@ -167,6 +167,8 @@ async def ingest_org(
     mode: str = "full",
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
+    org_alias: str | None = None,
+    enrich_org: bool = False,
 ) -> str:
     """Deprecated blocking ingest path. Prefer `start_ingest_job`."""
     app: AppContext = ctx.request_context.lifespan_context
@@ -179,6 +181,8 @@ async def ingest_org(
         mode=mode,
         include_globs=include_globs or [],
         exclude_globs=exclude_globs or [],
+        org_alias=org_alias,
+        enrich_org=enrich_org,
     )
 
 
@@ -189,6 +193,8 @@ async def start_ingest_job(
     mode: str = "full",
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
+    org_alias: str | None = None,
+    enrich_org: bool = False,
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
@@ -199,6 +205,8 @@ async def start_ingest_job(
         mode=mode,
         include_globs=include_globs or [],
         exclude_globs=exclude_globs or [],
+        org_alias=org_alias,
+        enrich_org=enrich_org,
     )
     job_id = str(result.get("job_id") or "")
     if job_id:
@@ -213,6 +221,8 @@ async def start_refresh_job(
     mode: str = "full",
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
+    org_alias: str | None = None,
+    enrich_org: bool = False,
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
@@ -223,6 +233,8 @@ async def start_refresh_job(
         mode=mode,
         include_globs=include_globs or [],
         exclude_globs=exclude_globs or [],
+        org_alias=org_alias,
+        enrich_org=enrich_org,
     )
     job_id = str(result.get("job_id") or "")
     if job_id:
@@ -303,6 +315,8 @@ async def refresh(
     mode: str = "full",
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
+    org_alias: str | None = None,
+    enrich_org: bool = False,
 ) -> str:
     """Deprecated blocking refresh path. Prefer `start_refresh_job`."""
     app: AppContext = ctx.request_context.lifespan_context
@@ -315,6 +329,8 @@ async def refresh(
         mode=mode,
         include_globs=include_globs or [],
         exclude_globs=exclude_globs or [],
+        org_alias=org_alias,
+        enrich_org=enrich_org,
     )
 
 

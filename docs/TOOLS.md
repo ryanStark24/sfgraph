@@ -2,6 +2,8 @@
 
 This document describes the MCP tools exposed by `sfgraph`.
 
+For day-to-day ingestion, prefer the CLI (`sfgraph ingest` / `sfgraph refresh`) and use MCP tools for orchestration and query workflows in IDE clients.
+
 ## Ingestion and Runtime
 
 ### `ping`
@@ -14,11 +16,12 @@ Typical use:
 
 - confirm the server is alive and the parser pool initialized
 
-### `start_ingest_job(export_dir, mode?, include_globs?, exclude_globs?)`
+### `start_ingest_job(export_dir, mode?, include_globs?, exclude_globs?, org_alias?, enrich_org?)`
 
 Purpose:
 
 - start full ingest in the background and return immediately with a `job_id`
+- optional org metadata enrichment via Salesforce CLI when `enrich_org=true`
 
 Returns:
 
@@ -26,11 +29,12 @@ Returns:
 - `state`
 - `created_at`
 
-### `start_refresh_job(export_dir, mode?, include_globs?, exclude_globs?)`
+### `start_refresh_job(export_dir, mode?, include_globs?, exclude_globs?, org_alias?, enrich_org?)`
 
 Purpose:
 
 - start incremental re-ingest in the background
+- optional org metadata enrichment via Salesforce CLI when `enrich_org=true`
 
 Returns:
 
