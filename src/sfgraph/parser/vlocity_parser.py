@@ -130,6 +130,79 @@ def _normalize_namespace(value: str, namespace: str) -> str:
     return value.replace("%vlocity_namespace%", namespace)
 
 
+def _qname_from_record_source_key(record_source_key: str) -> str | None:
+    parts = [part for part in record_source_key.split("/") if part]
+    if len(parts) < 2:
+        return None
+    pack_type = _safe_pack_type_for_qname(parts[0])
+    suffix = ".".join(_safe_pack_type_for_qname(part) for part in parts[1:])
+    return f"{pack_type}.{suffix}" if suffix else None
+
+
+def _lookup_reference_qname(lookup: dict[str, Any], namespace: str) -> str | None:
+    sobject_type = _normalize_namespace(str(lookup.get("VlocityRecordSObjectType") or "").strip(), namespace)
+    global_key = _normalize_namespace(str(lookup.get("%vlocity_namespace%__GlobalKey__c") or lookup.get("GlobalKey") or "").strip(), namespace)
+    name = _normalize_namespace(str(lookup.get("Name") or "").strip(), namespace)
+    record_source_key = _normalize_namespace(
+        str(
+            lookup.get("VlocityLookupRecordSourceKey")
+            or lookup.get("VlocityMatchingRecordSourceKey")
+            or ""
+        ).strip(),
+        namespace,
+    )
+    if sobject_type and global_key:
+        return f"{_safe_pack_type_for_qname(sobject_type)}.{global_key}"
+    if sobject_type and name:
+        return f"{_safe_pack_type_for_qname(sobject_type)}.{name}"
+    if record_source_key:
+        return _qname_from_record_source_key(record_source_key)
+    return None
+
+
+def _collect_lookup_reference_edges(
+    src_qname: str,
+    src_label: str,
+    payload: Any,
+    namespace: str,
+    context: str,
+) -> list[EdgeFact]:
+    edges: list[EdgeFact] = []
+    seen_edges: set[tuple[str, str]] = set()
+
+    def _walk(value: Any, path: tuple[str, ...] = ()) -> None:
+        if isinstance(value, dict):
+            pack_marker = str(value.get("VlocityDataPackType") or "")
+            if pack_marker in {"VlocityMatchingKeyObject", "VlocityLookupMatchingKeyObject"}:
+                dst_qname = _lookup_reference_qname(value, namespace)
+                if dst_qname:
+                    key = (dst_qname, ".".join(path[-3:]) or context)
+                    if key not in seen_edges:
+                        seen_edges.add(key)
+                        edges.append(
+                            _edge(
+                                src_qname,
+                                src_label,
+                                "REFERENCES_COMPONENT",
+                                dst_qname,
+                                "VlocityDataPack",
+                                0.9,
+                                "matching_key_object",
+                                "CONFIG",
+                                ".".join(path[-3:]) or context,
+                            )
+                        )
+            for child_key, child_value in value.items():
+                if isinstance(child_key, str):
+                    _walk(child_value, path + (child_key,))
+        elif isinstance(value, list):
+            for item in value:
+                _walk(item, path)
+
+    _walk(payload)
+    return edges
+
+
 def _pack_type(data: dict[str, Any], file_path: str) -> str:
     candidates = [
         data.get("VlocityDataPackType"),
@@ -647,10 +720,12 @@ def _parse_non_object_vlocity_array(
         item_name = _first_string(
             item.get("Name"),
             item.get("DeveloperName"),
+            item.get("%vlocity_namespace%__GlobalKey__c"),
+            item.get("GlobalKey"),
             item.get("Id"),
             f"item_{idx}",
         )
-        child_qname = f"{container_qname}.{item_name}"
+        child_qname = _matching_key_qname(item, pack_type=f"{pack_type}Item", standards=standards) or f"{container_qname}.{item_name}"
         nodes.append(
             _node(
                 item_label,
@@ -699,8 +774,10 @@ def _parse_non_object_vlocity_array(
             )
         )
         edges.extend(_collect_reference_edges(child_qname, item_label, item, namespace, pack_type))
+        edges.extend(_collect_lookup_reference_edges(child_qname, item_label, item, namespace, pack_type))
 
     edges.extend(_collect_reference_edges(container_qname, "VlocityDataPack", {"items": data}, namespace, pack_type))
+    edges.extend(_collect_lookup_reference_edges(container_qname, "VlocityDataPack", {"items": data}, namespace, pack_type))
     return nodes, edges
 
 

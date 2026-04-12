@@ -108,6 +108,7 @@ EDGE_TYPES: list[str] = [
     "DR_WRITES",
     "DR_TRANSFORMS",
     "REFERENCES_STEP_OUTPUT",
+    "REFERENCES_COMPONENT",
 ]
 
 # Human-readable descriptions for schema_index.json (INGEST-09)

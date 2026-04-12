@@ -340,6 +340,43 @@ def test_supported_non_object_vlocity_arrays_are_parsed(tmp_path):
     )
 
 
+def test_promotion_items_emit_lookup_reference_edges(tmp_path):
+    file = tmp_path / "Offer_PromotionItems.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "PromoItemA",
+                    "%vlocity_namespace%__ProductId__c": {
+                        "%vlocity_namespace%__GlobalKey__c": "product-global-key",
+                        "VlocityDataPackType": "VlocityLookupMatchingKeyObject",
+                        "VlocityRecordSObjectType": "Product2",
+                    },
+                    "%vlocity_namespace%__PromotionId__c": {
+                        "%vlocity_namespace%__GlobalKey__c": "promo-global-key",
+                        "VlocityDataPackType": "VlocityMatchingKeyObject",
+                        "VlocityRecordSObjectType": "%vlocity_namespace%__Promotion__c",
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, edges, _ = parse_vlocity_json_detailed(str(file))
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_label == "VlocityDataPack"
+        and e.dst_qualified_name == "Product2.product-global-key"
+        for e in edges
+    )
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_qualified_name == "vlocity_cmt__Promotion__c.promo-global-key"
+        for e in edges
+    )
+
+
 def test_price_list_entries_array_emits_typed_nodes(tmp_path):
     file = tmp_path / "Catalog_PriceListEntries.json"
     file.write_text(
@@ -360,6 +397,43 @@ def test_price_list_entries_array_emits_typed_nodes(tmp_path):
     assert any(n.label == "PriceListEntryItem" for n in nodes)
     assert any(e.rel_type == "HAS_PRICE_LIST_ENTRY" for e in edges)
     assert any(e.rel_type == "CALLS" and e.dst_label == "DataRaptor" for e in edges)
+
+
+def test_price_list_entries_emit_matching_key_lookup_edges(tmp_path):
+    file = tmp_path / "Catalog_PriceListEntries.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "EnterprisePriceEntry",
+                    "%vlocity_namespace%__PriceListId__c": {
+                        "%vlocity_namespace%__Code__c": "B2B_PRICE_LIST",
+                        "VlocityDataPackType": "VlocityLookupMatchingKeyObject",
+                        "VlocityLookupRecordSourceKey": "%vlocity_namespace%__PriceList__c/B2B_PRICE_LIST",
+                        "VlocityRecordSObjectType": "%vlocity_namespace%__PriceList__c",
+                    },
+                    "%vlocity_namespace%__PromotionItemId__c": {
+                        "VlocityDataPackType": "VlocityMatchingKeyObject",
+                        "VlocityMatchingRecordSourceKey": "%vlocity_namespace%__PromotionItem__c/%vlocity_namespace%__Promotion__c/promo-key/Product2/product-key",
+                        "VlocityRecordSObjectType": "%vlocity_namespace%__PromotionItem__c",
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, edges, _ = parse_vlocity_json_detailed(str(file))
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_qualified_name == "vlocity_cmt__PriceList__c.B2B_PRICE_LIST"
+        for e in edges
+    )
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_qualified_name == "vlocity_cmt__PromotionItem__c.vlocity_cmt__Promotion__c.promo_key.Product2.product_key"
+        for e in edges
+    )
 
 
 def test_interface_implementation_details_array_emits_typed_nodes(tmp_path):
@@ -384,6 +458,32 @@ def test_interface_implementation_details_array_emits_typed_nodes(tmp_path):
     assert any(e.rel_type == "CALLS" and e.dst_label == "ApexClass" for e in edges)
 
 
+def test_interface_implementation_details_emit_interface_lookup_edges(tmp_path):
+    file = tmp_path / "Interface_InterfaceImplementationDetails.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "DefaultGetProductListImplementation",
+                    "%vlocity_namespace%__InterfaceId__c": {
+                        "Name": "GetProductListInterface",
+                        "VlocityDataPackType": "VlocityMatchingKeyObject",
+                        "VlocityRecordSObjectType": "%vlocity_namespace%__InterfaceImplementation__c",
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, edges, _ = parse_vlocity_json_detailed(str(file))
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_qualified_name == "vlocity_cmt__InterfaceImplementation__c.GetProductListInterface"
+        for e in edges
+    )
+
+
 def test_product_child_items_array_emits_typed_nodes(tmp_path):
     file = tmp_path / "Bundle_ProductChildItems.json"
     file.write_text(
@@ -404,6 +504,32 @@ def test_product_child_items_array_emits_typed_nodes(tmp_path):
     assert any(n.label == "ProductChildItem" for n in nodes)
     assert any(e.rel_type == "HAS_PRODUCT_CHILD_ITEM" for e in edges)
     assert any(e.rel_type == "CALLS" and e.dst_label == "IntegrationProcedure" for e in edges)
+
+
+def test_product_child_items_emit_parent_product_lookup_edges(tmp_path):
+    file = tmp_path / "Bundle_ProductChildItems.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "AddonFiber",
+                    "%vlocity_namespace%__ParentProductId__c": {
+                        "%vlocity_namespace%__GlobalKey__c": "parent-product-key",
+                        "VlocityDataPackType": "VlocityMatchingKeyObject",
+                        "VlocityRecordSObjectType": "Product2",
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, edges, _ = parse_vlocity_json_detailed(str(file))
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_qualified_name == "Product2.parent-product-key"
+        for e in edges
+    )
 
 
 def test_supported_non_object_vlocity_arrays_wrapped_in_dict_are_parsed(tmp_path):
