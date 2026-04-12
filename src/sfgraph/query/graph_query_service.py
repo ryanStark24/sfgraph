@@ -25,6 +25,7 @@ from sfgraph.query.analyze_support import (
     candidate_qnames_for_payload,
     render_analyze_markdown,
 )
+from sfgraph.query.exact_retrieval import ExactRetrievalHelper
 from sfgraph.query.graph_visualizer import render_mermaid_subgraph
 from sfgraph.query.rules_registry import RulesRegistry
 from sfgraph.storage.base import GraphStore
@@ -57,18 +58,6 @@ def _semantic_kind(rel_type: str, context: str) -> str:
 class GraphQueryService:
     """Provides lineage and query helpers over the current graph store."""
 
-    _SKIP_DIR_NAMES = frozenset({".git", ".hg", ".svn", "node_modules", ".sf", ".sfdx", ".venv", "venv", "__pycache__"})
-    _EXACT_SEARCH_SUFFIXES = (
-        ".cls",
-        ".trigger",
-        ".flow-meta.xml",
-        ".object-meta.xml",
-        ".labels-meta.xml",
-        ".label-meta.xml",
-        ".json",
-        ".xml",
-    )
-
     def __init__(
         self,
         graph: GraphStore,
@@ -86,6 +75,7 @@ class GraphQueryService:
         self._ingestion_meta_path = Path(ingestion_meta_path)
         self._ingestion_progress_path = Path(ingestion_progress_path)
         self._rules = RulesRegistry(config_path=rules_path)
+        self._exact = ExactRetrievalHelper(self._repo_root)
         self._schema_agent = SchemaFilterAgent()
         self._planner_agent = QueryPlannerAgent()
         self._corrector_agent = QueryCorrectorAgent()
@@ -524,20 +514,11 @@ class GraphQueryService:
         }
 
     def _iter_repo_files(self, suffixes: tuple[str, ...] | None = None):
-        suffixes = suffixes or self._EXACT_SEARCH_SUFFIXES
-        for current_root, dirs, filenames in os.walk(self._repo_root):
-            dirs[:] = [d for d in dirs if d not in self._SKIP_DIR_NAMES]
-            for filename in filenames:
-                if not filename.endswith(suffixes):
-                    continue
-                yield Path(current_root) / filename
+        yield from self._exact.iter_repo_files(suffixes)
 
     @staticmethod
     def _read_text_safe(path: Path) -> str:
-        try:
-            return path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            return ""
+        return ExactRetrievalHelper.read_text_safe(path)
 
     @staticmethod
     def _classify_exact_field_match(
@@ -546,136 +527,23 @@ class GraphQueryService:
         window: str,
         file_path: Path,
     ) -> tuple[str, float]:
-        lower_line = line.lower()
-        lower_window = window.lower()
-        if file_path.suffix in {".cls", ".trigger"}:
-            assignment_patterns = (
-                rf"\b{re.escape(field_token)}\b\s*=",
-                rf"\.\s*{re.escape(field_token)}\s*=",
-                rf"\.put\(\s*['\"]{re.escape(field_token)}['\"]\s*,",
-            )
-            if any(re.search(pattern, line) for pattern in assignment_patterns):
-                return "write", 0.98
-            if re.search(rf"\.\s*get\(\s*['\"]{re.escape(field_token)}['\"]\s*\)", line):
-                return "read", 0.95
-            if any(keyword in lower_window for keyword in ("select ", "where ", ".get(", "map<", "jsonattribute", "serviceid")):
-                return "read", 0.9
-            return "mention", 0.75
-
-        if file_path.suffix == ".json":
-            if any(
-                re.search(pattern, lower_line)
-                for pattern in (
-                    rf'"destinationfield"\s*:\s*"[^"]*{re.escape(field_token.lower())}[^"]*"',
-                    rf'"destinationfields"\s*:\s*\[[^\]]*{re.escape(field_token.lower())}[^\]]*\]',
-                )
-            ):
-                return "write", 0.92
-            if any(keyword in lower_window for keyword in ("destinationfield", "destinationfields", "targetfield", "updateablefields")):
-                return "write", 0.9
-            if any(keyword in lower_window for keyword in ("sourcefield", "sourcefields", "input", "query", "extract")):
-                return "read", 0.82
-            return "mention", 0.7
-
-        if file_path.suffix.endswith(".xml"):
-            if any(keyword in lower_window for keyword in ("<field>", "<assigntoreference>", "<outputassignments>", "<recordupdates>")):
-                return "write", 0.85
-            return "mention", 0.7
-
-        return "mention", 0.65
+        return ExactRetrievalHelper.classify_exact_field_match(field_token, line, window, file_path)
 
     @staticmethod
     def _classify_component_token_match(token: str, line: str, window: str, file_path: Path) -> tuple[str, float]:
-        lower_line = line.lower()
-        lower_window = window.lower()
-        escaped = re.escape(token)
-        if file_path.suffix in {".cls", ".trigger"}:
-            write_patterns = (
-                rf"\b{escaped}\b\s*=",
-                rf"\.put\(\s*['\"]{escaped}['\"]\s*,",
-                rf"['\"]{escaped}['\"]\s*:",
-            )
-            read_patterns = (
-                rf"\b{escaped}\b",
-                rf"\.get\(\s*['\"]{escaped}['\"]\s*\)",
-            )
-            if any(re.search(pattern, line) for pattern in write_patterns):
-                return "write", 0.98
-            if any(re.search(pattern, line) for pattern in read_patterns):
-                if "put(" in lower_window or "= " in lower_window:
-                    return "read", 0.9
-                return "mention", 0.75
-            return "mention", 0.7
-        if file_path.suffix == ".json":
-            if any(keyword in lower_window for keyword in ("put(", "destinationfield", "destinationfields", "output", "setvalues")):
-                return "write", 0.88
-            if any(keyword in lower_window for keyword in ("sourcefield", "input", "get(", "extract", "query")):
-                return "read", 0.82
-            return "mention", 0.7
-        if file_path.suffix.endswith(".xml"):
-            if any(keyword in lower_window for keyword in ("<assigntoreference>", "<recordupdates>", "<outputassignments>")):
-                return "write", 0.84
-            return "mention", 0.7
-        return "mention", 0.65
+        return ExactRetrievalHelper.classify_component_token_match(token, line, window, file_path)
 
     @staticmethod
     def _extract_component_write_expression(token: str, line: str) -> str | None:
-        escaped = re.escape(token)
-        patterns = (
-            rf"\b{escaped}\b\s*=\s*(?P<expr>[^;]+)",
-            rf"\.\s*{escaped}\s*=\s*(?P<expr>[^;]+)",
-            rf"\.put\(\s*['\"]{escaped}['\"]\s*,\s*(?P<expr>[^)]+)\)",
-            rf"['\"]{escaped}['\"]\s*:\s*(?P<expr>[^,}}]+)",
-        )
-        for pattern in patterns:
-            match = re.search(pattern, line)
-            if not match:
-                continue
-            expr = str(match.group("expr")).strip()
-            if expr:
-                return expr
-        return None
+        return ExactRetrievalHelper.extract_component_write_expression(token, line)
 
     @staticmethod
     def _extract_field_write_expression(field_token: str, line: str) -> str | None:
-        escaped = re.escape(field_token)
-        patterns = (
-            rf"\.\s*{escaped}\s*=\s*(?P<expr>[^;]+)",
-            rf"\b{escaped}\b\s*=\s*(?P<expr>[^;]+)",
-            rf"\.put\(\s*['\"]{escaped}['\"]\s*,\s*(?P<expr>[^)]+)\)",
-            rf'"destinationfield"\s*:\s*"(?P<expr>[^"]+)"',
-        )
-        for pattern in patterns:
-            match = re.search(pattern, line, flags=re.IGNORECASE)
-            if not match:
-                continue
-            expr = str(match.group("expr")).strip()
-            if expr:
-                return expr
-        return None
+        return ExactRetrievalHelper.extract_field_write_expression(field_token, line)
 
     @staticmethod
     def _trace_variable_origin(symbol: str, lines: list[str], write_line: int) -> dict[str, Any] | None:
-        escaped = re.escape(symbol)
-        assign_pattern = re.compile(rf"\b{escaped}\b\s*=\s*(?P<expr>[^;]+)")
-        decl_assign_pattern = re.compile(
-            rf"\b(?:final\s+)?[A-Za-z_][A-Za-z0-9_<>,.\[\]]*\s+{escaped}\b\s*=\s*(?P<expr>[^;]+)"
-        )
-        for idx in range(write_line - 2, -1, -1):
-            candidate = lines[idx]
-            match = decl_assign_pattern.search(candidate) or assign_pattern.search(candidate)
-            if not match:
-                continue
-            expr = str(match.group("expr")).strip()
-            return {
-                "source_symbol": symbol,
-                "source_expression": expr,
-                "source_line": idx + 1,
-                "source_context": candidate.strip()[:240],
-                "confidence": 0.92,
-                "resolution": "intra_file_backtrack",
-            }
-        return None
+        return ExactRetrievalHelper.trace_variable_origin(symbol, lines, write_line)
 
     def _origin_for_component_write(
         self,
@@ -684,13 +552,13 @@ class GraphQueryService:
         lines: list[str],
         write_line: int,
     ) -> dict[str, Any] | None:
-        expr = self._extract_component_write_expression(token, line)
+        expr = self._exact.extract_component_write_expression(token, line)
         if not expr:
             return None
         rhs_symbol_match = re.fullmatch(r"\(?\s*(?:String|Id|Object|Decimal|Integer|Long|Double|Boolean)?\s*\)?\s*([A-Za-z_][A-Za-z0-9_]*)", expr)
         if rhs_symbol_match:
             symbol = rhs_symbol_match.group(1)
-            traced = self._trace_variable_origin(symbol, lines, write_line)
+            traced = self._exact.trace_variable_origin(symbol, lines, write_line)
             if traced:
                 traced["write_expression"] = expr
                 return traced
@@ -747,7 +615,7 @@ class GraphQueryService:
     ) -> dict[str, Any]:
         resolved_nodes = await self._find_component_nodes(component_name, max_results=25)
         if not resolved_nodes:
-            for source_path in self._find_component_source_files(component_name, max_results=25):
+            for source_path in self._exact.find_component_source_files(component_name, max_results=25):
                 resolved_nodes.append(
                     {
                         "qualifiedName": component_name.strip(),
@@ -865,95 +733,13 @@ class GraphQueryService:
         }
 
     def _find_component_source_files(self, component_name: str, max_results: int = 20) -> list[Path]:
-        name = component_name.strip()
-        if not name:
-            return []
-        out: list[Path] = []
-        seen: set[str] = set()
-
-        def _add(path: Path) -> None:
-            resolved = path.resolve()
-            key = str(resolved)
-            if not resolved.exists() or key in seen:
-                return
-            seen.add(key)
-            out.append(resolved)
-
-        package_metadata_roots = self._package_metadata_roots()
-        exact_roots: list[Path] = []
-        for metadata_root in package_metadata_roots:
-            exact_roots.append(metadata_root / "classes")
-            exact_roots.append(metadata_root / "triggers")
-        exact_roots.append(self._repo_root / "vlocity")
-
-        for suffix in (".cls", ".trigger", ".js", ".ts", ".xml", ".json"):
-            for root in exact_roots:
-                _add(root / f"{name}{suffix}")
-            if len(out) >= max_results:
-                return out[:max_results]
-
-        class_pattern = re.compile(rf"\b(?:class|trigger)\s+{re.escape(name)}\b", re.IGNORECASE)
-        search_roots = exact_roots
-        allowed_exts = {".cls", ".trigger", ".js", ".ts", ".xml", ".json"}
-        for root in search_roots:
-            if not root.exists():
-                continue
-            for path in root.rglob("*"):
-                if not path.is_file() or path.suffix.lower() not in allowed_exts:
-                    continue
-                text = self._read_text_safe(path)
-                if not text:
-                    continue
-                if class_pattern.search(text) or name in text:
-                    _add(path)
-                    if len(out) >= max_results:
-                        return out[:max_results]
-        return out[:max_results]
+        return self._exact.find_component_source_files(component_name, max_results=max_results)
 
     def _package_metadata_roots(self) -> list[Path]:
-        candidates = self._sfdx_package_directories()
-        if not candidates:
-            candidates = [self._repo_root / "force-app"]
-        roots: list[Path] = []
-        seen: set[str] = set()
-        for package_dir in candidates:
-            metadata_root = package_dir / "main" / "default"
-            if not metadata_root.exists():
-                metadata_root = package_dir
-            resolved = metadata_root.resolve()
-            key = str(resolved)
-            if not resolved.exists() or key in seen:
-                continue
-            seen.add(key)
-            roots.append(resolved)
-        return roots
+        return self._exact.package_metadata_roots()
 
     def _sfdx_package_directories(self) -> list[Path]:
-        config_path = self._repo_root / "sfdx-project.json"
-        if not config_path.exists():
-            return []
-        try:
-            payload = json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-        package_dirs = payload.get("packageDirectories")
-        if not isinstance(package_dirs, list):
-            return []
-        out: list[Path] = []
-        seen: set[str] = set()
-        for entry in package_dirs:
-            if not isinstance(entry, dict):
-                continue
-            rel_path = entry.get("path")
-            if not isinstance(rel_path, str) or not rel_path.strip():
-                continue
-            candidate = (self._repo_root / rel_path).expanduser().resolve()
-            key = str(candidate)
-            if not candidate.exists() or not candidate.is_dir() or key in seen:
-                continue
-            seen.add(key)
-            out.append(candidate)
-        return out
+        return self._exact.sfdx_package_directories()
 
     @staticmethod
     def _component_token_query_parts(question: str) -> tuple[str, str] | None:

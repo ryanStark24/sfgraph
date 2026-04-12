@@ -43,30 +43,11 @@ from sfgraph.ingestion.models import (
     VectorizeSummary,
 )
 from sfgraph.ingestion.org_metadata import SalesforceOrgMetadataClient
+from sfgraph.ingestion.parse_executor import ParseExecutor
 from sfgraph.ingestion.schema_index import materialize_schema_index
 from sfgraph.parser.apex_extractor import ApexExtractor
-from sfgraph.parser.aura_parser import parse_aura_file
 from sfgraph.parser.dynamic_accessor import DynamicAccessorRegistry
-from sfgraph.parser.flow_parser import parse_flow_xml
-from sfgraph.parser.lwc_parser import parse_lwc_file
-from sfgraph.parser.object_parser import (
-    parse_custom_metadata_record_xml,
-    parse_global_value_set_xml,
-    parse_labels_xml,
-    parse_object_dir,
-)
-from sfgraph.parser.metadata_parser import (
-    parse_dashboard_xml,
-    parse_named_credential_xml,
-    parse_permission_metadata_xml,
-    parse_report_xml,
-    parse_workflow_xml,
-)
 from sfgraph.parser.pool import NodeParserPool
-from sfgraph.parser.vlocity_parser import (
-    is_vlocity_datapack_file,
-    parse_vlocity_json_detailed,
-)
 from sfgraph.storage.base import GraphStore
 from sfgraph.storage.manifest_store import ManifestStore
 from sfgraph.storage.parse_cache import ParseCache
@@ -74,8 +55,6 @@ from sfgraph.storage.vector_store import VectorStore
 from sfgraph.vlocity_standards import VlocityStandardsCore
 
 logger = logging.getLogger(__name__)
-TRANSIENT_WORKER_ERRORS = frozenset({"worker_restarting", "worker_exited", "timeout", "no_workers"})
-
 def _format_parser_failure_details(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -163,6 +142,19 @@ class IngestionService:
         self._vector_failure_logged = False
         self._vlocity_standards = VlocityStandardsCore()
         self._vlocity_rule_bundle = self._vlocity_standards.resolve_bundle(Path.cwd())
+        self._parse_executor = ParseExecutor(
+            pool=self._pool,
+            apex_extractor=self._apex_extractor,
+            dynamic_registry=self._dynamic_registry,
+            parse_cache=self._parse_cache,
+            vlocity_rule_bundle=self._vlocity_rule_bundle,
+            cacheable_parser=self._cacheable_parser,
+            parse_cache_namespace=self._parse_cache_namespace,
+            serialize_parse_result=self._serialize_parse_result,
+            deserialize_parse_result=self._deserialize_parse_result,
+            rebind_cached_nodes=self._rebind_cached_nodes,
+            format_parser_failure_details=_format_parser_failure_details,
+        )
 
     def _resolve_target_org_alias(self) -> str | None:
         if self._org_alias:
@@ -260,6 +252,19 @@ class IngestionService:
                 export_root,
                 org_alias=self._resolve_target_org_alias(),
                 org_context=self._org_enrichment_context,
+            )
+            self._parse_executor = ParseExecutor(
+                pool=self._pool,
+                apex_extractor=self._apex_extractor,
+                dynamic_registry=self._dynamic_registry,
+                parse_cache=self._parse_cache,
+                vlocity_rule_bundle=self._vlocity_rule_bundle,
+                cacheable_parser=self._cacheable_parser,
+                parse_cache_namespace=self._parse_cache_namespace,
+                serialize_parse_result=self._serialize_parse_result,
+                deserialize_parse_result=self._deserialize_parse_result,
+                rebind_cached_nodes=self._rebind_cached_nodes,
+                format_parser_failure_details=_format_parser_failure_details,
             )
 
     def _raise_if_cancelled(self) -> None:
@@ -1692,147 +1697,7 @@ class IngestionService:
         *,
         sha256: str | None = None,
     ) -> tuple[list[NodeFact], list[EdgeFact], dict[str, Any]]:
-        path = Path(fpath)
-        parser_name = parser_name_for_file(Path(fpath))
-        cache_namespace = self._parse_cache_namespace(parser_name, fpath)
-        can_cache = self._cacheable_parser(parser_name)
-        if self._parse_cache and sha256 and can_cache:
-            cached = await self._parse_cache.get(cache_namespace, sha256)
-            if cached is not None:
-                nodes, edges, metadata = self._deserialize_parse_result(cached)
-                return self._rebind_cached_nodes(nodes, fpath), edges, metadata
-
-        if path.suffix in {".cls", ".trigger"}:
-            result = await self._pool.parse(fpath, "apex")
-            if not result.get("ok") and str(result.get("error", "")) in TRANSIENT_WORKER_ERRORS:
-                # One retry for transient parser worker lifecycle events.
-                await asyncio.sleep(0.05)
-                result = await self._pool.parse(fpath, "apex")
-            if not result.get("ok"):
-                error = str(result.get("error") or "worker_parse_failed")
-                payload = result.get("payload")
-                detail_suffix = _format_parser_failure_details(payload)
-                if detail_suffix:
-                    raise RuntimeError(f"{error} | {detail_suffix}")
-                raise RuntimeError(error)
-            payload = result.get("payload") or {}
-            nodes, edges = self._apex_extractor.extract(payload, fpath)
-
-            # APEX-11 dynamic accessor edge candidates from raw method refs.
-            primary_class = next((n.key_props.get("qualifiedName") for n in nodes if n.label == "ApexClass"), path.stem)
-            for ref in payload.get("potential_refs", []):
-                if ref.get("refType") != "CALLS_CLASS_METHOD":
-                    continue
-                target_class = ref.get("targetClass", "")
-                target_method = ref.get("method", "")
-                if not target_class or not target_method:
-                    continue
-                edges.extend(
-                    self._dynamic_registry.match(
-                        class_name=target_class,
-                        method_name=target_method,
-                        src_qualified_name=primary_class,
-                        src_label="ApexClass",
-                        context_snippet=ref.get("contextSnippet", ""),
-                    )
-                )
-
-            metadata = {"outcome": "parsed", "parser_strategy": "specialized", "node_label": "ApexClass"}
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, metadata))
-            return nodes, edges, metadata
-
-        if path.suffix in {".js", ".html"} and "lwc" in {part.lower() for part in path.parts}:
-            nodes, edges = parse_lwc_file(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if path.suffix in AURA_MARKUP_SUFFIXES and "aura" in {part.lower() for part in path.parts}:
-            nodes, edges = parse_aura_file(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if fpath.endswith(".flow-meta.xml"):
-            nodes, edges = parse_flow_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if fpath.endswith(".object-meta.xml"):
-            nodes, edges = parse_object_dir(str(path.parent))
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if fpath.endswith(".globalValueSet-meta.xml"):
-            nodes, edges = parse_global_value_set_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if fpath.endswith(".md-meta.xml"):
-            nodes, edges = parse_custom_metadata_record_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if fpath.endswith(".workflow-meta.xml"):
-            nodes, edges = parse_workflow_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if fpath.endswith(".permissionset-meta.xml") or fpath.endswith(".profile-meta.xml"):
-            nodes, edges = parse_permission_metadata_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if fpath.endswith(".namedCredential-meta.xml"):
-            nodes, edges = parse_named_credential_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if fpath.endswith(".report-meta.xml"):
-            nodes, edges = parse_report_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if fpath.endswith(".dashboard-meta.xml"):
-            nodes, edges = parse_dashboard_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
-            nodes, edges = parse_labels_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
-            return nodes, edges, {"outcome": "parsed"}
-
-        if path.suffix == ".json" and is_vlocity_datapack_file(path):
-            nodes, edges, meta = parse_vlocity_json_detailed(
-                fpath,
-                standards=self._vlocity_rule_bundle,
-            )
-            metadata = {
-                "outcome": meta.outcome,
-                "pack_type": meta.pack_type,
-                "parser_strategy": meta.parser_strategy,
-                "node_label": meta.node_label,
-                "unsupported_type": meta.unsupported_type,
-                "standards_rule_source": meta.standards_rule_source,
-                "matching_key_fields": list(meta.matching_key_fields),
-            }
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, metadata))
-            return nodes, edges, metadata
-
-        return [], [], {"outcome": "skipped"}
+        return await self._parse_executor.execute(fpath, sha256=sha256)
 
     def _apply_picklist_guard(
         self,
