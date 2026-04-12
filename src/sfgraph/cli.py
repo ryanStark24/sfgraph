@@ -74,6 +74,21 @@ def _build_parser() -> argparse.ArgumentParser:
     progress.add_argument("--data-dir", default="./data")
     progress.set_defaults(func=_cmd_progress)
 
+    diagnostics = sub.add_parser("diagnostics", help="Render ingestion diagnostics markdown")
+    diagnostics.add_argument("--data-dir", default="./data")
+    diagnostics.add_argument("--destination", default=None)
+    diagnostics.set_defaults(func=_cmd_diagnostics)
+
+    subgraph = sub.add_parser("subgraph", help="Render a graph neighborhood around a node or question")
+    subgraph.add_argument("--data-dir", default="./data")
+    subgraph.add_argument("--node-id", default=None)
+    subgraph.add_argument("--question", default=None)
+    subgraph.add_argument("--hops", type=int, default=2)
+    subgraph.add_argument("--max-nodes", type=int, default=80)
+    subgraph.add_argument("--format", choices=("mermaid", "json"), default="mermaid")
+    subgraph.add_argument("--focus", default="lineage")
+    subgraph.set_defaults(func=_cmd_subgraph)
+
     migrate = sub.add_parser("migrate-scope", help="Migrate legacy unscoped rows for a project")
     migrate.add_argument("export_dir")
     migrate.add_argument("--data-dir", default="./data")
@@ -212,6 +227,49 @@ async def _cmd_query(args: argparse.Namespace) -> int:
             args.question,
             max_hops=args.max_hops,
             max_results=args.max_results,
+        )
+        print(json.dumps(payload, indent=2))
+        return 0
+    finally:
+        await _close_runtime(runtime)
+
+
+async def _cmd_diagnostics(args: argparse.Namespace) -> int:
+    runtime = await _build_runtime(args.data_dir, needs_pool=False)
+    try:
+        service = GraphQueryService(
+            graph=runtime["graph"],
+            manifest=runtime["manifest"],
+            vectors=runtime["vectors"],
+            repo_root=str(Path.cwd()),
+            ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
+        )
+        payload = await service.export_diagnostics_md(destination=args.destination)
+        print(json.dumps(payload, indent=2))
+        return 0
+    finally:
+        await _close_runtime(runtime)
+
+
+async def _cmd_subgraph(args: argparse.Namespace) -> int:
+    runtime = await _build_runtime(args.data_dir, needs_pool=False)
+    try:
+        service = GraphQueryService(
+            graph=runtime["graph"],
+            manifest=runtime["manifest"],
+            vectors=runtime["vectors"],
+            repo_root=str(Path.cwd()),
+            ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
+        )
+        payload = await service.graph_subgraph(
+            node_id=args.node_id,
+            question=args.question,
+            hops=args.hops,
+            max_nodes=args.max_nodes,
+            format=args.format,
+            focus=args.focus,
         )
         print(json.dumps(payload, indent=2))
         return 0

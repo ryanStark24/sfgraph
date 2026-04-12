@@ -19,6 +19,7 @@ from typing import Any
 
 from sfgraph.common import compute_sha256, descope_qname, parse_json_props, scope_qname
 from sfgraph.ingestion.constants import NODE_WRITE_ORDER
+from sfgraph.ingestion.diagnostics import IngestionDiagnosticsReporter
 from sfgraph.ingestion.models import (
     EdgeFact,
     IngestionPhase,
@@ -28,8 +29,10 @@ from sfgraph.ingestion.models import (
     RefreshSummary,
     VectorizeSummary,
 )
+from sfgraph.ingestion.org_metadata import SalesforceOrgMetadataClient
 from sfgraph.ingestion.schema_index import materialize_schema_index
 from sfgraph.parser.apex_extractor import ApexExtractor
+from sfgraph.parser.aura_parser import parse_aura_file
 from sfgraph.parser.dynamic_accessor import DynamicAccessorRegistry
 from sfgraph.parser.flow_parser import parse_flow_xml
 from sfgraph.parser.lwc_parser import parse_lwc_file
@@ -48,6 +51,7 @@ from sfgraph.storage.base import GraphStore
 from sfgraph.storage.manifest_store import ManifestStore
 from sfgraph.storage.parse_cache import ParseCache
 from sfgraph.storage.vector_store import VectorStore
+from sfgraph.vlocity_standards import VlocityStandardsCore
 
 logger = logging.getLogger(__name__)
 TRANSIENT_WORKER_ERRORS = frozenset({"worker_restarting", "worker_exited", "timeout", "no_workers"})
@@ -115,6 +119,7 @@ class IngestionService:
     SKIP_FILE_PREFIXES = ("~$",)
     SKIP_FILE_SUFFIXES = (".tmp", ".swp", ".swo")
     DEFAULT_DISCOVERY_ROOTS = ("force-app", "vlocity")
+    AURA_MARKUP_SUFFIXES = (".cmp", ".app", ".evt", ".intf")
 
     def __init__(
         self,
@@ -155,6 +160,8 @@ class IngestionService:
         self._vector_upsert_failures = 0
         self._vector_last_error: str | None = None
         self._vector_failure_logged = False
+        self._vlocity_standards = VlocityStandardsCore()
+        self._vlocity_rule_bundle = self._vlocity_standards.resolve_bundle(Path.cwd())
 
     def _resolve_target_org_alias(self) -> str | None:
         if self._org_alias:
@@ -189,70 +196,21 @@ class IngestionService:
         except Exception:
             return None
 
-    @staticmethod
-    def _extract_count_from_sf_query(payload: dict[str, Any]) -> int | None:
-        result = payload.get("result")
-        if not isinstance(result, dict):
-            return None
-        records = result.get("records")
-        if not isinstance(records, list) or not records:
-            return None
-        first = records[0]
-        if not isinstance(first, dict):
-            return None
-        for key in ("expr0", "total", "count", "attributes"):
-            if key == "attributes":
-                continue
-            value = first.get(key)
-            if isinstance(value, int):
-                return value
-            if isinstance(value, str) and value.isdigit():
-                return int(value)
-        for value in first.values():
-            if isinstance(value, int):
-                return value
-            if isinstance(value, str) and value.isdigit():
-                return int(value)
-        return None
-
     def _query_tooling_count(self, alias: str, soql: str) -> int | None:
-        try:
-            proc = subprocess.run(
-                [
-                    "sf",
-                    "data",
-                    "query",
-                    "--target-org",
-                    alias,
-                    "--use-tooling-api",
-                    "--query",
-                    soql,
-                    "--json",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            if proc.returncode != 0:
-                return None
-            payload = json.loads(proc.stdout or "{}")
-            return self._extract_count_from_sf_query(payload)
-        except Exception:
-            return None
+        return SalesforceOrgMetadataClient(alias).query_count(soql, tooling=True, timeout=20)
 
     def _prepare_org_enrichment(self, warnings: list[str]) -> None:
         self._org_enrichment_context = None
-        if not self._enrich_org:
-            return
-        if shutil.which("sf") is None:
-            warnings.append("Org enrichment skipped: Salesforce CLI `sf` not found.")
-            return
-        alias = self._resolve_target_org_alias()
-        if not alias:
-            warnings.append("Org enrichment skipped: no org alias provided and no default target-org configured.")
-            return
         try:
+            if not self._enrich_org:
+                return
+            if shutil.which("sf") is None:
+                warnings.append("Org enrichment skipped: Salesforce CLI `sf` not found.")
+                return
+            alias = self._resolve_target_org_alias()
+            if not alias:
+                warnings.append("Org enrichment skipped: no org alias provided and no default target-org configured.")
+                return
             proc = subprocess.run(
                 ["sf", "org", "display", "--target-org", alias, "--json"],
                 check=False,
@@ -276,6 +234,7 @@ class IngestionService:
                 "instance_url": result.get("instanceUrl"),
                 "api_version": result.get("apiVersion"),
             }
+            metadata_client = SalesforceOrgMetadataClient(alias)
             tooling_counts = {
                 "entity_definition_count": self._query_tooling_count(alias, "SELECT COUNT() total FROM EntityDefinition"),
                 "field_definition_count": self._query_tooling_count(alias, "SELECT COUNT() total FROM FieldDefinition"),
@@ -284,14 +243,23 @@ class IngestionService:
                 ),
             }
             context["tooling_counts"] = tooling_counts
+            context["vlocity_rule_overrides"] = metadata_client.load_vlocity_rule_overrides()
             self._org_enrichment_context = context
             warnings.append(
                 "Org enrichment enabled via alias "
                 f"`{alias}` (EntityDefinition={tooling_counts.get('entity_definition_count')}, "
-                f"FieldDefinition={tooling_counts.get('field_definition_count')})."
+                f"FieldDefinition={tooling_counts.get('field_definition_count')}, "
+                f"VlocityRules={len(context['vlocity_rule_overrides'])})."
             )
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Org enrichment skipped: {exc}")
+        finally:
+            export_root = self._active_export_root or Path.cwd()
+            self._vlocity_rule_bundle = self._vlocity_standards.resolve_bundle(
+                export_root,
+                org_alias=self._resolve_target_org_alias(),
+                org_context=self._org_enrichment_context,
+            )
 
     def _raise_if_cancelled(self) -> None:
         if self._cancel_event is not None and self._cancel_event.is_set():
@@ -329,7 +297,7 @@ class IngestionService:
         # Some parsers derive stable identities from the file path rather than
         # only the file content. Keep those cache entries path-scoped so
         # identical content in different files cannot alias to the same graph ids.
-        if parser_name in {"apex", "flow", "lwc", "vlocity"}:
+        if parser_name in {"apex", "aura", "flow", "lwc", "vlocity"}:
             path_digest = hashlib.sha1(str(Path(fpath).resolve()).encode("utf-8")).hexdigest()[:16]
             return f"{parser_name}@{path_digest}"
         return parser_name
@@ -1130,6 +1098,7 @@ class IngestionService:
                         for sfx in (
                             ".cls",
                             ".trigger",
+                            *self.AURA_MARKUP_SUFFIXES,
                             ".js",
                             ".html",
                             ".object-meta.xml",
@@ -1259,6 +1228,7 @@ class IngestionService:
     def _empty_parser_stats() -> dict[str, dict[str, int]]:
         return {
             "apex": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+            "aura": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
             "flow": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
             "object": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
             "labels": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
@@ -1364,6 +1334,8 @@ class IngestionService:
         path = Path(fpath)
         if path.suffix in {".cls", ".trigger"}:
             return "apex"
+        if path.suffix in IngestionService.AURA_MARKUP_SUFFIXES and "aura" in {part.lower() for part in path.parts}:
+            return "aura"
         if path.suffix in {".js", ".html"} and "lwc" in {part.lower() for part in path.parts}:
             return "lwc"
         if fpath.endswith(".flow-meta.xml"):
@@ -1916,6 +1888,12 @@ class IngestionService:
                 await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
             return nodes, edges, {"outcome": "parsed"}
 
+        if path.suffix in self.AURA_MARKUP_SUFFIXES and "aura" in {part.lower() for part in path.parts}:
+            nodes, edges = parse_aura_file(fpath)
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
+            return nodes, edges, {"outcome": "parsed"}
+
         if fpath.endswith(".flow-meta.xml"):
             nodes, edges = parse_flow_xml(fpath)
             if self._parse_cache and sha256 and can_cache:
@@ -1947,13 +1925,18 @@ class IngestionService:
             return nodes, edges, {"outcome": "parsed"}
 
         if path.suffix == ".json" and is_vlocity_datapack_file(path):
-            nodes, edges, meta = parse_vlocity_json_detailed(fpath)
+            nodes, edges, meta = parse_vlocity_json_detailed(
+                fpath,
+                standards=self._vlocity_rule_bundle,
+            )
             metadata = {
                 "outcome": meta.outcome,
                 "pack_type": meta.pack_type,
                 "parser_strategy": meta.parser_strategy,
                 "node_label": meta.node_label,
                 "unsupported_type": meta.unsupported_type,
+                "standards_rule_source": meta.standards_rule_source,
+                "matching_key_fields": list(meta.matching_key_fields),
             }
             if self._parse_cache and sha256 and can_cache:
                 await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, metadata))
@@ -2013,16 +1996,21 @@ class IngestionService:
             "total_nodes": summary.total_nodes,
             "edge_count": summary.edge_count,
             "orphaned_edges": summary.orphaned_edges,
-            "parse_failures": len(summary.parse_failures),
-            "warnings": len(summary.warnings),
+            "parse_failures": summary.parse_failures,
+            "warnings": summary.warnings,
             "mode": "full_ingest",
             "parser_stats": summary.parser_stats,
             "unresolved_symbols": summary.unresolved_symbols,
             "org_enrichment": self._org_enrichment_context or {"enabled": False},
+            "vlocity_standards": self._vlocity_rule_bundle.describe(),
         }
         out = Path(self._ingestion_meta_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        IngestionDiagnosticsReporter(
+            ingestion_meta_path=self._ingestion_meta_path,
+            ingestion_progress_path=self._ingestion_progress_path,
+        ).export_markdown(context={"export_dir": summary.export_dir})
 
     def _write_refresh_meta(self, summary: RefreshSummary) -> None:
         project_scope = self._compute_project_scope(summary.export_dir)
@@ -2039,15 +2027,20 @@ class IngestionService:
             "node_count": summary.node_count,
             "edge_count": summary.edge_count,
             "orphaned_edges": summary.orphaned_edges,
-            "warnings": len(summary.warnings),
+            "warnings": summary.warnings,
             "mode": "incremental_refresh",
             "parser_stats": summary.parser_stats,
             "unresolved_symbols": summary.unresolved_symbols,
             "org_enrichment": self._org_enrichment_context or {"enabled": False},
+            "vlocity_standards": self._vlocity_rule_bundle.describe(),
         }
         out = Path(self._ingestion_meta_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        IngestionDiagnosticsReporter(
+            ingestion_meta_path=self._ingestion_meta_path,
+            ingestion_progress_path=self._ingestion_progress_path,
+        ).export_markdown(context={"export_dir": summary.export_dir})
 
     @staticmethod
     def _current_git_commit() -> str | None:

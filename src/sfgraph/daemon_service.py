@@ -644,6 +644,26 @@ class DaemonOperations:
         payload["vector_health"] = _vector_health_payload(self.app, payload)
         return payload
 
+    async def export_diagnostics_md(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = build_query_service(self.app)
+        return await service.export_diagnostics_md(
+            destination=str(params["destination"]) if params.get("destination") is not None else None,
+            export_dir=str(params["export_dir"]) if params.get("export_dir") is not None else None,
+            run_id=str(params["run_id"]) if params.get("run_id") is not None else None,
+            job_id=str(params["job_id"]) if params.get("job_id") is not None else None,
+        )
+
+    async def graph_subgraph(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = build_query_service(self.app)
+        return await service.graph_subgraph(
+            node_id=str(params["node_id"]) if params.get("node_id") is not None else None,
+            question=str(params["question"]) if params.get("question") is not None else None,
+            hops=int(params.get("hops", 2)),
+            max_nodes=int(params.get("max_nodes", 80)),
+            format=str(params.get("format", "mermaid")),
+            focus=str(params.get("focus", "lineage")),
+        )
+
     async def trace_upstream(self, params: dict[str, Any]) -> dict[str, Any]:
         service = build_query_service(self.app)
         return await service.trace_upstream(

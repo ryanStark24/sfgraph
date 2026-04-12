@@ -78,7 +78,7 @@ Ingestion lives under `src/sfgraph/ingestion/`.
 Responsibilities:
 
 - discover supported files in an export
-- parse Apex, Flows, objects, LWC, and Vlocity assets
+- parse Apex, Aura, Flows, objects, LWC, and Vlocity assets
 - normalize parser output into `NodeFact` and `EdgeFact`
 - write scoped graph rows
 - track run/file status in the manifest
@@ -99,6 +99,7 @@ Parsers live under `src/sfgraph/parser/`.
 Current parser coverage:
 
 - Apex CST extraction
+- Aura bundle markup (`.cmp`, `.app`, `.evt`, `.intf`)
 - Flow XML
 - Object and field XML
 - LWC JS/HTML metadata references
@@ -107,6 +108,7 @@ Current parser coverage:
 Important notes:
 
 - the Apex path uses a Node worker with `web-tree-sitter-sfapex`
+- the Aura path is intentionally lightweight today and extracts bundle identity, Apex controller usage, and local child-component references
 - rich Vlocity parsing currently exists for:
   - `IntegrationProcedure`
   - `DataRaptor`
@@ -682,3 +684,21 @@ And for query quality, the next major win is hybrid retrieval orchestration:
 - lexical certainty first
 - graph reasoning second
 - semantic fallback only when required
+
+## Modular Standards and Diagnostics
+
+Recent implementation work adds small swappable modules rather than expanding
+monolithic services:
+
+- `src/sfgraph/contracts.py`
+  - interface seams for standards providers, parser adapters, retrieval
+    engines, and diagnostics reporters
+- `src/sfgraph/vlocity_standards.py`
+  - standards-driven Vlocity rule bundle resolution
+- `src/sfgraph/ingestion/diagnostics.py`
+  - markdown diagnostics export
+- `src/sfgraph/query/graph_visualizer.py`
+  - Mermaid/json graph neighborhood rendering
+
+This keeps standards sources, visualization output, and diagnostics rendering
+replaceable without forcing storage or parser rewrites.

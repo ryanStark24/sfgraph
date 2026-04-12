@@ -1,6 +1,6 @@
 # sfgraph
 
-`sfgraph` is a Salesforce metadata graph and MCP server for impact analysis across Apex, Flows, LWC, objects, and OmniStudio/Vlocity assets.
+`sfgraph` is a Salesforce metadata graph and MCP server for impact analysis across Apex, Aura, Flows, LWC, objects, and OmniStudio/Vlocity assets.
 
 It ingests a Salesforce export into a local property graph, preserves project isolation, and answers evidence-first questions such as:
 
@@ -16,6 +16,7 @@ It ingests a Salesforce export into a local property graph, preserves project is
 - Apex classes and SOQL/DML behavior
 - Object and field metadata
 - Record-triggered and screen flows
+- Aura bundles and Apex controller links
 - Lightning Web Components
 - OmniStudio / Vlocity components including DataRaptors, Integration Procedures, and OmniScripts
 
@@ -160,6 +161,8 @@ Available commands:
 - `ingest`
 - `refresh`
 - `query`
+- `diagnostics`
+- `subgraph`
 - `progress`
 - `status`
 - `migrate-scope`
@@ -204,6 +207,8 @@ The server stores graph data under `./data` relative to the repo root by default
 - `watch_refresh(export_dir, duration_seconds?, poll_interval?, debounce_seconds?, max_refreshes?)`
 - `get_ingestion_progress()`
 - `get_ingestion_status()`
+- `export_diagnostics_md(export_dir?, run_id?, job_id?, destination?)`
+- `graph_subgraph(node_id?, question?, hops?, max_nodes?, format?, focus?)`
 - `analyze(question, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?)`
 - `query(question, max_hops?, max_results?, time_budget_ms?, offset?)`
 - `trace_upstream(node_id, max_hops?, max_results?, time_budget_ms?, offset?)`
@@ -218,6 +223,25 @@ The server stores graph data under `./data` relative to the repo root by default
 - `cross_layer_flow_map(node_id, max_hops?, max_results?)`
 - `list_unknown_dynamic_edges(limit?, offset?)`
 - `create_snapshot(name?)`
+
+## Standards-Driven Vlocity Support
+
+The Vlocity / OmniStudio layer now uses a modular standards core so we can
+improve coverage without growing parser heuristics into an unreadable blob.
+
+- bundled baseline rules live in `src/sfgraph/config/vlocity_standards_baseline.yaml`
+- runtime bundles merge:
+  - bundled baseline
+  - local datapack inference
+  - optional org enrichment from Salesforce CLI metadata queries
+- ingest metadata now persists:
+  - full `parse_failures`
+  - full `warnings`
+  - `vlocity_standards`
+- diagnostics markdown is written automatically to:
+  - `data/ingestion_diagnostics.md`
+- `analyze(...)` now includes a short-lived in-process cache and stage-budget tracking
+  so repeated exact questions can return with fewer internal round trips
 - `diff_snapshots(snapshot_a_path, snapshot_b_path, max_examples?)`
 - `migrate_project_scope(export_dir, dry_run?, prune_legacy?)`
 - `test_gap_intelligence_from_git_diff(base_ref?, head_ref?, max_hops?, max_results_per_component?)`

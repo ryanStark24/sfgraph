@@ -382,6 +382,51 @@ async def get_ingestion_progress(ctx: Context, export_dir: str | None = None) ->
 
 
 @mcp.tool()
+async def export_diagnostics_md(
+    ctx: Context,
+    export_dir: str | None = None,
+    run_id: str | None = None,
+    job_id: str | None = None,
+    destination: str | None = None,
+) -> str:
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app, export_dir)
+    return _daemon_call(
+        daemon,
+        "export_diagnostics_md",
+        export_dir=export_dir,
+        run_id=run_id,
+        job_id=job_id,
+        destination=destination,
+    )
+
+
+@mcp.tool()
+async def graph_subgraph(
+    ctx: Context,
+    node_id: str | None = None,
+    question: str | None = None,
+    hops: int = 2,
+    max_nodes: int = 80,
+    format: str = "mermaid",
+    focus: str = "lineage",
+    export_dir: str | None = None,
+) -> str:
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app, export_dir)
+    return _daemon_call(
+        daemon,
+        "graph_subgraph",
+        node_id=node_id,
+        question=question,
+        hops=hops,
+        max_nodes=max_nodes,
+        format=format,
+        focus=focus,
+    )
+
+
+@mcp.tool()
 async def trace_upstream(
     node_id: str,
     ctx: Context,

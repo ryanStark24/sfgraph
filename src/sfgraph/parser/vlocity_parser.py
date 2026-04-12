@@ -16,6 +16,7 @@ from sfgraph.parser.vlocity_registry import (
     SUPPORTED_VLOCITY_DATAPACK_TYPE_HINTS,
     SUPPORTED_VLOCITY_DATAPACK_TYPE_SET,
 )
+from sfgraph.vlocity_standards import VlocityRuleBundle, matching_key_candidates
 
 _MERGE_FIELD_RE = re.compile(r"%([A-Za-z0-9_]+):([A-Za-z0-9_]+)%")
 _VLOCITY_NAME_HINTS = SUPPORTED_VLOCITY_DATAPACK_TYPE_HINTS + (
@@ -63,6 +64,8 @@ class VlocityParseMetadata:
     parser_strategy: str = "none"
     node_label: str = ""
     unsupported_type: bool = False
+    standards_rule_source: str = ""
+    matching_key_fields: tuple[str, ...] = ()
 
 
 def is_vlocity_datapack_file(file_path: str | Path) -> bool:
@@ -86,6 +89,27 @@ def _first_string(*values: Any) -> str:
 def _safe_pack_type_for_qname(pack_type: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", pack_type.strip())
     return cleaned or "Unknown"
+
+
+def _matching_key_qname(
+    data: dict[str, Any],
+    *,
+    pack_type: str,
+    standards: VlocityRuleBundle | None,
+) -> str | None:
+    candidate_fields: list[str] = []
+    rule = standards.get(pack_type) if standards else None
+    if rule and rule.matching_key_fields:
+        candidate_fields.extend(rule.matching_key_fields)
+    candidate_fields.extend(field for field in matching_key_candidates(data) if field not in candidate_fields)
+    values: list[str] = []
+    for field_name in candidate_fields:
+        value = data.get(field_name)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+    if not values:
+        return None
+    return f"{pack_type}." + ".".join(values)
 
 
 def _iter_keyed_strings(value: Any, key_path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], str]]:
@@ -124,12 +148,15 @@ def _pack_type(data: dict[str, Any], file_path: str) -> str:
     return ""
 
 
-def _supported_non_object_pack_type(file_path: str) -> str:
+def _supported_non_object_pack_type(file_path: str, standards: VlocityRuleBundle | None = None) -> str:
     stem = Path(file_path).stem
     if "_" not in stem:
         return ""
     suffix = stem.rsplit("_", 1)[-1]
-    if suffix in _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES:
+    supported_suffixes = set(_SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES)
+    if standards:
+        supported_suffixes.update(str(key) for key in standards.critical_file_suffixes.keys())
+    if suffix in supported_suffixes:
         return suffix
     return ""
 
@@ -586,6 +613,7 @@ def _parse_non_object_vlocity_array(
     source_file: str,
     namespace: str,
     pack_type: str,
+    standards: VlocityRuleBundle | None = None,
 ) -> tuple[list[NodeFact], list[EdgeFact]]:
     stem = Path(source_file).stem
     parent_name = stem.rsplit("_", 1)[0] if "_" in stem else stem
@@ -603,8 +631,15 @@ def _parse_non_object_vlocity_array(
         )
     ]
     edges: list[EdgeFact] = []
-    item_label = _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_NODE_LABELS.get(pack_type, "VlocityDataPack")
-    item_rel_type = _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_REL_TYPES.get(pack_type, "CONTAINS_CHILD")
+    configured_family = standards.critical_file_suffixes.get(pack_type, {}) if standards else {}
+    item_label = str(
+        configured_family.get("node_label")
+        or _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_NODE_LABELS.get(pack_type, "VlocityDataPack")
+    )
+    item_rel_type = str(
+        configured_family.get("rel_type")
+        or _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_REL_TYPES.get(pack_type, "CONTAINS_CHILD")
+    )
 
     for idx, item in enumerate(data, start=1):
         if not isinstance(item, dict):
@@ -703,6 +738,7 @@ def _extract_non_object_vlocity_array_from_dict(
 def parse_vlocity_json_detailed(
     file_path: str,
     namespace: str = "vlocity_cmt",
+    standards: VlocityRuleBundle | None = None,
 ) -> tuple[list[NodeFact], list[EdgeFact], VlocityParseMetadata]:
     """Parse one Vlocity JSON candidate file and report the parse outcome."""
     path = Path(file_path)
@@ -713,9 +749,15 @@ def parse_vlocity_json_detailed(
 
     if not isinstance(data, dict):
         if isinstance(data, list):
-            non_object_pack_type = _supported_non_object_pack_type(file_path)
+            non_object_pack_type = _supported_non_object_pack_type(file_path, standards=standards)
             if non_object_pack_type:
-                nodes, edges = _parse_non_object_vlocity_array(data, file_path, namespace, non_object_pack_type)
+                nodes, edges = _parse_non_object_vlocity_array(
+                    data,
+                    file_path,
+                    namespace,
+                    non_object_pack_type,
+                    standards=standards,
+                )
                 return nodes, edges, VlocityParseMetadata(
                     outcome="parsed_specialized",
                     pack_type=non_object_pack_type,
@@ -726,7 +768,7 @@ def parse_vlocity_json_detailed(
 
     explicit_type_marker = any(key in data for key in ("VlocityDataPackType", "DataPackType", "Type", "type"))
     raw_pack_type = _pack_type(data, file_path)
-    non_object_pack_type = _supported_non_object_pack_type(file_path)
+    non_object_pack_type = _supported_non_object_pack_type(file_path, standards=standards)
     candidate_non_object_type = raw_pack_type if raw_pack_type in _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES else non_object_pack_type
     if candidate_non_object_type and (not explicit_type_marker or raw_pack_type in _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES):
         maybe_items = _extract_non_object_vlocity_array_from_dict(data, candidate_non_object_type)
@@ -736,12 +778,15 @@ def parse_vlocity_json_detailed(
                 file_path,
                 namespace,
                 candidate_non_object_type,
+                standards=standards,
             )
             return nodes, edges, VlocityParseMetadata(
                 outcome="parsed_specialized",
                 pack_type=candidate_non_object_type,
                 parser_strategy="specialized",
                 node_label="VlocityDataPack",
+                standards_rule_source=(standards.get(candidate_non_object_type).source_provenance if standards and standards.get(candidate_non_object_type) else ""),
+                matching_key_fields=tuple(matching_key_candidates(data)),
             )
 
     if not raw_pack_type and not explicit_type_marker:
@@ -753,12 +798,15 @@ def parse_vlocity_json_detailed(
                     file_path,
                     namespace,
                     non_object_pack_type,
+                    standards=standards,
                 )
                 return nodes, edges, VlocityParseMetadata(
                     outcome="parsed_specialized",
                     pack_type=non_object_pack_type,
                     parser_strategy="specialized",
                     node_label="VlocityDataPack",
+                    standards_rule_source=(standards.get(non_object_pack_type).source_provenance if standards and standards.get(non_object_pack_type) else ""),
+                    matching_key_fields=tuple(matching_key_candidates(data)),
                 )
         return [], [], VlocityParseMetadata(outcome="non_datapack_json")
 
@@ -770,6 +818,8 @@ def parse_vlocity_json_detailed(
             pack_type=raw_pack_type,
             parser_strategy="specialized",
             node_label="IntegrationProcedure",
+            standards_rule_source=(standards.get(raw_pack_type).source_provenance if standards and standards.get(raw_pack_type) else ""),
+            matching_key_fields=tuple(matching_key_candidates(data)),
         )
     if ptype == "dataraptor":
         nodes, edges = _parse_data_raptor(data, file_path, namespace)
@@ -778,6 +828,8 @@ def parse_vlocity_json_detailed(
             pack_type=raw_pack_type,
             parser_strategy="specialized",
             node_label="DataRaptor",
+            standards_rule_source=(standards.get(raw_pack_type).source_provenance if standards and standards.get(raw_pack_type) else ""),
+            matching_key_fields=tuple(matching_key_candidates(data)),
         )
     if ptype == "omniscript":
         nodes, edges = _parse_omniscript(data, file_path)
@@ -786,6 +838,8 @@ def parse_vlocity_json_detailed(
             pack_type=raw_pack_type,
             parser_strategy="specialized",
             node_label="OmniScript",
+            standards_rule_source=(standards.get(raw_pack_type).source_provenance if standards and standards.get(raw_pack_type) else ""),
+            matching_key_fields=tuple(matching_key_candidates(data)),
         )
     if raw_pack_type in _SPECIALIZED_UI_PACK_TYPES:
         nodes, edges = _parse_component_datapack(data, file_path, namespace, raw_pack_type, raw_pack_type)
@@ -794,16 +848,33 @@ def parse_vlocity_json_detailed(
             pack_type=raw_pack_type,
             parser_strategy="specialized",
             node_label=raw_pack_type,
+            standards_rule_source=(standards.get(raw_pack_type).source_provenance if standards and standards.get(raw_pack_type) else ""),
+            matching_key_fields=tuple(matching_key_candidates(data)),
         )
 
     pack_type = raw_pack_type or "Unknown"
     nodes, edges = _parse_generic_datapack(data, file_path, namespace, pack_type)
+    standards_rule = standards.get(pack_type) if standards else None
+    matching_qname = _matching_key_qname(data, pack_type=pack_type, standards=standards)
+    if matching_qname:
+        for index, node in enumerate(nodes):
+            if node.label != "VlocityDataPack":
+                continue
+            nodes[index] = node.model_copy(
+                update={
+                    "key_props": {"qualifiedName": matching_qname},
+                    "all_props": {**node.all_props, "qualifiedName": matching_qname},
+                }
+            )
+            break
     return nodes, edges, VlocityParseMetadata(
         outcome="parsed_generic",
         pack_type=pack_type,
         parser_strategy="generic",
         node_label="VlocityDataPack",
         unsupported_type=bool(raw_pack_type and raw_pack_type not in SUPPORTED_VLOCITY_DATAPACK_TYPE_SET),
+        standards_rule_source=standards_rule.source_provenance if standards_rule else "",
+        matching_key_fields=standards_rule.matching_key_fields if standards_rule else tuple(matching_key_candidates(data)),
     )
 
 

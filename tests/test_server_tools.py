@@ -96,6 +96,26 @@ async def test_non_export_tools_proxy_to_daemon():
 
 
 @pytest.mark.asyncio
+async def test_diagnostics_and_subgraph_tools_proxy_to_daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(workspace)
+    export_dir = str(workspace.resolve())
+    daemon = _FakeDaemon()
+    app = SimpleNamespace(
+        runtime_root=tmp_path / "runtime" / "workspaces",
+        session_data_root=tmp_path / "runtime" / "session" / "data",
+        daemons={export_dir: daemon},
+        job_routes={},
+        active_export_dir=export_dir,
+    )
+    diagnostics = await server.export_diagnostics_md(_ctx(app), export_dir=export_dir, run_id="r1")
+    subgraph = await server.graph_subgraph(_ctx(app), node_id="AccountService", export_dir=export_dir)
+    assert json.loads(diagnostics)["method"] == "export_diagnostics_md"
+    assert json.loads(subgraph)["method"] == "graph_subgraph"
+
+
+@pytest.mark.asyncio
 async def test_analyze_component_proxies_to_current_daemon():
     export_dir = str(Path("/tmp/repo").resolve())
     daemon = _FakeDaemon()

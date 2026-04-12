@@ -14,6 +14,7 @@ from sfgraph.parser.vlocity_parser import (
     parse_vlocity_json,
     parse_vlocity_json_detailed,
 )
+from sfgraph.vlocity_standards import VlocityStandardsCore
 
 
 def _write_json(path: Path, payload: dict):
@@ -425,6 +426,37 @@ def test_supported_non_object_vlocity_arrays_wrapped_in_dict_are_parsed(tmp_path
     assert any(n.label == "PromotionItem" and n.all_props.get("name") == "PromoItemB" for n in nodes)
     assert any(e.rel_type == "HAS_PROMOTION_ITEM" for e in edges)
     assert any(e.rel_type == "CALLS" and e.dst_label == "ApexClass" and e.dst_qualified_name == "PromoPricingService" for e in edges)
+
+
+def test_non_object_vlocity_arrays_can_be_extended_by_standards_bundle(tmp_path):
+    file = tmp_path / "Offer_CustomArrayItems.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "EntryA",
+                    "IntegrationProcedure": "DoWork",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    bundle = VlocityStandardsCore(
+        baseline_payload={
+            "critical_file_suffixes": {
+                "CustomArrayItems": {
+                    "node_label": "CustomArrayItem",
+                    "rel_type": "HAS_CUSTOM_ARRAY_ITEM",
+                }
+            },
+            "rules": {},
+        }
+    ).resolve_bundle(tmp_path)
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file), standards=bundle)
+    assert meta.outcome == "parsed_specialized"
+    assert any(n.label == "CustomArrayItem" for n in nodes)
+    assert any(e.rel_type == "HAS_CUSTOM_ARRAY_ITEM" for e in edges)
 
 
 def test_supported_vlocity_registry_matches_upstream_inventory_size():

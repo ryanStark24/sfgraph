@@ -942,6 +942,56 @@ async def test_analyze_exact_disables_vector_fallback_for_unresolved_queries(tmp
 
 
 @pytest.mark.asyncio
+async def test_analyze_uses_short_lived_cache(svc: GraphQueryService):
+    service = svc
+    original = service.analyze_field
+    calls = 0
+
+    async def wrapped_analyze_field(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return await original(*args, **kwargs)
+
+    service.analyze_field = wrapped_analyze_field  # type: ignore[method-assign]
+    first = await service.analyze("where is Status__c populated?", mode="exact", strict=True)
+    second = await service.analyze("where is Status__c populated?", mode="exact", strict=True)
+
+    assert calls == 1
+    assert first["cache"]["hit"] is False
+    assert second["cache"]["hit"] is True
+
+
+@pytest.mark.asyncio
+async def test_query_vector_only_results_are_review_manually(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_vector_review.db"))
+    await manifest.initialize()
+    vectors = AsyncMock()
+    vectors.search = AsyncMock(
+        return_value=[
+            {
+                "node_id": "scope::ApexClass:Fallback",
+                "score": 0.93,
+                "payload": {"label": "ApexClass", "sourceFile": "classes/Fallback.cls"},
+            }
+        ]
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        vectors=vectors,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "meta_vec.json"),
+    )
+    payload = await service.query("totallymissingtoken", allow_vector_fallback=True, max_results=5)
+    assert payload["confidence_tiers"]["definite"] == []
+    assert payload["confidence_tiers"]["probable"] == []
+    assert len(payload["confidence_tiers"]["review_manually"]) == 1
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
 async def test_test_gap_intelligence_from_changed_files(svc: GraphQueryService):
     payload = await svc.test_gap_intelligence_from_changed_files(
         changed_files=["classes/AccountService.cls"],

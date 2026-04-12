@@ -114,11 +114,35 @@ Key fields:
 - `completion_ratio`
 - `parser_stats`
 
+### `export_diagnostics_md(export_dir?, run_id?, job_id?, destination?)`
+
+Purpose:
+
+- write a compact markdown report for the latest ingest state
+- reduce follow-up tool calls during parser or workspace debugging
+
+Returns:
+
+- report path
+- summary payload including parser stats and latest state
+
+### `graph_subgraph(node_id?, question?, hops?, max_nodes?, format?, focus?)`
+
+Purpose:
+
+- render a compact graph neighborhood around a node or resolved question target
+- support `format=mermaid` for chat-native visualization and `format=json` for structured consumers
+
 ## Query and Lineage
 
 Preferred entrypoint (use this first):
 
 - `analyze(question, ...)` one-call router for most Q&A
+
+Notes:
+
+- `analyze(...)` now tracks per-stage time budget and uses a short-lived in-process cache for repeated questions in the same daemon/session
+- vector-only fallback results are intentionally downgraded to `review_manually`
 
 Intent tools (use directly when your client can classify intent):
 
@@ -170,6 +194,8 @@ To reduce tool-call cost and round trips, use this request shape:
 
 3. Only call deep tools if evidence is insufficient:
 - fallback order: `analyze_component` / `analyze_field` -> `trace_upstream` -> `query`
+- use `graph_subgraph(...)` when a relationship picture is more helpful than raw edges
+- use `export_diagnostics_md(...)` before manual ingest-debug exploration
 
 Prompting tips:
 - include concrete object/class/field/token names

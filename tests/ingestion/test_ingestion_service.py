@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,7 +24,7 @@ def make_mock_graph() -> AsyncMock:
     graph.delete_node = AsyncMock(return_value=True)
     graph.delete_edge = AsyncMock(return_value=True)
     graph.delete_edges_for_node = AsyncMock(return_value=1)
-    graph.get_labels = AsyncMock(return_value=["ApexClass", "SFObject", "SFField", "Flow"])
+    graph.get_labels = AsyncMock(return_value=["ApexClass", "AuraComponent", "SFObject", "SFField", "Flow"])
     graph.get_relationship_types = AsyncMock(return_value=["CALLS", "QUERIES_OBJECT", "FLOW_CALLS_APEX"])
     graph.query = AsyncMock(return_value=[])
     return graph
@@ -80,6 +81,10 @@ def svc():
         ingestion_progress_path="/tmp/test_ingestion_progress.json",
     )
     return service, graph, manifest, pool
+
+
+def _completed_process(*, returncode: int = 0, stdout: str = "{}", stderr: str = ""):
+    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 @pytest.mark.asyncio
@@ -218,6 +223,127 @@ async def test_vectorize_rebuilds_vectors_for_active_scope(tmp_path):
     assert summary.failed_nodes == 0
     vectors.delete_by_project_scope.assert_awaited()
     vectors.upsert.assert_awaited()
+
+
+def test_prepare_org_enrichment_loads_vlocity_rule_overrides(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+        enrich_org=True,
+        org_alias="my-org",
+    )
+    service._activate_scope(str(tmp_path / "repo"))
+
+    def fake_run(command, **kwargs):
+        joined = " ".join(command)
+        if "org display" in joined:
+            return _completed_process(
+                stdout=json.dumps(
+                    {
+                        "result": {
+                            "username": "me@example.com",
+                            "id": "00Dxx0000000001",
+                            "instanceUrl": "https://example.my.salesforce.com",
+                            "apiVersion": "62.0",
+                        }
+                    }
+                )
+            )
+        if "COUNT() total FROM EntityDefinition" in joined:
+            return _completed_process(stdout=json.dumps({"result": {"records": [{"total": 10}]}}))
+        if "COUNT() total FROM FieldDefinition" in joined:
+            return _completed_process(stdout=json.dumps({"result": {"records": [{"total": 20}]}}))
+        if "COUNT() total FROM MetadataComponentDependency" in joined:
+            return _completed_process(stdout=json.dumps({"result": {"records": [{"total": 30}]}}))
+        if "FROM VlocityDataPackConfiguration__mdt" in joined:
+            return _completed_process(
+                stdout=json.dumps(
+                    {
+                        "result": {
+                            "records": [
+                                {
+                                    "DeveloperName": "CustomThing",
+                                    "SObjectType__c": "CustomThing__c",
+                                    "QueryFields__c": "Name,Type__c",
+                                }
+                            ]
+                        }
+                    }
+                )
+            )
+        if "FROM DRMatchingKey__mdt" in joined:
+            return _completed_process(
+                stdout=json.dumps(
+                    {
+                        "result": {
+                            "records": [
+                                {
+                                    "DeveloperName": "CustomThing__c",
+                                    "ObjectAPIName__c": "CustomThing__c",
+                                    "MatchingKeyFields__c": "Name, Type__c",
+                                    "ReturnKeyField__c": "Name",
+                                }
+                            ]
+                        }
+                    }
+                )
+            )
+        raise AssertionError(f"unexpected command: {joined}")
+
+    monkeypatch.setattr("sfgraph.ingestion.service.shutil.which", lambda _: "/opt/homebrew/bin/sf")
+    monkeypatch.setattr("sfgraph.ingestion.service.subprocess.run", fake_run)
+
+    warnings: list[str] = []
+    service._prepare_org_enrichment(warnings)
+
+    assert service._org_enrichment_context is not None
+    assert service._org_enrichment_context["alias"] == "my-org"
+    overrides = service._org_enrichment_context["vlocity_rule_overrides"]
+    assert len(overrides) == 1
+    assert overrides[0]["datapack_type"] == "CustomThing"
+    assert overrides[0]["matching_key_fields"] == ["Name", "Type__c"]
+    assert service._vlocity_rule_bundle.get("CustomThing") is not None
+    assert service._vlocity_rule_bundle.get("CustomThing").source_provenance == "org:my-org"
+
+
+def test_prepare_org_enrichment_handles_missing_vlocity_metadata_queries(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+        enrich_org=True,
+        org_alias="my-org",
+    )
+    service._activate_scope(str(tmp_path / "repo"))
+
+    def fake_run(command, **kwargs):
+        joined = " ".join(command)
+        if "org display" in joined:
+            return _completed_process(stdout=json.dumps({"result": {"username": "me@example.com"}}))
+        if "COUNT() total FROM" in joined:
+            return _completed_process(stdout=json.dumps({"result": {"records": [{"total": 1}]}}))
+        if "FROM VlocityDataPackConfiguration__mdt" in joined or "FROM DRMatchingKey__mdt" in joined:
+            return _completed_process(returncode=1, stdout="{}", stderr="no such object")
+        raise AssertionError(f"unexpected command: {joined}")
+
+    monkeypatch.setattr("sfgraph.ingestion.service.shutil.which", lambda _: "/opt/homebrew/bin/sf")
+    monkeypatch.setattr("sfgraph.ingestion.service.subprocess.run", fake_run)
+
+    warnings: list[str] = []
+    service._prepare_org_enrichment(warnings)
+
+    assert service._org_enrichment_context is not None
+    assert service._org_enrichment_context["vlocity_rule_overrides"] == []
+    assert any("VlocityRules=0" in warning for warning in warnings)
 
 
 @pytest.mark.asyncio
@@ -599,7 +725,28 @@ def test_discover_files_defaults_to_force_app_and_vlocity_roots(tmp_path):
     discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
     assert str(force_app_cls) in discovered
     assert str(vlocity_json) in discovered
-    assert str(vendor_cls) not in discovered
+
+
+def test_discover_files_includes_aura_markup(tmp_path):
+    aura_file = tmp_path / "force-app" / "main" / "default" / "aura" / "AccountBanner" / "AccountBanner.cmp"
+    aura_file.parent.mkdir(parents=True, exist_ok=True)
+    aura_file.write_text("<aura:component/>", encoding="utf-8")
+
+    service = IngestionService(
+        graph=make_mock_graph(),
+        manifest=make_mock_manifest(),
+        pool=make_mock_pool(),
+    )
+
+    discovered = service._discover_files(tmp_path)
+    assert str(aura_file) in discovered
+
+
+def test_parser_name_for_aura_markup():
+    parser_name = IngestionService._parser_name_for_file(
+        "/tmp/repo/force-app/main/default/aura/AccountBanner/AccountBanner.cmp"
+    )
+    assert parser_name == "aura"
 
 
 def test_discover_files_falls_back_to_root_when_default_roots_missing(tmp_path):

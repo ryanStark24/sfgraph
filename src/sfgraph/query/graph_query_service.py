@@ -6,17 +6,20 @@ import os
 import re
 import subprocess
 import time
+from copy import deepcopy
 from collections import deque
 from pathlib import Path
 from typing import Any
 
 from sfgraph.common import descope_qname, parse_json_props, scope_qname
+from sfgraph.ingestion.diagnostics import IngestionDiagnosticsReporter
 from sfgraph.query.agents import (
     QueryCorrectorAgent,
     QueryPlannerAgent,
     ResultFormatterAgent,
     SchemaFilterAgent,
 )
+from sfgraph.query.graph_visualizer import render_mermaid_subgraph
 from sfgraph.query.rules_registry import RulesRegistry
 from sfgraph.storage.base import GraphStore
 from sfgraph.storage.manifest_store import ManifestStore
@@ -84,6 +87,8 @@ class GraphQueryService:
         self._labels_cache: list[str] | None = None
         self._rel_cache: list[str] | None = None
         self._node_cache: dict[str, dict[str, Any] | None] = {}
+        self._analyze_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._analyze_cache_ttl_seconds = 15.0
 
     async def _labels(self) -> list[str]:
         if self._labels_cache is None:
@@ -112,6 +117,53 @@ class GraphQueryService:
             return payload if isinstance(payload, dict) else {}
         except Exception:
             return {}
+
+    def _analyze_cache_key(
+        self,
+        *,
+        question: str,
+        mode: str,
+        strict: bool,
+        max_results: int,
+        max_hops: int,
+        time_budget_ms: int,
+        offset: int,
+    ) -> str:
+        return json.dumps(
+            {
+                "scope": self._current_scope(),
+                "q": " ".join(question.strip().split()).lower(),
+                "mode": mode,
+                "strict": strict,
+                "max_results": max_results,
+                "max_hops": max_hops,
+                "time_budget_ms": time_budget_ms,
+                "offset": offset,
+            },
+            sort_keys=True,
+        )
+
+    def _get_cached_analyze(self, cache_key: str) -> dict[str, Any] | None:
+        cached = self._analyze_cache.get(cache_key)
+        if cached is None:
+            return None
+        cached_at, payload = cached
+        if (time.monotonic() - cached_at) > self._analyze_cache_ttl_seconds:
+            self._analyze_cache.pop(cache_key, None)
+            return None
+        cloned = deepcopy(payload)
+        cloned["cache"] = {"hit": True, "ttl_seconds": self._analyze_cache_ttl_seconds}
+        return cloned
+
+    def _store_cached_analyze(self, cache_key: str, payload: dict[str, Any]) -> None:
+        if payload.get("partial_results"):
+            return
+        self._analyze_cache[cache_key] = (time.monotonic(), deepcopy(payload))
+
+    @staticmethod
+    def _remaining_budget_ms(deadline: float) -> int:
+        remaining = int((deadline - time.monotonic()) * 1000)
+        return max(remaining, 0)
 
     def _current_commit(self) -> str | None:
         try:
@@ -1349,11 +1401,16 @@ class GraphQueryService:
         partial = len(candidates) > max_results
         corrector_trace = self._corrector_agent.run(attempts)
         formatter_trace = self._formatter_agent.run(len(candidates[:max_results]))
+        confidence_tiers = (
+            self._review_manually_tiers(candidates[:max_results])
+            if used_vector_fallback
+            else self._confidence_tiers(candidates[:max_results])
+        )
         return {
             "mode": "node_search",
             "question": q,
             "candidates": candidates[:max_results],
-            "confidence_tiers": self._confidence_tiers(candidates[:max_results]),
+            "confidence_tiers": confidence_tiers,
             "pipeline": {
                 "schema_filter": schema_filter,
                 "intent": intent,
@@ -1498,6 +1555,19 @@ class GraphQueryService:
         selected_mode = (mode or "auto").strip().lower()
         if selected_mode not in {"auto", "exact", "lineage"}:
             raise ValueError("mode must be one of: auto, exact, lineage")
+        cache_key = self._analyze_cache_key(
+            question=q,
+            mode=selected_mode,
+            strict=strict,
+            max_results=max_results,
+            max_hops=max_hops,
+            time_budget_ms=time_budget_ms,
+            offset=offset,
+        )
+        cached = self._get_cached_analyze(cache_key)
+        if cached is not None:
+            return cached
+        deadline = time.monotonic() + max(time_budget_ms, 1) / 1000.0
 
         routed_to = "query"
         result: dict[str, Any]
@@ -1505,11 +1575,36 @@ class GraphQueryService:
         semantic_fallback_reason: str | None = None
 
         async def _query_stage(*, allow_vector_fallback: bool, stage: str) -> dict[str, Any]:
+            stage_budget_ms = self._remaining_budget_ms(deadline)
+            if stage_budget_ms <= 0:
+                routing_stages.append(
+                    {
+                        "stage": stage,
+                        "tool": "query",
+                        "allow_vector_fallback": allow_vector_fallback,
+                        "result_mode": "skipped_budget_exhausted",
+                        "has_evidence": False,
+                        "budget_ms": 0,
+                    }
+                )
+                return {
+                    "mode": "node_search",
+                    "question": q,
+                    "candidates": [],
+                    "confidence_tiers": self._confidence_tiers([]),
+                    "pipeline": {
+                        "intent": "budget_exhausted",
+                        "attempts": [],
+                        "hint": "Skipped because the analyze stage budget was exhausted.",
+                    },
+                    "freshness": await self.freshness(partial_results=True),
+                    "partial_results": True,
+                }
             payload = await self.query(
                 question=q,
                 max_hops=max_hops,
                 max_results=max_results,
-                time_budget_ms=time_budget_ms,
+                time_budget_ms=stage_budget_ms,
                 offset=offset,
                 allow_vector_fallback=allow_vector_fallback,
             )
@@ -1520,6 +1615,7 @@ class GraphQueryService:
                     "allow_vector_fallback": allow_vector_fallback,
                     "result_mode": payload.get("mode"),
                     "has_evidence": self._has_material_result_evidence(payload),
+                    "budget_ms": stage_budget_ms,
                 }
             )
             return payload
@@ -1635,7 +1731,7 @@ class GraphQueryService:
                     confidence_tiers = result["confidence_tiers"]
                 else:
                     confidence_tiers = self._confidence_tiers(evidence)
-                return {
+                final_payload = {
                     "mode": "analyze",
                     "question": q,
                     "analysis_mode": selected_mode,
@@ -1659,6 +1755,9 @@ class GraphQueryService:
                     "freshness": result.get("freshness", await self.freshness(partial_results=False)),
                     "partial_results": bool(result.get("partial_results", False)),
                 }
+                self._store_cached_analyze(cache_key, final_payload)
+                final_payload["cache"] = {"hit": False, "ttl_seconds": self._analyze_cache_ttl_seconds}
+                return final_payload
             component_token = self._component_token_query_parts(q)
             if component_token:
                 component_name, token = component_token
@@ -1760,7 +1859,7 @@ class GraphQueryService:
         else:
             confidence_tiers = self._confidence_tiers(evidence)
 
-        return {
+        final_payload = {
             "mode": "analyze",
             "question": q,
             "analysis_mode": selected_mode,
@@ -1784,6 +1883,9 @@ class GraphQueryService:
             "freshness": result.get("freshness", await self.freshness(partial_results=False)),
             "partial_results": bool(result.get("partial_results", False)),
         }
+        self._store_cached_analyze(cache_key, final_payload)
+        final_payload["cache"] = {"hit": False, "ttl_seconds": self._analyze_cache_ttl_seconds}
+        return final_payload
 
     @staticmethod
     def _field_query_mode(question: str) -> str | None:
@@ -2055,6 +2157,14 @@ class GraphQueryService:
             else:
                 tiers["review_manually"].append(finding)
         return tiers
+
+    @staticmethod
+    def _review_manually_tiers(findings: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        return {
+            "definite": [],
+            "probable": [],
+            "review_manually": list(findings),
+        }
 
     async def _execute_node_search_pipeline(
         self,
@@ -2355,6 +2465,92 @@ class GraphQueryService:
         progress["available"] = True
         progress["freshness"] = await self.freshness(partial_results=progress.get("state") == "running")
         return progress
+
+    async def export_diagnostics_md(
+        self,
+        *,
+        destination: str | None = None,
+        export_dir: str | None = None,
+        run_id: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        reporter = IngestionDiagnosticsReporter(
+            ingestion_meta_path=str(self._ingestion_meta_path),
+            ingestion_progress_path=str(self._ingestion_progress_path),
+        )
+        payload = reporter.export_markdown(
+            destination=destination,
+            context={
+                "export_dir": export_dir,
+                "run_id": run_id,
+                "job_id": job_id,
+            },
+        )
+        payload["freshness"] = await self.freshness(partial_results=False)
+        return payload
+
+    async def graph_subgraph(
+        self,
+        *,
+        node_id: str | None = None,
+        question: str | None = None,
+        hops: int = 2,
+        max_nodes: int = 80,
+        format: str = "mermaid",
+        focus: str = "lineage",
+    ) -> dict[str, Any]:
+        resolved = node_id
+        if not resolved and question:
+            candidate = await self._find_node(question)
+            if candidate:
+                resolved = str(candidate.get("scopedQualifiedName") or candidate.get("qualifiedName") or "")
+        if not resolved and question:
+            analysis = await self.analyze(
+                question=question,
+                mode="exact",
+                strict=True,
+                max_results=10,
+                max_hops=hops,
+            )
+            for finding in analysis.get("findings", []):
+                resolved = str(
+                    finding.get("scopedQualifiedName")
+                    or finding.get("qualifiedName")
+                    or finding.get("target_node")
+                    or ""
+                )
+                if resolved:
+                    break
+        if not resolved:
+            raise ValueError("graph_subgraph requires node_id or a question that resolves to a node")
+
+        node_payload = await self.get_node(resolved)
+        node = node_payload.get("node") or {}
+        incoming = list(node_payload.get("incoming_edges", []))[: max(max_nodes // 2, 1)]
+        outgoing = list(node_payload.get("outgoing_edges", []))[: max(max_nodes // 2, 1)]
+        node_qname = str(node.get("scopedQualifiedName") or node.get("qualifiedName") or resolved)
+        node_label = str(node.get("label") or "Node")
+        if format == "json":
+            return {
+                "node": node,
+                "incoming_edges": incoming,
+                "outgoing_edges": outgoing,
+                "focus": focus,
+                "format": "json",
+                "freshness": await self.freshness(partial_results=False),
+            }
+        return {
+            "node": node,
+            "focus": focus,
+            "format": "mermaid",
+            "mermaid": render_mermaid_subgraph(
+                center=node_qname,
+                node_label=node_label,
+                incoming=incoming,
+                outgoing=outgoing,
+            ),
+            "freshness": await self.freshness(partial_results=False),
+        }
 
     async def _find_nodes_by_source_files(self, changed_files: list[str], limit: int = 500) -> list[dict[str, Any]]:
         """Best-effort mapping from changed file paths to graph nodes."""
