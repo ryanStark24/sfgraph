@@ -132,6 +132,75 @@ def _extract_formula_field_references(formula_text: str) -> list[str]:
     return refs
 
 
+def _parse_validation_rules(
+    root: ET.Element,
+    *,
+    object_api_name: str,
+    source_file: str,
+) -> tuple[list[NodeFact], list[EdgeFact]]:
+    nodes: list[NodeFact] = []
+    edges: list[EdgeFact] = []
+
+    for rule_elem in root.findall(_tag("validationRules")):
+        full_name = rule_elem.findtext(_tag("fullName")) or ""
+        if not full_name:
+            continue
+        active = (rule_elem.findtext(_tag("active")) or "").lower() == "true"
+        formula = rule_elem.findtext(_tag("errorConditionFormula")) or ""
+        error_message = rule_elem.findtext(_tag("errorMessage")) or ""
+        description = rule_elem.findtext(_tag("description")) or ""
+        rule_qname = f"{object_api_name}.{full_name}"
+
+        nodes.append(
+            NodeFact(
+                label="ValidationRule",
+                key_props={"qualifiedName": rule_qname},
+                all_props={
+                    "qualifiedName": rule_qname,
+                    "apiName": full_name,
+                    "objectApiName": object_api_name,
+                    "active": active,
+                    "errorConditionFormula": formula,
+                    "errorMessage": error_message,
+                    "description": description,
+                },
+                sourceFile=source_file,
+                lineNumber=0,
+                parserType="xml_object",
+            )
+        )
+        edges.append(
+            EdgeFact(
+                src_qualified_name=object_api_name,
+                src_label="SFObject",
+                rel_type="CONTAINS_CHILD",
+                dst_qualified_name=rule_qname,
+                dst_label="ValidationRule",
+                confidence=1.0,
+                resolutionMethod="direct",
+                edgeCategory="STRUCTURAL",
+                contextSnippet=f"validation rule: {full_name}",
+            )
+        )
+
+        for ref in _extract_formula_field_references(formula):
+            edges.append(
+                EdgeFact(
+                    src_qualified_name=rule_qname,
+                    src_label="ValidationRule",
+                    rel_type="VALIDATION_RULE_REFERENCES_FIELD",
+                    dst_qualified_name=f"{object_api_name}.{ref}",
+                    dst_label="SFField",
+                    confidence=0.85,
+                    resolutionMethod="regex",
+                    edgeCategory="DATA_FLOW",
+                    contextSnippet=f"validation formula: {formula[:80]}",
+                )
+            )
+
+    return nodes, edges
+
+
 def _detect_object_node_type(obj_xml_path: Path) -> str:
     """Determine the NodeFact label from the object XML filename."""
     stem = obj_xml_path.parent.name  # directory name is the object API name
@@ -306,6 +375,14 @@ def parse_object_dir(object_dir: str) -> tuple[list[NodeFact], list[EdgeFact]]:
             },
             sourceFile=str(obj_xml_path), lineNumber=0, parserType="xml_object",
         ))
+
+        validation_nodes, validation_edges = _parse_validation_rules(
+            root,
+            object_api_name=object_api_name,
+            source_file=str(obj_xml_path),
+        )
+        nodes.extend(validation_nodes)
+        edges.extend(validation_edges)
 
         # Parse inline <fields> elements if present
         for field_elem in root.findall(_tag("fields")):

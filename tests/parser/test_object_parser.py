@@ -176,6 +176,47 @@ def test_custom_metadata_field_nodes_emitted_for_mdt(tmp_path):
     assert any(n.label == "CustomMetadataField" and n.key_props["qualifiedName"] == "FeatureFlag__mdt.Enabled__c" for n in nodes)
 
 
+def test_validation_rules_are_parsed_from_object_xml(tmp_path):
+    obj_dir = tmp_path / "Opportunity"
+    obj_dir.mkdir()
+    (obj_dir / "Opportunity.object-meta.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Opportunity</label>
+    <sharingModel>ReadWrite</sharingModel>
+    <validationRules>
+        <fullName>ClosedWonNeedsAmount</fullName>
+        <active>true</active>
+        <description>Require amount on close</description>
+        <errorConditionFormula>AND(ISPICKVAL(StageName, 'Closed Won'), Amount = 0)</errorConditionFormula>
+        <errorMessage>Amount is required.</errorMessage>
+    </validationRules>
+</CustomObject>""",
+        encoding="utf-8",
+    )
+
+    nodes, edges = parse_object_dir(str(obj_dir))
+    assert any(
+        n.label == "ValidationRule"
+        and n.key_props["qualifiedName"] == "Opportunity.ClosedWonNeedsAmount"
+        and n.all_props["active"] is True
+        for n in nodes
+    )
+    assert any(
+        e.rel_type == "CONTAINS_CHILD"
+        and e.src_qualified_name == "Opportunity"
+        and e.dst_qualified_name == "Opportunity.ClosedWonNeedsAmount"
+        for e in edges
+    )
+    dst_names = {
+        e.dst_qualified_name
+        for e in edges
+        if e.rel_type == "VALIDATION_RULE_REFERENCES_FIELD"
+    }
+    assert "Opportunity.StageName" in dst_names
+    assert "Opportunity.Amount" in dst_names
+
+
 def test_parse_custom_metadata_record_xml(tmp_path):
     record = tmp_path / "FeatureFlag.Default.md-meta.xml"
     record.write_text(

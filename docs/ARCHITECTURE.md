@@ -101,7 +101,7 @@ Current parser coverage:
 - Apex CST extraction
 - Aura bundle markup (`.cmp`, `.app`, `.evt`, `.intf`)
 - Flow XML
-- Object and field XML
+- Object, field, formula, and validation-rule XML
 - LWC JS/HTML metadata references
 - OmniStudio / Vlocity JSON
 

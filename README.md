@@ -15,6 +15,7 @@ It ingests a Salesforce export into a local property graph, preserves project is
 
 - Apex classes and SOQL/DML behavior
 - Object and field metadata
+- Object validation rules and formula dependencies
 - Record-triggered and screen flows
 - Aura bundles and Apex controller links
 - Lightning Web Components
