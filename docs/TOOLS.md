@@ -168,7 +168,7 @@ Purpose:
 - natural-language-ish entry point for common lineage/impact questions
 - compatibility fallback for ambiguous questions; `analyze(...)` should be preferred in new clients
 
-### `analyze(question, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?)`
+### `analyze(question, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?, render?, include_mermaid?)`
 
 Purpose:
 
@@ -181,6 +181,12 @@ Typical use:
 - `analyze("where is Service_Id__c populated?")`
 - `analyze("what happens when QuoteLineItem is inserted?")`
 - `analyze("in class OSS_ServiceabilityTask, where is accessId populated?")`
+- `analyze("where is Service_Id__c populated?", render="markdown", include_mermaid=true)`
+
+Presentation options:
+
+- `render="markdown"` returns an inline markdown summary under `presentation.markdown`
+- `include_mermaid=true` adds `presentation.mermaid` when a graph center can be resolved from the routed answer
 
 ## LLM Prompt Contract (Recommended)
 

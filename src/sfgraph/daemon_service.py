@@ -748,6 +748,8 @@ class DaemonOperations:
             max_hops=int(params.get("max_hops", 3)),
             time_budget_ms=int(params.get("time_budget_ms", 1500)),
             offset=int(params.get("offset", 0)),
+            render=str(params.get("render", "json")),
+            include_mermaid=bool(params.get("include_mermaid", False)),
         )
 
     async def impact_from_git_diff(self, params: dict[str, Any]) -> dict[str, Any]:

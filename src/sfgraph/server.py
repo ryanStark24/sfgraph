@@ -553,6 +553,8 @@ async def analyze(
     max_hops: int = 3,
     time_budget_ms: int = 1500,
     offset: int = 0,
+    render: str = "json",
+    include_mermaid: bool = False,
     export_dir: str | None = None,
 ) -> str:
     """
@@ -575,6 +577,8 @@ async def analyze(
         max_hops=max_hops,
         time_budget_ms=time_budget_ms,
         offset=offset,
+        render=render,
+        include_mermaid=include_mermaid,
     )
 
 
@@ -589,6 +593,8 @@ async def ask(
     max_hops: int = 3,
     time_budget_ms: int = 1500,
     offset: int = 0,
+    render: str = "json",
+    include_mermaid: bool = False,
 ) -> str:
     """
     Primary one-call Q&A entrypoint for MCP clients.
@@ -609,6 +615,8 @@ async def ask(
         max_hops=max_hops,
         time_budget_ms=time_budget_ms,
         offset=offset,
+        render=render,
+        include_mermaid=include_mermaid,
     )
 
 

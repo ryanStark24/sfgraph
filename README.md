@@ -1,6 +1,6 @@
 # sfgraph
 
-`sfgraph` is a Salesforce metadata graph and MCP server for impact analysis across Apex, Aura, Flows, LWC, objects, and OmniStudio/Vlocity assets.
+`sfgraph` is a Salesforce metadata graph and MCP server for impact analysis across Apex, Aura, Flows, LWC, object metadata, permission metadata, named credentials, and OmniStudio/Vlocity assets.
 
 It ingests a Salesforce export into a local property graph, preserves project isolation, and answers evidence-first questions such as:
 
@@ -16,6 +16,7 @@ It ingests a Salesforce export into a local property graph, preserves project is
 - Apex classes and SOQL/DML behavior
 - Object and field metadata
 - Object validation rules and formula dependencies
+- Permission sets, profiles, and named credentials
 - Record-triggered and screen flows
 - Aura bundles and Apex controller links
 - Lightning Web Components
@@ -210,7 +211,7 @@ The server stores graph data under `./data` relative to the repo root by default
 - `get_ingestion_status()`
 - `export_diagnostics_md(export_dir?, run_id?, job_id?, destination?)`
 - `graph_subgraph(node_id?, question?, hops?, max_nodes?, format?, focus?)`
-- `analyze(question, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?)`
+- `analyze(question, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?, render?, include_mermaid?)`
 - `query(question, max_hops?, max_results?, time_budget_ms?, offset?)`
 - `trace_upstream(node_id, max_hops?, max_results?, time_budget_ms?, offset?)`
 - `trace_downstream(node_id, max_hops?, max_results?, time_budget_ms?, offset?)`
@@ -218,6 +219,12 @@ The server stores graph data under `./data` relative to the repo root by default
 - `explain_field(field_qualified_name)`
 - `analyze_field(field_name, focus?, max_results?)`
 - `analyze_object_event(object_name, event, max_results?)`
+
+Presentation options:
+
+- set `render="markdown"` to get an inline markdown summary in the response payload
+- set `include_mermaid=true` to include a Mermaid diagram alongside the routed answer when a graph center can be resolved
+- use `export_diagnostics_md(...)` when you want a markdown file written to disk
 - `analyze_component(component_name, token?, focus?, max_results?)`
 - `analyze_change(target?, changed_files?, max_hops?, max_results_per_component?)`
 - `impact_from_git_diff(base_ref?, head_ref?, max_hops?, max_results_per_component?)`

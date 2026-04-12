@@ -42,6 +42,10 @@ from sfgraph.parser.object_parser import (
     parse_labels_xml,
     parse_object_dir,
 )
+from sfgraph.parser.metadata_parser import (
+    parse_named_credential_xml,
+    parse_permission_metadata_xml,
+)
 from sfgraph.parser.pool import NodeParserPool
 from sfgraph.parser.vlocity_parser import (
     is_vlocity_datapack_file,
@@ -1107,6 +1111,9 @@ class IngestionService:
                             ".label-meta.xml",
                             ".globalValueSet-meta.xml",
                             ".md-meta.xml",
+                            ".permissionset-meta.xml",
+                            ".profile-meta.xml",
+                            ".namedCredential-meta.xml",
                         )
                     ):
                         continue
@@ -1345,6 +1352,12 @@ class IngestionService:
         if fpath.endswith(".globalValueSet-meta.xml"):
             return "object"
         if fpath.endswith(".md-meta.xml"):
+            return "object"
+        if fpath.endswith(".permissionset-meta.xml"):
+            return "object"
+        if fpath.endswith(".profile-meta.xml"):
+            return "object"
+        if fpath.endswith(".namedCredential-meta.xml"):
             return "object"
         if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
             return "labels"
@@ -1914,6 +1927,18 @@ class IngestionService:
 
         if fpath.endswith(".md-meta.xml"):
             nodes, edges = parse_custom_metadata_record_xml(fpath)
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
+            return nodes, edges, {"outcome": "parsed"}
+
+        if fpath.endswith(".permissionset-meta.xml") or fpath.endswith(".profile-meta.xml"):
+            nodes, edges = parse_permission_metadata_xml(fpath)
+            if self._parse_cache and sha256 and can_cache:
+                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
+            return nodes, edges, {"outcome": "parsed"}
+
+        if fpath.endswith(".namedCredential-meta.xml"):
+            nodes, edges = parse_named_credential_xml(fpath)
             if self._parse_cache and sha256 and can_cache:
                 await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
             return nodes, edges, {"outcome": "parsed"}

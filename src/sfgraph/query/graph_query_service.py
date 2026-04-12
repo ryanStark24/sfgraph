@@ -128,6 +128,8 @@ class GraphQueryService:
         max_hops: int,
         time_budget_ms: int,
         offset: int,
+        render: str,
+        include_mermaid: bool,
     ) -> str:
         return json.dumps(
             {
@@ -139,9 +141,154 @@ class GraphQueryService:
                 "max_hops": max_hops,
                 "time_budget_ms": time_budget_ms,
                 "offset": offset,
+                "render": render,
+                "include_mermaid": include_mermaid,
             },
             sort_keys=True,
         )
+
+    @staticmethod
+    def _render_analyze_markdown(payload: dict[str, Any]) -> str:
+        routed_to = str(payload.get("routed_to") or "")
+        section_title = "Evidence"
+        if routed_to == "analyze_field":
+            section_title = "Field Evidence"
+        elif routed_to == "analyze_object_event":
+            section_title = "Lifecycle Evidence"
+        elif routed_to == "analyze_change":
+            section_title = "Impact Evidence"
+        elif routed_to == "analyze_component":
+            section_title = "Component Evidence"
+        lines = [
+            "# Analyze Result",
+            "",
+            f"- Question: {payload.get('question', '')}",
+            f"- Routed to: {payload.get('routed_to', '')}",
+            f"- Mode: {payload.get('analysis_mode', '')}",
+            f"- Strict: {payload.get('strict', False)}",
+            "",
+            f"## {section_title}",
+        ]
+        evidence = payload.get("evidence", [])
+        if not isinstance(evidence, list) or not evidence:
+            lines.append("- No evidence found.")
+        else:
+            for item in evidence[:10]:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("label") or item.get("dst_label") or item.get("src_label") or "Node")
+                qname = str(
+                    item.get("qualifiedName")
+                    or item.get("scopedQualifiedName")
+                    or item.get("target_node")
+                    or item.get("dst")
+                    or item.get("src")
+                    or ""
+                )
+                source_file = str(item.get("sourceFile") or item.get("source_file") or "")
+                source_line = item.get("lineNumber") or item.get("source_line")
+                detail = f"{label}: {qname}".strip()
+                if source_file:
+                    if source_line:
+                        detail += f" ({source_file}:{source_line})"
+                    else:
+                        detail += f" ({source_file})"
+                lines.append(f"- {detail}")
+        freshness = payload.get("freshness")
+        if isinstance(freshness, dict) and freshness:
+            lines.extend(
+                [
+                    "",
+                    "## Freshness",
+                    f"- Indexed at: {freshness.get('indexed_at', '')}",
+                    f"- Dirty files pending: {freshness.get('dirty_files_pending', '')}",
+                    f"- Partial results: {freshness.get('partial_results', False)}",
+                ]
+            )
+        presentation = payload.get("presentation")
+        if isinstance(presentation, dict) and presentation.get("mermaid"):
+            lines.extend(["", "## Diagram", "```mermaid", str(presentation["mermaid"]), "```"])
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _candidate_qname_from_item(item: dict[str, Any]) -> str:
+        return str(
+            item.get("scopedQualifiedName")
+            or item.get("qualifiedName")
+            or item.get("target_node")
+            or item.get("dst")
+            or item.get("src")
+            or item.get("field")
+            or item.get("component")
+            or ""
+        )
+
+    def _candidate_qnames_for_analyze_payload(self, payload: dict[str, Any]) -> list[str]:
+        result = payload.get("result")
+        candidates: list[str] = []
+
+        def _add(candidate: Any) -> None:
+            value = str(candidate or "").strip()
+            if value and value not in candidates:
+                candidates.append(value)
+
+        if isinstance(result, dict):
+            _add(result.get("start_node"))
+            for key in ("resolved_fields", "resolved_components"):
+                values = result.get(key)
+                if isinstance(values, list):
+                    for value in values:
+                        _add(value)
+            fields = result.get("fields")
+            if isinstance(fields, list):
+                for field in fields:
+                    if not isinstance(field, dict):
+                        continue
+                    _add(field.get("field"))
+                    for nested_key in ("writers", "readers", "dependents"):
+                        nested = field.get(nested_key)
+                        if not isinstance(nested, list):
+                            continue
+                        for item in nested:
+                            if isinstance(item, dict):
+                                _add(self._candidate_qname_from_item(item))
+            for list_key in ("graph_findings", "findings", "exact_matches"):
+                items = result.get(list_key)
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if isinstance(item, dict):
+                        _add(self._candidate_qname_from_item(item))
+
+        evidence = payload.get("evidence", [])
+        if isinstance(evidence, list):
+            for item in evidence:
+                if isinstance(item, dict):
+                    _add(self._candidate_qname_from_item(item))
+
+        return candidates
+
+    async def _mermaid_for_analyze_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        max_hops: int,
+    ) -> str | None:
+        for candidate in self._candidate_qnames_for_analyze_payload(payload):
+            try:
+                graph_payload = await self.graph_subgraph(
+                    node_id=candidate,
+                    hops=max_hops,
+                    max_nodes=40,
+                    format="mermaid",
+                    focus=str(payload.get("routed_to") or "lineage"),
+                )
+            except Exception:
+                continue
+            mermaid = graph_payload.get("mermaid")
+            if isinstance(mermaid, str) and mermaid.strip():
+                return mermaid
+        return None
 
     def _get_cached_analyze(self, cache_key: str) -> dict[str, Any] | None:
         cached = self._analyze_cache.get(cache_key)
@@ -1550,11 +1697,16 @@ class GraphQueryService:
         max_hops: int = 3,
         time_budget_ms: int = 1500,
         offset: int = 0,
+        render: str = "json",
+        include_mermaid: bool = False,
     ) -> dict[str, Any]:
         q = question.strip()
         selected_mode = (mode or "auto").strip().lower()
         if selected_mode not in {"auto", "exact", "lineage"}:
             raise ValueError("mode must be one of: auto, exact, lineage")
+        render_mode = (render or "json").strip().lower()
+        if render_mode not in {"json", "markdown"}:
+            raise ValueError("render must be one of: json, markdown")
         cache_key = self._analyze_cache_key(
             question=q,
             mode=selected_mode,
@@ -1563,6 +1715,8 @@ class GraphQueryService:
             max_hops=max_hops,
             time_budget_ms=time_budget_ms,
             offset=offset,
+            render=render_mode,
+            include_mermaid=include_mermaid,
         )
         cached = self._get_cached_analyze(cache_key)
         if cached is not None:
@@ -1755,6 +1909,17 @@ class GraphQueryService:
                     "freshness": result.get("freshness", await self.freshness(partial_results=False)),
                     "partial_results": bool(result.get("partial_results", False)),
                 }
+                if render_mode == "markdown" or include_mermaid:
+                    presentation: dict[str, Any] = {}
+                    if include_mermaid:
+                        mermaid = await self._mermaid_for_analyze_payload(final_payload, max_hops=max_hops)
+                        if mermaid:
+                            presentation["mermaid"] = mermaid
+                    if render_mode == "markdown":
+                        presentation["format"] = "markdown"
+                        presentation["markdown"] = self._render_analyze_markdown({**final_payload, "presentation": presentation})
+                    if presentation:
+                        final_payload["presentation"] = presentation
                 self._store_cached_analyze(cache_key, final_payload)
                 final_payload["cache"] = {"hit": False, "ttl_seconds": self._analyze_cache_ttl_seconds}
                 return final_payload
@@ -1883,6 +2048,17 @@ class GraphQueryService:
             "freshness": result.get("freshness", await self.freshness(partial_results=False)),
             "partial_results": bool(result.get("partial_results", False)),
         }
+        if render_mode == "markdown" or include_mermaid:
+            presentation: dict[str, Any] = {}
+            if include_mermaid:
+                mermaid = await self._mermaid_for_analyze_payload(final_payload, max_hops=max_hops)
+                if mermaid:
+                    presentation["mermaid"] = mermaid
+            if render_mode == "markdown":
+                presentation["format"] = "markdown"
+                presentation["markdown"] = self._render_analyze_markdown({**final_payload, "presentation": presentation})
+            if presentation:
+                final_payload["presentation"] = presentation
         self._store_cached_analyze(cache_key, final_payload)
         final_payload["cache"] = {"hit": False, "ttl_seconds": self._analyze_cache_ttl_seconds}
         return final_payload

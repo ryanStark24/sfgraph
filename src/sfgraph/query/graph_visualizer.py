@@ -6,7 +6,7 @@ from typing import Any
 
 
 def render_mermaid_subgraph(*, center: str, node_label: str, incoming: list[dict[str, Any]], outgoing: list[dict[str, Any]]) -> str:
-    lines = ["graph TD"]
+    lines = ['%%{init: {"theme": "neutral"}}%%', "graph TD"]
     emitted_nodes: set[str] = set()
 
     def _node_id(value: str) -> str:

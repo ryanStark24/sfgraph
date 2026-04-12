@@ -962,6 +962,29 @@ async def test_analyze_uses_short_lived_cache(svc: GraphQueryService):
 
 
 @pytest.mark.asyncio
+async def test_analyze_can_render_markdown_presentation(svc: GraphQueryService):
+    payload = await svc.analyze("where is Status__c populated?", mode="exact", strict=True, render="markdown")
+    assert payload["presentation"]["format"] == "markdown"
+    assert "# Analyze Result" in payload["presentation"]["markdown"]
+    assert "Question: where is Status__c populated?" in payload["presentation"]["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_can_include_mermaid_presentation(svc: GraphQueryService):
+    payload = await svc.analyze(
+        "where is Status__c populated?",
+        mode="exact",
+        strict=True,
+        render="markdown",
+        include_mermaid=True,
+    )
+    assert "presentation" in payload
+    assert "mermaid" in payload["presentation"]
+    assert "graph TD" in payload["presentation"]["mermaid"]
+    assert "## Diagram" in payload["presentation"]["markdown"]
+
+
+@pytest.mark.asyncio
 async def test_query_vector_only_results_are_review_manually(tmp_path: Path):
     graph = DuckPGQStore()
     manifest = ManifestStore(str(tmp_path / "manifest_vector_review.db"))

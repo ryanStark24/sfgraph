@@ -179,12 +179,16 @@ async def test_analyze_proxies_to_current_daemon():
         max_results=20,
         max_hops=2,
         time_budget_ms=1200,
+        render="markdown",
+        include_mermaid=True,
     )
     decoded = json.loads(payload)
     assert decoded["method"] == "analyze"
     assert decoded["params"]["question"] == "where is Service_Id__c populated?"
     assert decoded["params"]["mode"] == "exact"
     assert decoded["params"]["strict"] is True
+    assert decoded["params"]["render"] == "markdown"
+    assert decoded["params"]["include_mermaid"] is True
 
 
 @pytest.mark.asyncio
