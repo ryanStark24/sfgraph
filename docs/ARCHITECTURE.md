@@ -1,28 +1,84 @@
-# Architecture
+# sfgraph Architecture
 
-`sfgraph` is a local-first Salesforce metadata analysis system with three core responsibilities:
+## Purpose and Audience
 
-- ingest Salesforce metadata into a scoped graph
-- persist graph, manifest, and vector state locally
-- answer lineage, impact, and troubleshooting questions over CLI and MCP
+This is the single master architecture document for `sfgraph`.
 
-This document describes both:
+It is written for:
 
-- the current architecture
-- the target architecture for the next generation of faster, more robust, more transparent ingest
+- architects reviewing system direction
+- engineers implementing or refactoring core subsystems
+- maintainers validating whether new work fits the platform contract
 
-## Goals
+It replaces the previous split across implementation plans, upgrade plans, and roadmap notes.
 
-The architecture is optimized for:
+## Executive Summary
 
-- evidence over prose
-- local execution over hosted processing
-- explicit handling of unknown and dynamic edges
-- project isolation
-- predictable ingest behavior on large production exports
-- release-safe defaults where client code and metadata stay on the client machine
+`sfgraph` is a local-first Salesforce code-intelligence system. It ingests Salesforce metadata and OmniStudio/Vlocity assets into a scoped graph, persists that graph locally, and answers code-structured questions through CLI and MCP.
 
-## Hard Runtime Rules
+The system is designed to win against plain LLM/native search in one specific way:
+
+- less context
+- better context
+- more structured context
+- stronger evidence contracts
+
+The architecture is explicitly optimized for:
+
+- CLI-first ingest
+- `analyze`-first query orchestration
+- standards-driven Vlocity parsing
+- low tool-call / low round-trip answers
+- human-readable, modular, swappable code
+- local execution and project isolation
+
+## Product Goals
+
+`sfgraph` should provide:
+
+- exact answers for token-local questions such as "where is `Service_Id__c` populated?"
+- graph-backed answers for lineage and impact questions such as "what happens when `QuoteLineItem` is inserted?"
+- compact evidence payloads that reduce upstream LLM tokens
+- durable ingest jobs that stay observable during long runs
+- predictable behavior on large Salesforce and OmniStudio repositories
+
+## Non-Goals
+
+`sfgraph` is not currently trying to be:
+
+- a universal all-language code graph engine
+- an autonomous reasoning agent that replaces source-backed evidence
+- a hosted code processing service
+- a dynamic runtime tracer for Salesforce execution inside the org
+
+The product is Salesforce-first. Future broader language support must fit the same evidence-first contracts and modular boundaries.
+
+## Design Principles
+
+### Evidence over prose
+
+Every important claim should map to one or both of:
+
+- file + line evidence
+- explicit graph path evidence
+
+### Local-first by default
+
+Metadata parsing, graph persistence, and vector persistence happen locally unless the user explicitly opts into network-enabled behavior.
+
+### Deterministic before heuristic
+
+Routing, parsing, graph writes, and confidence promotion should be explainable. Heuristics and semantic retrieval are allowed only after exact and graph evidence are exhausted or insufficient.
+
+### Project isolation is mandatory
+
+Cross-project contamination is treated as a correctness bug.
+
+### Modularity is a product requirement
+
+The architecture must remain readable, swappable, and testable. Large modules are treated as technical debt, not a style preference.
+
+## Runtime Policy
 
 The intended runtime policy is:
 
@@ -36,674 +92,877 @@ Current enforced default:
 - remote LLM query-agent calls are disabled unless `SFGRAPH_ALLOW_NETWORK=1`
 - embedding model downloads are disabled unless `SFGRAPH_ALLOW_NETWORK=1`
 
-Allowed network access outside of core metadata analysis still exists during installation/bootstrap, for example:
+Allowed network access outside of core analysis may still occur during:
 
-- npm package download
-- Python package installation
-- optional model prefetch during explicit bootstrap
+- package installation
+- optional bootstrap steps
+- optional org enrichment when the user provides a Salesforce CLI alias
 
-## High-Level Flow
+## System Context
 
-Current high-level flow:
+High-level flow:
 
 ```text
-metadata export
+metadata export / repo
   -> discovery
-  -> parsers
+  -> standards resolution
+  -> parser orchestration
   -> node/edge facts
-  -> graph store + manifest + vectors
-  -> query service
-  -> MCP tools / CLI
+  -> graph + manifest + vector persistence
+  -> query orchestration
+  -> MCP / CLI responses
 ```
 
-Target high-level flow:
+Target operational flow:
 
 ```text
-metadata export
+repo / export
   -> ingest job creation
   -> discovery phase
-  -> parse queue
-  -> node write queue
-  -> edge write queue
-  -> optional vector queue
+  -> parse planning
+  -> node batch writes
+  -> edge batch writes
+  -> optional vector stage
+  -> persisted progress + diagnostics
   -> query service / MCP polling
 ```
 
-## Current Components
+## Current Implemented Components
 
-### Ingestion
+### Ingestion Layer
 
-Ingestion lives under `src/sfgraph/ingestion/`.
+The ingestion layer lives under `src/sfgraph/ingestion/`.
 
 Responsibilities:
 
-- discover supported files in an export
-- parse Apex, Aura, Flows, objects, workflow metadata, permission metadata, reports, dashboards, named credentials, LWC, and Vlocity assets
+- discover supported files under one project scope
+- resolve standards and parser rules
+- parse Salesforce metadata families and Vlocity assets
 - normalize parser output into `NodeFact` and `EdgeFact`
-- write scoped graph rows
-- track run/file status in the manifest
-- persist ingest progress snapshots
-- update vector search chunks
+- batch-write graph state
+- maintain manifest freshness and run state
+- persist ingest progress snapshots and diagnostics
 
-Important files:
+Current key modules:
 
-- [`src/sfgraph/ingestion/service.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/ingestion/service.py)
-- [`src/sfgraph/ingestion/models.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/ingestion/models.py)
-- [`src/sfgraph/ingestion/scope_migration.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/ingestion/scope_migration.py)
-- [`src/sfgraph/ingestion/snapshot.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/ingestion/snapshot.py)
+- `service.py`
+- `parser_dispatch.py`
+- `diagnostics.py`
+- `org_metadata.py`
+- `models.py`
+- `snapshot.py`
 
-### Parsers
+### Parser Layer
 
-Parsers live under `src/sfgraph/parser/`.
+The parser layer lives under `src/sfgraph/parser/`.
 
-Current parser coverage:
+Current parser coverage includes:
 
 - Apex CST extraction
-- Aura bundle markup (`.cmp`, `.app`, `.evt`, `.intf`)
+- Aura bundle markup
 - Flow XML
-- Object, field, formula, and validation-rule XML
-- Legacy workflow XML (`.workflow-meta.xml`)
-- Permission set and profile XML
-- Report XML
-- Dashboard XML
-- Named credential XML
-- LWC JS/HTML metadata references
-- OmniStudio / Vlocity JSON
+- Object XML, fields, formulas, validation rules
+- Workflow metadata
+- Permission set and profile metadata
+- Named credentials
+- Reports
+- Dashboards
+- LWC references
+- OmniStudio / Vlocity datapacks
 
-Important notes:
+The parser layer is intentionally mixed:
 
-- the Apex path uses a Node worker with `web-tree-sitter-sfapex`
-- the Aura path is intentionally lightweight today and extracts bundle identity, Apex controller usage, and local child-component references
-- rich Vlocity parsing currently exists for:
-  - `IntegrationProcedure`
-  - `DataRaptor`
-  - `OmniScript`
-- other supported Vlocity types currently fall back to generic `VlocityDataPack` parsing
+- exact structural parsers where practical
+- standards-driven Vlocity parsing where rule data exists
+- generic fallback parsing where type coverage exists but deep semantics are incomplete
 
-Important files:
+### Standards Layer
 
-- [`src/sfgraph/parser/pool.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/parser/pool.py)
-- [`src/sfgraph/parser/worker/worker.js`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/parser/worker/worker.js)
-- [`src/sfgraph/parser/vlocity_parser.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/parser/vlocity_parser.py)
-- [`src/sfgraph/parser/vlocity_registry.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/parser/vlocity_registry.py)
+The standards layer is the new foundation for Vlocity correctness.
 
-### Storage
+Current direction:
 
-Storage lives under `src/sfgraph/storage/`.
+- local datapack metadata first
+- optional org metadata via Salesforce CLI alias
+- bundled baseline snapshots derived from upstream reference behavior
 
-Current runtime model:
+The standards layer normalizes:
 
-- graph store: DuckDB-backed property graph tables
-- manifest store: SQLite file state and run tracking
-- vector store: local Qdrant path storage for semantic fallback
+- datapack type
+- primary object type
+- matching key fields
+- return key field
+- required settings
+- provenance and confidence
+
+### Storage Layer
+
+The storage layer lives under `src/sfgraph/storage/`.
+
+Current default runtime:
+
+- DuckDB-backed graph tables
+- SQLite-backed manifest and job state
+- local Qdrant path storage for vectors
 
 Important note:
 
-- FalkorDB exists as an optional backend path, but the default product flow is DuckDB-based
+- FalkorDB still exists as an optional backend path, but DuckDB is the primary product backend
 
 ### Query Layer
 
-Query logic lives under `src/sfgraph/query/`.
+The query layer lives under `src/sfgraph/query/`.
 
 Responsibilities:
 
-- node lookup and scoped/unscoped resolution
-- upstream and downstream lineage tracing
-- evidence-first edge/path formatting
-- git-diff impact analysis
-- cross-layer flow map generation
-- unknown dynamic edge reporting
-- heuristic or optional LLM-assisted query shaping
+- exact node and symbol lookup
+- scoped graph traversal
+- impact and lineage analysis
+- evidence formatting
+- hybrid lexical / graph / semantic retrieval
+- markdown and Mermaid presentation support
 
-Important files:
+Current key modules:
 
-- [`src/sfgraph/query/graph_query_service.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/query/graph_query_service.py)
-- [`src/sfgraph/query/rules_registry.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/query/rules_registry.py)
-- [`src/sfgraph/query/agents.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/query/agents.py)
+- `graph_query_service.py`
+- `graph_visualizer.py`
+- `rules_registry.py`
+- `agents.py`
 
-### MCP Server
+### Daemon and MCP Layer
 
-The MCP server lives in [`src/sfgraph/server.py`](/Users/anshulmehta/Documents/salesforceMCP/src/sfgraph/server.py).
+`sfgraph` exposes a job-native runtime and an MCP server.
 
 Responsibilities:
 
-- initialize runtime storage handles
-- expose MCP tools over `stdio`
-- enforce workspace-local export path validation
-- return structured JSON for each tool
+- isolate runtime state per workspace/export root
+- manage ingest/refresh/vectorize jobs durably
+- keep health/status/progress available during long jobs
+- expose structured MCP tools over `stdio`
 
-## Project Isolation Model
+The intended client model is now:
 
-`sfgraph` is designed to avoid cross-project contamination.
+- ingest via CLI or job-native MCP tools
+- query via `analyze`
+- debug via specialized tools only when necessary
 
-Isolation mechanisms:
+## Project and Workspace Isolation
+
+Isolation is a correctness requirement.
+
+Mechanisms in place:
 
 - graph node keys are stored as `projectScope::qualifiedName`
-- vector search is filtered by `project_scope`
-- ingestion freshness metadata records `project_scope` and export path
-- MCP ingest paths are restricted to the current workspace root
+- vector search is filtered by project scope
+- progress and ingest metadata record the export path and project scope
+- workspaces are separated per export directory
 - nested repositories inside the export tree are skipped during discovery
 
-Recommended practice:
+Recommended deployment model:
 
-- use a separate data directory for each project
-- run one MCP server instance per workspace
+- one workspace data root per project/export directory
+- one MCP server instance per workspace when possible
 
-## Runtime Layout
+## Data and Artifact Layout
 
-Source install default:
+Typical local artifacts include:
 
-- `./data/sfgraph.duckdb`
-- `./data/manifest.sqlite`
-- `./data/vectors/`
+- DuckDB graph database
+- SQLite manifest store
+- SQLite ingest job registry
+- vector store directory
+- `ingestion_progress.json`
+- `ingestion_meta.json`
+- `ingestion_diagnostics.md`
 
-npx bootstrap default:
-
-- cached Python runtime under the user cache directory
-- workspace-specific data under:
-  - `~/Library/Caches/sfgraph-mcp/workspaces/<hash>/data` on macOS
+These artifacts form the local system of record for ingest status and graph freshness.
 
 ## Current Strengths
 
-The current system already does a few important things well:
+The current system already delivers several important architectural wins:
 
 - local parsing rather than hosted parsing
-- scoped graph identity to prevent cross-project contamination
-- explicit progress snapshot persistence
-- evidence-first query output instead of opaque prose summaries
-- baseline Vlocity coverage across a broader type inventory than before
+- scoped identity and per-workspace isolation
+- durable ingest job tracking
+- responsive status/progress endpoints during ingest
+- explicit diagnostics export
+- evidence-first query payloads
+- markdown and Mermaid presentation support
+- broader Salesforce metadata coverage than the original implementation
+- materially improved Vlocity handling compared with suffix-only parsing
 
 ## Current Weaknesses
 
-The current ingest architecture has moved to durable background jobs with per-workspace isolation, but still has practical limits.
+Despite recent progress, several architectural concerns remain.
 
-### 1. Internal cleanup still trails the public tool model
+### 1. Large core modules still exist
 
-The blocking MCP wrappers have been removed, and the public ingest surface is now job-native.
-
-Consequences:
-
-- new integrations have one clear model: `start_*_job` plus polling APIs
-- internal cleanup can now focus on simplifying transition-era code paths instead of supporting two public models
-
-### 2. Job model is first-class, with persisted state and resume support
-
-Ingest/refresh/vectorize are job-native with durable metadata in SQLite (`ingest_jobs.sqlite`) and persisted progress snapshots.
+`IngestionService` and `GraphQueryService` still carry too many responsibilities.
 
 Consequences:
 
-- stable `job_id` for polling and cancellation
-- `list_ingest_jobs` and `get_ingest_job` survive daemon restart
-- queued/running jobs are marked failed as `daemon_restarted` on recovery
-- `resume_ingest_job(job_id)` can create a checkpoint-aware resumed job (`resume_checkpoint=true`)
+- higher refactor risk
+- slower onboarding for maintainers
+- harder contract testing
 
-### 3. Vector work can still influence critical-path behavior
+### 2. Vlocity semantic depth still varies by datapack family
 
-Vector updates currently still happen in the ingest flow (except explicit `graph_only` mode), but status now reports vector health explicitly.
-
-Consequences:
-
-- graph ingest latency can be coupled to embedding availability
-- first-use model readiness can delay ingest unless pre-cached
-- status endpoints now expose `vector_health` so failures are visible instead of silent
-
-### 4. Discovery is still heavier than it should be
-
-Even after pruning improvements, production trees can still contain:
-
-- huge JSON volumes
-- generated files
-- exports with low-value or repetitive metadata classes
+Coverage is broader, but deep relationship extraction is not yet complete across all high-value datapack shapes.
 
 Consequences:
 
-- file hashing and traversal can dominate ingest time
-- users perceive “slow ingest” before parser throughput is even the bottleneck
+- some answers still require generic fallback evidence
+- some impact results are shallower than they should be
 
-### 5. Vlocity coverage is broader, but semantic depth still varies
+### 3. Vector work can still affect perceived ingest quality
 
-We recognize the upstream-supported type inventory and now parse additional non-object array families used in real OmniStudio exports, including wrapped-array forms:
+Vector state is now reported more truthfully, but vector health remains an operational concern.
+
+Consequences:
+
+- semantic fallback quality can vary based on local embedding readiness
+- graph ingest should remain useful even in degraded vector mode
+
+### 4. Query orchestration is improved but not fully decomposed
+
+`analyze` is the correct top-level pattern, but the internal query stack still needs cleaner module boundaries.
+
+### 5. Tool and token cost can still be reduced further
+
+The architecture has moved in the right direction, but dynamic tool disclosure, stronger caching, and local helper-model routing are still future work.
+
+## Reference Architecture
+
+The target reference architecture is:
+
+```text
+User Question
+  -> Analyze API
+    -> Intent Router
+      -> Exact Retrieval
+      -> Graph Retrieval
+      -> Semantic Fallback
+    -> Evidence Aggregator
+    -> Confidence Resolver
+    -> Renderers (JSON / Markdown / Mermaid)
+```
+
+The target ingest architecture is:
+
+```text
+Repo / Export
+  -> Discovery
+  -> Standards Resolution
+  -> Parse Planning
+  -> Parser Adapters
+  -> Node Batch Writer
+  -> Edge Batch Writer
+  -> Optional Vectorizer
+  -> Diagnostics Reporter
+  -> Durable Job / Progress Store
+```
+
+## Ingestion Architecture
+
+### Job Model
+
+Ingest, refresh, and vectorize are job-native operations.
+
+Required behavior:
+
+- stable `job_id`
+- persisted job state in SQLite
+- cancellation support
+- restart-aware failure markers
+- progress snapshots independent of active polling
+
+### Phase Model
+
+The target phase contract is:
+
+- `bootstrap`
+- `discovering`
+- `planning_refresh`
+- `parsing`
+- `writing_nodes`
+- `writing_edges`
+- `vectorizing`
+- `completed`
+- `failed`
+- `cancelled`
+
+All external status APIs should rely on typed, validated phase values.
+
+### Discovery
+
+Discovery should:
+
+- honor `sfdx-project.json` package directories when present
+- fall back to default Salesforce roots only when needed
+- avoid hard dependency on `force-app/main/default/...`
+- skip nested repositories and low-value generated trees where appropriate
+
+### Parser Dispatch
+
+Parser dispatch should be centralized and data-driven.
+
+Required properties:
+
+- file-family routing separated from parse execution
+- no storage coupling in parser adapters
+- clear parser-name mapping per supported suffix or asset family
+
+### Standards Resolution
+
+The standards layer must resolve Vlocity behavior in this precedence order:
+
+1. local datapack/export metadata
+2. optional org metadata via alias
+3. bundled baseline derived from `vlocity_build` and `vlocode` reference behavior
+
+### Parse Outcomes
+
+Every parsed or skipped asset should produce an explicit typed outcome.
+
+Required categories:
+
+- `parsed_structured`
+- `parsed_generic`
+- `skipped_missing_rule`
+- `skipped_unsupported_shape`
+- `parse_error`
+
+Silent skips are not acceptable.
+
+### Write Strategy
+
+Graph writes should use batched node and edge persistence.
+
+Required properties:
+
+- configurable batch sizes
+- stable merge semantics
+- backend-safe abstraction boundaries
+- truth-preserving scope handling
+
+### Progress and Diagnostics
+
+Progress reporting should remain low-latency and independent of heavy query work.
+
+Required artifacts:
+
+- `ingestion_progress.json`
+- `ingestion_meta.json`
+- `ingestion_diagnostics.md`
+
+Diagnostics should summarize:
+
+- parse failures
+- skip reasons
+- unresolved symbols
+- vector health
+- worker/runtime warnings
+- standards provenance and coverage
+
+## Parser Architecture
+
+## Apex
+
+Apex parsing uses a Node worker and Tree-sitter-based CST extraction.
+
+Goals:
+
+- stable method/class/trigger symbol extraction
+- strong call and DML relationships
+- low hallucination for exact lookup questions
+
+## Aura
+
+Aura parsing is intentionally lightweight but first-class.
+
+Current support:
+
+- bundle identity
+- Apex controller usage
+- local child component references
+
+## Object Metadata
+
+Object parsing should continue to own:
+
+- object nodes
+- field nodes
+- formula relationships
+- validation rule nodes and field references
+
+## Permission and Security Metadata
+
+Current support includes:
+
+- profiles
+- permission sets
+- named credentials
+- high-signal permission edges
+
+Future work should deepen:
+
+- permission aggregation semantics
+- setup and integration metadata relationships
+
+## Workflow, Reports, and Dashboards
+
+Current support includes:
+
+- workflow rules
+- workflow field updates
+- report nodes
+- dashboard nodes
+- dashboard-to-report relationships
+
+## LWC
+
+LWC coverage is still intentionally bounded and should be treated as structural/reference extraction rather than a full JavaScript reasoning engine.
+
+## Vlocity / OmniStudio
+
+Vlocity is the most important standards-driven parser domain in the system.
+
+### Gold-standard references
+
+The architecture treats these upstream sources as behavioral references:
+
+- `vlocity_build`
+- `vlocode`
+
+### Expected standards contract
+
+The normalized Vlocity rule bundle should include:
+
+- datapack type
+- primary object type
+- matching key fields
+- return key field
+- query signature
+- required settings
+- provenance and confidence
+
+### Coverage direction
+
+Deep extraction must continue to improve for at least:
 
 - `*_PromotionItems.json`
 - `*_PriceListEntries.json`
 - `*_InterfaceImplementationDetails.json`
 - `*_ProductChildItems.json`
 
-Consequences:
+The system should emit typed nodes and meaningful edges instead of falling back to raw nested JSON excerpts whenever possible.
 
-- baseline coverage exists
-- full semantic richness does not yet exist across all Vlocity types
+## Query Architecture
 
-### 6. Job execution model
+## Primary Entry Point
 
-Background jobs run in isolated subprocesses (not worker threads) so cancellation can terminate active work deterministically.
+The default query entry point is:
 
-Consequences:
+- `analyze(question, export_dir?, mode=auto, strict=true, ...)`
 
-- API status/health endpoints stay responsive during long ingests
-- cancellation now performs hard-stop process termination for active background jobs
-- no same-process thread linger after `cancel_ingest_job`
+This should remain the dominant LLM-facing surface.
 
-## Target Ingest Architecture
+## Query Modes
 
-The target ingest architecture should be job-based, phase-aware, resumable, and local-only by default.
+The routing policy is hybrid, not graph-for-everything.
 
-### Job Model
+### Exact mode
 
-Introduce explicit ingest jobs:
+Use for token-local questions such as:
 
-- `start_ingest(export_dir, mode?) -> job_id`
-- `get_ingest_job(job_id)`
-- `cancel_ingest(job_id)`
-- `list_ingest_jobs()`
-- optional `resume_ingest(job_id)`
+- where is a field populated
+- where is a method called
+- where is a value assigned
 
-CLI remains the convenience wrapper for synchronous human workflows.
+### Lineage mode
 
-### Phase Model
+Use for transitive or impact questions such as:
 
-Each job should move through explicit phases:
+- what happens when an object is inserted
+- what breaks if this class changes
+- which flows or datapacks depend on this component
 
-1. `bootstrap`
-2. `discovering`
-3. `parsing`
-4. `writing_nodes`
-5. `writing_edges`
-6. `vectorizing`
-7. `completed`
-8. `failed`
-9. `cancelled`
+### Exploratory mode
 
-### Progress Contract
+Use only when the question is broad and exact scope is unclear.
 
-Progress should expose:
+## Retrieval Pipeline
 
-- `job_id`
-- `state`
-- `phase`
-- `total_files_discovered`
-- `files_hashed`
-- `files_parsed`
-- `files_failed`
-- `nodes_written`
-- `edges_written`
-- `vectors_written`
-- `current_file`
-- `current_parser`
-- `parser_breakdown`
-- `elapsed_seconds`
-- `estimated_remaining_seconds`
-- `top_failure_reasons`
+The intended retrieval stages are:
 
-### Queue Model
+1. exact lexical retrieval
+2. symbol retrieval
+3. graph traversal when the question requires it
+4. semantic fallback only if the earlier stages are insufficient
 
-Use explicit bounded queues:
+### Lane responsibilities
 
-- discovery queue
-- parse queue
-- node write queue
-- edge write queue
-- vector queue
-- retry queue
+#### Lexical lane
 
-Benefits:
+Best for fast certainty and direct file evidence.
 
-- backpressure becomes visible
-- parser workers are isolated from DB write latency
-- vector work can be deferred or disabled without affecting graph ingest
+#### Graph lane
 
-### Recommended Modes
+Best for structured lineage and impact.
 
-Support explicit ingest modes:
+#### Semantic lane
 
-- `graph_only`
-- `graph_plus_vectors`
-- `vectors_only`
+Fallback only. It should never independently produce a `definite` claim.
 
-Recommended default for large orgs:
+## Evidence Aggregation and Confidence
 
-- start with `graph_only`
-- run vectorization as a second job
+Every finding should carry:
 
-## Efficiency Plan
+- source kind
+- file and line if available
+- relation semantics
+- confidence tier
+- unresolved evidence notes where relevant
 
-### 1. Reduce discovery cost
+### Confidence tiers
 
-Recommended improvements:
+- `definite`
+  - direct assignment, direct writer edge, or exact corroborated source evidence
+- `probable`
+  - strong graph path or corroborated inference without direct writer proof
+- `review_manually`
+  - semantic-only or unresolved dynamic evidence
 
-- keep nested repo pruning
-- continue aggressive directory skipping
-- skip low-value/generated trees by policy
-- allow configurable include/exclude patterns
-- hash only candidate files rather than broad trees
+### Confidence rules
 
-Potential future additions:
+- vector-only evidence cannot become `definite`
+- graph-only answers without lexical/source corroboration must be downgraded where correctness risk is material
+- exact file evidence wins over semantic similarity
 
-- manifest-assisted fast stat comparison before hashing
-- shallow discovery caches per export root
+## Presentation Contract
 
-### 2. Keep large Apex files off the pipe
+The query layer should support multiple renderers without mixing rendering logic into core retrieval logic.
 
-This is now already improved:
+Current presentation shapes:
 
-- the worker reads from disk during normal ingest instead of receiving full file bodies inline
+- structured JSON
+- inline Markdown
+- optional Mermaid via `include_mermaid=true`
+- diagnostics markdown file export via `export_diagnostics_md(...)`
 
-Additional future improvements:
+## Tool Surface Contract
 
-- length-prefixed IPC as a fallback transport
-- explicit large-file handling metrics
+### Primary tools
 
-### 3. Batch graph writes harder
+The preferred client path should emphasize:
 
-Recommended improvements:
+- `start_ingest_job`
+- `start_refresh_job`
+- `get_ingest_job`
+- `get_ingestion_progress`
+- `analyze`
+- `graph_subgraph`
+- `export_diagnostics_md`
 
-- larger node merge batches
-- larger edge merge batches
-- write ordering by type plus batch size tuning
-- optional commit checkpoints per phase
+### Specialized tools
 
-### 4. Make vectors secondary
+Specialized lineage/debug tools can remain available, but should not define the default user journey.
 
-Recommended improvements:
+## LLM Integration Contract
 
-- default to graph-first ingest
-- defer vector creation to a second phase or a second job
-- support vector disabling for privacy-sensitive or speed-sensitive use cases
+When `sfgraph` is available, LLM clients should follow this policy:
 
-### 5. Add warm bootstrap
+1. use `analyze` first
+2. use `mode=exact` for token-local questions
+3. use `mode=lineage` for impact or transitive questions
+4. require evidence in the answer
+5. if only semantic evidence exists, present it as `review_manually`
 
-There should be an explicit bootstrap step that prepares everything before ingest:
+Recommended question envelope:
 
-- create venv
-- install Python dependencies
-- install Node dependencies
-- verify parser worker startup
-- optionally prefetch embedding model locally
-- record runtime readiness
+```json
+{
+  "question": "Where is Service_Id__c populated?",
+  "mode": "exact",
+  "strict": true,
+  "render": "markdown"
+}
+```
 
-Recommended bootstrap modes:
+## Modularity and Swappability Standards
 
-- `bootstrap-minimal`
-- `bootstrap-full`
+This is a first-class architecture constraint.
 
-### 6. Improve skip accounting
+### Required subsystem contracts
 
-Recommended improvements:
+Major subsystems should be structured around explicit interfaces or narrow seams such as:
 
-- distinguish `ignored`, `unsupported`, `empty`, and `failed`
-- report unsupported Vlocity types explicitly
-- make “skipped” actionable rather than opaque
+- `StandardsProvider`
+- `ParserAdapter`
+- `GraphStore`
+- `VectorStore`
+- `RetrievalEngine`
+- `DiagnosticsReporter`
 
-## Vlocity Target Design
+### Required engineering rules
 
-The current target should be:
+- parsing logic must remain separate from discovery logic
+- retrieval logic must remain separate from ranking and rendering logic
+- renderers must stay separate from business logic
+- no parser may depend directly on storage internals
+- no query engine may depend on filesystem heuristics when a retrieval abstraction exists
+- policy/config thresholds should live outside core orchestration where practical
 
-- baseline support for all upstream-listed DataPack types
-- rich parsers for the highest-value types first
+### Code health guardrails
 
-Recommended rollout:
+- avoid new god files
+- prefer small orchestrators with focused helpers
+- require contract tests for public subsystem seams
+- provide at least one fake or test double for each major replaceable subsystem
 
-1. keep generic `VlocityDataPack` fallback for all types
-2. add unsupported-type reporting by frequency
-3. add rich parsers incrementally for the highest-volume / highest-value types
+## Security and Reliability Requirements
 
-Useful source of truth:
+Required hardening direction:
 
-- upstream `vlocity_build` supported type inventory
+- sanitize dynamic table identifiers and storage-layer interpolations
+- centralize duplicated utilities and scope helpers
+- reduce silent exception swallowing in favor of structured warnings
+- make cancellation cooperative and observable
+- preserve health/status calls before and during ingest
+- keep vector mode explicitly reported as `enabled`, `disabled`, `degraded`, or `failed`
 
-## Privacy and Security Design
+## Performance and Quality Targets
 
-The product promise should be:
+### Query targets
 
-- client code and metadata do not leave the machine during normal analysis
+- common developer questions answered in one tool call whenever possible
+- exact questions should avoid unnecessary semantic fallback
+- graph traversals should respect hop/result/time budgets
 
-To preserve that, the architecture should enforce:
+### Ingest targets
 
-- no implicit remote query shaping
-- no implicit model downloads during ingest
-- no hidden hosted parsing
-- explicit opt-in for all outbound runtime calls
+- large production exports remain phase-transparent during ingest
+- status/progress polling stays responsive
+- batch write paths reduce row-by-row persistence costs
 
-The only acceptable network-by-default surface should be installation/bootstrap, not metadata analysis.
+### Quality targets
 
-## Recommended Next Implementation Steps
+- no vector-only `definite` write/population answers
+- no silent Vlocity skips
+- structured Vlocity coverage should continue improving for critical datapack families
+- evidence-first answers should outperform plain lexical/native search for supported Salesforce-structured questions
 
-Highest ROI sequence:
+## Architecture Workstreams
 
-1. introduce background ingest jobs with `job_id`
-2. expose true job polling APIs over MCP and CLI
-3. split vectorization into a separate phase or job
-4. add richer skip / unsupported-type accounting
-5. add configurable discovery include/exclude rules
-6. add warm bootstrap with dependency and model prefetch
-7. add resumable ingest checkpoints
+The remaining architecture program should be tracked under these workstreams.
+
+### WS1: Query decomposition
+
+Split `GraphQueryService` into smaller modules such as:
+
+- intent router
+- exact retrieval
+- lineage engine
+- component analysis
+- answer assembler
+- presentation/renderers
+
+### WS2: Ingestion decomposition
+
+Continue splitting `IngestionService` into:
+
+- discovery
+- standards resolution
+- parse orchestrator
+- node writer
+- edge writer
+- progress tracker
+- vectorizer
+
+### WS3: Vlocity semantic depth
+
+Expand standards-driven extraction and typed relationships across more datapack families and custom org-defined types.
+
+### WS4: Tool and token efficiency
+
+Reduce tool-schema overhead and reduce upstream payloads.
+
+### WS5: Evaluation and benchmarking
+
+Formalize head-to-head testing against native lexical/LLM search for common Salesforce engineering questions.
+
+## Cost and Token Efficiency Roadmap
+
+This roadmap is intentionally included in the master architecture because token efficiency is now a product-level architecture concern.
+
+### Phase 1: Tool and payload minimization
+
+Goals:
+
+- keep `analyze` as the dominant entry point
+- return structured payloads that reduce follow-up prompts
+- reduce avoidable tool orchestration and formatting cost
+
+Acceptance criteria:
+
+- most common question types resolve with a single `analyze(...)` call
+- markdown and Mermaid output reduce extra formatting turns
+
+### Phase 2: Dynamic tool disclosure
+
+Goals:
+
+- avoid exposing the full MCP tool surface to the model up front
+- progressively reveal specialized tools only when needed
+
+Acceptance criteria:
+
+- lower tool-schema prompt footprint
+- no increase in user-visible round trips
+
+### Phase 3: Local helper-model layer
+
+Use local small models only for:
+
+- intent routing
+- lane selection
+- reranking
+- evidence compaction
+- answer formatting
+
+They must not:
+
+- determine truth independently
+- promote semantic-only evidence to high confidence
+- replace parser or graph evidence
+
+### Phase 4: Exact and semantic cache
+
+Goals:
+
+- cache repeated exact questions safely
+- optionally reuse semantic candidate sets without bypassing freshness or confidence rules
+
+Acceptance criteria:
+
+- lower repeated-query latency
+- no stale-evidence regressions after refresh
+
+### Phase 5: Deeper evidence compaction
+
+Goals:
+
+- compress retrieved evidence into small, typed payloads
+- preserve claim-bearing facts while stripping boilerplate
+
+### Phase 6: Better Vlocity semantic compression
+
+Goals:
+
+- structurally summarize large OmniStudio/Vlocity assets
+- reduce the need to pass raw nested JSON to the upstream LLM
+
+### Phase 7: Code-based orchestration for heavy workflows
+
+Goals:
+
+- move benchmark and selftest execution into scripts/workflows instead of chat-heavy tool transcripts
+- keep large logs and intermediate artifacts out of conversation context
+
+### Phase 8: Evaluation and proof
+
+Benchmarks should explicitly track:
+
+- tool calls per question
+- prompt token estimate
+- response token estimate
+- cache hit rate
+- exact-lane success rate
+- semantic fallback rate
+- latency by question class
+- answer precision and completeness
+
+## Risks and Mitigations
+
+### Risk: Vlocity complexity outpaces standards coverage
+
+Mitigation:
+
+- local-first standards resolution
+- optional org enrichment
+- explicit skip reasons and diagnostics
+- phased family-by-family deep extraction
+
+### Risk: small local models distort evidence quality
+
+Mitigation:
+
+- keep helper models out of the truth path
+- retain deterministic confidence gates
+- benchmark helper-model usage against exact-only baselines
+
+### Risk: module decomposition slows feature delivery
+
+Mitigation:
+
+- decompose behind stable seams
+- keep external tool contracts stable
+- add contract tests before major extractions
+
+### Risk: storage abstraction becomes leaky
+
+Mitigation:
+
+- keep GraphStore and VectorStore responsibilities narrow
+- require backend-agnostic contract tests for shared operations
 
 ## Release Readiness Gates
 
-Before release, the tool should satisfy:
-
 ### Correctness
 
-- no nested repos indexed
-- no cross-project graph contamination
-- large Apex files ingest without IPC chunk failures
-- Vlocity fallback covers all known upstream type names
+- no project-scope leakage
+- no vector-only `definite` findings
+- no silent skip of supported Vlocity families
 
 ### UX
 
-- users can see meaningful progress during ingest
-- users can tell whether the run is parsing, writing, or vectorizing
-- failures surface with reasons, not silent skips
+- status and progress stay responsive during long jobs
+- common structured questions resolve with low round trips
+- markdown and Mermaid outputs are stable and usable
 
 ### Privacy
 
-- no client metadata leaves the machine by default
-- remote features require explicit opt-in
+- local-first parsing remains the default
+- remote/network paths require explicit opt-in
 
 ### Performance
 
-- large exports remain responsive
-- critical-path ingest does not block on optional vector work
-- discovery cost is bounded and explainable
+- ingest remains phase-transparent on large datasets
+- batch writes remain the default for large graph updates
+- exact retrieval remains the fastest lane for token-local questions
 
-## V3 Hybrid Retrieval Architecture (Next)
+## Definition of Done for the Architecture Program
 
-This section defines the next architecture needed to consistently outperform native LLM-only repo search on both:
+This architecture program is complete when:
 
-- token-level exact lookups
-- multi-hop lineage/impact reasoning
-
-### Design Principles
-
-- exact-first for deterministic questions
-- graph-first for lifecycle/impact questions
-- semantic retrieval only as gated fallback
-- one-call UX (`analyze`) with internal orchestration
-- evidence and confidence in every answer payload
-
-### Retrieval Pipeline
-
-`analyze(...)` should execute a three-lane pipeline internally:
-
-1. lexical lane
-2. graph lane
-3. semantic lane
-
-Routing policy:
-
-- token lookup / field assignment intent:
-  - lexical lane first
-  - graph lane only if lexical confidence is low
-- object lifecycle / change impact intent:
-  - graph lane first
-  - lexical corroboration when available
-- broad discovery intent:
-  - lexical lane first
-  - semantic lane only when lexical+graph are insufficient
-
-### Lane Responsibilities
-
-#### 1) Lexical lane (fast certainty)
-
-Responsibilities:
-
-- symbol/token resolution
-- file+line extraction for direct assignment/use evidence
-- low-latency “where is X set/used” answers
-
-Target behavior:
-
-- return exact locations before any semantic ranking
-- avoid vector calls for deterministic matches
-
-#### 2) Graph lane (structured reasoning)
-
-Responsibilities:
-
-- event lifecycle analysis (`insert/update/delete`)
-- impact analysis (`what breaks if I change X`)
-- transitive upstream/downstream traversal
-
-Target behavior:
-
-- produce path evidence with relation semantics
-- separate definite/probable evidence in response
-
-#### 3) Semantic lane (fallback only)
-
-Responsibilities:
-
-- recover from sparse lexical/graph matches
-- suggest candidate components for manual review
-
-Target behavior:
-
-- only run when exact lanes fail confidence gate
-- always mark semantic-only conclusions as lower confidence
-
-### Confidence Gate Contract
-
-Before escalating to the semantic lane, evaluate:
-
-- evidence count
-- evidence quality (file+line, explicit edge path, or both)
-- intent-specific minimums
-
-If confidence threshold is met:
-
-- return immediately
-- include `routing.stages` and `confidence_tiers`
-
-If threshold is not met:
-
-- run semantic fallback
-- return explicit review guidance
-
-### Tool Surface Contract
-
-Primary query tool:
-
-- `analyze(...)`
-
-Expert/debug tools remain available but non-default:
-
-- `query(...)`
-- `trace_upstream(...)`
-- `trace_downstream(...)`
-- `get_node(...)`
-
-The default client policy should be:
-
-- call `analyze` first
-- only call expert tools when `analyze` returns insufficient evidence
-
-### LLM Integration Contract
-
-Recommended LLM request policy:
-
-- token-level asks:
-  - `mode=exact`, `strict=true`
-- impact/lifecycle asks:
-  - `mode=lineage`, `strict=true`
-- broad discovery:
-  - `mode=auto`, `strict=true`
-
-Response policy:
-
-- include claim + evidence + confidence
-- include unresolved gaps when evidence is weak
-- avoid presenting semantic candidates as definitive facts
-
-### KPI Targets
-
-Track quality and cost by question class:
-
-- exactness@1 for token-level questions
-- lineage correctness for lifecycle/impact questions
-- tool calls per user question
-- prompt/input tokens per user question
-- p50/p95 latency per route
-- follow-up clarification rate
-
-Target outcomes for next release:
-
-- 30–60% fewer tool calls
-- 40–70% lower input tokens
-- higher exactness than native search on lineage/impact questions
-- parity or better exactness on token-level lookups
-
-### Implementation Waves
-
-Wave 1 (now):
-
-- finalize route policy and confidence gating in `analyze`
-- normalize quality-gate scoring for routed responses
-- publish architecture + evaluation suites
-
-Wave 2:
-
-- strengthen lexical extraction for assignment/use questions
-- improve Vlocity semantic depth for high-value skipped families
-- expand acceptance suites by query class
-
-Wave 3:
-
-- add explicit reranking/fusion strategy for semantic fallback
-- unify observability across routing, evidence, and latency
-- harden planner with regression gates in CI
+- `docs/ARCHITECTURE.md` remains the only architecture source of truth
+- ingest and query orchestration are decomposed into readable subsystems
+- Vlocity standards resolution is first-class and auditable
+- `analyze` is the dominant client path for structured questions
+- evidence contracts are enforced consistently across answer types
+- token efficiency is benchmarked, not assumed
+- architects can review the system from this document without needing separate plan files
 
 ## Summary
 
-The current architecture is now substantially safer and more scalable than the original shape, but the next major win is not another parser tweak.
+`sfgraph` is no longer just a graphing utility. It is a Salesforce-first evidence engine.
 
-The next major win is a job-based ingest architecture:
+The architecture should continue moving toward:
 
-- faster in practice
-- easier to monitor
-- easier to resume
-- easier to keep local-only
-- much more trustworthy for large production orgs
+- deterministic ingest
+- standards-driven Vlocity parsing
+- low-round-trip hybrid retrieval
+- compact evidence handoff to LLMs
+- readable and swappable subsystem boundaries
 
-And for query quality, the next major win is hybrid retrieval orchestration:
-
-- lexical certainty first
-- graph reasoning second
-- semantic fallback only when required
-
-## Modular Standards and Diagnostics
-
-Recent implementation work adds small swappable modules rather than expanding
-monolithic services:
-
-- `src/sfgraph/contracts.py`
-  - interface seams for standards providers, parser adapters, retrieval
-    engines, and diagnostics reporters
-- `src/sfgraph/vlocity_standards.py`
-  - standards-driven Vlocity rule bundle resolution
-- `src/sfgraph/ingestion/diagnostics.py`
-  - markdown diagnostics export
-- `src/sfgraph/query/graph_visualizer.py`
-  - Mermaid/json graph neighborhood rendering
-
-This keeps standards sources, visualization output, and diagnostics rendering
-replaceable without forcing storage or parser rewrites.
+That combination is how the product becomes both cheaper to operate and more trustworthy than raw search-based prompting.

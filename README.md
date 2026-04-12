@@ -39,7 +39,6 @@ Start here depending on what you need:
 
 - Product overview and install: this README
 - Architecture and internals: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- Next implementation architecture: [`docs/ARCHITECTURE_V2_IMPLEMENTATION.md`](docs/ARCHITECTURE_V2_IMPLEMENTATION.md)
 - MCP tool reference: [`docs/TOOLS.md`](docs/TOOLS.md)
 - IDE and client setup: [`docs/IDE_SETUP.md`](docs/IDE_SETUP.md)
 - Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
