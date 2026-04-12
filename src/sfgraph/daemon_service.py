@@ -46,18 +46,6 @@ def _as_string_list(value: Any) -> list[str]:
     return [str(value)] if str(value) else []
 
 
-def _deprecated_tool_payload(*, tool_name: str, replacement: str) -> dict[str, Any]:
-    return {
-        "deprecated": True,
-        "tool": tool_name,
-        "replacement_tool": replacement,
-        "message": (
-            f"{tool_name} is deprecated and will be removed in a future release. "
-            f"Use {replacement} for background execution and progress polling."
-        ),
-    }
-
-
 def _merge_job_with_progress(job: dict[str, Any], progress: dict[str, Any]) -> dict[str, Any]:
     payload = dict(job)
     if progress.get("available"):
@@ -401,22 +389,6 @@ async def _run_job_in_worker_process(
         result_queue.join_thread()
 
 
-async def _run_job_inline_via_worker(
-    *,
-    job_type: str,
-    data_root: Path,
-    export_dir: str,
-    options: dict[str, Any],
-):
-    return await _run_job_in_worker_process(
-        job_type=job_type,
-        data_root=data_root,
-        export_dir=export_dir,
-        options=options,
-        cancel_event=threading.Event(),
-    )
-
-
 async def assert_no_active_background_job(app: DaemonAppContext, tool_name: str) -> None:
     active_job = await app.jobs.get_active_job()
     if active_job is None:
@@ -446,47 +418,6 @@ class DaemonOperations:
     async def ping(self, params: dict[str, Any]) -> dict[str, Any]:
         _ = params
         return {"ok": True, "pool_size": len(self.app.pool._workers)}
-
-    async def ingest_org(self, params: dict[str, Any]) -> dict[str, Any]:
-        await assert_no_active_background_job(self.app, "ingest_org")
-        mode = str(params.get("mode", "full"))
-        include_globs = _as_string_list(params.get("include_globs"))
-        exclude_globs = _as_string_list(params.get("exclude_globs"))
-        org_alias = str(params.get("org_alias") or "").strip() or None
-        enrich_org = bool(params.get("enrich_org", False))
-        export_dir = str(params["export_dir"])
-        summary = await _run_job_inline_via_worker(
-            job_type="ingest",
-            data_root=self.app.data_root,
-            export_dir=export_dir,
-            options={
-                "mode": mode,
-                "include_globs": include_globs,
-                "exclude_globs": exclude_globs,
-                "org_alias": org_alias,
-                "enrich_org": enrich_org,
-            },
-        )
-        return {
-            **_deprecated_tool_payload(tool_name="ingest_org", replacement="start_ingest_job"),
-            "run_id": summary.run_id,
-            "export_dir": summary.export_dir,
-            "duration_seconds": summary.duration_seconds,
-            "total_nodes": summary.total_nodes,
-            "node_counts_by_type": summary.node_counts_by_type,
-            "edge_count": summary.edge_count,
-            "parse_failures": summary.parse_failures,
-            "orphaned_edges": summary.orphaned_edges,
-            "parser_stats": summary.parser_stats,
-            "unresolved_symbols": summary.unresolved_symbols,
-            "warnings": summary.warnings[:20],
-            "mode": mode,
-            "include_globs": include_globs,
-            "exclude_globs": exclude_globs,
-            "org_alias": org_alias,
-            "enrich_org": enrich_org,
-            "vector_health": _vector_health_payload(self.app),
-        }
 
     async def start_ingest_job(self, params: dict[str, Any]) -> dict[str, Any]:
         await _release_graph_for_background_job(self.app)
@@ -554,61 +485,6 @@ class DaemonOperations:
             return await self.app.jobs.resume_job(job_id)
         except KeyError:
             return {"job_id": job_id, "available": False, "error": "job_not_found"}
-
-    async def refresh(self, params: dict[str, Any]) -> dict[str, Any]:
-        await assert_no_active_background_job(self.app, "refresh")
-        mode = str(params.get("mode", "full"))
-        include_globs = _as_string_list(params.get("include_globs"))
-        exclude_globs = _as_string_list(params.get("exclude_globs"))
-        org_alias = str(params.get("org_alias") or "").strip() or None
-        enrich_org = bool(params.get("enrich_org", False))
-        export_dir = str(params["export_dir"])
-        summary = await _run_job_inline_via_worker(
-            job_type="refresh",
-            data_root=self.app.data_root,
-            export_dir=export_dir,
-            options={
-                "mode": mode,
-                "include_globs": include_globs,
-                "exclude_globs": exclude_globs,
-                "org_alias": org_alias,
-                "enrich_org": enrich_org,
-            },
-        )
-        return {
-            **_deprecated_tool_payload(tool_name="refresh", replacement="start_refresh_job"),
-            "run_id": summary.run_id,
-            "export_dir": summary.export_dir,
-            "duration_seconds": summary.duration_seconds,
-            "processed_files": summary.processed_files,
-            "changed_files": summary.changed_files,
-            "deleted_files": summary.deleted_files,
-            "affected_neighbor_files": summary.affected_neighbor_files,
-            "node_count": summary.node_count,
-            "edge_count": summary.edge_count,
-            "orphaned_edges": summary.orphaned_edges,
-            "parser_stats": summary.parser_stats,
-            "unresolved_symbols": summary.unresolved_symbols,
-            "warnings": summary.warnings[:20],
-            "mode": mode,
-            "include_globs": include_globs,
-            "exclude_globs": exclude_globs,
-            "org_alias": org_alias,
-            "enrich_org": enrich_org,
-            "vector_health": _vector_health_payload(self.app),
-        }
-
-    async def vectorize(self, params: dict[str, Any]) -> dict[str, Any]:
-        await assert_no_active_background_job(self.app, "vectorize")
-        summary = await _run_job_inline_via_worker(
-            job_type="vectorize",
-            data_root=self.app.data_root,
-            export_dir=str(params["export_dir"]),
-            options={"mode": "full"},
-        )
-        payload = summary.model_dump()
-        payload["vector_health"] = _vector_health_payload(self.app)
-        return payload
 
     async def watch_refresh(self, params: dict[str, Any]) -> dict[str, Any]:
         await assert_no_active_background_job(self.app, "watch_refresh")

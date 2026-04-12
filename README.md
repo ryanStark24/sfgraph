@@ -196,9 +196,6 @@ The server stores graph data under `./data` relative to the repo root by default
   - `analyze_object_event`
   - `analyze_component`
   - `analyze_change`
-- Compatibility fallback:
-  - `query`
-
 - `start_ingest_job(export_dir, mode?, include_globs?, exclude_globs?, org_alias?, enrich_org?)`
 - `start_refresh_job(export_dir, mode?, include_globs?, exclude_globs?, org_alias?, enrich_org?)`
 - `start_vectorize_job(export_dir)`
@@ -206,9 +203,8 @@ The server stores graph data under `./data` relative to the repo root by default
 - `list_ingest_jobs()`
 - `cancel_ingest_job(job_id)`
 - `resume_ingest_job(job_id)`
-- `ingest_org(export_dir, ..., org_alias?, enrich_org?)` (deprecated compatibility)
-- `refresh(export_dir, ..., org_alias?, enrich_org?)` (deprecated compatibility)
 - `watch_refresh(export_dir, duration_seconds?, poll_interval?, debounce_seconds?, max_refreshes?)`
+- `query(question, ...)` (compatibility fallback only)
 - `get_ingestion_progress()`
 - `get_ingestion_status()`
 - `export_diagnostics_md(export_dir?, run_id?, job_id?, destination?)`

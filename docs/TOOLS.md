@@ -153,14 +153,6 @@ Intent tools (use directly when your client can classify intent):
 
 Use `query(...)` as a compatibility fallback only when you explicitly want broad node discovery.
 
-## Deprecated Blocking Tools
-
-- `ingest_org(export_dir)`
-- `refresh(export_dir, ...)`
-- `vectorize(export_dir)`
-
-These still exist for compatibility, but new clients should prefer job-native tools above.
-
 ### `query(question, ...)`
 
 Purpose:

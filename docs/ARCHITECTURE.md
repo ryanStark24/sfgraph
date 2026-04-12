@@ -217,14 +217,14 @@ The current system already does a few important things well:
 
 The current ingest architecture has moved to durable background jobs with per-workspace isolation, but still has practical limits.
 
-### 1. Legacy blocking tools still exist (compatibility only)
+### 1. Internal cleanup still trails the public tool model
 
-`ingest_org(...)` and `refresh(...)` are still available for backward compatibility.
+The blocking MCP wrappers have been removed, and the public ingest surface is now job-native.
 
 Consequences:
 
-- clients that use legacy tools can still hit long-running blocking calls
-- new integrations should prefer `start_*_job` + polling APIs
+- new integrations have one clear model: `start_*_job` plus polling APIs
+- internal cleanup can now focus on simplifying transition-era code paths instead of supporting two public models
 
 ### 2. Job model is first-class, with persisted state and resume support
 
@@ -298,7 +298,7 @@ Introduce explicit ingest jobs:
 - `list_ingest_jobs()`
 - optional `resume_ingest(job_id)`
 
-`ingest_org(...)` can remain as a convenience wrapper, but should internally create and wait on a job.
+CLI remains the convenience wrapper for synchronous human workflows.
 
 ### Phase Model
 

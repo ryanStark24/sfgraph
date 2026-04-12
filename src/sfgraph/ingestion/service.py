@@ -20,6 +20,11 @@ from typing import Any
 from sfgraph.common import compute_sha256, descope_qname, parse_json_props, scope_qname
 from sfgraph.ingestion.constants import NODE_WRITE_ORDER
 from sfgraph.ingestion.diagnostics import IngestionDiagnosticsReporter
+from sfgraph.ingestion.parser_dispatch import (
+    AURA_MARKUP_SUFFIXES,
+    is_supported_source_file,
+    parser_name_for_file,
+)
 from sfgraph.ingestion.models import (
     EdgeFact,
     IngestionPhase,
@@ -126,8 +131,6 @@ class IngestionService:
     SKIP_FILE_PREFIXES = ("~$",)
     SKIP_FILE_SUFFIXES = (".tmp", ".swp", ".swo")
     DEFAULT_DISCOVERY_ROOTS = ("force-app", "vlocity")
-    AURA_MARKUP_SUFFIXES = (".cmp", ".app", ".evt", ".intf")
-
     def __init__(
         self,
         graph: GraphStore,
@@ -1097,31 +1100,7 @@ class IngestionService:
                         continue
                     if not self._matches_discovery_rules(path, root):
                         continue
-                    if path.suffix == ".json":
-                        if not is_vlocity_datapack_file(path):
-                            continue
-                    elif not any(
-                        path.name.endswith(sfx)
-                        for sfx in (
-                            ".cls",
-                            ".trigger",
-                            *self.AURA_MARKUP_SUFFIXES,
-                            ".js",
-                            ".html",
-                            ".object-meta.xml",
-                            ".flow-meta.xml",
-                            ".labels-meta.xml",
-                            ".label-meta.xml",
-                            ".globalValueSet-meta.xml",
-                            ".md-meta.xml",
-                            ".workflow-meta.xml",
-                            ".permissionset-meta.xml",
-                            ".profile-meta.xml",
-                            ".namedCredential-meta.xml",
-                            ".report-meta.xml",
-                            ".dashboard-meta.xml",
-                        )
-                    ):
+                    if not is_supported_source_file(path):
                         continue
                     stat = path.stat()
                     tracked_file = tracked.get(str(path))
@@ -1238,6 +1217,10 @@ class IngestionService:
         return True
 
     @staticmethod
+    def _parser_name_for_file(fpath: str) -> str:
+        return parser_name_for_file(Path(fpath))
+
+    @staticmethod
     def _empty_parser_stats() -> dict[str, dict[str, int]]:
         return {
             "apex": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
@@ -1343,41 +1326,6 @@ class IngestionService:
             bucket["skipped_files"] += 1
 
     @staticmethod
-    def _parser_name_for_file(fpath: str) -> str:
-        path = Path(fpath)
-        if path.suffix in {".cls", ".trigger"}:
-            return "apex"
-        if path.suffix in IngestionService.AURA_MARKUP_SUFFIXES and "aura" in {part.lower() for part in path.parts}:
-            return "aura"
-        if path.suffix in {".js", ".html"} and "lwc" in {part.lower() for part in path.parts}:
-            return "lwc"
-        if fpath.endswith(".flow-meta.xml"):
-            return "flow"
-        if fpath.endswith(".object-meta.xml"):
-            return "object"
-        if fpath.endswith(".globalValueSet-meta.xml"):
-            return "object"
-        if fpath.endswith(".md-meta.xml"):
-            return "object"
-        if fpath.endswith(".workflow-meta.xml"):
-            return "object"
-        if fpath.endswith(".permissionset-meta.xml"):
-            return "object"
-        if fpath.endswith(".profile-meta.xml"):
-            return "object"
-        if fpath.endswith(".namedCredential-meta.xml"):
-            return "object"
-        if fpath.endswith(".report-meta.xml"):
-            return "object"
-        if fpath.endswith(".dashboard-meta.xml"):
-            return "object"
-        if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
-            return "labels"
-        if path.suffix == ".json" and is_vlocity_datapack_file(path):
-            return "vlocity"
-        return "unknown"
-
-    @staticmethod
     def _is_unresolved_dynamic_edge(edge: EdgeFact) -> bool:
         if edge.dst_qualified_name.startswith("UNRESOLVED."):
             return True
@@ -1408,7 +1356,7 @@ class IngestionService:
         total = len(files) if total_files is None else total_files
         for index, fpath in enumerate(files, start=1):
             self._raise_if_cancelled()
-            parser_name = self._parser_name_for_file(fpath)
+            parser_name = parser_name_for_file(Path(fpath))
             try:
                 file_sha = None
                 if file_records and fpath in file_records:
@@ -1858,7 +1806,7 @@ class IngestionService:
         sha256: str | None = None,
     ) -> tuple[list[NodeFact], list[EdgeFact], dict[str, Any]]:
         path = Path(fpath)
-        parser_name = self._parser_name_for_file(fpath)
+        parser_name = parser_name_for_file(Path(fpath))
         cache_namespace = self._parse_cache_namespace(parser_name, fpath)
         can_cache = self._cacheable_parser(parser_name)
         if self._parse_cache and sha256 and can_cache:
@@ -1913,7 +1861,7 @@ class IngestionService:
                 await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))
             return nodes, edges, {"outcome": "parsed"}
 
-        if path.suffix in self.AURA_MARKUP_SUFFIXES and "aura" in {part.lower() for part in path.parts}:
+        if path.suffix in AURA_MARKUP_SUFFIXES and "aura" in {part.lower() for part in path.parts}:
             nodes, edges = parse_aura_file(fpath)
             if self._parse_cache and sha256 and can_cache:
                 await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges, {"outcome": "parsed"}))

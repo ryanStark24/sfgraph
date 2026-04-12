@@ -29,10 +29,7 @@ def _ctx(app):
 @pytest.mark.parametrize(
     ("tool", "method", "kwargs"),
     [
-        (server.ingest_org, "ingest_org", {"mode": "full"}),
         (server.start_ingest_job, "start_ingest_job", {"mode": "graph_only"}),
-        (server.refresh, "refresh", {"mode": "full"}),
-        (server.vectorize, "vectorize", {}),
         (
             server.watch_refresh,
             "watch_refresh",
@@ -297,7 +294,7 @@ async def test_status_uses_session_daemon_before_export_activation(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_export_path_guard_still_applies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+async def test_export_path_guard_still_applies_for_job_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "repo"
     outside = tmp_path / "outside"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -313,7 +310,7 @@ async def test_export_path_guard_still_applies(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(server, "ensure_daemon_client", lambda data_root, workspace_root=None: _FakeDaemon())
 
     with pytest.raises(ValueError):
-        await server.ingest_org(str(outside), _ctx(app), mode="full")
+        await server.start_ingest_job(str(outside), _ctx(app), mode="full")
 
 
 @pytest.mark.asyncio

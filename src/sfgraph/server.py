@@ -161,32 +161,6 @@ async def ping(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def ingest_org(
-    export_dir: str,
-    ctx: Context,
-    mode: str = "full",
-    include_globs: list[str] | None = None,
-    exclude_globs: list[str] | None = None,
-    org_alias: str | None = None,
-    enrich_org: bool = False,
-) -> str:
-    """Deprecated blocking ingest path. Prefer `start_ingest_job`."""
-    app: AppContext = ctx.request_context.lifespan_context
-    export_dir = _validate_workspace_export_dir(export_dir)
-    daemon = _daemon_for_export_dir(app, export_dir)
-    return _daemon_call(
-        daemon,
-        "ingest_org",
-        export_dir=export_dir,
-        mode=mode,
-        include_globs=include_globs or [],
-        exclude_globs=exclude_globs or [],
-        org_alias=org_alias,
-        enrich_org=enrich_org,
-    )
-
-
-@mcp.tool()
 async def start_ingest_job(
     export_dir: str,
     ctx: Context,
@@ -306,40 +280,6 @@ async def resume_ingest_job(job_id: str, ctx: Context) -> str:
         if export_dir:
             app.job_routes[resumed_job_id] = str(Path(export_dir).expanduser().resolve())
     return json.dumps(result, indent=2)
-
-
-@mcp.tool()
-async def refresh(
-    export_dir: str,
-    ctx: Context,
-    mode: str = "full",
-    include_globs: list[str] | None = None,
-    exclude_globs: list[str] | None = None,
-    org_alias: str | None = None,
-    enrich_org: bool = False,
-) -> str:
-    """Deprecated blocking refresh path. Prefer `start_refresh_job`."""
-    app: AppContext = ctx.request_context.lifespan_context
-    export_dir = _validate_workspace_export_dir(export_dir)
-    daemon = _daemon_for_export_dir(app, export_dir)
-    return _daemon_call(
-        daemon,
-        "refresh",
-        export_dir=export_dir,
-        mode=mode,
-        include_globs=include_globs or [],
-        exclude_globs=exclude_globs or [],
-        org_alias=org_alias,
-        enrich_org=enrich_org,
-    )
-
-
-@mcp.tool()
-async def vectorize(export_dir: str, ctx: Context) -> str:
-    app: AppContext = ctx.request_context.lifespan_context
-    export_dir = _validate_workspace_export_dir(export_dir)
-    daemon = _daemon_for_export_dir(app, export_dir)
-    return _daemon_call(daemon, "vectorize", export_dir=export_dir)
 
 
 @mcp.tool()
