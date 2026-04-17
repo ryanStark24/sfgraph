@@ -26,6 +26,13 @@ from sfgraph.query.analyze_support import (
     render_analyze_markdown,
 )
 from sfgraph.query.exact_retrieval import ExactRetrievalHelper
+from sfgraph.query.question_patterns import (
+    change_query_target,
+    component_token_query_parts,
+    extract_method_calls,
+    object_event_query_parts,
+    parse_trigger_declaration,
+)
 from sfgraph.query.graph_visualizer import render_mermaid_subgraph
 from sfgraph.query.rules_registry import RulesRegistry
 from sfgraph.storage.base import GraphStore
@@ -949,17 +956,7 @@ class GraphQueryService:
 
     @staticmethod
     def _parse_trigger_declaration(text: str) -> tuple[str, str, set[str]] | None:
-        match = re.search(r"trigger\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)", text, re.IGNORECASE | re.DOTALL)
-        if not match:
-            return None
-        trigger_name = match.group(1)
-        object_name = match.group(2)
-        events = {
-            event.strip().lower()
-            for event in match.group(3).split(",")
-            if event.strip()
-        }
-        return trigger_name, object_name, events
+        return parse_trigger_declaration(text)
 
     @staticmethod
     def _extract_method_calls(text: str) -> list[dict[str, str]]:
