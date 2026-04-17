@@ -21,9 +21,9 @@ from sfgraph.query.agents import (
 )
 from sfgraph.query.analyze_support import (
     AnalyzeResponseCache,
+    finalize_analyze_payload,
     build_analyze_payload,
     candidate_qnames_for_payload,
-    render_analyze_markdown,
 )
 from sfgraph.query.exact_retrieval import ExactRetrievalHelper
 from sfgraph.query.question_patterns import (
@@ -1565,7 +1565,24 @@ class GraphQueryService:
                     confidence_tiers = result["confidence_tiers"]
                 else:
                     confidence_tiers = self._confidence_tiers(evidence)
-                final_payload = build_analyze_payload(
+                mermaid = None
+                if include_mermaid:
+                    preview_payload = build_analyze_payload(
+                        question=q,
+                        analysis_mode=selected_mode,
+                        strict=strict,
+                        routed_to=routed_to,
+                        result=result,
+                        evidence=evidence,
+                        confidence_tiers=confidence_tiers,
+                        routing_stages=routing_stages,
+                        semantic_fallback_reason=semantic_fallback_reason,
+                        freshness=result.get("freshness", await self.freshness(partial_results=False)),
+                    )
+                    mermaid = await self._mermaid_for_analyze_payload(preview_payload, max_hops=max_hops)
+                return finalize_analyze_payload(
+                    cache=self._analyze_cache,
+                    cache_key=cache_key,
                     question=q,
                     analysis_mode=selected_mode,
                     strict=strict,
@@ -1576,22 +1593,10 @@ class GraphQueryService:
                     routing_stages=routing_stages,
                     semantic_fallback_reason=semantic_fallback_reason,
                     freshness=result.get("freshness", await self.freshness(partial_results=False)),
+                    has_material_evidence=self._has_material_result_evidence(result),
+                    render_mode=render_mode,
+                    mermaid=mermaid,
                 )
-                final_payload["confidence_gate"]["has_material_evidence"] = self._has_material_result_evidence(result)
-                if render_mode == "markdown" or include_mermaid:
-                    presentation: dict[str, Any] = {}
-                    if include_mermaid:
-                        mermaid = await self._mermaid_for_analyze_payload(final_payload, max_hops=max_hops)
-                        if mermaid:
-                            presentation["mermaid"] = mermaid
-                    if render_mode == "markdown":
-                        presentation["format"] = "markdown"
-                        presentation["markdown"] = render_analyze_markdown({**final_payload, "presentation": presentation})
-                    if presentation:
-                        final_payload["presentation"] = presentation
-                self._analyze_cache.store(cache_key, final_payload)
-                final_payload["cache"] = {"hit": False, "ttl_seconds": self._analyze_cache.ttl_seconds}
-                return final_payload
             component_token = self._component_token_query_parts(q)
             if component_token:
                 component_name, token = component_token
@@ -1693,7 +1698,24 @@ class GraphQueryService:
         else:
             confidence_tiers = self._confidence_tiers(evidence)
 
-        final_payload = build_analyze_payload(
+        mermaid = None
+        if include_mermaid:
+            preview_payload = build_analyze_payload(
+                question=q,
+                analysis_mode=selected_mode,
+                strict=strict,
+                routed_to=routed_to,
+                result=result,
+                evidence=evidence,
+                confidence_tiers=confidence_tiers,
+                routing_stages=routing_stages,
+                semantic_fallback_reason=semantic_fallback_reason,
+                freshness=result.get("freshness", await self.freshness(partial_results=False)),
+            )
+            mermaid = await self._mermaid_for_analyze_payload(preview_payload, max_hops=max_hops)
+        return finalize_analyze_payload(
+            cache=self._analyze_cache,
+            cache_key=cache_key,
             question=q,
             analysis_mode=selected_mode,
             strict=strict,
@@ -1704,22 +1726,10 @@ class GraphQueryService:
             routing_stages=routing_stages,
             semantic_fallback_reason=semantic_fallback_reason,
             freshness=result.get("freshness", await self.freshness(partial_results=False)),
+            has_material_evidence=self._has_material_result_evidence(result),
+            render_mode=render_mode,
+            mermaid=mermaid,
         )
-        final_payload["confidence_gate"]["has_material_evidence"] = self._has_material_result_evidence(result)
-        if render_mode == "markdown" or include_mermaid:
-            presentation: dict[str, Any] = {}
-            if include_mermaid:
-                mermaid = await self._mermaid_for_analyze_payload(final_payload, max_hops=max_hops)
-                if mermaid:
-                    presentation["mermaid"] = mermaid
-            if render_mode == "markdown":
-                presentation["format"] = "markdown"
-                presentation["markdown"] = render_analyze_markdown({**final_payload, "presentation": presentation})
-            if presentation:
-                final_payload["presentation"] = presentation
-        self._analyze_cache.store(cache_key, final_payload)
-        final_payload["cache"] = {"hit": False, "ttl_seconds": self._analyze_cache.ttl_seconds}
-        return final_payload
 
     @staticmethod
     def _field_query_mode(question: str) -> str | None:

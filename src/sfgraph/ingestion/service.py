@@ -18,7 +18,6 @@ from typing import Any
 
 from sfgraph.common import compute_sha256, descope_qname, parse_json_props, scope_qname
 from sfgraph.ingestion.constants import NODE_WRITE_ORDER
-from sfgraph.ingestion.diagnostics import IngestionDiagnosticsReporter
 from sfgraph.ingestion.discovery import (
     DEFAULT_DISCOVERY_ROOTS,
     SKIP_DIR_NAMES,
@@ -35,8 +34,6 @@ from sfgraph.ingestion.parser_dispatch import (
 )
 from sfgraph.ingestion.models import (
     EdgeFact,
-    IngestionPhase,
-    IngestionState,
     IngestionSummary,
     NodeFact,
     RefreshSummary,
@@ -45,6 +42,12 @@ from sfgraph.ingestion.models import (
 from sfgraph.ingestion.org_metadata import SalesforceOrgMetadataClient
 from sfgraph.ingestion.parse_executor import ParseExecutor
 from sfgraph.ingestion.schema_index import materialize_schema_index
+from sfgraph.ingestion.state_io import (
+    build_progress_payload,
+    write_ingestion_meta,
+    write_progress_snapshot,
+    write_refresh_meta,
+)
 from sfgraph.parser.apex_extractor import ApexExtractor
 from sfgraph.parser.dynamic_accessor import DynamicAccessorRegistry
 from sfgraph.parser.pool import NodeParserPool
@@ -1152,26 +1155,40 @@ class IngestionService:
         export_dir: str | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "run_id": run_id,
-            "mode": mode,
-            "state": state,
-            "phase": phase,
-            "export_dir": export_dir if export_dir is not None else (str(self._active_export_root) if self._active_export_root else None),
-            "project_scope": self._active_project_scope,
-            "started_at": self._progress_started_at,
-            "total_files": total_files,
-            "processed_files": processed_files,
-            "failed_files": failed_files,
-            "current_file": current_file,
-        }
-        if current_parser is not None:
-            payload["current_parser"] = current_parser
-        payload.update(extra)
-        return payload
+        return build_progress_payload(
+            run_id=run_id,
+            mode=mode,
+            state=state,
+            phase=phase,
+            total_files=total_files,
+            processed_files=processed_files,
+            failed_files=failed_files,
+            active_export_root=self._active_export_root,
+            active_project_scope=self._active_project_scope,
+            progress_started_at=self._progress_started_at,
+            current_file=current_file,
+            current_parser=current_parser,
+            export_dir=export_dir,
+            **extra,
+        )
 
     def _emit_progress(self, *, force: bool = False, **payload: Any) -> None:
-        self._write_progress_snapshot(payload, force=force)
+        self._last_progress_flush_at = write_progress_snapshot(
+            ingestion_progress_path=self._ingestion_progress_path,
+            payload=payload,
+            progress_started_at=self._progress_started_at,
+            last_progress_flush_at=self._last_progress_flush_at,
+            force=force,
+        )
+
+    def _write_progress_snapshot(self, payload: dict[str, Any], *, force: bool = False) -> None:
+        self._last_progress_flush_at = write_progress_snapshot(
+            ingestion_progress_path=self._ingestion_progress_path,
+            payload=payload,
+            progress_started_at=self._progress_started_at,
+            last_progress_flush_at=self._last_progress_flush_at,
+            force=force,
+        )
 
     @staticmethod
     def _record_parser_outcome(
@@ -1315,60 +1332,6 @@ class IngestionService:
                 )
 
         return facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols
-
-    def _write_progress_snapshot(self, payload: dict[str, Any], *, force: bool = False) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        payload = dict(payload)
-        phase = payload.get("phase")
-        if phase is not None:
-            try:
-                IngestionPhase(str(phase))
-            except ValueError as exc:
-                raise ValueError(f"Invalid ingestion phase: {phase!r}") from exc
-        state = payload.get("state")
-        if state is not None:
-            try:
-                IngestionState(str(state))
-            except ValueError as exc:
-                raise ValueError(f"Invalid ingestion state: {state!r}") from exc
-        payload.setdefault("updated_at", now)
-        payload.setdefault("last_progress_at", now)
-        payload.setdefault("last_job_heartbeat_at", now)
-        payload.setdefault("started_at", self._progress_started_at)
-
-        total_files = payload.get("total_files")
-        processed_files = payload.get("processed_files")
-        if isinstance(total_files, int) and total_files >= 0 and isinstance(processed_files, int):
-            payload["completion_ratio"] = 1.0 if total_files == 0 else round(min(processed_files / total_files, 1.0), 4)
-            payload["pending_files"] = max(total_files - processed_files, 0)
-            payload["queue_status"] = {
-                "pending": payload["pending_files"],
-                "processed": processed_files,
-                "failed": int(payload.get("failed_files", 0) or 0),
-            }
-        started_at = payload.get("started_at")
-        if isinstance(started_at, str):
-            try:
-                started_dt = datetime.fromisoformat(started_at)
-                elapsed_seconds = max((datetime.now(timezone.utc) - started_dt).total_seconds(), 0.0)
-                payload["elapsed_seconds"] = round(elapsed_seconds, 3)
-                if isinstance(processed_files, int) and elapsed_seconds > 0:
-                    files_per_second = processed_files / elapsed_seconds
-                    payload["files_per_second"] = round(files_per_second, 3)
-                    pending_files = payload.get("pending_files")
-                    if isinstance(pending_files, int) and files_per_second > 0:
-                        payload["estimated_remaining_seconds"] = round(pending_files / files_per_second, 1)
-            except Exception:
-                pass
-
-        monotonic_now = time.monotonic()
-        if not force and (monotonic_now - self._last_progress_flush_at) < 0.25:
-            return
-
-        out = Path(self._ingestion_progress_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        self._last_progress_flush_at = monotonic_now
 
     async def _load_scoped_nodes_with_props(self) -> dict[str, list[tuple[str, dict[str, Any]]]]:
         rows_by_label: dict[str, list[tuple[str, dict[str, Any]]]] = {}
@@ -1898,82 +1861,23 @@ class IngestionService:
         return resolved
 
     def _write_ingestion_meta(self, summary: IngestionSummary, status_snapshot: dict[str, Any]) -> None:
-        """Persist latest ingestion metadata for freshness contract responses."""
-        project_scope = self._compute_project_scope(summary.export_dir)
-        payload = {
-            "run_id": summary.run_id,
-            "indexed_at": datetime.now(timezone.utc).isoformat(),
-            "indexed_commit": self._current_git_commit(),
-            "export_dir": summary.export_dir,
-            "project_scope": project_scope,
-            "total_nodes": summary.total_nodes,
-            "edge_count": summary.edge_count,
-            "orphaned_edges": summary.orphaned_edges,
-            "parse_failures": summary.parse_failures,
-            "warnings": summary.warnings,
-            "mode": "full_ingest",
-            "parser_stats": summary.parser_stats,
-            "unresolved_symbols": summary.unresolved_symbols,
-            "org_enrichment": self._org_enrichment_context or {"enabled": False},
-            "vlocity_standards": self._vlocity_rule_bundle.describe(),
-            "node_counts_by_type": status_snapshot.get("node_counts_by_type", summary.node_counts_by_type),
-            "edge_counts_by_type": status_snapshot.get("edge_counts_by_type", {}),
-            "status_counts": status_snapshot.get("status_counts", {}),
-            "latest_completed_run": status_snapshot.get("latest_completed_run"),
-        }
-        out = Path(self._ingestion_meta_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        IngestionDiagnosticsReporter(
+        write_ingestion_meta(
             ingestion_meta_path=self._ingestion_meta_path,
             ingestion_progress_path=self._ingestion_progress_path,
-        ).export_markdown(context={"export_dir": summary.export_dir})
+            summary=summary,
+            status_snapshot=status_snapshot,
+            project_scope=self._compute_project_scope(summary.export_dir),
+            org_enrichment=self._org_enrichment_context or {"enabled": False},
+            vlocity_standards=self._vlocity_rule_bundle.describe(),
+        )
 
     def _write_refresh_meta(self, summary: RefreshSummary, status_snapshot: dict[str, Any]) -> None:
-        project_scope = self._compute_project_scope(summary.export_dir)
-        payload = {
-            "run_id": summary.run_id,
-            "indexed_at": datetime.now(timezone.utc).isoformat(),
-            "indexed_commit": self._current_git_commit(),
-            "export_dir": summary.export_dir,
-            "project_scope": project_scope,
-            "processed_files": summary.processed_files,
-            "changed_files": summary.changed_files,
-            "deleted_files": summary.deleted_files,
-            "affected_neighbor_files": summary.affected_neighbor_files,
-            "node_count": summary.node_count,
-            "edge_count": summary.edge_count,
-            "orphaned_edges": summary.orphaned_edges,
-            "warnings": summary.warnings,
-            "mode": "incremental_refresh",
-            "parser_stats": summary.parser_stats,
-            "unresolved_symbols": summary.unresolved_symbols,
-            "org_enrichment": self._org_enrichment_context or {"enabled": False},
-            "vlocity_standards": self._vlocity_rule_bundle.describe(),
-            "node_counts_by_type": status_snapshot.get("node_counts_by_type", {}),
-            "edge_counts_by_type": status_snapshot.get("edge_counts_by_type", {}),
-            "status_counts": status_snapshot.get("status_counts", {}),
-            "latest_completed_run": status_snapshot.get("latest_completed_run"),
-        }
-        out = Path(self._ingestion_meta_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        IngestionDiagnosticsReporter(
+        write_refresh_meta(
             ingestion_meta_path=self._ingestion_meta_path,
             ingestion_progress_path=self._ingestion_progress_path,
-        ).export_markdown(context={"export_dir": summary.export_dir})
-
-    @staticmethod
-    def _current_git_commit() -> str | None:
-        try:
-            root = Path(__file__).resolve().parents[3]
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=str(root),
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            return result.stdout.strip()
-        except Exception:
-            return None
+            summary=summary,
+            status_snapshot=status_snapshot,
+            project_scope=self._compute_project_scope(summary.export_dir),
+            org_enrichment=self._org_enrichment_context or {"enabled": False},
+            vlocity_standards=self._vlocity_rule_bundle.describe(),
+        )

@@ -198,3 +198,57 @@ def build_analyze_payload(
         "freshness": freshness,
         "partial_results": bool(result.get("partial_results", False)),
     }
+
+
+def attach_analyze_presentation(
+    payload: dict[str, Any],
+    *,
+    render_mode: str,
+    mermaid: str | None = None,
+) -> dict[str, Any]:
+    presentation: dict[str, Any] = {}
+    if mermaid:
+        presentation["mermaid"] = mermaid
+    if render_mode == "markdown":
+        presentation["format"] = "markdown"
+        presentation["markdown"] = render_analyze_markdown({**payload, "presentation": presentation})
+    if presentation:
+        payload["presentation"] = presentation
+    return payload
+
+
+def finalize_analyze_payload(
+    *,
+    cache: AnalyzeResponseCache,
+    cache_key: str,
+    question: str,
+    analysis_mode: str,
+    strict: bool,
+    routed_to: str,
+    result: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    confidence_tiers: dict[str, Any],
+    routing_stages: list[dict[str, Any]],
+    semantic_fallback_reason: str | None,
+    freshness: dict[str, Any],
+    has_material_evidence: bool,
+    render_mode: str,
+    mermaid: str | None = None,
+) -> dict[str, Any]:
+    final_payload = build_analyze_payload(
+        question=question,
+        analysis_mode=analysis_mode,
+        strict=strict,
+        routed_to=routed_to,
+        result=result,
+        evidence=evidence,
+        confidence_tiers=confidence_tiers,
+        routing_stages=routing_stages,
+        semantic_fallback_reason=semantic_fallback_reason,
+        freshness=freshness,
+    )
+    final_payload["confidence_gate"]["has_material_evidence"] = has_material_evidence
+    attach_analyze_presentation(final_payload, render_mode=render_mode, mermaid=mermaid)
+    cache.store(cache_key, final_payload)
+    final_payload["cache"] = {"hit": False, "ttl_seconds": cache.ttl_seconds}
+    return final_payload
