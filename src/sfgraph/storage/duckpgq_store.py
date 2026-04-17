@@ -75,8 +75,23 @@ class DuckPGQStore(GraphStore):
                 "(qualified_name VARCHAR PRIMARY KEY, label VARCHAR NOT NULL)"
             )
             self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS _sfgraph_source_index ("
+                "qualified_name VARCHAR PRIMARY KEY, "
+                "source_file VARCHAR NOT NULL, "
+                "label VARCHAR NOT NULL, "
+                "project_scope VARCHAR)"
+            )
+            self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sfgraph_node_index_label "
                 "ON _sfgraph_node_index (label)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sfgraph_source_index_source_file "
+                "ON _sfgraph_source_index (source_file)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sfgraph_source_index_project_scope "
+                "ON _sfgraph_source_index (project_scope)"
             )
         try:
             rows = self._conn.execute(
@@ -94,6 +109,7 @@ class DuckPGQStore(GraphStore):
                 self._edge_types.add(table_name)
         if not self._read_only:
             self._backfill_node_index()
+            self._backfill_source_index()
             self._refresh_all_edges_view()
 
     def _backfill_node_index(self) -> None:
@@ -104,6 +120,19 @@ class DuckPGQStore(GraphStore):
                 f'SELECT qualified_name, ? FROM "{label}"',
                 [label],
             )
+
+    def _backfill_source_index(self) -> None:
+        """Populate source-file index entries for legacy tables if missing."""
+        for label in self._node_labels:
+            rows = self._conn.execute(
+                f'SELECT qualified_name, props FROM "{label}"'
+            ).fetchall()
+            for qualified_name, raw_props in rows:
+                try:
+                    props = json.loads(raw_props) if isinstance(raw_props, str) else raw_props
+                except Exception:
+                    props = {}
+                self._sync_source_index_entry(str(qualified_name), str(label), props if isinstance(props, dict) else {})
 
     @staticmethod
     def _is_valid_identifier(name: str) -> bool:
@@ -186,6 +215,21 @@ class DuckPGQStore(GraphStore):
         sql = "CREATE OR REPLACE VIEW _sfgraph_all_edges AS " + " UNION ALL ".join(selects)
         self._conn.execute(sql)
 
+    def _sync_source_index_entry(self, qualified_name: str, label: str, props: dict[str, Any]) -> None:
+        source_file = props.get("sourceFile")
+        project_scope = props.get("projectScope")
+        if isinstance(source_file, str) and source_file:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO _sfgraph_source_index "
+                "(qualified_name, source_file, label, project_scope) VALUES (?, ?, ?, ?)",
+                [qualified_name, source_file, label, project_scope if isinstance(project_scope, str) else None],
+            )
+            return
+        self._conn.execute(
+            "DELETE FROM _sfgraph_source_index WHERE qualified_name = ?",
+            [qualified_name],
+        )
+
     # ------------------------------------------------------------------
     # GraphStore ABC implementation
     # ------------------------------------------------------------------
@@ -211,6 +255,7 @@ class DuckPGQStore(GraphStore):
                 "INSERT OR REPLACE INTO _sfgraph_node_index (qualified_name, label) VALUES (?, ?)",
                 [qualified_name, label],
             )
+            self._sync_source_index_entry(qualified_name, label, all_props)
         return qualified_name
 
     async def merge_nodes_batch(
@@ -232,6 +277,8 @@ class DuckPGQStore(GraphStore):
                 "INSERT OR REPLACE INTO _sfgraph_node_index (qualified_name, label) VALUES (?, ?)",
                 [(qualified_name, label) for qualified_name, _ in nodes],
             )
+            for qualified_name, props in nodes:
+                self._sync_source_index_entry(qualified_name, label, props)
         return len(nodes)
 
     async def merge_edge(
@@ -287,6 +334,10 @@ class DuckPGQStore(GraphStore):
             )
             self._conn.execute(
                 "DELETE FROM _sfgraph_node_index WHERE qualified_name = $qn",
+                {"qn": qualified_name},
+            )
+            self._conn.execute(
+                "DELETE FROM _sfgraph_source_index WHERE qualified_name = $qn",
                 {"qn": qualified_name},
             )
             return bool(before and int(before[0]) > 0)

@@ -962,11 +962,81 @@ async def test_analyze_uses_short_lived_cache(svc: GraphQueryService):
 
 
 @pytest.mark.asyncio
+async def test_analyze_invalidates_cache_when_ingestion_meta_changes(svc: GraphQueryService, tmp_path: Path):
+    service = svc
+    meta_path = tmp_path / "ingestion_meta_cache.json"
+    meta_path.write_text(
+        json.dumps({"run_id": "run-1", "indexed_at": "2026-04-06T00:00:00Z", "project_scope": "scope-a"}),
+        encoding="utf-8",
+    )
+    service._ingestion_meta_path = meta_path
+    original = service.analyze_field
+    calls = 0
+
+    async def wrapped_analyze_field(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return await original(*args, **kwargs)
+
+    service.analyze_field = wrapped_analyze_field  # type: ignore[method-assign]
+
+    first = await service.analyze("where is Status__c populated?", mode="exact", strict=True)
+    meta_path.write_text(
+        json.dumps({"run_id": "run-2", "indexed_at": "2026-04-06T00:01:00Z", "project_scope": "scope-a"}),
+        encoding="utf-8",
+    )
+    second = await service.analyze("where is Status__c populated?", mode="exact", strict=True)
+
+    assert calls == 2
+    assert first["cache"]["hit"] is False
+    assert second["cache"]["hit"] is False
+
+
+@pytest.mark.asyncio
 async def test_analyze_can_render_markdown_presentation(svc: GraphQueryService):
     payload = await svc.analyze("where is Status__c populated?", mode="exact", strict=True, render="markdown")
     assert payload["presentation"]["format"] == "markdown"
     assert "# Analyze Result" in payload["presentation"]["markdown"]
     assert "Question: where is Status__c populated?" in payload["presentation"]["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_get_ingestion_status_prefers_meta_snapshot(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_status_snapshot.db"))
+    await manifest.initialize()
+    meta_path = tmp_path / "ingestion_meta_status.json"
+    meta_path.write_text(
+        json.dumps(
+            {
+                "run_id": "run-snap-1",
+                "indexed_at": "2026-04-06T00:00:00Z",
+                "node_counts_by_type": {"ApexClass": 7},
+                "edge_counts_by_type": {"CALLS": 4},
+                "status_counts": {"tracked": 9},
+                "latest_completed_run": {"run_id": "run-snap-1"},
+                "parser_stats": {"apex": {"parsed_files": 2, "error_files": 0, "skipped_files": 0}},
+                "unresolved_symbols": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(meta_path),
+    )
+    service._count_nodes_for_label = AsyncMock(side_effect=AssertionError("should not count nodes"))  # type: ignore[method-assign]
+    service._count_edges_for_rel = AsyncMock(side_effect=AssertionError("should not count edges"))  # type: ignore[method-assign]
+
+    payload = await service.get_ingestion_status()
+    assert payload["node_counts_by_type"]["ApexClass"] == 7
+    assert payload["edge_counts_by_type"]["CALLS"] == 4
+    assert payload["status_counts"]["tracked"] == 9
+    assert payload["latest_completed_run"]["run_id"] == "run-snap-1"
+    await manifest.close()
+    await graph.close()
 
 
 @pytest.mark.asyncio

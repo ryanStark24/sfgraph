@@ -765,7 +765,8 @@ class IngestionService:
             parser_stats=parser_stats,
             unresolved_symbols=unresolved_symbols,
         )
-        self._write_ingestion_meta(summary)
+        status_snapshot = await self._build_status_snapshot()
+        self._write_ingestion_meta(summary, status_snapshot)
         self._emit_progress(
             force=True,
             **self._progress_payload(
@@ -990,7 +991,8 @@ class IngestionService:
             parser_stats=parser_stats,
             unresolved_symbols=unresolved_symbols,
         )
-        self._write_refresh_meta(summary)
+        status_snapshot = await self._build_status_snapshot()
+        self._write_refresh_meta(summary, status_snapshot)
         self._emit_progress(
             force=True,
             **self._progress_payload(
@@ -1439,7 +1441,68 @@ class IngestionService:
 
         return dict(node_counts), written_qnames
 
+    @staticmethod
+    def _sql_list_params(prefix: str, values: list[str] | set[str]) -> tuple[str, dict[str, str]]:
+        params: dict[str, str] = {}
+        placeholders: list[str] = []
+        for index, value in enumerate(values):
+            key = f"{prefix}{index}"
+            placeholders.append(f"${key}")
+            params[key] = str(value)
+        return ", ".join(placeholders), params
+
+    @staticmethod
+    def _safe_count(rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        try:
+            return int(rows[0].get("count", 0) or 0)
+        except Exception:
+            return 0
+
+    async def _build_status_snapshot(self) -> dict[str, Any]:
+        labels = await self._graph.get_labels()
+        rel_types = await self._graph.get_relationship_types()
+        node_counts_by_type: dict[str, int] = {}
+        edge_counts_by_type: dict[str, int] = {}
+
+        for label in labels:
+            self._raise_if_cancelled()
+            try:
+                rows = await self._graph.query(f'SELECT COUNT(*) AS count FROM "{label}"')
+            except Exception:
+                rows = []
+            node_counts_by_type[label] = self._safe_count(rows)
+
+        for rel in rel_types:
+            self._raise_if_cancelled()
+            try:
+                rows = await self._graph.query(f'SELECT COUNT(*) AS count FROM "{rel}"')
+            except Exception:
+                rows = []
+            edge_counts_by_type[rel] = self._safe_count(rows)
+
+        return {
+            "node_counts_by_type": node_counts_by_type,
+            "edge_counts_by_type": edge_counts_by_type,
+            "status_counts": await self._manifest.get_status_counts(),
+            "latest_completed_run": await self._manifest.get_latest_completed_run(),
+        }
+
     async def _load_node_registry(self) -> dict[str, str]:
+        try:
+            rows = await self._graph.query("SELECT qualified_name, label FROM _sfgraph_node_index")
+        except Exception:
+            rows = []
+        if rows:
+            registry: dict[str, str] = {}
+            for row in rows:
+                qn = str(row.get("qualified_name", ""))
+                label = str(row.get("label", ""))
+                if qn and label and self._belongs_to_active_scope(qn, {}):
+                    registry[qn] = label
+            return registry
+
         registry: dict[str, str] = {}
         labels = await self._graph.get_labels()
         for label in labels:
@@ -1460,6 +1523,26 @@ class IngestionService:
     async def _nodes_for_source_files(self, source_files: list[str]) -> set[str]:
         if not source_files:
             return set()
+        placeholders, params = self._sql_list_params("sf", source_files)
+        if placeholders:
+            try:
+                rows = await self._graph.query(
+                    "SELECT qualified_name, project_scope "
+                    "FROM _sfgraph_source_index "
+                    f"WHERE source_file IN ({placeholders})",
+                    params,
+                )
+            except Exception:
+                rows = []
+            if rows:
+                matched: set[str] = set()
+                for row in rows:
+                    qn = str(row.get("qualified_name", ""))
+                    props = {"projectScope": row.get("project_scope")}
+                    if qn and self._belongs_to_active_scope(qn, props):
+                        matched.add(qn)
+                return matched
+
         labels = await self._graph.get_labels()
         source_set = set(source_files)
         matched: set[str] = set()
@@ -1483,6 +1566,33 @@ class IngestionService:
     async def _collect_neighbor_nodes(self, node_qnames: set[str], limit: int = 1500) -> set[str]:
         if not node_qnames:
             return set()
+        placeholders, params = self._sql_list_params("qn", sorted(node_qnames))
+        if placeholders:
+            try:
+                rows = await self._graph.query(
+                    "SELECT src_qualified_name, dst_qualified_name "
+                    "FROM _sfgraph_all_edges "
+                    f"WHERE src_qualified_name IN ({placeholders}) "
+                    f"OR dst_qualified_name IN ({placeholders})",
+                    params,
+                )
+            except Exception:
+                rows = []
+            if rows:
+                neighbors: set[str] = set()
+                for row in rows:
+                    src = str(row.get("src_qualified_name", ""))
+                    dst = str(row.get("dst_qualified_name", ""))
+                    if not src or not dst:
+                        continue
+                    if src in node_qnames and dst not in node_qnames:
+                        neighbors.add(dst)
+                    elif dst in node_qnames and src not in node_qnames:
+                        neighbors.add(src)
+                    if len(neighbors) >= limit:
+                        return neighbors
+                return neighbors
+
         rel_types = await self._graph.get_relationship_types()
         neighbors: set[str] = set()
         for rel in rel_types:
@@ -1513,6 +1623,27 @@ class IngestionService:
     async def _source_files_for_nodes(self, node_qnames: set[str]) -> set[str]:
         if not node_qnames:
             return set()
+        placeholders, params = self._sql_list_params("qn", sorted(node_qnames))
+        if placeholders:
+            try:
+                rows = await self._graph.query(
+                    "SELECT source_file, qualified_name, project_scope "
+                    "FROM _sfgraph_source_index "
+                    f"WHERE qualified_name IN ({placeholders})",
+                    params,
+                )
+            except Exception:
+                rows = []
+            if rows:
+                files: set[str] = set()
+                for row in rows:
+                    qn = str(row.get("qualified_name", ""))
+                    source = str(row.get("source_file", ""))
+                    props = {"projectScope": row.get("project_scope")}
+                    if source and qn and self._belongs_to_active_scope(qn, props):
+                        files.add(source)
+                return files
+
         labels = await self._graph.get_labels()
         files: set[str] = set()
         qn_set = set(node_qnames)
@@ -1537,6 +1668,33 @@ class IngestionService:
     async def _purge_nodes_by_source_files(self, source_files: list[str]) -> set[str]:
         if not source_files:
             return set()
+        placeholders, params = self._sql_list_params("sf", source_files)
+        if placeholders:
+            try:
+                rows = await self._graph.query(
+                    "SELECT qualified_name, label, project_scope "
+                    "FROM _sfgraph_source_index "
+                    f"WHERE source_file IN ({placeholders})",
+                    params,
+                )
+            except Exception:
+                rows = []
+            if rows:
+                removed_qnames: set[str] = set()
+                for row in rows:
+                    qn = str(row.get("qualified_name", ""))
+                    label = str(row.get("label", ""))
+                    props = {"projectScope": row.get("project_scope")}
+                    if not qn or not label or not self._belongs_to_active_scope(qn, props):
+                        continue
+                    self._raise_if_cancelled()
+                    try:
+                        deleted = await self._graph.delete_node(label, qn)
+                        if deleted:
+                            removed_qnames.add(qn)
+                    except Exception:
+                        continue
+                return removed_qnames
 
         labels = await self._graph.get_labels()
         source_set = set(source_files)
@@ -1739,7 +1897,7 @@ class IngestionService:
 
         return resolved
 
-    def _write_ingestion_meta(self, summary: IngestionSummary) -> None:
+    def _write_ingestion_meta(self, summary: IngestionSummary, status_snapshot: dict[str, Any]) -> None:
         """Persist latest ingestion metadata for freshness contract responses."""
         project_scope = self._compute_project_scope(summary.export_dir)
         payload = {
@@ -1758,6 +1916,10 @@ class IngestionService:
             "unresolved_symbols": summary.unresolved_symbols,
             "org_enrichment": self._org_enrichment_context or {"enabled": False},
             "vlocity_standards": self._vlocity_rule_bundle.describe(),
+            "node_counts_by_type": status_snapshot.get("node_counts_by_type", summary.node_counts_by_type),
+            "edge_counts_by_type": status_snapshot.get("edge_counts_by_type", {}),
+            "status_counts": status_snapshot.get("status_counts", {}),
+            "latest_completed_run": status_snapshot.get("latest_completed_run"),
         }
         out = Path(self._ingestion_meta_path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -1767,7 +1929,7 @@ class IngestionService:
             ingestion_progress_path=self._ingestion_progress_path,
         ).export_markdown(context={"export_dir": summary.export_dir})
 
-    def _write_refresh_meta(self, summary: RefreshSummary) -> None:
+    def _write_refresh_meta(self, summary: RefreshSummary, status_snapshot: dict[str, Any]) -> None:
         project_scope = self._compute_project_scope(summary.export_dir)
         payload = {
             "run_id": summary.run_id,
@@ -1788,6 +1950,10 @@ class IngestionService:
             "unresolved_symbols": summary.unresolved_symbols,
             "org_enrichment": self._org_enrichment_context or {"enabled": False},
             "vlocity_standards": self._vlocity_rule_bundle.describe(),
+            "node_counts_by_type": status_snapshot.get("node_counts_by_type", {}),
+            "edge_counts_by_type": status_snapshot.get("edge_counts_by_type", {}),
+            "status_counts": status_snapshot.get("status_counts", {}),
+            "latest_completed_run": status_snapshot.get("latest_completed_run"),
         }
         out = Path(self._ingestion_meta_path)
         out.parent.mkdir(parents=True, exist_ok=True)

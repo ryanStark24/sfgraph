@@ -36,6 +36,8 @@ def make_mock_manifest() -> AsyncMock:
     manifest.upsert_file = AsyncMock(return_value=None)
     manifest.set_status = AsyncMock(return_value=None)
     manifest.mark_run_complete = AsyncMock(return_value=None)
+    manifest.get_status_counts = AsyncMock(return_value={"tracked": 1, "nodes_written": 1, "edges_written": 1})
+    manifest.get_latest_completed_run = AsyncMock(return_value={"run_id": "run-test-001"})
     manifest.get_delta = AsyncMock(return_value={"new": [], "changed": [], "unchanged": [], "deleted": []})
     manifest.get_tracked_files = AsyncMock(return_value={})
     manifest.delete_files = AsyncMock(return_value=0)
@@ -132,6 +134,26 @@ async def test_ingest_node_counts_by_type(svc):
     service, _, _, _ = svc
     summary = await service.ingest(FIXTURE_EXPORT)
     assert summary.total_nodes >= 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_writes_status_snapshot_into_meta(svc, tmp_path: Path):
+    service, graph, _, _ = svc
+    meta_path = tmp_path / "ingestion_meta.json"
+    service._ingestion_meta_path = str(meta_path)
+    graph.query = AsyncMock(
+        side_effect=lambda sql, *args, **kwargs: (
+            [{"count": 2}] if 'FROM "ApexClass"' in sql
+            else [{"count": 1}] if 'FROM "CALLS"' in sql
+            else []
+        )
+    )
+
+    await service.ingest(FIXTURE_EXPORT)
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert payload["node_counts_by_type"]["ApexClass"] == 2
+    assert payload["edge_counts_by_type"]["CALLS"] == 1
+    assert payload["status_counts"]["tracked"] == 1
 
 
 @pytest.mark.asyncio

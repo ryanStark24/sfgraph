@@ -34,6 +34,9 @@ class AnalyzeResponseCache:
             return
         self._entries[cache_key] = (time.monotonic(), deepcopy(payload))
 
+    def clear(self) -> None:
+        self._entries.clear()
+
 
 def render_analyze_markdown(payload: dict[str, Any]) -> str:
     routed_to = str(payload.get("routed_to") or "")

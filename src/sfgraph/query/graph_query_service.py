@@ -91,13 +91,16 @@ class GraphQueryService:
         self._rel_cache: list[str] | None = None
         self._node_cache: dict[str, dict[str, Any] | None] = {}
         self._analyze_cache = AnalyzeResponseCache(ttl_seconds=15.0)
+        self._cache_freshness_token: str | None = None
 
     async def _labels(self) -> list[str]:
+        self._refresh_read_caches()
         if self._labels_cache is None:
             self._labels_cache = await self._graph.get_labels()
         return self._labels_cache
 
     async def _rel_types(self) -> list[str]:
+        self._refresh_read_caches()
         if self._rel_cache is None:
             self._rel_cache = await self._graph.get_relationship_types()
         return self._rel_cache
@@ -120,6 +123,30 @@ class GraphQueryService:
         except Exception:
             return {}
 
+    def _freshness_token(self) -> str:
+        meta = self._read_ingestion_meta()
+        return json.dumps(
+            {
+                "scope": meta.get("project_scope"),
+                "run_id": meta.get("run_id"),
+                "indexed_at": meta.get("indexed_at"),
+                "indexed_commit": meta.get("indexed_commit"),
+                "export_dir": meta.get("export_dir"),
+            },
+            sort_keys=True,
+        )
+
+    def _refresh_read_caches(self) -> str:
+        token = self._freshness_token()
+        if token == self._cache_freshness_token:
+            return token
+        self._cache_freshness_token = token
+        self._labels_cache = None
+        self._rel_cache = None
+        self._node_cache.clear()
+        self._analyze_cache.clear()
+        return token
+
     def _analyze_cache_key(
         self,
         *,
@@ -133,8 +160,10 @@ class GraphQueryService:
         render: str,
         include_mermaid: bool,
     ) -> str:
+        freshness_token = self._refresh_read_caches()
         return json.dumps(
             {
+                "freshness_token": freshness_token,
                 "scope": self._current_scope(),
                 "q": " ".join(question.strip().split()).lower(),
                 "mode": mode,
@@ -232,6 +261,7 @@ class GraphQueryService:
         }
 
     async def _find_node(self, qualified_name: str) -> dict[str, Any] | None:
+        self._refresh_read_caches()
         cache_key = f"{self._current_scope() or 'no-scope'}::{qualified_name}"
         if cache_key in self._node_cache:
             return self._node_cache[cache_key]
@@ -2226,28 +2256,19 @@ class GraphQueryService:
         }
 
     async def get_ingestion_status(self) -> dict[str, Any]:
-        labels = await self._labels()
-        rel_types = await self._rel_types()
-
-        node_counts: dict[str, int] = {}
-        for label in labels:
-            node_counts[label] = await self._count_nodes_for_label(label)
-
-        edge_counts: dict[str, int] = {}
-        for rel in rel_types:
-            edge_counts[rel] = await self._count_edges_for_rel(rel)
-
-        status_counts = await self._manifest.get_status_counts()
-        latest_run = await self._manifest.get_latest_completed_run()
-        pending = await self._manifest.get_pending_files(limit=200)
+        self._refresh_read_caches()
         meta = self._read_ingestion_meta()
+        snapshot = self._status_snapshot_from_meta(meta)
+        if snapshot is None:
+            snapshot = await self._compute_status_snapshot()
+        pending = await self._manifest.get_pending_files(limit=200)
         progress = await self.get_ingestion_progress()
 
         return {
-            "node_counts_by_type": node_counts,
-            "edge_counts_by_type": edge_counts,
-            "status_counts": status_counts,
-            "latest_completed_run": latest_run,
+            "node_counts_by_type": snapshot["node_counts_by_type"],
+            "edge_counts_by_type": snapshot["edge_counts_by_type"],
+            "status_counts": snapshot["status_counts"],
+            "latest_completed_run": snapshot["latest_completed_run"],
             "dirty_files_pending": len(pending),
             "parser_stats": meta.get("parser_stats", {}),
             "unresolved_symbols": int(meta.get("unresolved_symbols", 0) or 0),
@@ -2257,6 +2278,7 @@ class GraphQueryService:
         }
 
     async def get_ingestion_progress(self) -> dict[str, Any]:
+        self._refresh_read_caches()
         progress = self._read_ingestion_progress()
         if not progress:
             return {
@@ -2269,6 +2291,42 @@ class GraphQueryService:
         progress["available"] = True
         progress["freshness"] = await self.freshness(partial_results=progress.get("state") == "running")
         return progress
+
+    async def _compute_status_snapshot(self) -> dict[str, Any]:
+        labels = await self._labels()
+        rel_types = await self._rel_types()
+
+        node_counts: dict[str, int] = {}
+        for label in labels:
+            node_counts[label] = await self._count_nodes_for_label(label)
+
+        edge_counts: dict[str, int] = {}
+        for rel in rel_types:
+            edge_counts[rel] = await self._count_edges_for_rel(rel)
+
+        return {
+            "node_counts_by_type": node_counts,
+            "edge_counts_by_type": edge_counts,
+            "status_counts": await self._manifest.get_status_counts(),
+            "latest_completed_run": await self._manifest.get_latest_completed_run(),
+        }
+
+    @staticmethod
+    def _status_snapshot_from_meta(meta: dict[str, Any]) -> dict[str, Any] | None:
+        node_counts = meta.get("node_counts_by_type")
+        edge_counts = meta.get("edge_counts_by_type")
+        status_counts = meta.get("status_counts")
+        latest_completed_run = meta.get("latest_completed_run")
+        if not isinstance(node_counts, dict) or not isinstance(edge_counts, dict):
+            return None
+        if not isinstance(status_counts, dict):
+            status_counts = {}
+        return {
+            "node_counts_by_type": node_counts,
+            "edge_counts_by_type": edge_counts,
+            "status_counts": status_counts,
+            "latest_completed_run": latest_completed_run if isinstance(latest_completed_run, dict) else None,
+        }
 
     async def export_diagnostics_md(
         self,
