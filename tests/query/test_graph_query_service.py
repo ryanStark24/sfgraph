@@ -247,6 +247,273 @@ async def test_query_dispatches_to_trace_upstream(svc: GraphQueryService):
 
 
 @pytest.mark.asyncio
+async def test_query_field_population_is_strict_and_exact(svc: GraphQueryService):
+    svc._vectors = AsyncMock()
+    result = await svc.query("where is Status__c populated?")
+    assert result["mode"] == "field_writes"
+    assert result["fields"]
+    assert result["fields"][0]["field"] == "Account.Status__c"
+    assert result["findings"]
+    assert all(finding["field"] == "Account.Status__c" for finding in result["findings"])
+    assert "vector fallback disabled" in result["pipeline"]["hint"].lower()
+    svc._vectors.search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_analyze_field_combines_graph_and_exact_repo_matches(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_field.db"))
+    await manifest.initialize()
+
+    await graph.merge_node(
+        "SFField",
+        {"qualifiedName": "OrderItem.Service_Id__c"},
+        {
+            "qualifiedName": "OrderItem.Service_Id__c",
+            "sourceFile": "objects/OrderItem/fields/Service_Id__c.field-meta.xml",
+            "lineNumber": 1,
+            "parserType": "xml_object",
+        },
+    )
+    await graph.merge_node(
+        "ApexClass",
+        {"qualifiedName": "OrderExtensionEngine"},
+        {
+            "qualifiedName": "OrderExtensionEngine",
+            "sourceFile": "classes/OrderExtensionEngine.cls",
+            "lineNumber": 1,
+            "parserType": "apex_cst",
+        },
+    )
+    await graph.merge_edge(
+        "OrderExtensionEngine",
+        "ApexClass",
+        "WRITES_FIELD",
+        "OrderItem.Service_Id__c",
+        "SFField",
+        {
+            "confidence": 0.96,
+            "resolutionMethod": "cst",
+            "edgeCategory": "DATA_FLOW",
+            "contextSnippet": "orderItemEach.Service_Id__c = serviceId;",
+        },
+    )
+
+    code_file = tmp_path / "force-app" / "main" / "default" / "classes" / "OrderExtensionEngine.cls"
+    code_file.parent.mkdir(parents=True, exist_ok=True)
+    code_file.write_text(
+        "public class OrderExtensionEngine {\n"
+        "  public static void apply(OrderItem orderItemEach, String serviceId) {\n"
+        "    orderItemEach.Service_Id__c = serviceId;\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_field("Service_Id__c", focus="writes")
+    assert "OrderItem.Service_Id__c" in payload["resolved_fields"]
+    assert payload["graph_findings"]
+    assert payload["exact_matches"]
+    assert any(match["file"].endswith("OrderExtensionEngine.cls") for match in payload["exact_matches"])
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_object_event_finds_matching_triggers(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_trigger.db"))
+    await manifest.initialize()
+    trigger_file = tmp_path / "force-app" / "main" / "default" / "triggers" / "QuoteLineItemTrigger.trigger"
+    trigger_file.parent.mkdir(parents=True, exist_ok=True)
+    trigger_file.write_text(
+        "trigger QuoteLineItemTrigger on QuoteLineItem (before insert, after insert, before update) {\n"
+        "  if (Trigger.isBefore && Trigger.isInsert) {\n"
+        "    QuoteLineItemTriggerHelper.processBuildersBeforeInsertCode(Trigger.new);\n"
+        "  }\n"
+        "  if (Trigger.isAfter && Trigger.isInsert) {\n"
+        "    QuoteLineItemTriggerHelper.processAfterInsert(Trigger.new);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_object_event("QuoteLineItem", "insert")
+    assert payload["triggers"]
+    assert payload["triggers"][0]["triggerName"] == "QuoteLineItemTrigger"
+    calls = payload["triggers"][0]["methodCalls"]
+    assert any(call["className"] == "QuoteLineItemTriggerHelper" for call in calls)
+    assert payload["important_note"]
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_component_token_traces_exact_assignments(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_component.db"))
+    await manifest.initialize()
+    await graph.merge_node(
+        "ApexClass",
+        {"qualifiedName": "OrderNowUpdateAttribute"},
+        {
+            "qualifiedName": "OrderNowUpdateAttribute",
+            "sourceFile": "force-app/main/default/classes/OrderNowUpdateAttribute.cls",
+            "lineNumber": 1,
+            "parserType": "apex_cst",
+        },
+    )
+    class_file = tmp_path / "force-app" / "main" / "default" / "classes" / "OrderNowUpdateAttribute.cls"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_text(
+        "public class OrderNowUpdateAttribute {\n"
+        "  public static Map<String, Object> updateAttrib(Map<String, Object> input, Id qliId) {\n"
+        "    Map<String, Object> drinputMap = new Map<String, Object>();\n"
+        "    drinputMap.put('accessId', qliId);\n"
+        "    String accessId = (String) input.get('accessId');\n"
+        "    return drinputMap;\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_component("OrderNowUpdateAttribute", token="accessId", focus="writes")
+    assert payload["resolved_components"]
+    assert payload["exact_matches"]
+    assert any(item["kind"] == "write" for item in payload["exact_matches"])
+    assert any(item["file"].endswith("OrderNowUpdateAttribute.cls") for item in payload["exact_matches"])
+    assert payload["variable_origins"]
+    assert any("qliId" in str(item.get("source_expression", "")) for item in payload["variable_origins"])
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_component_falls_back_to_source_file_without_graph_node(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_component_fallback.db"))
+    await manifest.initialize()
+
+    class_file = tmp_path / "force-app" / "main" / "default" / "classes" / "QuoteRecipientHelper.cls"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_text(
+        "public class QuoteRecipientHelper {\n"
+        "  public static void performBeforeInsertLogic(List<QuoteLineItemRecipient> records) {\n"
+        "    for (QuoteLineItemRecipient obj : records) {\n"
+        "      obj.MaxDownloadSpeed = '500 Mpbs';\n"
+        "    }\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_component("QuoteRecipientHelper", token="MaxDownloadSpeed", focus="writes")
+
+    assert payload["resolved_components"]
+    assert any(str(match["file"]).endswith("QuoteRecipientHelper.cls") for match in payload["exact_matches"])
+    assert any(match["kind"] == "write" for match in payload["exact_matches"])
+
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_component_supports_sfdx_package_directories(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_component_pkg.db"))
+    await manifest.initialize()
+
+    (tmp_path / "sfdx-project.json").write_text(
+        json.dumps({"packageDirectories": [{"path": "packages/sales"}]}),
+        encoding="utf-8",
+    )
+    class_file = tmp_path / "packages" / "sales" / "main" / "default" / "classes" / "PkgHelper.cls"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_text(
+        "public class PkgHelper {\n"
+        "  public static void apply(Map<String, Object> output, Id qliId) {\n"
+        "    output.put('accessId', qliId);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_component("PkgHelper", token="accessId", focus="writes")
+
+    assert payload["resolved_components"]
+    assert any(str(match["file"]).endswith("PkgHelper.cls") for match in payload["exact_matches"])
+    assert any(match["kind"] == "write" for match in payload["exact_matches"])
+
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_component_variable_origin_backtracks_symbol(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_component_origin.db"))
+    await manifest.initialize()
+
+    class_file = tmp_path / "force-app" / "main" / "default" / "classes" / "OriginHelper.cls"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_text(
+        "public class OriginHelper {\n"
+        "  public static void apply(Map<String, Object> input, Map<String, Object> output) {\n"
+        "    String serviceId = (String) input.get('Service_Id__c');\n"
+        "    output.put('accessId', serviceId);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze_component("OriginHelper", token="accessId", focus="writes")
+
+    assert payload["variable_origins"]
+    first = payload["variable_origins"][0]
+    assert first["source_symbol"] == "serviceId"
+    assert "input.get('Service_Id__c')" in first["source_expression"]
+    assert first["resolution"] == "intra_file_backtrack"
+    assert first["write_line"] > first["source_line"]
+
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
 async def test_get_node_returns_adjacent_edges(svc: GraphQueryService):
     payload = await svc.get_node("Account.Status__c")
     assert payload["node"] is not None
@@ -522,6 +789,326 @@ async def test_query_uses_vector_fallback_when_no_lexical_hits(tmp_path: Path):
     assert payload["candidates"]
     assert "vector fallback" in payload["pipeline"]["hint"].lower()
     assert payload["pipeline"]["agent_trace"]
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_query_routes_component_token_population_to_exact_component_analysis(svc: GraphQueryService):
+    svc._vectors = AsyncMock()
+    payload = await svc.query("In class OSS_ServiceabilityTask, where is accessId populated? show method and source file.")
+    assert payload["mode"] == "analyze_component"
+    assert payload["pipeline"]["intent"] == "component_token_writes"
+    assert "vector fallback disabled" in payload["pipeline"]["hint"].lower()
+    svc._vectors.search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_query_routes_object_event_questions_to_event_analysis(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_event_route.db"))
+    await manifest.initialize()
+    trigger_file = tmp_path / "force-app" / "main" / "default" / "triggers" / "QuoteLineItemTrigger.trigger"
+    trigger_file.parent.mkdir(parents=True, exist_ok=True)
+    trigger_file.write_text(
+        "trigger QuoteLineItemTrigger on QuoteLineItem (before insert, after insert) {\n"
+        "  if (Trigger.isBefore && Trigger.isInsert) {\n"
+        "    QuoteLineItemTriggerHelper.populateFields(Trigger.new);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.query("what happens when a QuoteLineItem is inserted?")
+    assert payload["mode"] == "analyze_object_event"
+    assert payload["event"] == "insert"
+    assert payload["triggers"]
+    assert payload["pipeline"]["intent"] == "object_event"
+
+    updated_payload = await service.query("what runs when QuoteLineItem is updated?")
+    assert updated_payload["mode"] == "analyze_object_event"
+    assert updated_payload["event"] == "update"
+    assert updated_payload["pipeline"]["intent"] == "object_event"
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_change_resolves_component_to_source_files(svc: GraphQueryService):
+    payload = await svc.analyze_change(target="AccountService", max_hops=2, max_results_per_component=10)
+    assert payload["mode"] == "analyze_change"
+    assert payload["target_resolution"]["mode"] == "component_target"
+    assert payload["analysis"]["changed_files"]
+    assert any(path.endswith("AccountService.cls") for path in payload["analysis"]["changed_files"])
+
+
+@pytest.mark.asyncio
+async def test_query_routes_change_questions_to_analyze_change(svc: GraphQueryService):
+    payload = await svc.query("what breaks if I change AccountService?")
+    assert payload["mode"] == "analyze_change"
+    assert payload["pipeline"]["intent"] == "analyze_change"
+    assert payload["target_resolution"]["mode"] in {"component_target", "file_target"}
+
+
+@pytest.mark.asyncio
+async def test_analyze_exact_routes_to_field_analysis(svc: GraphQueryService):
+    payload = await svc.analyze("where is Status__c populated?", mode="exact", strict=True)
+    assert payload["mode"] == "analyze"
+    assert payload["analysis_mode"] == "exact"
+    assert payload["routed_to"] == "analyze_field"
+    assert payload["result"]["mode"] == "analyze_field"
+    assert payload["evidence"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_auto_routes_to_component_for_token_population(svc: GraphQueryService):
+    payload = await svc.analyze(
+        "In class OSS_ServiceabilityTask, where is accessId populated? show method and source file.",
+        mode="auto",
+        strict=True,
+    )
+    assert payload["mode"] == "analyze"
+    assert payload["analysis_mode"] == "auto"
+    assert payload["routed_to"] == "analyze_component"
+    assert payload["result"]["mode"] == "analyze_component"
+
+
+@pytest.mark.asyncio
+async def test_analyze_does_not_treat_method_reference_as_field_query(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_method_reference.db"))
+    await manifest.initialize()
+    class_file = tmp_path / "force-app" / "main" / "default" / "classes" / "SiteLoginController.cls"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_text(
+        "public with sharing class SiteLoginController {\n"
+        "  public PageReference login() { return null; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze("find SiteLoginController.login", mode="auto", strict=True)
+    assert payload["mode"] == "analyze"
+    assert payload["routed_to"] == "query"
+    assert payload["result"]["mode"] == "node_search"
+    assert payload["result"].get("resolved_fields") is None
+    assert payload["result"]["pipeline"]["intent"] == "node_search"
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_lineage_routes_to_object_event(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_analyze_lineage.db"))
+    await manifest.initialize()
+    trigger_file = tmp_path / "force-app" / "main" / "default" / "triggers" / "QuoteLineItemTrigger.trigger"
+    trigger_file.parent.mkdir(parents=True, exist_ok=True)
+    trigger_file.write_text(
+        "trigger QuoteLineItemTrigger on QuoteLineItem (before insert, after insert) {\n"
+        "  if (Trigger.isBefore && Trigger.isInsert) {\n"
+        "    QuoteLineItemTriggerHelper.populateFields(Trigger.new);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze("what happens when a QuoteLineItem is inserted?", mode="lineage")
+    assert payload["mode"] == "analyze"
+    assert payload["analysis_mode"] == "lineage"
+    assert payload["routed_to"] == "analyze_object_event"
+    assert payload["result"]["mode"] == "analyze_object_event"
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_exact_disables_vector_fallback_for_unresolved_queries(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_analyze_exact_no_vector.db"))
+    await manifest.initialize()
+    vectors = AsyncMock()
+    vectors.search = AsyncMock(
+        return_value=[
+            {
+                "node_id": "scope::ApexClass:Fallback",
+                "score": 0.88,
+                "payload": {"label": "ApexClass", "sourceFile": "classes/Fallback.cls"},
+            }
+        ]
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        vectors=vectors,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "meta_vec.json"),
+    )
+    payload = await service.analyze("find nonexistingthing", mode="exact", strict=True, max_results=10)
+    assert payload["mode"] == "analyze"
+    assert payload["analysis_mode"] == "exact"
+    assert payload["result"]["mode"] == "node_search"
+    assert payload["result"]["candidates"] == []
+    assert "vector fallback disabled" in payload["result"]["pipeline"]["hint"].lower()
+    vectors.search.assert_not_called()
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_uses_short_lived_cache(svc: GraphQueryService):
+    service = svc
+    original = service.analyze_field
+    calls = 0
+
+    async def wrapped_analyze_field(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return await original(*args, **kwargs)
+
+    service.analyze_field = wrapped_analyze_field  # type: ignore[method-assign]
+    first = await service.analyze("where is Status__c populated?", mode="exact", strict=True)
+    second = await service.analyze("where is Status__c populated?", mode="exact", strict=True)
+
+    assert calls == 1
+    assert first["cache"]["hit"] is False
+    assert second["cache"]["hit"] is True
+
+
+@pytest.mark.asyncio
+async def test_analyze_invalidates_cache_when_ingestion_meta_changes(svc: GraphQueryService, tmp_path: Path):
+    service = svc
+    meta_path = tmp_path / "ingestion_meta_cache.json"
+    meta_path.write_text(
+        json.dumps({"run_id": "run-1", "indexed_at": "2026-04-06T00:00:00Z", "project_scope": "scope-a"}),
+        encoding="utf-8",
+    )
+    service._ingestion_meta_path = meta_path
+    original = service.analyze_field
+    calls = 0
+
+    async def wrapped_analyze_field(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return await original(*args, **kwargs)
+
+    service.analyze_field = wrapped_analyze_field  # type: ignore[method-assign]
+
+    first = await service.analyze("where is Status__c populated?", mode="exact", strict=True)
+    meta_path.write_text(
+        json.dumps({"run_id": "run-2", "indexed_at": "2026-04-06T00:01:00Z", "project_scope": "scope-a"}),
+        encoding="utf-8",
+    )
+    second = await service.analyze("where is Status__c populated?", mode="exact", strict=True)
+
+    assert calls == 2
+    assert first["cache"]["hit"] is False
+    assert second["cache"]["hit"] is False
+
+
+@pytest.mark.asyncio
+async def test_analyze_can_render_markdown_presentation(svc: GraphQueryService):
+    payload = await svc.analyze("where is Status__c populated?", mode="exact", strict=True, render="markdown")
+    assert payload["presentation"]["format"] == "markdown"
+    assert "# Analyze Result" in payload["presentation"]["markdown"]
+    assert "Question: where is Status__c populated?" in payload["presentation"]["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_get_ingestion_status_prefers_meta_snapshot(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_status_snapshot.db"))
+    await manifest.initialize()
+    meta_path = tmp_path / "ingestion_meta_status.json"
+    meta_path.write_text(
+        json.dumps(
+            {
+                "run_id": "run-snap-1",
+                "indexed_at": "2026-04-06T00:00:00Z",
+                "node_counts_by_type": {"ApexClass": 7},
+                "edge_counts_by_type": {"CALLS": 4},
+                "status_counts": {"tracked": 9},
+                "latest_completed_run": {"run_id": "run-snap-1"},
+                "parser_stats": {"apex": {"parsed_files": 2, "error_files": 0, "skipped_files": 0}},
+                "unresolved_symbols": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(meta_path),
+    )
+    service._count_nodes_for_label = AsyncMock(side_effect=AssertionError("should not count nodes"))  # type: ignore[method-assign]
+    service._count_edges_for_rel = AsyncMock(side_effect=AssertionError("should not count edges"))  # type: ignore[method-assign]
+
+    payload = await service.get_ingestion_status()
+    assert payload["node_counts_by_type"]["ApexClass"] == 7
+    assert payload["edge_counts_by_type"]["CALLS"] == 4
+    assert payload["status_counts"]["tracked"] == 9
+    assert payload["latest_completed_run"]["run_id"] == "run-snap-1"
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_can_include_mermaid_presentation(svc: GraphQueryService):
+    payload = await svc.analyze(
+        "where is Status__c populated?",
+        mode="exact",
+        strict=True,
+        render="markdown",
+        include_mermaid=True,
+    )
+    assert "presentation" in payload
+    assert "mermaid" in payload["presentation"]
+    assert "graph TD" in payload["presentation"]["mermaid"]
+    assert "## Diagram" in payload["presentation"]["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_query_vector_only_results_are_review_manually(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_vector_review.db"))
+    await manifest.initialize()
+    vectors = AsyncMock()
+    vectors.search = AsyncMock(
+        return_value=[
+            {
+                "node_id": "scope::ApexClass:Fallback",
+                "score": 0.93,
+                "payload": {"label": "ApexClass", "sourceFile": "classes/Fallback.cls"},
+            }
+        ]
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        vectors=vectors,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "meta_vec.json"),
+    )
+    payload = await service.query("totallymissingtoken", allow_vector_fallback=True, max_results=5)
+    assert payload["confidence_tiers"]["definite"] == []
+    assert payload["confidence_tiers"]["probable"] == []
+    assert len(payload["confidence_tiers"]["review_manually"]) == 1
     await manifest.close()
     await graph.close()
 

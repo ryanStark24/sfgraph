@@ -11,6 +11,7 @@ logging.basicConfig(
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -35,49 +36,127 @@ def _validate_workspace_export_dir(export_dir: str) -> str:
 
 @dataclass
 class AppContext:
-    daemon: DaemonClient
-    data_root: Path
+    runtime_root: Path
+    session_data_root: Path
+    daemons: dict[str, DaemonClient]
+    job_routes: dict[str, str]
+    active_export_dir: str | None = None
+
+
+def _resolve_runtime_root(session_data_root: Path) -> Path:
+    configured = os.getenv("SFGRAPH_RUNTIME_ROOT")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if session_data_root.name == "data" and session_data_root.parent.parent.name == "workspaces":
+        return session_data_root.parent.parent
+    return (session_data_root.parent / "workspaces").resolve()
+
+
+def _workspace_key(export_dir: str) -> str:
+    return hashlib.sha1(export_dir.encode("utf-8")).hexdigest()[:12]
+
+
+def _data_root_for_export_dir(runtime_root: Path, export_dir: str) -> Path:
+    return runtime_root / _workspace_key(export_dir) / "data"
+
+
+def _session_daemon(app: AppContext) -> DaemonClient:
+    session_key = str(Path.cwd().resolve())
+    daemon = app.daemons.get(session_key)
+    if daemon is None:
+        app.session_data_root.mkdir(parents=True, exist_ok=True)
+        daemon = ensure_daemon_client(app.session_data_root, workspace_root=Path(session_key))
+        app.daemons[session_key] = daemon
+    return daemon
+
+
+def _daemon_for_export_dir(app: AppContext, export_dir: str, *, activate: bool = True) -> DaemonClient:
+    resolved = str(Path(export_dir).expanduser().resolve())
+    daemon = app.daemons.get(resolved)
+    if daemon is None:
+        data_root = _data_root_for_export_dir(app.runtime_root, resolved)
+        data_root.mkdir(parents=True, exist_ok=True)
+        daemon = ensure_daemon_client(data_root, workspace_root=Path(resolved))
+        app.daemons[resolved] = daemon
+    if activate:
+        app.active_export_dir = resolved
+    return daemon
+
+
+def _current_daemon(app: AppContext, export_dir: str | None = None) -> DaemonClient:
+    if export_dir:
+        return _daemon_for_export_dir(app, _validate_workspace_export_dir(export_dir))
+    if app.active_export_dir:
+        return _daemon_for_export_dir(app, app.active_export_dir)
+    if len(app.daemons) == 1:
+        only_export_dir = next(iter(app.daemons))
+        return _daemon_for_export_dir(app, only_export_dir, activate=False)
+    return _session_daemon(app)
+
+
+def _all_known_export_dirs(app: AppContext) -> list[str]:
+    export_dirs = set(app.daemons.keys())
+    if app.runtime_root.exists():
+        for candidate in app.runtime_root.iterdir():
+            meta_path = candidate / "data" / "daemon.json"
+            if not meta_path.exists():
+                continue
+            try:
+                payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            workspace_root = str(payload.get("workspace_root") or "").strip()
+            if workspace_root:
+                export_dirs.add(str(Path(workspace_root).expanduser().resolve()))
+    return sorted(export_dirs)
+
+
+def _find_daemon_for_job(app: AppContext, job_id: str) -> DaemonClient:
+    routed = app.job_routes.get(job_id)
+    if routed:
+        return _daemon_for_export_dir(app, routed, activate=False)
+    for export_dir in _all_known_export_dirs(app):
+        daemon = _daemon_for_export_dir(app, export_dir, activate=False)
+        payload = daemon.call("list_ingest_jobs")
+        for job in payload.get("jobs", []):
+            if str(job.get("job_id")) == job_id:
+                app.job_routes[job_id] = export_dir
+                return daemon
+    raise RuntimeError(f"Job {job_id} was not found in any known workspace.")
 
 
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     data_root = Path(os.getenv("SFGRAPH_DATA_DIR", "./data")).expanduser().resolve()
     data_root.mkdir(parents=True, exist_ok=True)
-    daemon = ensure_daemon_client(data_root)
-    logger.info("Connected to sfgraph daemon at %s", daemon.base_url)
-    yield AppContext(daemon=daemon, data_root=data_root)
+    runtime_root = _resolve_runtime_root(data_root)
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    yield AppContext(
+        runtime_root=runtime_root,
+        session_data_root=data_root,
+        daemons={},
+        job_routes={},
+    )
 
 
 mcp = FastMCP("sfgraph", lifespan=lifespan)
 
 
-def _daemon_call(app: AppContext, method: str, **params: Any) -> str:
-    return json.dumps(app.daemon.call(method, **params), indent=2)
+def _daemon_call(daemon: DaemonClient, method: str, **params: Any) -> str:
+    return json.dumps(daemon.call(method, **params), indent=2)
 
 
 @mcp.tool()
 async def ping(ctx: Context) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    return json.dumps(app.daemon.call("ping"), indent=2)
-
-
-@mcp.tool()
-async def ingest_org(
-    export_dir: str,
-    ctx: Context,
-    mode: str = "full",
-    include_globs: list[str] | None = None,
-    exclude_globs: list[str] | None = None,
-) -> str:
-    app: AppContext = ctx.request_context.lifespan_context
-    export_dir = _validate_workspace_export_dir(export_dir)
-    return _daemon_call(
-        app,
-        "ingest_org",
-        export_dir=export_dir,
-        mode=mode,
-        include_globs=include_globs or [],
-        exclude_globs=exclude_globs or [],
+    return json.dumps(
+        {
+            "ok": True,
+            "runtime_root": str(app.runtime_root),
+            "known_workspaces": _all_known_export_dirs(app),
+            "active_export_dir": app.active_export_dir,
+        },
+        indent=2,
     )
 
 
@@ -88,17 +167,25 @@ async def start_ingest_job(
     mode: str = "full",
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
+    org_alias: str | None = None,
+    enrich_org: bool = False,
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    return _daemon_call(
-        app,
+    daemon = _daemon_for_export_dir(app, export_dir)
+    result = daemon.call(
         "start_ingest_job",
         export_dir=export_dir,
         mode=mode,
         include_globs=include_globs or [],
         exclude_globs=exclude_globs or [],
+        org_alias=org_alias,
+        enrich_org=enrich_org,
     )
+    job_id = str(result.get("job_id") or "")
+    if job_id:
+        app.job_routes[job_id] = export_dir
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -108,69 +195,91 @@ async def start_refresh_job(
     mode: str = "full",
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
+    org_alias: str | None = None,
+    enrich_org: bool = False,
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    return _daemon_call(
-        app,
+    daemon = _daemon_for_export_dir(app, export_dir)
+    result = daemon.call(
         "start_refresh_job",
         export_dir=export_dir,
         mode=mode,
         include_globs=include_globs or [],
         exclude_globs=exclude_globs or [],
+        org_alias=org_alias,
+        enrich_org=enrich_org,
     )
+    job_id = str(result.get("job_id") or "")
+    if job_id:
+        app.job_routes[job_id] = export_dir
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 async def start_vectorize_job(export_dir: str, ctx: Context) -> str:
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    return _daemon_call(app, "start_vectorize_job", export_dir=export_dir)
+    daemon = _daemon_for_export_dir(app, export_dir)
+    result = daemon.call("start_vectorize_job", export_dir=export_dir)
+    job_id = str(result.get("job_id") or "")
+    if job_id:
+        app.job_routes[job_id] = export_dir
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 async def get_ingest_job(job_id: str, ctx: Context) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "get_ingest_job", job_id=job_id)
+    daemon = _find_daemon_for_job(app, job_id)
+    return _daemon_call(daemon, "get_ingest_job", job_id=job_id)
 
 
 @mcp.tool()
 async def list_ingest_jobs(ctx: Context) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "list_ingest_jobs")
+    jobs: list[dict[str, Any]] = []
+    active_by_workspace: dict[str, str | None] = {}
+    for export_dir in _all_known_export_dirs(app):
+        daemon = _daemon_for_export_dir(app, export_dir, activate=False)
+        payload = daemon.call("list_ingest_jobs")
+        active_by_workspace[export_dir] = payload.get("active_job_id")
+        for job in payload.get("jobs", []):
+            job_payload = dict(job)
+            job_payload["workspace_export_dir"] = export_dir
+            jobs.append(job_payload)
+            job_id = str(job_payload.get("job_id") or "")
+            if job_id:
+                app.job_routes[job_id] = export_dir
+    jobs.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return json.dumps(
+        {
+            "active_export_dir": app.active_export_dir,
+            "workspaces": active_by_workspace,
+            "jobs": jobs,
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()
 async def cancel_ingest_job(job_id: str, ctx: Context) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "cancel_ingest_job", job_id=job_id)
+    daemon = _find_daemon_for_job(app, job_id)
+    return _daemon_call(daemon, "cancel_ingest_job", job_id=job_id)
 
 
 @mcp.tool()
-async def refresh(
-    export_dir: str,
-    ctx: Context,
-    mode: str = "full",
-    include_globs: list[str] | None = None,
-    exclude_globs: list[str] | None = None,
-) -> str:
+async def resume_ingest_job(job_id: str, ctx: Context) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    export_dir = _validate_workspace_export_dir(export_dir)
-    return _daemon_call(
-        app,
-        "refresh",
-        export_dir=export_dir,
-        mode=mode,
-        include_globs=include_globs or [],
-        exclude_globs=exclude_globs or [],
-    )
-
-
-@mcp.tool()
-async def vectorize(export_dir: str, ctx: Context) -> str:
-    app: AppContext = ctx.request_context.lifespan_context
-    export_dir = _validate_workspace_export_dir(export_dir)
-    return _daemon_call(app, "vectorize", export_dir=export_dir)
+    daemon = _find_daemon_for_job(app, job_id)
+    result = daemon.call("resume_ingest_job", job_id=job_id)
+    resumed_job_id = str(result.get("job_id") or "")
+    if resumed_job_id:
+        export_dir = str(result.get("export_dir") or "")
+        if export_dir:
+            app.job_routes[resumed_job_id] = str(Path(export_dir).expanduser().resolve())
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -184,8 +293,9 @@ async def watch_refresh(
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
+    daemon = _daemon_for_export_dir(app, export_dir)
     return _daemon_call(
-        app,
+        daemon,
         "watch_refresh",
         export_dir=export_dir,
         duration_seconds=duration_seconds,
@@ -196,15 +306,64 @@ async def watch_refresh(
 
 
 @mcp.tool()
-async def get_ingestion_status(ctx: Context) -> str:
+async def get_ingestion_status(ctx: Context, export_dir: str | None = None) -> str:
+    """Return graph + ingestion status for the active or selected workspace."""
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "get_ingestion_status")
+    daemon = _current_daemon(app, export_dir)
+    return _daemon_call(daemon, "get_ingestion_status")
 
 
 @mcp.tool()
-async def get_ingestion_progress(ctx: Context) -> str:
+async def get_ingestion_progress(ctx: Context, export_dir: str | None = None) -> str:
+    """Return latest persisted ingestion progress snapshot."""
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "get_ingestion_progress")
+    daemon = _current_daemon(app, export_dir)
+    return _daemon_call(daemon, "get_ingestion_progress")
+
+
+@mcp.tool()
+async def export_diagnostics_md(
+    ctx: Context,
+    export_dir: str | None = None,
+    run_id: str | None = None,
+    job_id: str | None = None,
+    destination: str | None = None,
+) -> str:
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app, export_dir)
+    return _daemon_call(
+        daemon,
+        "export_diagnostics_md",
+        export_dir=export_dir,
+        run_id=run_id,
+        job_id=job_id,
+        destination=destination,
+    )
+
+
+@mcp.tool()
+async def graph_subgraph(
+    ctx: Context,
+    node_id: str | None = None,
+    question: str | None = None,
+    hops: int = 2,
+    max_nodes: int = 80,
+    format: str = "mermaid",
+    focus: str = "lineage",
+    export_dir: str | None = None,
+) -> str:
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app, export_dir)
+    return _daemon_call(
+        daemon,
+        "graph_subgraph",
+        node_id=node_id,
+        question=question,
+        hops=hops,
+        max_nodes=max_nodes,
+        format=format,
+        focus=focus,
+    )
 
 
 @mcp.tool()
@@ -216,8 +375,10 @@ async def trace_upstream(
     time_budget_ms: int = 1500,
     offset: int = 0,
 ) -> str:
+    """Advanced graph traversal helper. Prefer `analyze_field` / `analyze_component` for user Q&A."""
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "trace_upstream", node_id=node_id, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "trace_upstream", node_id=node_id, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
 
 
 @mcp.tool()
@@ -229,20 +390,72 @@ async def trace_downstream(
     time_budget_ms: int = 1500,
     offset: int = 0,
 ) -> str:
+    """Advanced graph traversal helper. Prefer `analyze_change` for impact questions."""
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "trace_downstream", node_id=node_id, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "trace_downstream", node_id=node_id, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
 
 
 @mcp.tool()
 async def get_node(node_id: str, ctx: Context) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "get_node", node_id=node_id)
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "get_node", node_id=node_id)
 
 
 @mcp.tool()
 async def explain_field(field_qualified_name: str, ctx: Context) -> str:
+    """Low-level field edge inspection. Prefer `analyze_field` for user-facing answers."""
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "explain_field", field_qualified_name=field_qualified_name)
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "explain_field", field_qualified_name=field_qualified_name)
+
+
+@mcp.tool()
+async def analyze_field(
+    field_name: str,
+    ctx: Context,
+    focus: str = "both",
+    max_results: int = 100,
+) -> str:
+    """Best tool for field read/write questions (populate, assign, update, use)."""
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "analyze_field", field_name=field_name, focus=focus, max_results=max_results)
+
+
+@mcp.tool()
+async def analyze_object_event(
+    object_name: str,
+    event: str,
+    ctx: Context,
+    max_results: int = 50,
+) -> str:
+    """Best tool for lifecycle questions: what runs on object insert/update/delete."""
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "analyze_object_event", object_name=object_name, event=event, max_results=max_results)
+
+
+@mcp.tool()
+async def analyze_component(
+    component_name: str,
+    ctx: Context,
+    token: str | None = None,
+    focus: str = "both",
+    max_results: int = 100,
+) -> str:
+    """Best tool for component lineage and token-level source tracing in classes/flows/IP/DR."""
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app)
+    return _daemon_call(
+        daemon,
+        "analyze_component",
+        component_name=component_name,
+        token=token,
+        focus=focus,
+        max_results=max_results,
+    )
 
 
 @mcp.tool()
@@ -253,9 +466,119 @@ async def query(
     max_results: int = 50,
     time_budget_ms: int = 1500,
     offset: int = 0,
+    allow_vector_fallback: bool = True,
 ) -> str:
+    """Legacy generic query endpoint. Prefer `analyze` for one-shot Q&A with exact-first routing."""
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "query", question=question, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
+    daemon = _current_daemon(app)
+    return _daemon_call(
+        daemon,
+        "query",
+        question=question,
+        max_hops=max_hops,
+        max_results=max_results,
+        time_budget_ms=time_budget_ms,
+        offset=offset,
+        allow_vector_fallback=allow_vector_fallback,
+    )
+
+
+@mcp.tool()
+async def analyze(
+    question: str,
+    ctx: Context,
+    mode: str = "auto",
+    strict: bool = True,
+    max_results: int = 50,
+    max_hops: int = 3,
+    time_budget_ms: int = 1500,
+    offset: int = 0,
+    render: str = "json",
+    include_mermaid: bool = False,
+    export_dir: str | None = None,
+) -> str:
+    """
+    Unified analysis entrypoint.
+
+    Modes:
+    - auto: route based on question intent
+    - exact: prefer exact/token-level evidence
+    - lineage: prefer transitive lineage/impact analysis
+    """
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app, export_dir)
+    return _daemon_call(
+        daemon,
+        "analyze",
+        question=question,
+        mode=mode,
+        strict=strict,
+        max_results=max_results,
+        max_hops=max_hops,
+        time_budget_ms=time_budget_ms,
+        offset=offset,
+        render=render,
+        include_mermaid=include_mermaid,
+    )
+
+
+@mcp.tool()
+async def ask(
+    question: str,
+    ctx: Context,
+    export_dir: str | None = None,
+    mode: str = "auto",
+    strict: bool = True,
+    max_results: int = 50,
+    max_hops: int = 3,
+    time_budget_ms: int = 1500,
+    offset: int = 0,
+    render: str = "json",
+    include_mermaid: bool = False,
+) -> str:
+    """
+    Primary one-call Q&A entrypoint for MCP clients.
+
+    Defaults are tuned for high precision:
+    - `strict=True` to favor exact/token-level evidence over vector-only recall
+    - `mode=auto` to route field/object-event/component/change questions
+    """
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app, export_dir)
+    return _daemon_call(
+        daemon,
+        "analyze",
+        question=question,
+        mode=mode,
+        strict=strict,
+        max_results=max_results,
+        max_hops=max_hops,
+        time_budget_ms=time_budget_ms,
+        offset=offset,
+        render=render,
+        include_mermaid=include_mermaid,
+    )
+
+
+@mcp.tool()
+async def analyze_change(
+    ctx: Context,
+    target: str | None = None,
+    changed_files: list[str] | None = None,
+    max_hops: int = 2,
+    max_results_per_component: int = 25,
+) -> str:
+    """Best tool for change impact: "what breaks if I change X?"."""
+    app: AppContext = ctx.request_context.lifespan_context
+    daemon = _current_daemon(app)
+    return _daemon_call(
+        daemon,
+        "analyze_change",
+        target=target,
+        changed_files=changed_files or [],
+        max_hops=max_hops,
+        max_results_per_component=max_results_per_component,
+    )
 
 
 @mcp.tool()
@@ -267,7 +590,8 @@ async def impact_from_git_diff(
     max_results_per_component: int = 25,
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "impact_from_git_diff", base_ref=base_ref, head_ref=head_ref, max_hops=max_hops, max_results_per_component=max_results_per_component)
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "impact_from_git_diff", base_ref=base_ref, head_ref=head_ref, max_hops=max_hops, max_results_per_component=max_results_per_component)
 
 
 @mcp.tool()
@@ -280,7 +604,8 @@ async def cross_layer_flow_map(
     offset: int = 0,
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "cross_layer_flow_map", node_id=node_id, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "cross_layer_flow_map", node_id=node_id, max_hops=max_hops, max_results=max_results, time_budget_ms=time_budget_ms, offset=offset)
 
 
 @mcp.tool()
@@ -290,7 +615,8 @@ async def list_unknown_dynamic_edges(
     offset: int = 0,
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "list_unknown_dynamic_edges", limit=limit, offset=offset)
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "list_unknown_dynamic_edges", limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -299,7 +625,8 @@ async def create_snapshot(
     name: str | None = None,
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "create_snapshot", name=name)
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "create_snapshot", name=name)
 
 
 @mcp.tool()
@@ -311,7 +638,8 @@ async def diff_snapshots(
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
     _ = ctx
-    return _daemon_call(app, "diff_snapshots", snapshot_a_path=snapshot_a_path, snapshot_b_path=snapshot_b_path, max_examples=max_examples)
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "diff_snapshots", snapshot_a_path=snapshot_a_path, snapshot_b_path=snapshot_b_path, max_examples=max_examples)
 
 
 @mcp.tool()
@@ -323,7 +651,8 @@ async def migrate_project_scope(
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
     export_dir = _validate_workspace_export_dir(export_dir)
-    return _daemon_call(app, "migrate_project_scope", export_dir=export_dir, dry_run=dry_run, prune_legacy=prune_legacy)
+    daemon = _daemon_for_export_dir(app, export_dir)
+    return _daemon_call(daemon, "migrate_project_scope", export_dir=export_dir, dry_run=dry_run, prune_legacy=prune_legacy)
 
 
 @mcp.tool()
@@ -335,7 +664,8 @@ async def test_gap_intelligence_from_git_diff(
     max_results_per_component: int = 25,
 ) -> str:
     app: AppContext = ctx.request_context.lifespan_context
-    return _daemon_call(app, "test_gap_intelligence_from_git_diff", base_ref=base_ref, head_ref=head_ref, max_hops=max_hops, max_results_per_component=max_results_per_component)
+    daemon = _current_daemon(app)
+    return _daemon_call(daemon, "test_gap_intelligence_from_git_diff", base_ref=base_ref, head_ref=head_ref, max_hops=max_hops, max_results_per_component=max_results_per_component)
 
 
 if __name__ == "__main__":

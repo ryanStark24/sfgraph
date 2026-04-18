@@ -4,9 +4,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 
+from sfgraph.ingestion.models import EdgeFact
 from sfgraph.ingestion.models import IngestionSummary
 from sfgraph.ingestion.schema_index import materialize_schema_index
 from sfgraph.ingestion.service import IngestionService
@@ -17,8 +19,13 @@ FIXTURE_EXPORT = "tests/fixtures/metadata"
 def make_mock_graph() -> AsyncMock:
     graph = AsyncMock()
     graph.merge_node = AsyncMock(side_effect=lambda label, key_props, all_props: key_props.get("qualifiedName", "qn"))
+    graph.merge_nodes_batch = AsyncMock(side_effect=lambda label, nodes: len(nodes))
     graph.merge_edge = AsyncMock(return_value=None)
-    graph.get_labels = AsyncMock(return_value=["ApexClass", "SFObject", "SFField", "Flow"])
+    graph.merge_edges_batch = AsyncMock(side_effect=lambda rel_type, edges: len(edges))
+    graph.delete_node = AsyncMock(return_value=True)
+    graph.delete_edge = AsyncMock(return_value=True)
+    graph.delete_edges_for_node = AsyncMock(return_value=1)
+    graph.get_labels = AsyncMock(return_value=["ApexClass", "AuraComponent", "SFObject", "SFField", "Flow"])
     graph.get_relationship_types = AsyncMock(return_value=["CALLS", "QUERIES_OBJECT", "FLOW_CALLS_APEX"])
     graph.query = AsyncMock(return_value=[])
     return graph
@@ -30,6 +37,8 @@ def make_mock_manifest() -> AsyncMock:
     manifest.upsert_file = AsyncMock(return_value=None)
     manifest.set_status = AsyncMock(return_value=None)
     manifest.mark_run_complete = AsyncMock(return_value=None)
+    manifest.get_status_counts = AsyncMock(return_value={"tracked": 1, "nodes_written": 1, "edges_written": 1})
+    manifest.get_latest_completed_run = AsyncMock(return_value={"run_id": "run-test-001"})
     manifest.get_delta = AsyncMock(return_value={"new": [], "changed": [], "unchanged": [], "deleted": []})
     manifest.get_tracked_files = AsyncMock(return_value={})
     manifest.delete_files = AsyncMock(return_value=0)
@@ -75,6 +84,10 @@ def svc():
         ingestion_progress_path="/tmp/test_ingestion_progress.json",
     )
     return service, graph, manifest, pool
+
+
+def _completed_process(*, returncode: int = 0, stdout: str = "{}", stderr: str = ""):
+    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 @pytest.mark.asyncio
@@ -125,6 +138,26 @@ async def test_ingest_node_counts_by_type(svc):
 
 
 @pytest.mark.asyncio
+async def test_ingest_writes_status_snapshot_into_meta(svc, tmp_path: Path):
+    service, graph, _, _ = svc
+    meta_path = tmp_path / "ingestion_meta.json"
+    service._ingestion_meta_path = str(meta_path)
+    graph.query = AsyncMock(
+        side_effect=lambda sql, *args, **kwargs: (
+            [{"count": 2}] if 'FROM "ApexClass"' in sql
+            else [{"count": 1}] if 'FROM "CALLS"' in sql
+            else []
+        )
+    )
+
+    await service.ingest(FIXTURE_EXPORT)
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert payload["node_counts_by_type"]["ApexClass"] == 2
+    assert payload["edge_counts_by_type"]["CALLS"] == 1
+    assert payload["status_counts"]["tracked"] == 1
+
+
+@pytest.mark.asyncio
 async def test_ingest_parse_failure_does_not_crash(svc):
     service, _, _, pool = svc
     pool.parse = AsyncMock(
@@ -172,6 +205,53 @@ async def test_ingest_parse_failure_logs_diagnostics(svc, caplog):
 
 
 @pytest.mark.asyncio
+async def test_write_edges_emits_progress_for_chunked_batches(svc):
+    service, graph, _, _ = svc
+    service._active_project_scope = "scope"
+    emitted: list[dict] = []
+    service._emit_progress = lambda **payload: emitted.append(payload)  # type: ignore[method-assign]
+    node_registry = {"scope::Src": "ApexClass", "scope::Dst": "ApexClass"}
+    edge_facts = [
+        EdgeFact(
+            src_qualified_name="scope::Src",
+            src_label="ApexClass",
+            rel_type="CALLS",
+            dst_qualified_name="scope::Dst",
+            dst_label="ApexClass",
+            confidence=0.8,
+            resolutionMethod="direct",
+            edgeCategory="CONTROL_FLOW",
+        )
+        for _ in range(5001)
+    ]
+
+    edge_count, orphaned_edges, warnings = await service._write_edges(
+        edge_facts,
+        node_registry=node_registry,
+        progress_context={
+            "run_id": "run-1",
+            "mode": "full_ingest",
+            "export_dir": FIXTURE_EXPORT,
+            "total_files": 1,
+            "processed_files": 1,
+            "failed_files": 0,
+            "parser_stats": service._empty_parser_stats(),
+            "unresolved_symbols": 0,
+            "node_counts_by_type": {"ApexClass": 2},
+            "warnings_count": 0,
+        },
+    )
+
+    assert edge_count == 5001
+    assert orphaned_edges == 0
+    assert warnings == []
+    assert graph.merge_edges_batch.await_count == 2
+    assert emitted
+    assert emitted[-1]["phase"] == "writing_edges"
+    assert emitted[-1]["edge_count"] == 5001
+
+
+@pytest.mark.asyncio
 async def test_vectorize_rebuilds_vectors_for_active_scope(tmp_path):
     graph = make_mock_graph()
     manifest = make_mock_manifest()
@@ -210,8 +290,175 @@ async def test_vectorize_rebuilds_vectors_for_active_scope(tmp_path):
 
     summary = await service.vectorize(scope)
     assert summary.processed_nodes == 1
+    assert summary.failed_nodes == 0
     vectors.delete_by_project_scope.assert_awaited()
     vectors.upsert.assert_awaited()
+
+
+def test_prepare_org_enrichment_loads_vlocity_rule_overrides(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+        enrich_org=True,
+        org_alias="my-org",
+    )
+    service._activate_scope(str(tmp_path / "repo"))
+
+    def fake_run(command, **kwargs):
+        joined = " ".join(command)
+        if "org display" in joined:
+            return _completed_process(
+                stdout=json.dumps(
+                    {
+                        "result": {
+                            "username": "me@example.com",
+                            "id": "00Dxx0000000001",
+                            "instanceUrl": "https://example.my.salesforce.com",
+                            "apiVersion": "62.0",
+                        }
+                    }
+                )
+            )
+        if "COUNT() total FROM EntityDefinition" in joined:
+            return _completed_process(stdout=json.dumps({"result": {"records": [{"total": 10}]}}))
+        if "COUNT() total FROM FieldDefinition" in joined:
+            return _completed_process(stdout=json.dumps({"result": {"records": [{"total": 20}]}}))
+        if "COUNT() total FROM MetadataComponentDependency" in joined:
+            return _completed_process(stdout=json.dumps({"result": {"records": [{"total": 30}]}}))
+        if "FROM VlocityDataPackConfiguration__mdt" in joined:
+            return _completed_process(
+                stdout=json.dumps(
+                    {
+                        "result": {
+                            "records": [
+                                {
+                                    "DeveloperName": "CustomThing",
+                                    "SObjectType__c": "CustomThing__c",
+                                    "QueryFields__c": "Name,Type__c",
+                                }
+                            ]
+                        }
+                    }
+                )
+            )
+        if "FROM DRMatchingKey__mdt" in joined:
+            return _completed_process(
+                stdout=json.dumps(
+                    {
+                        "result": {
+                            "records": [
+                                {
+                                    "DeveloperName": "CustomThing__c",
+                                    "ObjectAPIName__c": "CustomThing__c",
+                                    "MatchingKeyFields__c": "Name, Type__c",
+                                    "ReturnKeyField__c": "Name",
+                                }
+                            ]
+                        }
+                    }
+                )
+            )
+        raise AssertionError(f"unexpected command: {joined}")
+
+    monkeypatch.setattr("sfgraph.ingestion.service.shutil.which", lambda _: "/opt/homebrew/bin/sf")
+    monkeypatch.setattr("sfgraph.ingestion.service.subprocess.run", fake_run)
+
+    warnings: list[str] = []
+    service._prepare_org_enrichment(warnings)
+
+    assert service._org_enrichment_context is not None
+    assert service._org_enrichment_context["alias"] == "my-org"
+    overrides = service._org_enrichment_context["vlocity_rule_overrides"]
+    assert len(overrides) == 1
+    assert overrides[0]["datapack_type"] == "CustomThing"
+    assert overrides[0]["matching_key_fields"] == ["Name", "Type__c"]
+    assert service._vlocity_rule_bundle.get("CustomThing") is not None
+    assert service._vlocity_rule_bundle.get("CustomThing").source_provenance == "org:my-org"
+
+
+def test_prepare_org_enrichment_handles_missing_vlocity_metadata_queries(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+        enrich_org=True,
+        org_alias="my-org",
+    )
+    service._activate_scope(str(tmp_path / "repo"))
+
+    def fake_run(command, **kwargs):
+        joined = " ".join(command)
+        if "org display" in joined:
+            return _completed_process(stdout=json.dumps({"result": {"username": "me@example.com"}}))
+        if "COUNT() total FROM" in joined:
+            return _completed_process(stdout=json.dumps({"result": {"records": [{"total": 1}]}}))
+        if "FROM VlocityDataPackConfiguration__mdt" in joined or "FROM DRMatchingKey__mdt" in joined:
+            return _completed_process(returncode=1, stdout="{}", stderr="no such object")
+        raise AssertionError(f"unexpected command: {joined}")
+
+    monkeypatch.setattr("sfgraph.ingestion.service.shutil.which", lambda _: "/opt/homebrew/bin/sf")
+    monkeypatch.setattr("sfgraph.ingestion.service.subprocess.run", fake_run)
+
+    warnings: list[str] = []
+    service._prepare_org_enrichment(warnings)
+
+    assert service._org_enrichment_context is not None
+    assert service._org_enrichment_context["vlocity_rule_overrides"] == []
+    assert any("VlocityRules=0" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_vectorize_counts_failed_upserts(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    vectors = AsyncMock()
+    vectors.delete_by_project_scope = AsyncMock(return_value=0)
+    vectors.upsert = AsyncMock(side_effect=RuntimeError("vector backend unavailable"))
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        vectors=vectors,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+    )
+    export_dir = str(tmp_path / "repo")
+    Path(export_dir).mkdir(parents=True, exist_ok=True)
+    scope = service._activate_scope(export_dir)
+    scoped_qname = f"{service._active_project_scope}::AccountService"
+    graph.get_labels = AsyncMock(return_value=["ApexClass"])
+    graph.query = AsyncMock(
+        return_value=[
+            {
+                "qualified_name": scoped_qname,
+                "props": json.dumps(
+                    {
+                        "qualifiedName": "AccountService",
+                        "sourceFile": "classes/AccountService.cls",
+                        "parserType": "apex_cst",
+                        "projectScope": service._active_project_scope,
+                        "label": "ApexClass",
+                    }
+                ),
+            }
+        ]
+    )
+
+    summary = await service.vectorize(scope)
+    assert summary.processed_nodes == 0
+    assert summary.failed_nodes == 1
+    assert summary.skipped_nodes == 0
+    assert len(summary.warnings) == 2
+    assert "Vector upsert failed for" in summary.warnings[0]
 
 
 @pytest.mark.asyncio
@@ -548,7 +795,28 @@ def test_discover_files_defaults_to_force_app_and_vlocity_roots(tmp_path):
     discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
     assert str(force_app_cls) in discovered
     assert str(vlocity_json) in discovered
-    assert str(vendor_cls) not in discovered
+
+
+def test_discover_files_includes_aura_markup(tmp_path):
+    aura_file = tmp_path / "force-app" / "main" / "default" / "aura" / "AccountBanner" / "AccountBanner.cmp"
+    aura_file.parent.mkdir(parents=True, exist_ok=True)
+    aura_file.write_text("<aura:component/>", encoding="utf-8")
+
+    service = IngestionService(
+        graph=make_mock_graph(),
+        manifest=make_mock_manifest(),
+        pool=make_mock_pool(),
+    )
+
+    discovered = service._discover_files(tmp_path)
+    assert str(aura_file) in discovered
+
+
+def test_parser_name_for_aura_markup():
+    parser_name = IngestionService._parser_name_for_file(
+        "/tmp/repo/force-app/main/default/aura/AccountBanner/AccountBanner.cmp"
+    )
+    assert parser_name == "aura"
 
 
 def test_discover_files_falls_back_to_root_when_default_roots_missing(tmp_path):
@@ -566,6 +834,20 @@ def test_discover_files_falls_back_to_root_when_default_roots_missing(tmp_path):
 
     discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
     assert str(loose_cls) in discovered
+
+
+def test_discover_files_includes_global_value_set_and_custom_metadata_record(svc, tmp_path):
+    service, _, _, _ = svc
+    gvs = tmp_path / "force-app" / "main" / "default" / "globalValueSets" / "Priority.globalValueSet-meta.xml"
+    cmt = tmp_path / "force-app" / "main" / "default" / "customMetadata" / "FeatureFlag.Default.md-meta.xml"
+    gvs.parent.mkdir(parents=True, exist_ok=True)
+    cmt.parent.mkdir(parents=True, exist_ok=True)
+    gvs.write_text("<GlobalValueSet xmlns=\"http://soap.sforce.com/2006/04/metadata\"/>", encoding="utf-8")
+    cmt.write_text("<CustomMetadata xmlns=\"http://soap.sforce.com/2006/04/metadata\"/>", encoding="utf-8")
+
+    discovered = service._discover_files(tmp_path)  # type: ignore[arg-type]
+    assert str(gvs) in discovered
+    assert str(cmt) in discovered
 
 
 @pytest.mark.asyncio
@@ -768,4 +1050,124 @@ async def test_ingest_writes_progress_snapshot(svc, tmp_path):
     assert payload["phase"] == "completed"
     assert payload["mode"] == "full_ingest"
     assert payload["total_files"] >= 1
-    assert payload["processed_files"] == payload["total_files"]
+    assert "last_progress_at" in payload
+    assert "last_job_heartbeat_at" in payload
+    assert "vector_health" in payload
+    assert payload["vector_health"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_collect_facts_tracks_vlocity_outcomes(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+    )
+
+    valid = tmp_path / "vlocity" / "cards" / "AccountCard_DataPack.json"
+    invalid = tmp_path / "vlocity" / "cards" / "Broken_DataPack.json"
+    support = tmp_path / "vlocity" / "cards" / "support.json"
+    valid.parent.mkdir(parents=True, exist_ok=True)
+    valid.write_text(
+        json.dumps(
+            {
+                "VlocityDataPackType": "VlocityCard",
+                "Name": "AccountCard",
+                "IntegrationProcedureName": "LoadAccount",
+            }
+        ),
+        encoding="utf-8",
+    )
+    invalid.write_text("{broken", encoding="utf-8")
+    support.write_text(json.dumps({"name": "not-a-datapack"}), encoding="utf-8")
+
+    _, _, _, parser_stats, _ = await service._collect_facts(
+        [str(valid), str(invalid), str(support)],
+        file_records=None,
+    )
+
+    assert parser_stats["vlocity"]["parsed_files"] == 1
+    assert parser_stats["vlocity"]["specialized_files"] == 1
+    assert parser_stats["vlocity"]["invalid_json_files"] == 1
+    assert parser_stats["vlocity"]["non_datapack_json_files"] == 1
+    assert parser_stats["vlocity"]["skipped_files"] == 2
+
+
+def test_progress_snapshot_rejects_invalid_phase(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+    )
+    with pytest.raises(ValueError, match="Invalid ingestion phase"):
+        service._write_progress_snapshot(  # noqa: SLF001
+            {
+                "mode": "full_ingest",
+                "state": "running",
+                "phase": "typo_phase",
+                "total_files": 0,
+                "processed_files": 0,
+                "failed_files": 0,
+            },
+            force=True,
+        )
+
+
+def test_progress_snapshot_rejects_invalid_state(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(
+        graph=graph,
+        manifest=manifest,
+        pool=pool,
+        ingestion_progress_path=str(tmp_path / "progress.json"),
+    )
+    with pytest.raises(ValueError, match="Invalid ingestion state"):
+        service._write_progress_snapshot(  # noqa: SLF001
+            {
+                "mode": "full_ingest",
+                "state": "typo_state",
+                "phase": "discovering",
+                "total_files": 0,
+                "processed_files": 0,
+                "failed_files": 0,
+            },
+            force=True,
+        )
+
+
+def test_discovery_roots_honor_sfdx_package_directories(tmp_path):
+    graph = make_mock_graph()
+    manifest = make_mock_manifest()
+    pool = make_mock_pool()
+    service = IngestionService(graph=graph, manifest=manifest, pool=pool)
+
+    (tmp_path / "packages" / "core").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "packages" / "domain").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "vlocity").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "sfdx-project.json").write_text(
+        json.dumps(
+            {
+                "packageDirectories": [
+                    {"path": "packages/core"},
+                    {"path": "packages/domain"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    roots = service._discovery_roots(tmp_path)
+    root_paths = {str(path) for path in roots}
+    assert str((tmp_path / "packages" / "core").resolve()) in root_paths
+    assert str((tmp_path / "packages" / "domain").resolve()) in root_paths
+    # Keep vlocity as a first-class discovery root even with package directories.
+    assert str((tmp_path / "vlocity").resolve()) in root_paths

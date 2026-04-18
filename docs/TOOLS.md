@@ -2,6 +2,8 @@
 
 This document describes the MCP tools exposed by `sfgraph`.
 
+For day-to-day ingestion, prefer the CLI (`sfgraph ingest` / `sfgraph refresh`) and use MCP tools for orchestration and query workflows in IDE clients.
+
 ## Ingestion and Runtime
 
 ### `ping`
@@ -14,32 +16,61 @@ Typical use:
 
 - confirm the server is alive and the parser pool initialized
 
-### `ingest_org(export_dir)`
+### `start_ingest_job(export_dir, mode?, include_globs?, exclude_globs?, org_alias?, enrich_org?)`
 
 Purpose:
 
-- full ingest of a Salesforce export directory
+- start full ingest in the background and return immediately with a `job_id`
+- optional org metadata enrichment via Salesforce CLI when `enrich_org=true`
 
 Returns:
 
-- run id
-- total nodes and edges
-- parser stats
-- unresolved symbol count
-- warnings
+- `job_id`
+- `state`
+- `created_at`
 
-### `refresh(export_dir)`
+### `start_refresh_job(export_dir, mode?, include_globs?, exclude_globs?, org_alias?, enrich_org?)`
 
 Purpose:
 
-- incremental re-ingest for changed/new/deleted files
+- start incremental re-ingest in the background
+- optional org metadata enrichment via Salesforce CLI when `enrich_org=true`
 
 Returns:
 
-- changed files
-- deleted files
-- affected neighbor files
-- updated graph counts
+- `job_id`
+- `state`
+- `created_at`
+
+### `start_vectorize_job(export_dir)`
+
+Purpose:
+
+- rebuild vectors in the background
+
+Returns:
+
+- `job_id`
+- `state`
+- `created_at`
+
+### `get_ingest_job(job_id)`
+
+Purpose:
+
+- fetch status/result for one job
+
+### `list_ingest_jobs()`
+
+Purpose:
+
+- list jobs across known workspaces
+
+### `cancel_ingest_job(job_id)`
+
+Purpose:
+
+- request cancellation of a running job
 
 ### `watch_refresh(export_dir, ...)`
 
@@ -83,13 +114,91 @@ Key fields:
 - `completion_ratio`
 - `parser_stats`
 
+### `export_diagnostics_md(export_dir?, run_id?, job_id?, destination?)`
+
+Purpose:
+
+- write a compact markdown report for the latest ingest state
+- reduce follow-up tool calls during parser or workspace debugging
+
+Returns:
+
+- report path
+- summary payload including parser stats and latest state
+
+### `graph_subgraph(node_id?, question?, hops?, max_nodes?, format?, focus?)`
+
+Purpose:
+
+- render a compact graph neighborhood around a node or resolved question target
+- support `format=mermaid` for chat-native visualization and `format=json` for structured consumers
+
 ## Query and Lineage
+
+Preferred entrypoint (use this first):
+
+- `analyze(question, ...)` one-call router for most Q&A
+
+Notes:
+
+- `analyze(...)` now tracks per-stage time budget and uses a short-lived in-process cache for repeated questions in the same daemon/session
+- vector-only fallback results are intentionally downgraded to `review_manually`
+
+Intent tools (use directly when your client can classify intent):
+
+- `analyze_field(...)` for "where is field populated/assigned/used"
+- `analyze_object_event(...)` for "what happens when Object is inserted/updated/deleted"
+- `analyze_component(...)` for "in class/flow/IP/DR where is token set or used"
+- `analyze_change(...)` for "what breaks if I change X"
+
+Use `query(...)` as a compatibility fallback only when you explicitly want broad node discovery.
 
 ### `query(question, ...)`
 
 Purpose:
 
 - natural-language-ish entry point for common lineage/impact questions
+- compatibility fallback for ambiguous questions; `analyze(...)` should be preferred in new clients
+
+### `analyze(question, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?, render?, include_mermaid?)`
+
+Purpose:
+
+- primary one-call Q&A endpoint for MCP clients
+- routes to exact-first analyzers for field/object-event/component/change questions
+- uses strict mode by default to reduce semantic-noise answers
+
+Typical use:
+
+- `analyze("where is Service_Id__c populated?")`
+- `analyze("what happens when QuoteLineItem is inserted?")`
+- `analyze("in class OSS_ServiceabilityTask, where is accessId populated?")`
+- `analyze("where is Service_Id__c populated?", render="markdown", include_mermaid=true)`
+
+Presentation options:
+
+- `render="markdown"` returns an inline markdown summary under `presentation.markdown`
+- `include_mermaid=true` adds `presentation.mermaid` when a graph center can be resolved from the routed answer
+
+## LLM Prompt Contract (Recommended)
+
+To reduce tool-call cost and round trips, use this request shape:
+
+1. Set workspace context once:
+- `set_active_export_dir(export_dir)`
+
+2. Ask one focused question at a time:
+- `analyze(question="...single question...", strict=true, mode="auto")`
+
+3. Only call deep tools if evidence is insufficient:
+- fallback order: `analyze_component` / `analyze_field` -> `trace_upstream` -> `query`
+- use `graph_subgraph(...)` when a relationship picture is more helpful than raw edges
+- use `export_diagnostics_md(...)` before manual ingest-debug exploration
+
+Prompting tips:
+- include concrete object/class/field/token names
+- ask for `method + source file + line` when you need exact evidence
+- avoid multi-question prompts ("and also ...") in one call
 
 Behavior:
 
@@ -130,6 +239,50 @@ Purpose:
 Purpose:
 
 - summarize readers, writers, and dependents for a field
+- low-level helper; prefer `analyze_field` for production Q&A workflows
+
+### `analyze_field(field_name, focus?)`
+
+Purpose:
+
+- strict field-centric analysis for reads/writes
+- combines exact repo evidence with graph evidence
+
+Typical use:
+
+- `where is Service_Id__c populated`
+- `who reads Account.Clarity_Customer_ID__c`
+
+### `analyze_object_event(object_name, event)`
+
+Purpose:
+
+- object lifecycle map from trigger/event entrypoints
+
+Typical use:
+
+- `what happens when QuoteLineItem is inserted`
+
+### `analyze_component(component_name, token?, focus?)`
+
+Purpose:
+
+- component-focused lineage and exact token tracing
+
+Typical use:
+
+- `in class OSS_ServiceabilityTask, where is accessId populated`
+
+### `analyze_change(target?, changed_files?, ...)`
+
+Purpose:
+
+- change-impact analysis from component or file targets
+
+Typical use:
+
+- `what breaks if I change AccountService`
+- release impact checks from touched files
 
 ### `list_unknown_dynamic_edges(limit?, offset?)`
 
@@ -191,8 +344,9 @@ Recommended default:
 For a new workspace, a good smoke test order is:
 
 1. `ping`
-2. `ingest_org(...)`
-3. `get_ingestion_progress()` while ingest is running
+2. `start_ingest_job(...)`
+3. `get_ingest_job(job_id)` while ingest is running
+4. `analyze(...)` for primary Q&A checks
 4. `get_ingestion_status()`
 5. `query("what writes to Account.Status__c?")`
 6. `list_unknown_dynamic_edges(limit=10)`

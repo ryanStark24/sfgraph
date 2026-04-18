@@ -8,7 +8,13 @@ import pytest
 
 from sfgraph.ingestion.constants import EDGE_CATEGORIES
 from sfgraph.parser.vlocity_registry import SUPPORTED_VLOCITY_DATAPACK_TYPES
-from sfgraph.parser.vlocity_parser import VlocityParser, is_vlocity_datapack_file, parse_vlocity_json
+from sfgraph.parser.vlocity_parser import (
+    VlocityParser,
+    is_vlocity_datapack_file,
+    parse_vlocity_json,
+    parse_vlocity_json_detailed,
+)
+from sfgraph.vlocity_standards import VlocityStandardsCore
 
 
 def _write_json(path: Path, payload: dict):
@@ -35,7 +41,63 @@ def test_integration_procedure_nodes_and_merge_field_edges(tmp_path):
     nodes, edges = parse_vlocity_json(str(file))
     assert any(n.label == "IntegrationProcedure" and n.key_props["qualifiedName"] == "AccountIP" for n in nodes)
     assert any(n.label == "IPElement" and n.key_props["qualifiedName"] == "AccountIP.FetchAccount" for n in nodes)
+    assert any(e.rel_type == "HAS_STEP" and e.dst_qualified_name == "AccountIP.FetchAccount" for e in edges)
     assert any(e.rel_type == "REFERENCES_STEP_OUTPUT" for e in edges)
+
+
+def test_integration_procedure_merge_fields_create_ip_variables(tmp_path):
+    file = tmp_path / "ServiceabilityIP_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "IntegrationProcedure",
+            "Name": "ServiceabilityIP",
+            "Steps": [{"Name": "FetchOrder", "Type": "DataRaptor Extract"}],
+            "Template": "%FetchOrder:Status__c% + %accessId:value%",
+        },
+    )
+
+    nodes, edges = parse_vlocity_json(str(file))
+    assert any(n.label == "IPVariable" and n.key_props["qualifiedName"] == "ServiceabilityIP.var.accessId" for n in nodes)
+    assert any(
+        e.rel_type == "READS_VALUE"
+        and e.dst_label == "IPVariable"
+        and e.dst_qualified_name == "ServiceabilityIP.var.accessId"
+        for e in edges
+    )
+    assert any(
+        e.rel_type == "REFERENCES_STEP_OUTPUT"
+        and e.dst_qualified_name == "ServiceabilityIP.FetchOrder"
+        for e in edges
+    )
+
+
+def test_integration_procedure_step_level_references_emit_calls(tmp_path):
+    file = tmp_path / "OrderNowIP_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "IntegrationProcedure",
+            "Name": "OrderNowIP",
+            "Steps": [
+                {
+                    "Name": "ApplyAdjustments",
+                    "Type": "DataRaptor Post",
+                    "DataRaptorName": "DROrderNowUpdateAttributes",
+                }
+            ],
+        },
+    )
+
+    _, edges = parse_vlocity_json(str(file))
+    assert any(
+        e.rel_type == "CALLS"
+        and e.src_label == "IPElement"
+        and e.src_qualified_name == "OrderNowIP.ApplyAdjustments"
+        and e.dst_label == "DataRaptor"
+        and e.dst_qualified_name == "DROrderNowUpdateAttributes"
+        for e in edges
+    )
 
 
 def test_dataraptor_extract_reads_fields(tmp_path):
@@ -210,11 +272,317 @@ def test_unknown_vlocity_pack_type_still_emits_generic_node(tmp_path):
     )
 
 
+def test_vlocity_card_uses_specialized_component_node(tmp_path):
+    file = tmp_path / "AccountCard_DataPack.json"
+    _write_json(
+        file,
+        {
+            "VlocityDataPackType": "VlocityCard",
+            "Name": "AccountCard",
+            "IntegrationProcedureName": "LoadAccountCard",
+            "ApexClassName": "AccountCardController",
+        },
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.node_label == "VlocityCard"
+    assert any(n.label == "VlocityCard" and n.key_props["qualifiedName"] == "VlocityCard.AccountCard" for n in nodes)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "IntegrationProcedure" for e in edges)
+
+
+def test_vlocity_detailed_outcomes_report_non_datapack_and_invalid_json(tmp_path):
+    invalid = tmp_path / "broken_DataPack.json"
+    invalid.write_text("{not-json", encoding="utf-8")
+    _, _, invalid_meta = parse_vlocity_json_detailed(str(invalid))
+    assert invalid_meta.outcome == "invalid_json"
+
+    support = tmp_path / "vlocity" / "support.json"
+    support.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(support, {"name": "support-json-without-pack-type"})
+    _, _, support_meta = parse_vlocity_json_detailed(str(support))
+    assert support_meta.outcome == "non_datapack_json"
+
+
 def test_vlocity_candidate_detection_accepts_generic_datapack_names(tmp_path):
     candidate = tmp_path / "files" / "ProductChildItems_DataPack.json"
     candidate.parent.mkdir(parents=True, exist_ok=True)
     candidate.write_text("{}", encoding="utf-8")
     assert is_vlocity_datapack_file(candidate) is True
+
+
+def test_supported_non_object_vlocity_arrays_are_parsed(tmp_path):
+    file = tmp_path / "Offer_PromotionItems.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "PromoItemA",
+                    "DataRaptorName": "PromoLoadDR",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.pack_type == "PromotionItems"
+    assert any(n.label == "VlocityDataPack" and n.key_props["qualifiedName"] == "PromotionItems.Offer" for n in nodes)
+    assert any(n.label == "PromotionItem" for n in nodes)
+    assert any(e.rel_type == "CONTAINS_CHILD" for e in edges)
+    assert any(e.rel_type == "HAS_PROMOTION_ITEM" for e in edges)
+    assert any(
+        e.rel_type == "CALLS"
+        and e.dst_label == "DataRaptor"
+        and e.dst_qualified_name == "PromoLoadDR"
+        for e in edges
+    )
+
+
+def test_promotion_items_emit_lookup_reference_edges(tmp_path):
+    file = tmp_path / "Offer_PromotionItems.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "PromoItemA",
+                    "%vlocity_namespace%__ProductId__c": {
+                        "%vlocity_namespace%__GlobalKey__c": "product-global-key",
+                        "VlocityDataPackType": "VlocityLookupMatchingKeyObject",
+                        "VlocityRecordSObjectType": "Product2",
+                    },
+                    "%vlocity_namespace%__PromotionId__c": {
+                        "%vlocity_namespace%__GlobalKey__c": "promo-global-key",
+                        "VlocityDataPackType": "VlocityMatchingKeyObject",
+                        "VlocityRecordSObjectType": "%vlocity_namespace%__Promotion__c",
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, edges, _ = parse_vlocity_json_detailed(str(file))
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_label == "VlocityDataPack"
+        and e.dst_qualified_name == "Product2.product-global-key"
+        for e in edges
+    )
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_qualified_name == "vlocity_cmt__Promotion__c.promo-global-key"
+        for e in edges
+    )
+
+
+def test_price_list_entries_array_emits_typed_nodes(tmp_path):
+    file = tmp_path / "Catalog_PriceListEntries.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "EnterprisePriceEntry",
+                    "DataRaptorName": "PriceListSyncDR",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.pack_type == "PriceListEntries"
+    assert any(n.label == "PriceListEntryItem" for n in nodes)
+    assert any(e.rel_type == "HAS_PRICE_LIST_ENTRY" for e in edges)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "DataRaptor" for e in edges)
+
+
+def test_price_list_entries_emit_matching_key_lookup_edges(tmp_path):
+    file = tmp_path / "Catalog_PriceListEntries.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "EnterprisePriceEntry",
+                    "%vlocity_namespace%__PriceListId__c": {
+                        "%vlocity_namespace%__Code__c": "B2B_PRICE_LIST",
+                        "VlocityDataPackType": "VlocityLookupMatchingKeyObject",
+                        "VlocityLookupRecordSourceKey": "%vlocity_namespace%__PriceList__c/B2B_PRICE_LIST",
+                        "VlocityRecordSObjectType": "%vlocity_namespace%__PriceList__c",
+                    },
+                    "%vlocity_namespace%__PromotionItemId__c": {
+                        "VlocityDataPackType": "VlocityMatchingKeyObject",
+                        "VlocityMatchingRecordSourceKey": "%vlocity_namespace%__PromotionItem__c/%vlocity_namespace%__Promotion__c/promo-key/Product2/product-key",
+                        "VlocityRecordSObjectType": "%vlocity_namespace%__PromotionItem__c",
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, edges, _ = parse_vlocity_json_detailed(str(file))
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_qualified_name == "vlocity_cmt__PriceList__c.B2B_PRICE_LIST"
+        for e in edges
+    )
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_qualified_name == "vlocity_cmt__PromotionItem__c.vlocity_cmt__Promotion__c.promo_key.Product2.product_key"
+        for e in edges
+    )
+
+
+def test_interface_implementation_details_array_emits_typed_nodes(tmp_path):
+    file = tmp_path / "Interface_InterfaceImplementationDetails.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "ServiceabilityImplDetail",
+                    "ApexClassName": "OSS_ServiceabilityTask",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.pack_type == "InterfaceImplementationDetails"
+    assert any(n.label == "InterfaceImplementationDetail" for n in nodes)
+    assert any(e.rel_type == "HAS_INTERFACE_IMPLEMENTATION_DETAIL" for e in edges)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "ApexClass" for e in edges)
+
+
+def test_interface_implementation_details_emit_interface_lookup_edges(tmp_path):
+    file = tmp_path / "Interface_InterfaceImplementationDetails.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "DefaultGetProductListImplementation",
+                    "%vlocity_namespace%__InterfaceId__c": {
+                        "Name": "GetProductListInterface",
+                        "VlocityDataPackType": "VlocityMatchingKeyObject",
+                        "VlocityRecordSObjectType": "%vlocity_namespace%__InterfaceImplementation__c",
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, edges, _ = parse_vlocity_json_detailed(str(file))
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_qualified_name == "vlocity_cmt__InterfaceImplementation__c.GetProductListInterface"
+        for e in edges
+    )
+
+
+def test_product_child_items_array_emits_typed_nodes(tmp_path):
+    file = tmp_path / "Bundle_ProductChildItems.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "AddonFiber",
+                    "IntegrationProcedureName": "ResolveProductChildItems",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.pack_type == "ProductChildItems"
+    assert any(n.label == "ProductChildItem" for n in nodes)
+    assert any(e.rel_type == "HAS_PRODUCT_CHILD_ITEM" for e in edges)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "IntegrationProcedure" for e in edges)
+
+
+def test_product_child_items_emit_parent_product_lookup_edges(tmp_path):
+    file = tmp_path / "Bundle_ProductChildItems.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "AddonFiber",
+                    "%vlocity_namespace%__ParentProductId__c": {
+                        "%vlocity_namespace%__GlobalKey__c": "parent-product-key",
+                        "VlocityDataPackType": "VlocityMatchingKeyObject",
+                        "VlocityRecordSObjectType": "Product2",
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, edges, _ = parse_vlocity_json_detailed(str(file))
+    assert any(
+        e.rel_type == "REFERENCES_COMPONENT"
+        and e.dst_qualified_name == "Product2.parent-product-key"
+        for e in edges
+    )
+
+
+def test_supported_non_object_vlocity_arrays_wrapped_in_dict_are_parsed(tmp_path):
+    file = tmp_path / "Offer_PromotionItems.json"
+    _write_json(
+        file,
+        {
+            "records": [
+                {
+                    "Name": "PromoItemB",
+                    "ApexClassName": "PromoPricingService",
+                }
+            ]
+        },
+    )
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file))
+    assert meta.outcome == "parsed_specialized"
+    assert meta.pack_type == "PromotionItems"
+    assert any(n.label == "PromotionItem" and n.all_props.get("name") == "PromoItemB" for n in nodes)
+    assert any(e.rel_type == "HAS_PROMOTION_ITEM" for e in edges)
+    assert any(e.rel_type == "CALLS" and e.dst_label == "ApexClass" and e.dst_qualified_name == "PromoPricingService" for e in edges)
+
+
+def test_non_object_vlocity_arrays_can_be_extended_by_standards_bundle(tmp_path):
+    file = tmp_path / "Offer_CustomArrayItems.json"
+    file.write_text(
+        json.dumps(
+            [
+                {
+                    "Name": "EntryA",
+                    "IntegrationProcedure": "DoWork",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    bundle = VlocityStandardsCore(
+        baseline_payload={
+            "critical_file_suffixes": {
+                "CustomArrayItems": {
+                    "node_label": "CustomArrayItem",
+                    "rel_type": "HAS_CUSTOM_ARRAY_ITEM",
+                }
+            },
+            "rules": {},
+        }
+    ).resolve_bundle(tmp_path)
+
+    nodes, edges, meta = parse_vlocity_json_detailed(str(file), standards=bundle)
+    assert meta.outcome == "parsed_specialized"
+    assert any(n.label == "CustomArrayItem" for n in nodes)
+    assert any(e.rel_type == "HAS_CUSTOM_ARRAY_ITEM" for e in edges)
 
 
 def test_supported_vlocity_registry_matches_upstream_inventory_size():

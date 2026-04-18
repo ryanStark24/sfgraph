@@ -26,7 +26,7 @@ def test_route_trigger_returns_nodejs_pool():
 
 
 def test_route_js_returns_nodejs_pool():
-    assert route_file("accountService.js") == "nodejs_pool"
+    assert route_file("accountService.js") == "python_parser"
 
 
 # --- python_parser routing ---
@@ -63,7 +63,7 @@ def test_route_empty_extension_raises_value_error():
 # --- Exported constants ---
 
 def test_nodejs_extensions_contains_expected_set():
-    assert NODEJS_EXTENSIONS == frozenset({".cls", ".trigger", ".js"})
+    assert NODEJS_EXTENSIONS == frozenset({".cls", ".trigger"})
 
 
 def test_valid_extensions_is_superset_of_nodejs_extensions():

@@ -2,37 +2,43 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import time
+from copy import deepcopy
 from collections import deque
 from pathlib import Path
 from typing import Any
 
+from sfgraph.common import descope_qname, parse_json_props, scope_qname
+from sfgraph.ingestion.diagnostics import IngestionDiagnosticsReporter
 from sfgraph.query.agents import (
     QueryCorrectorAgent,
     QueryPlannerAgent,
     ResultFormatterAgent,
     SchemaFilterAgent,
 )
+from sfgraph.query.analyze_support import (
+    AnalyzeResponseCache,
+    finalize_analyze_payload,
+    build_analyze_payload,
+    candidate_qnames_for_payload,
+)
+from sfgraph.query.exact_retrieval import ExactRetrievalHelper
+from sfgraph.query.question_patterns import (
+    change_query_target,
+    component_token_query_parts,
+    extract_method_calls,
+    looks_like_method_reference,
+    object_event_query_parts,
+    parse_trigger_declaration,
+)
+from sfgraph.query.graph_visualizer import render_mermaid_subgraph
 from sfgraph.query.rules_registry import RulesRegistry
 from sfgraph.storage.base import GraphStore
 from sfgraph.storage.manifest_store import ManifestStore
 from sfgraph.storage.vector_store import VectorStore
-
-
-def _parse_props(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            return {}
-    return {}
-
 
 def _semantic_kind(rel_type: str, context: str) -> str:
     ctx = context.lower()
@@ -77,6 +83,7 @@ class GraphQueryService:
         self._ingestion_meta_path = Path(ingestion_meta_path)
         self._ingestion_progress_path = Path(ingestion_progress_path)
         self._rules = RulesRegistry(config_path=rules_path)
+        self._exact = ExactRetrievalHelper(self._repo_root)
         self._schema_agent = SchemaFilterAgent()
         self._planner_agent = QueryPlannerAgent()
         self._corrector_agent = QueryCorrectorAgent()
@@ -84,13 +91,17 @@ class GraphQueryService:
         self._labels_cache: list[str] | None = None
         self._rel_cache: list[str] | None = None
         self._node_cache: dict[str, dict[str, Any] | None] = {}
+        self._analyze_cache = AnalyzeResponseCache(ttl_seconds=15.0)
+        self._cache_freshness_token: str | None = None
 
     async def _labels(self) -> list[str]:
+        self._refresh_read_caches()
         if self._labels_cache is None:
             self._labels_cache = await self._graph.get_labels()
         return self._labels_cache
 
     async def _rel_types(self) -> list[str]:
+        self._refresh_read_caches()
         if self._rel_cache is None:
             self._rel_cache = await self._graph.get_relationship_types()
         return self._rel_cache
@@ -112,6 +123,88 @@ class GraphQueryService:
             return payload if isinstance(payload, dict) else {}
         except Exception:
             return {}
+
+    def _freshness_token(self) -> str:
+        meta = self._read_ingestion_meta()
+        return json.dumps(
+            {
+                "scope": meta.get("project_scope"),
+                "run_id": meta.get("run_id"),
+                "indexed_at": meta.get("indexed_at"),
+                "indexed_commit": meta.get("indexed_commit"),
+                "export_dir": meta.get("export_dir"),
+            },
+            sort_keys=True,
+        )
+
+    def _refresh_read_caches(self) -> str:
+        token = self._freshness_token()
+        if token == self._cache_freshness_token:
+            return token
+        self._cache_freshness_token = token
+        self._labels_cache = None
+        self._rel_cache = None
+        self._node_cache.clear()
+        self._analyze_cache.clear()
+        return token
+
+    def _analyze_cache_key(
+        self,
+        *,
+        question: str,
+        mode: str,
+        strict: bool,
+        max_results: int,
+        max_hops: int,
+        time_budget_ms: int,
+        offset: int,
+        render: str,
+        include_mermaid: bool,
+    ) -> str:
+        freshness_token = self._refresh_read_caches()
+        return json.dumps(
+            {
+                "freshness_token": freshness_token,
+                "scope": self._current_scope(),
+                "q": " ".join(question.strip().split()).lower(),
+                "mode": mode,
+                "strict": strict,
+                "max_results": max_results,
+                "max_hops": max_hops,
+                "time_budget_ms": time_budget_ms,
+                "offset": offset,
+                "render": render,
+                "include_mermaid": include_mermaid,
+            },
+            sort_keys=True,
+        )
+
+    async def _mermaid_for_analyze_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        max_hops: int,
+    ) -> str | None:
+        for candidate in candidate_qnames_for_payload(payload):
+            try:
+                graph_payload = await self.graph_subgraph(
+                    node_id=candidate,
+                    hops=max_hops,
+                    max_nodes=40,
+                    format="mermaid",
+                    focus=str(payload.get("routed_to") or "lineage"),
+                )
+            except Exception:
+                continue
+            mermaid = graph_payload.get("mermaid")
+            if isinstance(mermaid, str) and mermaid.strip():
+                return mermaid
+        return None
+
+    @staticmethod
+    def _remaining_budget_ms(deadline: float) -> int:
+        remaining = int((deadline - time.monotonic()) * 1000)
+        return max(remaining, 0)
 
     def _current_commit(self) -> str | None:
         try:
@@ -145,19 +238,10 @@ class GraphQueryService:
 
     @staticmethod
     def _descope_qname(qualified_name: str) -> str:
-        if "::" not in qualified_name:
-            return qualified_name
-        return qualified_name.split("::", 1)[1]
+        return descope_qname(qualified_name)
 
     def _scope_qname(self, qualified_name: str) -> str:
-        if not qualified_name:
-            return qualified_name
-        if "::" in qualified_name:
-            return qualified_name
-        scope = self._current_scope()
-        if not scope:
-            return qualified_name
-        return f"{scope}::{qualified_name}"
+        return scope_qname(self._current_scope(), qualified_name)
 
     def _is_in_scope(self, qualified_name: str) -> bool:
         scope = self._current_scope()
@@ -178,13 +262,29 @@ class GraphQueryService:
         }
 
     async def _find_node(self, qualified_name: str) -> dict[str, Any] | None:
+        self._refresh_read_caches()
         cache_key = f"{self._current_scope() or 'no-scope'}::{qualified_name}"
         if cache_key in self._node_cache:
             return self._node_cache[cache_key]
 
         scoped_qname = self._scope_qname(qualified_name)
 
-        for label in await self._labels():
+        # Fast path via DuckPGQ node index (when available).
+        indexed_labels: list[str] = []
+        for candidate_qname in (scoped_qname, qualified_name):
+            try:
+                idx_rows = await self._graph.query(
+                    "SELECT label FROM _sfgraph_node_index WHERE qualified_name = $qn LIMIT 1",
+                    {"qn": candidate_qname},
+                )
+            except Exception:
+                idx_rows = []
+            if idx_rows:
+                label = str(idx_rows[0].get("label", ""))
+                if label:
+                    indexed_labels.append(label)
+        label_order = indexed_labels + [label for label in await self._labels() if label not in indexed_labels]
+        for label in label_order:
             try:
                 rows = await self._graph.query(
                     f'SELECT qualified_name, props FROM "{label}" WHERE qualified_name = $qn LIMIT 1',
@@ -208,7 +308,7 @@ class GraphQueryService:
                         continue
                     if not self._is_in_scope(row_qname):
                         continue
-                    props = _parse_props(row.get("props"))
+                    props = parse_json_props(row.get("props"))
                     result = {
                         "qualifiedName": self._descope_qname(row_qname),
                         "scopedQualifiedName": row_qname,
@@ -222,7 +322,7 @@ class GraphQueryService:
             row_qname = str(rows[0].get("qualified_name", ""))
             if not row_qname:
                 continue
-            props = _parse_props(rows[0].get("props"))
+            props = parse_json_props(rows[0].get("props"))
             result = {
                 "qualifiedName": self._descope_qname(row_qname),
                 "scopedQualifiedName": row_qname,
@@ -238,6 +338,65 @@ class GraphQueryService:
     async def _edges_for_node(self, qualified_name: str, direction: str) -> list[dict[str, Any]]:
         rows_out: list[dict[str, Any]] = []
         scoped_qname = self._scope_qname(qualified_name)
+        used_unified_view = False
+        try:
+            if direction == "out":
+                unified_rows = await self._graph.query(
+                    "SELECT src_qualified_name, dst_qualified_name, props, rel_type "
+                    "FROM _sfgraph_all_edges WHERE src_qualified_name = $qn",
+                    {"qn": scoped_qname},
+                )
+            else:
+                unified_rows = await self._graph.query(
+                    "SELECT src_qualified_name, dst_qualified_name, props, rel_type "
+                    "FROM _sfgraph_all_edges WHERE dst_qualified_name = $qn",
+                    {"qn": scoped_qname},
+                )
+            used_unified_view = True
+        except Exception:
+            unified_rows = []
+
+        def _append_edge_row(row: dict[str, Any], rel: str) -> None:
+            src_scoped = str(row.get("src_qualified_name", ""))
+            dst_scoped = str(row.get("dst_qualified_name", ""))
+            if not src_scoped or not dst_scoped:
+                return
+            if not self._is_in_scope(src_scoped) or not self._is_in_scope(dst_scoped):
+                return
+            props = parse_json_props(row.get("props"))
+            context = str(props.get("contextSnippet", ""))
+            semantic = self._rules.semantic_override(rel, context) or _semantic_kind(rel, context)
+            resolution_method = str(props.get("resolutionMethod", "unknown"))
+            unresolved_dynamic = (
+                resolution_method in {"dynamic", "unknown", "traced_limit", "regex"}
+                or self._descope_qname(src_scoped).startswith("UNRESOLVED.")
+                or self._descope_qname(dst_scoped).startswith("UNRESOLVED.")
+            )
+            rows_out.append(
+                {
+                    "src": self._descope_qname(src_scoped),
+                    "dst": self._descope_qname(dst_scoped),
+                    "src_scoped": src_scoped,
+                    "dst_scoped": dst_scoped,
+                    "rel_type": rel,
+                    "confidence": float(props.get("confidence", 0.5)),
+                    "resolutionMethod": resolution_method,
+                    "edgeCategory": props.get("edgeCategory", "DATA_FLOW"),
+                    "contextSnippet": context,
+                    "semantic": semantic,
+                    "is_unresolved_dynamic": unresolved_dynamic,
+                }
+            )
+
+        if used_unified_view:
+            for row in unified_rows:
+                rel = str(row.get("rel_type", ""))
+                if not rel:
+                    continue
+                _append_edge_row(row, rel)
+            return rows_out
+
+        # Backward-compatible fallback when unified view is unavailable.
         for rel in await self._rel_types():
             try:
                 if direction == "out":
@@ -253,36 +412,7 @@ class GraphQueryService:
             except Exception:
                 rows = []
             for row in rows:
-                src_scoped = str(row.get("src_qualified_name", ""))
-                dst_scoped = str(row.get("dst_qualified_name", ""))
-                if not src_scoped or not dst_scoped:
-                    continue
-                if not self._is_in_scope(src_scoped) or not self._is_in_scope(dst_scoped):
-                    continue
-                props = _parse_props(row.get("props"))
-                context = str(props.get("contextSnippet", ""))
-                semantic = self._rules.semantic_override(rel, context) or _semantic_kind(rel, context)
-                resolution_method = str(props.get("resolutionMethod", "unknown"))
-                unresolved_dynamic = (
-                    resolution_method in {"dynamic", "unknown", "traced_limit", "regex"}
-                    or self._descope_qname(src_scoped).startswith("UNRESOLVED.")
-                    or self._descope_qname(dst_scoped).startswith("UNRESOLVED.")
-                )
-                rows_out.append(
-                    {
-                        "src": self._descope_qname(src_scoped),
-                        "dst": self._descope_qname(dst_scoped),
-                        "src_scoped": src_scoped,
-                        "dst_scoped": dst_scoped,
-                        "rel_type": rel,
-                        "confidence": float(props.get("confidence", 0.5)),
-                        "resolutionMethod": resolution_method,
-                        "edgeCategory": props.get("edgeCategory", "DATA_FLOW"),
-                        "contextSnippet": context,
-                        "semantic": semantic,
-                        "is_unresolved_dynamic": unresolved_dynamic,
-                    }
-                )
+                _append_edge_row(row, rel)
         return rows_out
 
     async def _trace(
@@ -421,6 +551,515 @@ class GraphQueryService:
             "partial_results": partial,
         }
 
+    def _iter_repo_files(self, suffixes: tuple[str, ...] | None = None):
+        yield from self._exact.iter_repo_files(suffixes)
+
+    @staticmethod
+    def _read_text_safe(path: Path) -> str:
+        return ExactRetrievalHelper.read_text_safe(path)
+
+    @staticmethod
+    def _classify_exact_field_match(
+        field_token: str,
+        line: str,
+        window: str,
+        file_path: Path,
+    ) -> tuple[str, float]:
+        return ExactRetrievalHelper.classify_exact_field_match(field_token, line, window, file_path)
+
+    @staticmethod
+    def _classify_component_token_match(token: str, line: str, window: str, file_path: Path) -> tuple[str, float]:
+        return ExactRetrievalHelper.classify_component_token_match(token, line, window, file_path)
+
+    @staticmethod
+    def _extract_component_write_expression(token: str, line: str) -> str | None:
+        return ExactRetrievalHelper.extract_component_write_expression(token, line)
+
+    @staticmethod
+    def _extract_field_write_expression(field_token: str, line: str) -> str | None:
+        return ExactRetrievalHelper.extract_field_write_expression(field_token, line)
+
+    @staticmethod
+    def _trace_variable_origin(symbol: str, lines: list[str], write_line: int) -> dict[str, Any] | None:
+        return ExactRetrievalHelper.trace_variable_origin(symbol, lines, write_line)
+
+    def _origin_for_component_write(
+        self,
+        token: str,
+        line: str,
+        lines: list[str],
+        write_line: int,
+    ) -> dict[str, Any] | None:
+        expr = self._exact.extract_component_write_expression(token, line)
+        if not expr:
+            return None
+        rhs_symbol_match = re.fullmatch(r"\(?\s*(?:String|Id|Object|Decimal|Integer|Long|Double|Boolean)?\s*\)?\s*([A-Za-z_][A-Za-z0-9_]*)", expr)
+        if rhs_symbol_match:
+            symbol = rhs_symbol_match.group(1)
+            traced = self._exact.trace_variable_origin(symbol, lines, write_line)
+            if traced:
+                traced["write_expression"] = expr
+                return traced
+        return {
+            "source_symbol": None,
+            "source_expression": expr,
+            "source_line": write_line,
+            "source_context": line.strip()[:240],
+            "confidence": 0.97,
+            "resolution": "direct_rhs_expression",
+        }
+
+    async def _find_component_nodes(self, component_name: str, max_results: int = 20) -> list[dict[str, Any]]:
+        search = component_name.strip()
+        if not search:
+            return []
+        normalized_search = self._rules.resolve_alias(search)
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for label in await self._labels():
+            try:
+                rows = await self._graph.query(
+                    f'SELECT qualified_name, props FROM "{label}" WHERE lower(qualified_name) LIKE $needle LIMIT 200',
+                    {"needle": f"%{normalized_search.lower()}%"},
+                )
+            except Exception:
+                rows = []
+            for row in rows:
+                scoped_qname = str(row.get("qualified_name", ""))
+                if not scoped_qname or scoped_qname in seen or not self._is_in_scope(scoped_qname):
+                    continue
+                descoped = self._descope_qname(scoped_qname)
+                if descoped != normalized_search and not descoped.endswith(f".{normalized_search}") and normalized_search.lower() not in descoped.lower():
+                    continue
+                seen.add(scoped_qname)
+                out.append(
+                    {
+                        "qualifiedName": descoped,
+                        "scopedQualifiedName": scoped_qname,
+                        "label": label,
+                        "props": parse_json_props(row.get("props")),
+                    }
+                )
+                if len(out) >= max_results:
+                    return out
+        return out
+
+    async def analyze_component(
+        self,
+        component_name: str,
+        token: str | None = None,
+        focus: str = "both",
+        max_results: int = 100,
+    ) -> dict[str, Any]:
+        resolved_nodes = await self._find_component_nodes(component_name, max_results=25)
+        if not resolved_nodes:
+            for source_path in self._exact.find_component_source_files(component_name, max_results=25):
+                resolved_nodes.append(
+                    {
+                        "qualifiedName": component_name.strip(),
+                        "scopedQualifiedName": "",
+                        "label": "SourceFile",
+                        "props": {"sourceFile": str(source_path)},
+                    }
+                )
+        exact_matches: list[dict[str, Any]] = []
+        variable_origins: list[dict[str, Any]] = []
+        graph_relations: list[dict[str, Any]] = []
+        seen_exact: set[tuple[str, int, str]] = set()
+        seen_origins: set[tuple[str, int, str]] = set()
+        seen_sources: set[str] = set()
+
+        for node in resolved_nodes:
+            qname = node["qualifiedName"]
+            if node.get("scopedQualifiedName"):
+                outgoing = await self._edges_for_node(qname, "out")
+                incoming = await self._edges_for_node(qname, "in")
+                graph_relations.append(
+                    {
+                        "node": qname,
+                        "outgoing": outgoing[:25],
+                        "incoming": incoming[:25],
+                    }
+                )
+
+            source_file = str(node.get("props", {}).get("sourceFile", ""))
+            if not source_file:
+                continue
+            source_path = Path(source_file)
+            if not source_path.is_absolute():
+                source_path = (self._repo_root / source_path).resolve()
+            source_key = str(source_path)
+            if source_key in seen_sources:
+                continue
+            seen_sources.add(source_key)
+            text = self._read_text_safe(source_path)
+            if not text:
+                continue
+            if token and token not in text:
+                continue
+            lines = text.splitlines()
+            if token:
+                token_matcher = token
+            else:
+                token_matcher = component_name
+            for idx, line in enumerate(lines, start=1):
+                if token_matcher not in line:
+                    continue
+                start = max(0, idx - 3)
+                end = min(len(lines), idx + 2)
+                window = "\n".join(lines[start:end])
+                kind, confidence = self._classify_component_token_match(token_matcher, line, window, source_path)
+                if focus == "writes" and kind != "write":
+                    continue
+                if focus == "reads" and kind not in {"read", "write"}:
+                    continue
+                key = (str(source_path), idx, kind)
+                if key in seen_exact:
+                    continue
+                seen_exact.add(key)
+                origin = None
+                if token and kind == "write":
+                    origin = self._origin_for_component_write(token_matcher, line, lines, idx)
+                    if origin:
+                        origin_key = (
+                            str(source_path),
+                            int(origin.get("source_line") or idx),
+                            str(origin.get("source_expression") or ""),
+                        )
+                        if origin_key not in seen_origins:
+                            seen_origins.add(origin_key)
+                            variable_origins.append(
+                                {
+                                    "component": qname,
+                                    "token": token_matcher,
+                                    "file": str(source_path),
+                                    "write_line": idx,
+                                    **origin,
+                                }
+                            )
+                exact_matches.append(
+                    {
+                        "component": qname,
+                        "token": token_matcher,
+                        "kind": kind,
+                        "file": str(source_path),
+                        "line": idx,
+                        "context": line.strip()[:240],
+                        "confidence": confidence,
+                        "origin": origin,
+                    }
+                )
+
+        exact_matches.sort(key=lambda item: (0 if item["kind"] == "write" else 1, -float(item["confidence"])))
+        variable_origins.sort(key=lambda item: (-float(item.get("confidence", 0.0)), int(item.get("write_line", 0))))
+        partial = len(exact_matches) > max_results or len(graph_relations) > max_results
+        return {
+            "mode": "analyze_component",
+            "component_query": component_name,
+            "resolved_components": resolved_nodes[:max_results],
+            "token": token,
+            "focus": focus,
+            "exact_matches": exact_matches[:max_results],
+            "variable_origins": variable_origins[:max_results],
+            "graph_relations": graph_relations[:max_results],
+            "freshness": await self.freshness(partial_results=partial),
+            "partial_results": partial,
+            "coverage_note": (
+                "Exact source matches are prioritized for token-level tracing. "
+                "Graph relations provide neighboring context for impact and lineage."
+            ),
+        }
+
+    def _find_component_source_files(self, component_name: str, max_results: int = 20) -> list[Path]:
+        return self._exact.find_component_source_files(component_name, max_results=max_results)
+
+    def _package_metadata_roots(self) -> list[Path]:
+        return self._exact.package_metadata_roots()
+
+    def _sfdx_package_directories(self) -> list[Path]:
+        return self._exact.sfdx_package_directories()
+
+    @staticmethod
+    def _component_token_query_parts(question: str) -> tuple[str, str] | None:
+        q = " ".join(question.strip().split())
+        patterns = (
+            (
+                r"\bin\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*,?\s*where\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:is\s+)?(?:populated|set|assigned|updated)\b",
+                ("component", "token"),
+            ),
+            (
+                r"\bin\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*,?\s*where\s+is\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:being\s+)?(?:populated|set|assigned|updated)\b",
+                ("component", "token"),
+            ),
+            (
+                r"\bwhere\s+is\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:being\s+)?(?:populated|set|assigned|updated)\s+in\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                ("token", "component"),
+            ),
+            (
+                r"\bin\s+([A-Za-z_][A-Za-z0-9_]*)\s*,?\s*where\s+is\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:being\s+)?(?:populated|set|assigned|updated)\b",
+                ("component", "token"),
+            ),
+        )
+        for pattern, order in patterns:
+            match = re.search(pattern, q, flags=re.IGNORECASE)
+            if not match:
+                continue
+            if order == ("token", "component"):
+                token = match.group(1)
+                component = match.group(2)
+            else:
+                component = match.group(1)
+                token = match.group(2)
+            return component, token
+        return None
+
+    @staticmethod
+    def _object_event_query_parts(question: str) -> tuple[str, str] | None:
+        q = " ".join(question.strip().split())
+        patterns = (
+            r"\bwhat\s+happens\s+when\s+(?:a|an)?\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\s+(inserted|updated|deleted|undeleted)\b",
+            r"\bwhat\s+runs\s+when\s+(?:a|an)?\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\s+(inserted|updated|deleted|undeleted)\b",
+            r"\b(?:on|for)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(insert|update|delete|undelete)\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, q, flags=re.IGNORECASE)
+            if not match:
+                continue
+            object_name = match.group(1)
+            raw_event = match.group(2).lower()
+            event_map = {
+                "inserted": "insert",
+                "updated": "update",
+                "deleted": "delete",
+                "undeleted": "undelete",
+                "insert": "insert",
+                "update": "update",
+                "delete": "delete",
+                "undelete": "undelete",
+            }
+            event = event_map.get(raw_event, raw_event)
+            return object_name, event
+        return None
+
+    @staticmethod
+    def _change_query_target(question: str) -> str | None:
+        q = " ".join(question.strip().split())
+        patterns = (
+            r"\bwhat\s+breaks\s+if\s+i\s+change\s+(.+)$",
+            r"\bimpact\s+of\s+changing\s+(.+)$",
+            r"\bimpact\s+if\s+i\s+change\s+(.+)$",
+            r"\bwhat\s+is\s+impacted\s+by\s+(.+)$",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, q, flags=re.IGNORECASE)
+            if not match:
+                continue
+            target = match.group(1).strip().strip("?.")
+            if target:
+                return target
+        return None
+
+    async def analyze_change(
+        self,
+        target: str | None = None,
+        changed_files: list[str] | None = None,
+        max_hops: int = 2,
+        max_results_per_component: int = 25,
+    ) -> dict[str, Any]:
+        files: list[str] = []
+        target_resolution: dict[str, Any] = {"target": target, "mode": None}
+
+        if changed_files:
+            files = [str(Path(item)) for item in changed_files if str(item).strip()]
+            target_resolution["mode"] = "explicit_files"
+        elif target:
+            target_clean = target.strip()
+            if "/" in target_clean or target_clean.endswith((".cls", ".trigger", ".xml", ".json")):
+                file_path = Path(target_clean)
+                if not file_path.is_absolute():
+                    file_path = (self._repo_root / file_path).resolve()
+                files = [str(file_path)]
+                target_resolution["mode"] = "file_target"
+            else:
+                nodes = await self._find_component_nodes(target_clean, max_results=10)
+                resolved_files: list[str] = []
+                for node in nodes:
+                    source_file = str(node.get("props", {}).get("sourceFile", ""))
+                    if not source_file:
+                        continue
+                    source_path = Path(source_file)
+                    if not source_path.is_absolute():
+                        source_path = (self._repo_root / source_path).resolve()
+                    resolved_files.append(str(source_path))
+                files = sorted(set(resolved_files))
+                target_resolution["mode"] = "component_target"
+                target_resolution["resolved_components"] = [node["qualifiedName"] for node in nodes]
+        else:
+            files = []
+            target_resolution["mode"] = "none"
+
+        impact = await self.impact_from_changed_files(
+            changed_files=files,
+            max_hops=max_hops,
+            max_results_per_component=max_results_per_component,
+        )
+        return {
+            "mode": "analyze_change",
+            "target_resolution": target_resolution,
+            "analysis": impact,
+            "freshness": impact.get("freshness"),
+            "partial_results": impact.get("partial_results", False),
+        }
+
+    async def analyze_field(self, field_name: str, focus: str = "both", max_results: int = 100) -> dict[str, Any]:
+        resolved_fields = await self._field_targets_for_question(field_name)
+        if not resolved_fields:
+            resolved_fields = [self._rules.resolve_alias(field_name)]
+
+        findings: list[dict[str, Any]] = []
+        repo_results: list[dict[str, Any]] = []
+        seen_keys: set[tuple[str, str, int, str]] = set()
+
+        for resolved in resolved_fields:
+            explain = await self.explain_field(resolved)
+            graph_findings = []
+            if focus in {"both", "writes"}:
+                graph_findings.extend({"field": resolved, "source": "graph", "kind": "write", **item} for item in explain.get("writers", []))
+            if focus in {"both", "reads"}:
+                graph_findings.extend({"field": resolved, "source": "graph", "kind": "read", **item} for item in explain.get("readers", []))
+            findings.extend(graph_findings)
+
+            token = resolved.split(".", 1)[1] if "." in resolved else resolved
+            for path in self._iter_repo_files():
+                text = self._read_text_safe(path)
+                if token not in text and resolved not in text:
+                    continue
+                lines = text.splitlines()
+                for idx, line in enumerate(lines, start=1):
+                    if token not in line and resolved not in line:
+                        continue
+                    start = max(0, idx - 3)
+                    end = min(len(lines), idx + 2)
+                    window = "\n".join(lines[start:end])
+                    kind, confidence = self._classify_exact_field_match(token, line, window, path)
+                    if focus == "writes" and kind != "write":
+                        continue
+                    if focus == "reads" and kind not in {"read", "write"}:
+                        continue
+                    key = (str(path), resolved, idx, kind)
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    repo_results.append(
+                        {
+                            "field": resolved,
+                            "source": "repo_search",
+                            "kind": kind,
+                            "file": str(path),
+                            "line": idx,
+                            "context": line.strip()[:240],
+                            "confidence": confidence,
+                            "value_expression": (
+                                self._extract_field_write_expression(token, line)
+                                if kind == "write"
+                                else None
+                            ),
+                        }
+                    )
+
+        repo_results.sort(key=lambda item: (0 if item["kind"] == "write" else 1, -float(item["confidence"])))
+        findings.sort(key=lambda item: -float(item.get("confidence", 0.0)))
+        partial = len(repo_results) > max_results or len(findings) > max_results
+        return {
+            "mode": "analyze_field",
+            "field_query": field_name,
+            "resolved_fields": resolved_fields,
+            "focus": focus,
+            "graph_findings": findings[:max_results],
+            "exact_matches": repo_results[:max_results],
+            "freshness": await self.freshness(partial_results=partial),
+            "partial_results": partial,
+            "coverage_note": (
+                "Exact repo evidence and graph evidence are both included. "
+                "When graph coverage is incomplete, exact repo matches may reveal additional writers/readers."
+            ),
+        }
+
+    @staticmethod
+    def _parse_trigger_declaration(text: str) -> tuple[str, str, set[str]] | None:
+        return parse_trigger_declaration(text)
+
+    @staticmethod
+    def _extract_method_calls(text: str) -> list[dict[str, str]]:
+        calls: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", text):
+            klass = match.group(1)
+            method = match.group(2)
+            key = (klass, method)
+            if key in seen:
+                continue
+            seen.add(key)
+            calls.append({"className": klass, "methodName": method})
+        return calls
+
+    async def analyze_object_event(self, object_name: str, event: str, max_results: int = 50) -> dict[str, Any]:
+        target_event = event.strip().lower()
+        matched_triggers: list[dict[str, Any]] = []
+        for path in self._iter_repo_files((".trigger",)):
+            text = self._read_text_safe(path)
+            parsed = self._parse_trigger_declaration(text)
+            if not parsed:
+                continue
+            trigger_name, trigger_object, events = parsed
+            if trigger_object.lower() != object_name.lower():
+                continue
+            if target_event not in events and f"before {target_event}" not in events and f"after {target_event}" not in events:
+                continue
+            phases = sorted(e for e in events if e.endswith(target_event))
+            matched_triggers.append(
+                {
+                    "triggerName": trigger_name,
+                    "objectName": trigger_object,
+                    "events": sorted(events),
+                    "matchingPhases": phases or [target_event],
+                    "file": str(path),
+                    "methodCalls": self._extract_method_calls(text),
+                }
+            )
+
+        phase_map: dict[str, list[dict[str, Any]]] = {}
+        for trigger in matched_triggers:
+            for phase in trigger["matchingPhases"]:
+                phase_map.setdefault(phase, []).append(trigger)
+
+        findings: list[dict[str, Any]] = []
+        for phase, triggers in sorted(phase_map.items()):
+            for trigger in triggers:
+                findings.append(
+                    {
+                        "phase": phase,
+                        "triggerName": trigger["triggerName"],
+                        "file": trigger["file"],
+                        "methodCalls": trigger["methodCalls"][:20],
+                    }
+                )
+
+        return {
+            "mode": "analyze_object_event",
+            "object_name": object_name,
+            "event": target_event,
+            "triggers": matched_triggers[:max_results],
+            "phases": phase_map,
+            "findings": findings[:max_results],
+            "freshness": await self.freshness(partial_results=len(matched_triggers) > max_results),
+            "partial_results": len(matched_triggers) > max_results,
+            "important_note": (
+                "Salesforce does not guarantee execution order across multiple triggers on the same object event. "
+                "All matched triggers run in the same transaction."
+            ),
+        }
+
     async def query(
         self,
         question: str,
@@ -428,16 +1067,69 @@ class GraphQueryService:
         max_results: int = 50,
         time_budget_ms: int = 1500,
         offset: int = 0,
+        allow_vector_fallback: bool = True,
     ) -> dict[str, Any]:
         q = question.strip()
+        change_target = self._change_query_target(q)
+        if change_target:
+            result = await self.analyze_change(target=change_target, max_hops=max_hops, max_results_per_component=max_results)
+            result["question"] = q
+            result["pipeline"] = {
+                "intent": "analyze_change",
+                "hint": "Change-impact query routed to impact analysis.",
+            }
+            return result
+
+        object_event = self._object_event_query_parts(q)
+        if object_event:
+            object_name, event = object_event
+            result = await self.analyze_object_event(
+                object_name=object_name,
+                event=event,
+                max_results=max_results,
+            )
+            result["question"] = q
+            result["pipeline"] = {
+                "intent": "object_event",
+                "hint": "Object lifecycle query routed to trigger/event analysis.",
+            }
+            return result
+
+        component_token = self._component_token_query_parts(q)
+        if component_token:
+            component_name, token = component_token
+            result = await self.analyze_component(
+                component_name=component_name,
+                token=token,
+                focus="writes",
+                max_results=max_results,
+            )
+            result["question"] = q
+            result["pipeline"] = {
+                "intent": "component_token_writes",
+                "hint": "Exact component token tracing; semantic vector fallback disabled.",
+            }
+            result["confidence_tiers"] = self._confidence_tiers(result.get("exact_matches", []))
+            return result
+
         schema_filter, schema_trace = await self._schema_filter(q)
         intent = self._intent(q)
         planner_trace = self._planner_agent.run(question=q, intent=intent)
-        field_match = None
-        match = re.search(r"\b([A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)?)\b", q)
-        if match:
-            field_match = match.group(1)
-            field_match = self._rules.resolve_alias(field_match)
+        field_targets = await self._field_targets_for_question(q)
+        field_match = field_targets[0] if field_targets else None
+        field_query_mode = self._field_query_mode(q)
+
+        if field_query_mode and field_targets:
+            result = await self._query_field_access(
+                question=q,
+                field_targets=field_targets,
+                focus=field_query_mode,
+                max_results=max_results,
+                schema_filter=schema_filter,
+                schema_trace=schema_trace,
+                planner_trace=planner_trace,
+            )
+            return result
 
         if intent == "trace_upstream" and field_match:
             result = await self.trace_upstream(
@@ -520,7 +1212,7 @@ class GraphQueryService:
             max_attempts=4,
         )
         used_vector_fallback = False
-        if not candidates:
+        if not candidates and allow_vector_fallback:
             vector_hits = await self._vector_fallback(question=q, limit=max_results)
             if vector_hits:
                 candidates = vector_hits
@@ -537,11 +1229,16 @@ class GraphQueryService:
         partial = len(candidates) > max_results
         corrector_trace = self._corrector_agent.run(attempts)
         formatter_trace = self._formatter_agent.run(len(candidates[:max_results]))
+        confidence_tiers = (
+            self._review_manually_tiers(candidates[:max_results])
+            if used_vector_fallback
+            else self._confidence_tiers(candidates[:max_results])
+        )
         return {
             "mode": "node_search",
             "question": q,
             "candidates": candidates[:max_results],
-            "confidence_tiers": self._confidence_tiers(candidates[:max_results]),
+            "confidence_tiers": confidence_tiers,
             "pipeline": {
                 "schema_filter": schema_filter,
                 "intent": intent,
@@ -555,11 +1252,643 @@ class GraphQueryService:
                 ],
                 "hint": "No lexical candidates; used semantic vector fallback."
                 if used_vector_fallback
-                else "Lexical label-filtered search succeeded.",
+                else (
+                    "No lexical candidates and vector fallback disabled."
+                    if not allow_vector_fallback
+                    else "Lexical label-filtered search succeeded."
+                ),
             },
             "freshness": await self.freshness(partial_results=partial),
             "partial_results": partial,
         }
+
+    @staticmethod
+    def _collect_analyze_evidence(result: dict[str, Any], max_items: int = 50) -> list[dict[str, Any]]:
+        evidence: list[dict[str, Any]] = []
+
+        for item in result.get("exact_matches", [])[:max_items]:
+            evidence.append(
+                {
+                    "source": "exact",
+                    "kind": item.get("kind", "mention"),
+                    "confidence": float(item.get("confidence", 0.7)),
+                    "file": item.get("file"),
+                    "line": item.get("line"),
+                    "context": item.get("context"),
+                }
+            )
+
+        for item in result.get("graph_findings", [])[:max_items]:
+            path = item.get("path", [])
+            step = path[-1] if path else {}
+            evidence.append(
+                {
+                    "source": "graph",
+                    "kind": item.get("kind", "relation"),
+                    "confidence": float(item.get("confidence", 0.6)),
+                    "file": step.get("source_file"),
+                    "line": step.get("source_line"),
+                    "context": step.get("contextSnippet"),
+                    "rel_type": step.get("rel_type"),
+                }
+            )
+
+        for item in result.get("findings", [])[:max_items]:
+            path = item.get("path", [])
+            step = path[-1] if path else {}
+            evidence.append(
+                {
+                    "source": "graph",
+                    "kind": "path",
+                    "confidence": float(item.get("confidence", 0.6)),
+                    "file": step.get("source_file"),
+                    "line": step.get("source_line"),
+                    "context": step.get("contextSnippet"),
+                    "rel_type": step.get("rel_type"),
+                }
+            )
+
+        return evidence[:max_items]
+
+    @staticmethod
+    def _has_material_result_evidence(result: dict[str, Any]) -> bool:
+        """Return True when a routed payload contains actionable evidence."""
+        if not isinstance(result, dict):
+            return False
+        keys_with_lists = (
+            "evidence",
+            "exact_matches",
+            "graph_findings",
+            "findings",
+            "candidates",
+            "writers",
+            "readers",
+            "dependents",
+            "resolved_components",
+        )
+        for key in keys_with_lists:
+            value = result.get(key)
+            if isinstance(value, list) and value:
+                return True
+        fields = result.get("fields")
+        if isinstance(fields, list):
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                for nested in ("writers", "readers", "dependents"):
+                    nested_value = field.get(nested)
+                    if isinstance(nested_value, list) and nested_value:
+                        return True
+        return False
+
+    @staticmethod
+    def _is_exact_first_question(question: str) -> bool:
+        q = question.lower()
+        signal_phrases = (
+            "where is",
+            "where does",
+            "populated",
+            "assigned",
+            "written",
+            "set in",
+            "set by",
+            "show method",
+            "source file",
+            "line number",
+        )
+        return any(phrase in q for phrase in signal_phrases)
+
+    @staticmethod
+    def _is_discovery_query(question: str) -> bool:
+        q = question.strip().lower()
+        return q.startswith("find ") or q.startswith("search ") or q.startswith("list ")
+
+    @staticmethod
+    def _contains_field_token(question: str) -> bool:
+        if re.search(r"\b[A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)?\b", question):
+            return True
+        return bool(re.search(r"\b[A-Za-z][A-Za-z0-9_]*__(?:c|r|mdt|e)\b", question))
+
+    async def analyze(
+        self,
+        question: str,
+        mode: str = "auto",
+        strict: bool = True,
+        max_results: int = 50,
+        max_hops: int = 3,
+        time_budget_ms: int = 1500,
+        offset: int = 0,
+        render: str = "json",
+        include_mermaid: bool = False,
+    ) -> dict[str, Any]:
+        q = question.strip()
+        selected_mode = (mode or "auto").strip().lower()
+        if selected_mode not in {"auto", "exact", "lineage"}:
+            raise ValueError("mode must be one of: auto, exact, lineage")
+        render_mode = (render or "json").strip().lower()
+        if render_mode not in {"json", "markdown"}:
+            raise ValueError("render must be one of: json, markdown")
+        cache_key = self._analyze_cache_key(
+            question=q,
+            mode=selected_mode,
+            strict=strict,
+            max_results=max_results,
+            max_hops=max_hops,
+            time_budget_ms=time_budget_ms,
+            offset=offset,
+            render=render_mode,
+            include_mermaid=include_mermaid,
+        )
+        cached = self._analyze_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        deadline = time.monotonic() + max(time_budget_ms, 1) / 1000.0
+
+        routed_to = "query"
+        result: dict[str, Any]
+        routing_stages: list[dict[str, Any]] = []
+        semantic_fallback_reason: str | None = None
+
+        async def _query_stage(*, allow_vector_fallback: bool, stage: str) -> dict[str, Any]:
+            stage_budget_ms = self._remaining_budget_ms(deadline)
+            if stage_budget_ms <= 0:
+                routing_stages.append(
+                    {
+                        "stage": stage,
+                        "tool": "query",
+                        "allow_vector_fallback": allow_vector_fallback,
+                        "result_mode": "skipped_budget_exhausted",
+                        "has_evidence": False,
+                        "budget_ms": 0,
+                    }
+                )
+                return {
+                    "mode": "node_search",
+                    "question": q,
+                    "candidates": [],
+                    "confidence_tiers": self._confidence_tiers([]),
+                    "pipeline": {
+                        "intent": "budget_exhausted",
+                        "attempts": [],
+                        "hint": "Skipped because the analyze stage budget was exhausted.",
+                    },
+                    "freshness": await self.freshness(partial_results=True),
+                    "partial_results": True,
+                }
+            payload = await self.query(
+                question=q,
+                max_hops=max_hops,
+                max_results=max_results,
+                time_budget_ms=stage_budget_ms,
+                offset=offset,
+                allow_vector_fallback=allow_vector_fallback,
+            )
+            routing_stages.append(
+                {
+                    "stage": stage,
+                    "tool": "query",
+                    "allow_vector_fallback": allow_vector_fallback,
+                    "result_mode": payload.get("mode"),
+                    "has_evidence": self._has_material_result_evidence(payload),
+                    "budget_ms": stage_budget_ms,
+                }
+            )
+            return payload
+
+        if selected_mode == "exact":
+            component_token = self._component_token_query_parts(q)
+            if component_token:
+                component_name, token = component_token
+                routed_to = "analyze_component"
+                result = await self.analyze_component(
+                    component_name=component_name,
+                    token=token,
+                    focus="writes" if strict else "both",
+                    max_results=max_results,
+                )
+                routing_stages.append(
+                    {
+                        "stage": "exact_component",
+                        "tool": "analyze_component",
+                        "allow_vector_fallback": False,
+                        "result_mode": result.get("mode"),
+                        "has_evidence": self._has_material_result_evidence(result),
+                    }
+                )
+                if not self._has_material_result_evidence(result):
+                    routed_to = "query"
+                    result = await _query_stage(allow_vector_fallback=False, stage="exact_lexical_graph")
+                    if not strict and not self._has_material_result_evidence(result):
+                        semantic_fallback_reason = "exact_component_insufficient_evidence"
+                        result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
+            else:
+                field_targets = await self._field_targets_for_question(q)
+                field_mode = self._field_query_mode(q)
+                if (
+                    not looks_like_method_reference(q)
+                    and (field_targets or (field_mode is not None and self._contains_field_token(q)))
+                ):
+                    field_mode = self._field_query_mode(q)
+                    focus = "writes" if strict and field_mode in {"writes", "explain"} else (field_mode or "both")
+                    routed_to = "analyze_field"
+                    result = await self.analyze_field(
+                        field_name=q,
+                        focus=focus,
+                        max_results=max_results,
+                    )
+                    routing_stages.append(
+                        {
+                            "stage": "exact_field",
+                            "tool": "analyze_field",
+                            "allow_vector_fallback": False,
+                            "result_mode": result.get("mode"),
+                            "has_evidence": self._has_material_result_evidence(result),
+                        }
+                    )
+                    if not self._has_material_result_evidence(result):
+                        routed_to = "query"
+                        result = await _query_stage(allow_vector_fallback=False, stage="exact_lexical_graph")
+                        if not strict and not self._has_material_result_evidence(result):
+                            semantic_fallback_reason = "exact_field_insufficient_evidence"
+                            result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
+                else:
+                    routed_to = "query"
+                    result = await _query_stage(allow_vector_fallback=False, stage="exact_lexical_graph")
+                    if not strict and not self._has_material_result_evidence(result):
+                        semantic_fallback_reason = "exact_query_insufficient_evidence"
+                        result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
+        elif selected_mode == "lineage":
+            object_event = self._object_event_query_parts(q)
+            if object_event:
+                object_name, event = object_event
+                routed_to = "analyze_object_event"
+                result = await self.analyze_object_event(
+                    object_name=object_name,
+                    event=event,
+                    max_results=max_results,
+                )
+                routing_stages.append(
+                    {
+                        "stage": "lineage_object_event",
+                        "tool": "analyze_object_event",
+                        "allow_vector_fallback": False,
+                        "result_mode": result.get("mode"),
+                        "has_evidence": self._has_material_result_evidence(result),
+                    }
+                )
+            else:
+                change_target = self._change_query_target(q)
+                if change_target:
+                    routed_to = "analyze_change"
+                    result = await self.analyze_change(
+                        target=change_target,
+                        max_hops=max_hops,
+                        max_results_per_component=max_results,
+                    )
+                    routing_stages.append(
+                        {
+                            "stage": "lineage_change",
+                            "tool": "analyze_change",
+                            "allow_vector_fallback": False,
+                            "result_mode": result.get("mode"),
+                            "has_evidence": self._has_material_result_evidence(result),
+                        }
+                    )
+                else:
+                    routed_to = "query"
+                    result = await _query_stage(allow_vector_fallback=not strict, stage="lineage_query")
+        else:
+            # Auto mode routes to intent-specific analyzers first to improve precision and reduce
+            # follow-up tool calls for common Salesforce investigation questions.
+            exact_first = self._is_exact_first_question(q)
+            if self._is_discovery_query(q):
+                routed_to = "query"
+                result = await _query_stage(allow_vector_fallback=not strict, stage="auto_discovery_query")
+                evidence = self._collect_analyze_evidence(result, max_items=max_results)
+                if "confidence_tiers" in result:
+                    confidence_tiers = result["confidence_tiers"]
+                else:
+                    confidence_tiers = self._confidence_tiers(evidence)
+                mermaid = None
+                if include_mermaid:
+                    preview_payload = build_analyze_payload(
+                        question=q,
+                        analysis_mode=selected_mode,
+                        strict=strict,
+                        routed_to=routed_to,
+                        result=result,
+                        evidence=evidence,
+                        confidence_tiers=confidence_tiers,
+                        routing_stages=routing_stages,
+                        semantic_fallback_reason=semantic_fallback_reason,
+                        freshness=result.get("freshness", await self.freshness(partial_results=False)),
+                    )
+                    mermaid = await self._mermaid_for_analyze_payload(preview_payload, max_hops=max_hops)
+                return finalize_analyze_payload(
+                    cache=self._analyze_cache,
+                    cache_key=cache_key,
+                    question=q,
+                    analysis_mode=selected_mode,
+                    strict=strict,
+                    routed_to=routed_to,
+                    result=result,
+                    evidence=evidence,
+                    confidence_tiers=confidence_tiers,
+                    routing_stages=routing_stages,
+                    semantic_fallback_reason=semantic_fallback_reason,
+                    freshness=result.get("freshness", await self.freshness(partial_results=False)),
+                    has_material_evidence=self._has_material_result_evidence(result),
+                    render_mode=render_mode,
+                    mermaid=mermaid,
+                )
+            component_token = self._component_token_query_parts(q)
+            if component_token:
+                component_name, token = component_token
+                routed_to = "analyze_component"
+                result = await self.analyze_component(
+                    component_name=component_name,
+                    token=token,
+                    focus="writes" if strict else "both",
+                    max_results=max_results,
+                )
+                routing_stages.append(
+                    {
+                        "stage": "auto_component",
+                        "tool": "analyze_component",
+                        "allow_vector_fallback": False,
+                        "result_mode": result.get("mode"),
+                        "has_evidence": self._has_material_result_evidence(result),
+                    }
+                )
+            else:
+                object_event = self._object_event_query_parts(q)
+                if object_event:
+                    object_name, event = object_event
+                    routed_to = "analyze_object_event"
+                    result = await self.analyze_object_event(
+                        object_name=object_name,
+                        event=event,
+                        max_results=max_results,
+                    )
+                    routing_stages.append(
+                        {
+                            "stage": "auto_object_event",
+                            "tool": "analyze_object_event",
+                            "allow_vector_fallback": False,
+                            "result_mode": result.get("mode"),
+                            "has_evidence": self._has_material_result_evidence(result),
+                        }
+                    )
+                else:
+                    change_target = self._change_query_target(q)
+                    if change_target:
+                        routed_to = "analyze_change"
+                        result = await self.analyze_change(
+                            target=change_target,
+                            max_hops=max_hops,
+                            max_results_per_component=max_results,
+                        )
+                        routing_stages.append(
+                            {
+                                "stage": "auto_change",
+                                "tool": "analyze_change",
+                                "allow_vector_fallback": False,
+                                "result_mode": result.get("mode"),
+                                "has_evidence": self._has_material_result_evidence(result),
+                            }
+                        )
+                    else:
+                        field_targets = await self._field_targets_for_question(q)
+                        field_mode = self._field_query_mode(q)
+                        if (
+                            not looks_like_method_reference(q)
+                            and (field_targets or (field_mode is not None and self._contains_field_token(q)))
+                        ):
+                            routed_to = "analyze_field"
+                            focus = "writes" if strict and field_mode in {"writes", "explain"} else (field_mode or "both")
+                            result = await self.analyze_field(
+                                field_name=q,
+                                focus=focus,
+                                max_results=max_results,
+                            )
+                            routing_stages.append(
+                                {
+                                    "stage": "auto_field",
+                                    "tool": "analyze_field",
+                                    "allow_vector_fallback": False,
+                                    "result_mode": result.get("mode"),
+                                    "has_evidence": self._has_material_result_evidence(result),
+                                }
+                            )
+                        else:
+                            routed_to = "query"
+                            result = await _query_stage(
+                                allow_vector_fallback=False if exact_first else (not strict),
+                                stage="auto_query",
+                            )
+
+            if (
+                exact_first
+                and routed_to == "query"
+                and not self._has_material_result_evidence(result)
+            ):
+                # Exact-first questions should only use semantic fallback when explicitly non-strict.
+                routed_to = "query"
+                result = await _query_stage(allow_vector_fallback=False, stage="auto_exact_lexical_graph")
+                if not strict and not self._has_material_result_evidence(result):
+                    semantic_fallback_reason = "auto_exact_first_insufficient_evidence"
+                    result = await _query_stage(allow_vector_fallback=True, stage="semantic_fallback")
+
+        evidence = self._collect_analyze_evidence(result, max_items=max_results)
+        if "confidence_tiers" in result:
+            confidence_tiers = result["confidence_tiers"]
+        else:
+            confidence_tiers = self._confidence_tiers(evidence)
+
+        mermaid = None
+        if include_mermaid:
+            preview_payload = build_analyze_payload(
+                question=q,
+                analysis_mode=selected_mode,
+                strict=strict,
+                routed_to=routed_to,
+                result=result,
+                evidence=evidence,
+                confidence_tiers=confidence_tiers,
+                routing_stages=routing_stages,
+                semantic_fallback_reason=semantic_fallback_reason,
+                freshness=result.get("freshness", await self.freshness(partial_results=False)),
+            )
+            mermaid = await self._mermaid_for_analyze_payload(preview_payload, max_hops=max_hops)
+        return finalize_analyze_payload(
+            cache=self._analyze_cache,
+            cache_key=cache_key,
+            question=q,
+            analysis_mode=selected_mode,
+            strict=strict,
+            routed_to=routed_to,
+            result=result,
+            evidence=evidence,
+            confidence_tiers=confidence_tiers,
+            routing_stages=routing_stages,
+            semantic_fallback_reason=semantic_fallback_reason,
+            freshness=result.get("freshness", await self.freshness(partial_results=False)),
+            has_material_evidence=self._has_material_result_evidence(result),
+            render_mode=render_mode,
+            mermaid=mermaid,
+        )
+
+    @staticmethod
+    def _field_query_mode(question: str) -> str | None:
+        q = question.lower()
+        if any(phrase in q for phrase in ("what uses", "who uses", "used by")):
+            return None
+        write_hits = any(
+            phrase in q
+            for phrase in (
+                " populate",
+                " populated",
+                " populated?",
+                " writes ",
+                " write ",
+                " written",
+                " assigned",
+                " assign ",
+                " set ",
+                " sets ",
+                " updated",
+                " update ",
+                " filled",
+                " fills ",
+            )
+        )
+        read_hits = any(
+            phrase in q
+            for phrase in (
+                " uses ",
+                " use ",
+                " used ",
+                " used?",
+                " read ",
+                " read?",
+                " reads ",
+                " referenced",
+                " reference ",
+                " consumed",
+                " depends on",
+            )
+        ) or "what uses" in q or "who uses" in q or "used by" in q or q.endswith(" used")
+        if write_hits and read_hits:
+            return "explain"
+        if write_hits:
+            return "writes"
+        if read_hits:
+            return "reads"
+        return None
+
+    async def _field_targets_for_question(self, question: str, limit: int = 20) -> list[str]:
+        explicit_matches = [
+            self._rules.resolve_alias(match.group(1))
+            for match in re.finditer(r"\b([A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)?)\b", question)
+        ]
+        if explicit_matches:
+            return list(dict.fromkeys(explicit_matches))
+
+        bare_matches = [
+            self._rules.resolve_alias(match.group(1))
+            for match in re.finditer(r"\b([A-Za-z][A-Za-z0-9_]*__(?:c|r|mdt|e))\b", question)
+        ]
+        targets: list[str] = []
+        for token in bare_matches:
+            targets.extend(await self._find_fields_by_suffix(token, limit=limit))
+            if len(targets) >= limit:
+                break
+        return list(dict.fromkeys(targets))[:limit]
+
+    async def _find_fields_by_suffix(self, field_token: str, limit: int = 20) -> list[str]:
+        scoped_matches: list[str] = []
+        try:
+            rows = await self._graph.query(
+                'SELECT qualified_name, props FROM "SFField" WHERE lower(qualified_name) LIKE $needle LIMIT 200',
+                {"needle": f"%.{field_token.lower()}"},
+            )
+        except Exception:
+            rows = []
+        for row in rows:
+            scoped_qname = str(row.get("qualified_name", ""))
+            if not scoped_qname or not self._is_in_scope(scoped_qname):
+                continue
+            descoped = self._descope_qname(scoped_qname)
+            if not descoped.lower().endswith(f".{field_token.lower()}"):
+                continue
+            scoped_matches.append(descoped)
+            if len(scoped_matches) >= limit:
+                break
+        return scoped_matches
+
+    async def _query_field_access(
+        self,
+        *,
+        question: str,
+        field_targets: list[str],
+        focus: str,
+        max_results: int,
+        schema_filter: dict[str, list[str]],
+        schema_trace: dict[str, str],
+        planner_trace: Any,
+    ) -> dict[str, Any]:
+        results: list[dict[str, Any]] = []
+        aggregated_findings: list[dict[str, Any]] = []
+        partial = False
+        for field_name in field_targets[:10]:
+            payload = await self.explain_field(field_name)
+            partial = partial or bool(payload.get("partial_results"))
+            field_result = {
+                "field": field_name,
+                "readers": payload.get("readers", []),
+                "writers": payload.get("writers", []),
+                "dependents": payload.get("dependents", []),
+                "partial_results": bool(payload.get("partial_results")),
+            }
+            results.append(field_result)
+            selected = (
+                field_result["writers"]
+                if focus == "writes"
+                else field_result["readers"]
+                if focus == "reads"
+                else field_result["writers"] + field_result["readers"]
+            )
+            for finding in selected:
+                aggregated_findings.append({"field": field_name, **finding})
+
+        aggregated_findings.sort(key=lambda finding: float(finding.get("confidence", 0.0)), reverse=True)
+        formatter_trace = self._formatter_agent.run(len(aggregated_findings[:max_results]))
+        mode = {
+            "writes": "field_writes",
+            "reads": "field_reads",
+            "explain": "field_access",
+        }[focus]
+        payload: dict[str, Any] = {
+            "mode": mode,
+            "question": question,
+            "fields": results,
+            "findings": aggregated_findings[:max_results],
+            "partial_results": partial or len(aggregated_findings) > max_results,
+            "freshness": await self.freshness(partial_results=partial or len(aggregated_findings) > max_results),
+            "confidence_tiers": self._confidence_tiers(aggregated_findings[:max_results]),
+            "pipeline": {
+                "schema_filter": schema_filter,
+                "intent": mode,
+                "attempts": [],
+                "agent_trace": [
+                    schema_trace,
+                    {"name": planner_trace.name, "strategy": planner_trace.strategy, "detail": planner_trace.detail},
+                    {"name": formatter_trace.name, "strategy": formatter_trace.strategy, "detail": formatter_trace.detail},
+                ],
+                "hint": "Strict exact field graph search; semantic vector fallback disabled.",
+            },
+        }
+        return payload
 
     @staticmethod
     def _layer_for_label(label: str) -> str:
@@ -680,6 +2009,14 @@ class GraphQueryService:
                 tiers["review_manually"].append(finding)
         return tiers
 
+    @staticmethod
+    def _review_manually_tiers(findings: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        return {
+            "definite": [],
+            "probable": [],
+            "review_manually": list(findings),
+        }
+
     async def _execute_node_search_pipeline(
         self,
         token: str,
@@ -722,7 +2059,7 @@ class GraphQueryService:
                         "qualifiedName": self._descope_qname(scoped_qname),
                         "scopedQualifiedName": scoped_qname,
                         "label": label,
-                        "props": _parse_props(row.get("props")),
+                        "props": parse_json_props(row.get("props")),
                         "confidence": 0.6,
                     }
                 )
@@ -834,21 +2171,23 @@ class GraphQueryService:
         """Return unresolved/dynamic edges explicitly for honesty in impact output."""
         findings: list[dict[str, Any]] = []
         matched = 0
+        try:
+            rows = await self._graph.query(
+                "SELECT src_qualified_name, dst_qualified_name, props, rel_type FROM _sfgraph_all_edges"
+            )
+            source_is_unified_view = True
+        except Exception:
+            rows = []
+            source_is_unified_view = False
 
-        for rel in await self._rel_types():
-            try:
-                rows = await self._graph.query(
-                    f'SELECT src_qualified_name, dst_qualified_name, props FROM "{rel}"'
-                )
-            except Exception:
-                rows = []
-
+        if source_is_unified_view:
             for row in rows:
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 resolution_method = str(props.get("resolutionMethod", "unknown"))
                 src = str(row.get("src_qualified_name", ""))
                 dst = str(row.get("dst_qualified_name", ""))
-                if not src or not dst:
+                rel = str(row.get("rel_type", ""))
+                if not src or not dst or not rel:
                     continue
                 if not self._is_in_scope(src) or not self._is_in_scope(dst):
                     continue
@@ -877,8 +2216,51 @@ class GraphQueryService:
                 )
                 if len(findings) >= limit:
                     break
-            if len(findings) >= limit:
-                break
+        else:
+            for rel in await self._rel_types():
+                try:
+                    rel_rows = await self._graph.query(
+                        f'SELECT src_qualified_name, dst_qualified_name, props FROM "{rel}"'
+                    )
+                except Exception:
+                    rel_rows = []
+
+                for row in rel_rows:
+                    props = parse_json_props(row.get("props"))
+                    resolution_method = str(props.get("resolutionMethod", "unknown"))
+                    src = str(row.get("src_qualified_name", ""))
+                    dst = str(row.get("dst_qualified_name", ""))
+                    if not src or not dst:
+                        continue
+                    if not self._is_in_scope(src) or not self._is_in_scope(dst):
+                        continue
+                    unresolved_dynamic = (
+                        resolution_method in {"dynamic", "unknown", "traced_limit", "regex"}
+                        or self._descope_qname(src).startswith("UNRESOLVED.")
+                        or self._descope_qname(dst).startswith("UNRESOLVED.")
+                    )
+                    if not unresolved_dynamic:
+                        continue
+                    if matched < offset:
+                        matched += 1
+                        continue
+                    matched += 1
+                    findings.append(
+                        {
+                            "rel_type": rel,
+                            "src_qualified_name": self._descope_qname(src),
+                            "dst_qualified_name": self._descope_qname(dst),
+                            "src_scoped_qualified_name": src,
+                            "dst_scoped_qualified_name": dst,
+                            "resolutionMethod": resolution_method,
+                            "confidence": float(props.get("confidence", 0.0)),
+                            "contextSnippet": props.get("contextSnippet", ""),
+                        }
+                    )
+                    if len(findings) >= limit:
+                        break
+                if len(findings) >= limit:
+                    break
 
         visible = findings[:limit]
         partial = matched > (offset + len(visible))
@@ -891,28 +2273,19 @@ class GraphQueryService:
         }
 
     async def get_ingestion_status(self) -> dict[str, Any]:
-        labels = await self._labels()
-        rel_types = await self._rel_types()
-
-        node_counts: dict[str, int] = {}
-        for label in labels:
-            node_counts[label] = await self._count_nodes_for_label(label)
-
-        edge_counts: dict[str, int] = {}
-        for rel in rel_types:
-            edge_counts[rel] = await self._count_edges_for_rel(rel)
-
-        status_counts = await self._manifest.get_status_counts()
-        latest_run = await self._manifest.get_latest_completed_run()
-        pending = await self._manifest.get_pending_files(limit=200)
+        self._refresh_read_caches()
         meta = self._read_ingestion_meta()
+        snapshot = self._status_snapshot_from_meta(meta)
+        if snapshot is None:
+            snapshot = await self._compute_status_snapshot()
+        pending = await self._manifest.get_pending_files(limit=200)
         progress = await self.get_ingestion_progress()
 
         return {
-            "node_counts_by_type": node_counts,
-            "edge_counts_by_type": edge_counts,
-            "status_counts": status_counts,
-            "latest_completed_run": latest_run,
+            "node_counts_by_type": snapshot["node_counts_by_type"],
+            "edge_counts_by_type": snapshot["edge_counts_by_type"],
+            "status_counts": snapshot["status_counts"],
+            "latest_completed_run": snapshot["latest_completed_run"],
             "dirty_files_pending": len(pending),
             "parser_stats": meta.get("parser_stats", {}),
             "unresolved_symbols": int(meta.get("unresolved_symbols", 0) or 0),
@@ -922,6 +2295,7 @@ class GraphQueryService:
         }
 
     async def get_ingestion_progress(self) -> dict[str, Any]:
+        self._refresh_read_caches()
         progress = self._read_ingestion_progress()
         if not progress:
             return {
@@ -934,6 +2308,128 @@ class GraphQueryService:
         progress["available"] = True
         progress["freshness"] = await self.freshness(partial_results=progress.get("state") == "running")
         return progress
+
+    async def _compute_status_snapshot(self) -> dict[str, Any]:
+        labels = await self._labels()
+        rel_types = await self._rel_types()
+
+        node_counts: dict[str, int] = {}
+        for label in labels:
+            node_counts[label] = await self._count_nodes_for_label(label)
+
+        edge_counts: dict[str, int] = {}
+        for rel in rel_types:
+            edge_counts[rel] = await self._count_edges_for_rel(rel)
+
+        return {
+            "node_counts_by_type": node_counts,
+            "edge_counts_by_type": edge_counts,
+            "status_counts": await self._manifest.get_status_counts(),
+            "latest_completed_run": await self._manifest.get_latest_completed_run(),
+        }
+
+    @staticmethod
+    def _status_snapshot_from_meta(meta: dict[str, Any]) -> dict[str, Any] | None:
+        node_counts = meta.get("node_counts_by_type")
+        edge_counts = meta.get("edge_counts_by_type")
+        status_counts = meta.get("status_counts")
+        latest_completed_run = meta.get("latest_completed_run")
+        if not isinstance(node_counts, dict) or not isinstance(edge_counts, dict):
+            return None
+        if not isinstance(status_counts, dict):
+            status_counts = {}
+        return {
+            "node_counts_by_type": node_counts,
+            "edge_counts_by_type": edge_counts,
+            "status_counts": status_counts,
+            "latest_completed_run": latest_completed_run if isinstance(latest_completed_run, dict) else None,
+        }
+
+    async def export_diagnostics_md(
+        self,
+        *,
+        destination: str | None = None,
+        export_dir: str | None = None,
+        run_id: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        reporter = IngestionDiagnosticsReporter(
+            ingestion_meta_path=str(self._ingestion_meta_path),
+            ingestion_progress_path=str(self._ingestion_progress_path),
+        )
+        payload = reporter.export_markdown(
+            destination=destination,
+            context={
+                "export_dir": export_dir,
+                "run_id": run_id,
+                "job_id": job_id,
+            },
+        )
+        payload["freshness"] = await self.freshness(partial_results=False)
+        return payload
+
+    async def graph_subgraph(
+        self,
+        *,
+        node_id: str | None = None,
+        question: str | None = None,
+        hops: int = 2,
+        max_nodes: int = 80,
+        format: str = "mermaid",
+        focus: str = "lineage",
+    ) -> dict[str, Any]:
+        resolved = node_id
+        if not resolved and question:
+            candidate = await self._find_node(question)
+            if candidate:
+                resolved = str(candidate.get("scopedQualifiedName") or candidate.get("qualifiedName") or "")
+        if not resolved and question:
+            analysis = await self.analyze(
+                question=question,
+                mode="exact",
+                strict=True,
+                max_results=10,
+                max_hops=hops,
+            )
+            for finding in analysis.get("findings", []):
+                resolved = str(
+                    finding.get("scopedQualifiedName")
+                    or finding.get("qualifiedName")
+                    or finding.get("target_node")
+                    or ""
+                )
+                if resolved:
+                    break
+        if not resolved:
+            raise ValueError("graph_subgraph requires node_id or a question that resolves to a node")
+
+        node_payload = await self.get_node(resolved)
+        node = node_payload.get("node") or {}
+        incoming = list(node_payload.get("incoming_edges", []))[: max(max_nodes // 2, 1)]
+        outgoing = list(node_payload.get("outgoing_edges", []))[: max(max_nodes // 2, 1)]
+        node_qname = str(node.get("scopedQualifiedName") or node.get("qualifiedName") or resolved)
+        node_label = str(node.get("label") or "Node")
+        if format == "json":
+            return {
+                "node": node,
+                "incoming_edges": incoming,
+                "outgoing_edges": outgoing,
+                "focus": focus,
+                "format": "json",
+                "freshness": await self.freshness(partial_results=False),
+            }
+        return {
+            "node": node,
+            "focus": focus,
+            "format": "mermaid",
+            "mermaid": render_mermaid_subgraph(
+                center=node_qname,
+                node_label=node_label,
+                incoming=incoming,
+                outgoing=outgoing,
+            ),
+            "freshness": await self.freshness(partial_results=False),
+        }
 
     async def _find_nodes_by_source_files(self, changed_files: list[str], limit: int = 500) -> list[dict[str, Any]]:
         """Best-effort mapping from changed file paths to graph nodes."""
@@ -948,7 +2444,7 @@ class GraphQueryService:
                 rows = []
             for row in rows:
                 qn = str(row.get("qualified_name", ""))
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 source = str(props.get("sourceFile", "")).replace("\\", "/")
                 if not qn or not source:
                     continue
@@ -986,7 +2482,7 @@ class GraphQueryService:
                 scoped_qn = str(row.get("qualified_name", ""))
                 if not scoped_qn or not self._is_in_scope(scoped_qn):
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 unscoped = self._descope_qname(scoped_qn)
                 if props.get("isTest") is True or self._looks_like_test_name(unscoped):
                     tests.append(

@@ -6,12 +6,12 @@ Tracks per-file processing state through the two-phase ingestion pipeline:
 
 Also tracks ingestion runs with phase completion flags for safe resume.
 """
-import hashlib
 import time
 import uuid
 from typing import Any, Dict
 
 import aiosqlite
+from sfgraph.common import compute_sha256
 
 # Valid phase state machine transitions
 VALID_STATUSES = frozenset({"PENDING", "NODES_WRITTEN", "EDGES_WRITTEN", "FAILED"})
@@ -275,11 +275,7 @@ class ManifestStore:
         Returns:
             64-character lowercase hexadecimal string.
         """
-        h = hashlib.sha256()
-        with open(path, "rb") as f:
-            while chunk := f.read(65536):
-                h.update(chunk)
-        return h.hexdigest()
+        return compute_sha256(path)
 
     async def close(self) -> None:
         """Close the database connection."""

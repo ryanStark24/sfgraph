@@ -19,7 +19,7 @@ A developer can ask "what breaks if I change this field?" and get a confident, s
 - [ ] Ingest Salesforce org metadata export (Apex, LWC, Flows, Objects, Labels, Settings, CMT, Vlocity) into a property graph
 - [ ] Two-phase ingestion: nodes-only pass first, then relationship discovery (eliminates forward-reference ordering)
 - [ ] Parse Apex/.cls/.trigger with tree-sitter-sfapex (Node.js subprocess pool)
-- [ ] Parse LWC .js with tree-sitter-javascript (wire + imperative Apex calls)
+- [ ] Parse LWC .js with the current Python LWC parser (regex-based import/wire/template extraction)
 - [ ] Parse LWC .html templates with lxml (child components, field bindings)
 - [ ] Parse Flow XML with ElementTree (record ops, apex calls, subflows, labels)
 - [ ] Parse Vlocity DataPacks: IntegrationProcedure, OmniScript, DataRaptor (full Load/Extract/Transform mapping)
@@ -32,8 +32,8 @@ A developer can ask "what breaks if I change this field?" and get a confident, s
 - [ ] Variable Origin Tracer with safety bounds (depth=5, cost=50, cycle detection)
 - [ ] Dynamic Accessor Registry (YAML config, org-specific utility method mapping)
 - [ ] Formula field parser (field formulas, validation rules, workflow updates, approval criteria)
-- [ ] FalkorDB embedded graph store (FalkorDBLite, New BSD)
-- [ ] GraphStore abstraction protocol (FalkorDBStore + DuckPGQStore implementations)
+- [ ] DuckPGQ embedded graph store (DuckDB-first runtime)
+- [ ] GraphStore abstraction protocol (DuckPGQStore primary + FalkorDBStore compatibility)
 - [ ] Qdrant local vector index (source code chunks per node)
 - [ ] SQLite manifest for incremental refresh (SHA-256 file hashing)
 - [ ] Incremental refresh: dirty-file-only re-ingestion + affected-node re-discovery
@@ -44,7 +44,7 @@ A developer can ask "what breaks if I change this field?" and get a confident, s
 - [ ] Result Formatter structured output contract (TRAVERSE vs ANSWER, hop budget=3)
 - [ ] Confidence tier output: Definite / Probable / Review manually
 - [ ] TRACE_LIMIT_HIT UX contract (attribution to code complexity, not tool weakness)
-- [ ] MCP server exposing: ingest_org, refresh, query, get_node, explain_field, get_ingestion_status
+- [ ] MCP server exposing job-native ingestion tools: start_ingest_job/start_refresh_job/start_vectorize_job + polling/status/query tools
 - [ ] PyPI-publishable package with README, CLI entrypoint, contributor docs
 
 ### Out of Scope
@@ -72,7 +72,7 @@ A developer can ask "what breaks if I change this field?" and get a confident, s
 
 - **Embedded only**: All components (graph DB, vector index, manifest) run locally — no cloud deps, no external services, no data leaves the machine
 - **License**: FalkorDBLite (New BSD) for embedded mode; DuckPGQ (MIT) as fallback — no copyleft, enterprise-safe
-- **Python**: 3.11+ orchestration runtime; `uv` for package management
+- **Python**: 3.12+ orchestration runtime; `uv` for package management
 - **Node.js**: Required for tree-sitter subprocess pool (Apex + LWC JS parsing)
 - **Performance**: Cold ingest < 3 min for large org; incremental refresh < 5s; query pipeline < 5s
 - **No test org available initially**: Build with synthetic fixtures; integrate real org in later phases
@@ -81,7 +81,7 @@ A developer can ask "what breaks if I change this field?" and get a confident, s
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| FalkorDB over Kùzu | Kùzu abandoned by corporate sponsor Oct 2025; FalkorDB is production-ready GraphRAG-native replacement | — Pending validation |
+| DuckPGQ-first runtime | Current shipped runtime uses DuckPGQ/DuckDB for embedded graph operations with workspace-scoped storage | Implemented |
 | Two-phase ingestion (nodes first, then edges) | Eliminates all forward-reference ordering problems; every node exists before any edge is attempted | — Pending |
 | GraphStore abstraction protocol | Decouples all ingestion/query logic from FalkorDB API; enables DuckPGQ fallback; ~2 day cost for major future flexibility | — Pending |
 | Variable Origin Tracer safety bounds (depth=5, cost=50) | Prevents O(n²) on pathological orgs; TRACE_LIMIT_HIT is a signal not an error | — Pending |

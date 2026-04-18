@@ -7,11 +7,35 @@ enforced here so parsers cannot forget source attribution.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
 from sfgraph.ingestion.constants import EDGE_CATEGORIES
+
+
+class IngestionPhase(str, Enum):
+    BOOTSTRAP = "bootstrap"
+    PLANNING_REFRESH = "planning_refresh"
+    DISCOVERING = "discovering"
+    PARSING = "parsing"
+    WRITING_NODES = "writing_nodes"
+    WRITING_EDGES = "writing_edges"
+    VECTORIZING = "vectorizing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class IngestionState(str, Enum):
+    IDLE = "idle"
+    QUEUED = "queued"
+    RUNNING = "running"
+    CANCELLING = "cancelling"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class NodeFact(BaseModel):
@@ -134,5 +158,6 @@ class VectorizeSummary(BaseModel):
     export_dir: str
     duration_seconds: float
     processed_nodes: int
+    failed_nodes: int = 0
     skipped_nodes: int
     warnings: list[str]

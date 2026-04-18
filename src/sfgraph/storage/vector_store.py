@@ -57,6 +57,8 @@ class VectorStore:
         Raises:
             ValueError: If neither path nor url is provided.
         """
+        self._path = path
+        self._url = url
         if url:
             self._client = QdrantClient(url=url)
         elif path is not None:
@@ -65,10 +67,42 @@ class VectorStore:
             raise ValueError("Either path or url must be provided to VectorStore")
         # Lazy-load embedder to defer model download until first upsert/search
         self._embedder = None
+        self._embedder_load_error: str | None = None
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Lightweight vector health snapshot safe for status endpoints."""
+        online = network_allowed()
+        mode = "remote" if self._url else ("memory" if self._path == ":memory:" else "local")
+        embedder_loaded = self._embedder is not None
+        if embedder_loaded:
+            status = "ready"
+        elif self._embedder_load_error:
+            status = "error"
+        elif online:
+            status = "lazy"
+        else:
+            status = "offline_model_unverified"
+        payload = {
+            "provider": "qdrant+fastembed",
+            "model": "BAAI/bge-small-en-v1.5",
+            "mode": mode,
+            "network_allowed": online,
+            "embedder_loaded": embedder_loaded,
+            "status": status,
+        }
+        if self._embedder_load_error:
+            payload["last_error"] = self._embedder_load_error
+        return payload
 
     def _get_embedder(self):
         """Return the fastembed TextEmbedding model, loading on first call."""
         if self._embedder is None:
+            if self._embedder_load_error:
+                raise RuntimeError(self._embedder_load_error)
+            # FastEmbed can emit repetitive INFO/WARNING logs while probing cache/network.
+            # Keep server logs actionable by default.
+            logging.getLogger("fastembed").setLevel(logging.ERROR)
+            logging.getLogger("onnxruntime").setLevel(logging.ERROR)
             from fastembed import TextEmbedding
             if not network_allowed():
                 # Hard privacy default: never fetch model artifacts over the network
@@ -84,16 +118,21 @@ class VectorStore:
                         local_files_only=True,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    raise RuntimeError(
+                    self._embedder_load_error = (
                         "Embeddings are configured to stay local-only. "
                         "Pre-cache the BAAI/bge-small-en-v1.5 model or set "
                         "SFGRAPH_ALLOW_NETWORK=1 to allow model download."
-                    ) from exc
+                    )
+                    raise RuntimeError(self._embedder_load_error) from exc
             else:
                 logger.info(
                     "Loading BAAI/bge-small-en-v1.5 embedding model (first use — may download ~130MB)"
                 )
-                self._embedder = TextEmbedding("BAAI/bge-small-en-v1.5")
+                try:
+                    self._embedder = TextEmbedding("BAAI/bge-small-en-v1.5")
+                except Exception as exc:  # noqa: BLE001
+                    self._embedder_load_error = str(exc)
+                    raise RuntimeError(self._embedder_load_error) from exc
         return self._embedder
 
     @staticmethod
@@ -225,3 +264,9 @@ class VectorStore:
             wait=True,
         )
         return len(point_ids)
+
+    async def close(self) -> None:
+        """Release underlying client resources when supported."""
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            close()

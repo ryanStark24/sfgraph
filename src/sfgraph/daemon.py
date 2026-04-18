@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from concurrent.futures import CancelledError as FutureCancelledError
+from concurrent.futures import TimeoutError as FutureTimeoutError
 import json
 import logging
 import os
@@ -10,6 +12,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -55,10 +58,44 @@ class _DaemonHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
-            self._send_json(200, {"ok": True, "pid": os.getpid()})
+            payload: dict[str, Any] = {"ok": True, "pid": os.getpid()}
+            progress_path = Path(getattr(self.server, "data_root")) / "ingestion_progress.json"
+            if progress_path.exists():
+                try:
+                    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+                except Exception:
+                    logger.debug("Failed to parse progress snapshot at %s", progress_path, exc_info=True)
+                    progress = {}
+                if isinstance(progress, dict):
+                    payload["progress_available"] = True
+                    payload["active_state"] = progress.get("state")
+                    payload["active_phase"] = progress.get("phase")
+                    payload["last_progress_at"] = progress.get("last_progress_at") or progress.get("updated_at")
+                    payload["active_run_id"] = progress.get("run_id")
+            else:
+                payload["progress_available"] = False
+            self._send_json(200, payload)
             return
         if self.path == "/meta":
             self._send_json(200, getattr(self.server, "meta_payload"))
+            return
+        if self.path == "/progress-snapshot":
+            progress_path = Path(getattr(self.server, "data_root")) / "ingestion_progress.json"
+            if not progress_path.exists():
+                self._send_json(200, {"available": False, "state": "idle"})
+                return
+            try:
+                payload = json.loads(progress_path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.debug("Failed to parse progress snapshot at %s", progress_path, exc_info=True)
+                self._send_json(200, {"available": False, "state": "idle"})
+                return
+            if not isinstance(payload, dict):
+                self._send_json(200, {"available": False, "state": "idle"})
+                return
+            payload = dict(payload)
+            payload["available"] = True
+            self._send_json(200, payload)
             return
         self._send_json(404, {"error": "not_found"})
 
@@ -71,6 +108,7 @@ class _DaemonHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(raw.decode("utf-8") or "{}")
         except Exception:
+            logger.debug("Invalid daemon RPC JSON payload", exc_info=True)
             self._send_json(400, {"error": "invalid_json"})
             return
         if not isinstance(payload, dict):
@@ -85,6 +123,21 @@ class _DaemonHandler(BaseHTTPRequestHandler):
         except KeyError:
             self._send_json(404, {"error": "unknown_method", "method": method})
             return
+        except FutureTimeoutError:
+            future.cancel()
+            self._send_json(504, {"error": "timeout", "method": method})
+            return
+        except FutureCancelledError:
+            self._send_json(499, {"error": "cancelled", "method": method})
+            return
+        except RuntimeError as exc:
+            logger.exception("daemon rpc runtime failure for %s", method)
+            self._send_json(500, {"error": "RuntimeError", "message": str(exc)})
+            return
+        except ValueError as exc:
+            logger.exception("daemon rpc value failure for %s", method)
+            self._send_json(400, {"error": "ValueError", "message": str(exc)})
+            return
         except Exception as exc:  # noqa: BLE001
             logger.exception("daemon rpc failed for %s", method)
             self._send_json(500, {"error": type(exc).__name__, "message": str(exc)})
@@ -97,26 +150,27 @@ class _DaemonServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-async def run_daemon(data_root: Path, host: str, port: int) -> None:
+async def run_daemon(data_root: Path, host: str, port: int, workspace_root: str | None = None) -> None:
     app = await create_app_context(data_root)
     loop = asyncio.get_running_loop()
+    server = _DaemonServer((host, port), _DaemonHandler)
     meta = {
         "host": host,
         "port": port,
         "base_url": f"http://{host}:{port}",
         "pid": os.getpid(),
         "data_root": str(data_root),
+        "workspace_root": workspace_root,
     }
     meta_path = _daemon_meta_path(data_root)
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-    server = _DaemonServer((host, port), _DaemonHandler)
     server.loop = loop  # type: ignore[attr-defined]
     server.operations = DaemonOperations(app)  # type: ignore[attr-defined]
     server.meta_payload = meta  # type: ignore[attr-defined]
+    server.data_root = str(data_root)  # type: ignore[attr-defined]
 
     thread = threading.Thread(target=server.serve_forever, name="sfgraphd-http", daemon=True)
     thread.start()
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     logger.info("sfgraph daemon listening on %s", meta["base_url"])
 
     stop_event = asyncio.Event()
@@ -140,24 +194,44 @@ async def run_daemon(data_root: Path, host: str, port: int) -> None:
         try:
             meta_path.unlink(missing_ok=True)
         except Exception:
-            pass
+            logger.debug("Failed to unlink daemon metadata at %s", meta_path, exc_info=True)
 
 
-def start_daemon_subprocess(data_root: Path, host: str = _DEFAULT_HOST) -> dict[str, Any]:
+def clear_daemon_metadata(data_root: Path) -> None:
+    meta_path = _daemon_meta_path(data_root.expanduser().resolve())
+    try:
+        meta_path.unlink(missing_ok=True)
+    except Exception:
+        logger.warning("Failed to remove stale daemon metadata at %s", meta_path, exc_info=True)
+
+
+def start_daemon_subprocess(
+    data_root: Path,
+    host: str = _DEFAULT_HOST,
+    *,
+    workspace_root: Path | None = None,
+    ignore_existing: bool = False,
+) -> dict[str, Any]:
     data_root = data_root.expanduser().resolve()
     meta_path = _daemon_meta_path(data_root)
-    if meta_path.exists():
+    if not ignore_existing and meta_path.exists():
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             pid = int(meta.get("pid", 0))
             if pid and _is_process_alive(pid):
                 return meta
         except Exception:
-            pass
+            logger.debug("Failed reading daemon metadata at %s; will start a new daemon", meta_path, exc_info=True)
+    elif ignore_existing:
+        clear_daemon_metadata(data_root)
     port = _free_port()
     env = os.environ.copy()
     env["SFGRAPH_DATA_DIR"] = str(data_root)
+    if workspace_root is not None:
+        env["SFGRAPH_WORKSPACE_ROOT"] = str(workspace_root.expanduser().resolve())
     cmd = [sys.executable, "-m", "sfgraph.daemon", "--data-dir", str(data_root), "--host", host, "--port", str(port)]
+    if workspace_root is not None:
+        cmd.extend(["--workspace-root", str(workspace_root.expanduser().resolve())])
     subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     for _ in range(50):
         if meta_path.exists():
@@ -166,8 +240,7 @@ def start_daemon_subprocess(data_root: Path, host: str = _DEFAULT_HOST) -> dict[
                 if int(meta.get("port", 0)) == port:
                     return meta
             except Exception:
-                pass
-        import time
+                logger.debug("Daemon metadata not ready yet at %s", meta_path, exc_info=True)
         time.sleep(0.1)
     raise RuntimeError(f"Timed out starting sfgraph daemon for {data_root}")
 
@@ -177,6 +250,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", default=os.getenv("SFGRAPH_DATA_DIR", "./data"))
     parser.add_argument("--host", default=_DEFAULT_HOST)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--workspace-root", default=os.getenv("SFGRAPH_WORKSPACE_ROOT"))
     return parser.parse_args(argv)
 
 
@@ -184,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = parse_args(argv)
     data_root = Path(args.data_dir).expanduser().resolve()
-    asyncio.run(run_daemon(data_root=data_root, host=args.host, port=args.port))
+    asyncio.run(run_daemon(data_root=data_root, host=args.host, port=args.port, workspace_root=args.workspace_root))
     return 0
 
 

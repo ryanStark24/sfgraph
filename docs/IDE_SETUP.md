@@ -182,7 +182,11 @@ Example ingest commands:
 ```bash
 uv run sfgraph ingest /absolute/path/to/ProjectA/export --data-dir /absolute/path/to/ProjectA/.sfgraph-data
 uv run sfgraph ingest /absolute/path/to/ProjectB/export --data-dir /absolute/path/to/ProjectB/.sfgraph-data
+# Optional org-aware enrichment (requires Salesforce CLI + authenticated alias)
+uv run sfgraph ingest /absolute/path/to/ProjectA/export --data-dir /absolute/path/to/ProjectA/.sfgraph-data --enrich-org --org-alias my-org
 ```
+
+Recommendation: run ingestion from CLI for deterministic execution, then use MCP tools (`ask`, `analyze`, `get_ingest_job`) from the IDE for interactive analysis.
 
 ## Sanity Check After Connecting
 
@@ -190,7 +194,8 @@ Once the IDE detects the server, try:
 
 - `ping`
 - `get_ingestion_status`
-- `ingest_org("/absolute/path/to/export")`
-- `query("what writes to Account.Status__c?")`
+- `start_ingest_job("/absolute/path/to/export", mode="graph_only")`
+- `ask("where is Account.Status__c populated?")`
+- `get_ingest_job("<job_id from start_ingest_job>")`
 
 If the server starts but queries are empty, ingest the export first.

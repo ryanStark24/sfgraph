@@ -26,6 +26,7 @@ Query method accepts DuckDB SQL or PGQ SQL (FROM GRAPH_TABLE syntax).
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 
 import duckdb
@@ -33,6 +34,8 @@ import duckdb
 from sfgraph.storage.base import GraphStore
 
 logger = logging.getLogger(__name__)
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EDGE_BATCH_SIZE = 5000
 
 
 class DuckPGQStore(GraphStore):
@@ -48,9 +51,10 @@ class DuckPGQStore(GraphStore):
         await store.close()
     """
 
-    def __init__(self, db_path: str = ":memory:") -> None:
+    def __init__(self, db_path: str = ":memory:", read_only: bool = False) -> None:
         self._db_path = db_path
-        self._conn = duckdb.connect(db_path)
+        self._read_only = read_only
+        self._conn = duckdb.connect(db_path, read_only=read_only)
         self._node_labels: set[str] = set()
         self._edge_types: set[str] = set()
         self._lock = asyncio.Lock()
@@ -62,24 +66,94 @@ class DuckPGQStore(GraphStore):
 
     def _init_schema_registry(self) -> None:
         """Create the schema registry table and reload any tables from a prior session."""
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS _sfgraph_schema "
-            "(table_name VARCHAR PRIMARY KEY, kind VARCHAR)"
-        )
-        rows = self._conn.execute(
-            "SELECT table_name, kind FROM _sfgraph_schema"
-        ).fetchall()
+        if not self._read_only:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS _sfgraph_schema "
+                "(table_name VARCHAR PRIMARY KEY, kind VARCHAR)"
+            )
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS _sfgraph_node_index "
+                "(qualified_name VARCHAR PRIMARY KEY, label VARCHAR NOT NULL)"
+            )
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS _sfgraph_source_index ("
+                "qualified_name VARCHAR PRIMARY KEY, "
+                "source_file VARCHAR NOT NULL, "
+                "label VARCHAR NOT NULL, "
+                "project_scope VARCHAR)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sfgraph_node_index_label "
+                "ON _sfgraph_node_index (label)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sfgraph_source_index_source_file "
+                "ON _sfgraph_source_index (source_file)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sfgraph_source_index_project_scope "
+                "ON _sfgraph_source_index (project_scope)"
+            )
+        try:
+            rows = self._conn.execute(
+                "SELECT table_name, kind FROM _sfgraph_schema"
+            ).fetchall()
+        except Exception:
+            rows = []
         for table_name, kind in rows:
+            if not self._is_valid_identifier(str(table_name)):
+                logger.warning("Skipping invalid schema identifier from registry: %r", table_name)
+                continue
             if kind == "node":
                 self._node_labels.add(table_name)
             elif kind == "edge":
                 self._edge_types.add(table_name)
+        if not self._read_only:
+            self._backfill_node_index()
+            self._backfill_source_index()
+            self._refresh_all_edges_view()
+
+    def _backfill_node_index(self) -> None:
+        """Populate node index entries for legacy tables if missing."""
+        for label in self._node_labels:
+            self._conn.execute(
+                f'INSERT OR REPLACE INTO _sfgraph_node_index (qualified_name, label) '
+                f'SELECT qualified_name, ? FROM "{label}"',
+                [label],
+            )
+
+    def _backfill_source_index(self) -> None:
+        """Populate source-file index entries for legacy tables if missing."""
+        for label in self._node_labels:
+            rows = self._conn.execute(
+                f'SELECT qualified_name, props FROM "{label}"'
+            ).fetchall()
+            for qualified_name, raw_props in rows:
+                try:
+                    props = json.loads(raw_props) if isinstance(raw_props, str) else raw_props
+                except Exception:
+                    props = {}
+                self._sync_source_index_entry(str(qualified_name), str(label), props if isinstance(props, dict) else {})
+
+    @staticmethod
+    def _is_valid_identifier(name: str) -> bool:
+        return bool(_IDENTIFIER_RE.match(name))
+
+    @classmethod
+    def _ensure_valid_identifier(cls, name: str, *, kind: str) -> str:
+        if not cls._is_valid_identifier(name):
+            raise ValueError(
+                f"Invalid {kind} identifier {name!r}. "
+                "Only [A-Za-z_][A-Za-z0-9_]* are allowed."
+            )
+        return name
 
     # ------------------------------------------------------------------
     # Schema helpers (synchronous — called inside async lock)
     # ------------------------------------------------------------------
 
     def _ensure_node_table(self, label: str) -> None:
+        label = self._ensure_valid_identifier(label, kind="label")
         if label in self._node_labels:
             return
         self._conn.execute(
@@ -94,6 +168,7 @@ class DuckPGQStore(GraphStore):
         logger.debug("Created node table: %s", label)
 
     def _ensure_edge_table(self, rel_type: str) -> None:
+        rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
         if rel_type in self._edge_types:
             return
         self._conn.execute(
@@ -107,8 +182,54 @@ class DuckPGQStore(GraphStore):
             "INSERT OR IGNORE INTO _sfgraph_schema (table_name, kind) VALUES (?, ?)",
             [rel_type, "edge"],
         )
+        self._conn.execute(
+            f'CREATE INDEX IF NOT EXISTS "idx_{rel_type}_src" '
+            f'ON "{rel_type}" (src_qualified_name)'
+        )
+        self._conn.execute(
+            f'CREATE INDEX IF NOT EXISTS "idx_{rel_type}_dst" '
+            f'ON "{rel_type}" (dst_qualified_name)'
+        )
         self._edge_types.add(rel_type)
+        self._refresh_all_edges_view()
         logger.debug("Created edge table: %s", rel_type)
+
+    def _refresh_all_edges_view(self) -> None:
+        """(Re)create a unified edge view for fast multi-hop traversal queries."""
+        if not self._edge_types:
+            self._conn.execute(
+                "CREATE OR REPLACE VIEW _sfgraph_all_edges AS "
+                "SELECT "
+                "CAST(NULL AS VARCHAR) AS src_qualified_name, "
+                "CAST(NULL AS VARCHAR) AS dst_qualified_name, "
+                "CAST(NULL AS JSON) AS props, "
+                "CAST(NULL AS VARCHAR) AS rel_type "
+                "WHERE FALSE"
+            )
+            return
+
+        selects = []
+        for rel_type in sorted(self._edge_types):
+            selects.append(
+                f"SELECT src_qualified_name, dst_qualified_name, props, '{rel_type}' AS rel_type FROM \"{rel_type}\""
+            )
+        sql = "CREATE OR REPLACE VIEW _sfgraph_all_edges AS " + " UNION ALL ".join(selects)
+        self._conn.execute(sql)
+
+    def _sync_source_index_entry(self, qualified_name: str, label: str, props: dict[str, Any]) -> None:
+        source_file = props.get("sourceFile")
+        project_scope = props.get("projectScope")
+        if isinstance(source_file, str) and source_file:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO _sfgraph_source_index "
+                "(qualified_name, source_file, label, project_scope) VALUES (?, ?, ?, ?)",
+                [qualified_name, source_file, label, project_scope if isinstance(project_scope, str) else None],
+            )
+            return
+        self._conn.execute(
+            "DELETE FROM _sfgraph_source_index WHERE qualified_name = ?",
+            [qualified_name],
+        )
 
     # ------------------------------------------------------------------
     # GraphStore ABC implementation
@@ -125,12 +246,41 @@ class DuckPGQStore(GraphStore):
             key_props.get("qualifiedName") or all_props.get("qualifiedName", "")
         )
         async with self._lock:
+            label = self._ensure_valid_identifier(label, kind="label")
             self._ensure_node_table(label)
             self._conn.execute(
                 f'INSERT OR REPLACE INTO "{label}" (qualified_name, props) VALUES (?, ?)',
                 [qualified_name, json.dumps(all_props)],
             )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO _sfgraph_node_index (qualified_name, label) VALUES (?, ?)",
+                [qualified_name, label],
+            )
+            self._sync_source_index_entry(qualified_name, label, all_props)
         return qualified_name
+
+    async def merge_nodes_batch(
+        self,
+        label: str,
+        nodes: list[tuple[str, dict[str, Any]]],
+    ) -> int:
+        """Batch upsert nodes for a single label."""
+        if not nodes:
+            return 0
+        async with self._lock:
+            label = self._ensure_valid_identifier(label, kind="label")
+            self._ensure_node_table(label)
+            self._conn.executemany(
+                f'INSERT OR REPLACE INTO "{label}" (qualified_name, props) VALUES (?, ?)',
+                [(qualified_name, json.dumps(props)) for qualified_name, props in nodes],
+            )
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO _sfgraph_node_index (qualified_name, label) VALUES (?, ?)",
+                [(qualified_name, label) for qualified_name, _ in nodes],
+            )
+            for qualified_name, props in nodes:
+                self._sync_source_index_entry(qualified_name, label, props)
+        return len(nodes)
 
     async def merge_edge(
         self,
@@ -143,6 +293,7 @@ class DuckPGQStore(GraphStore):
     ) -> None:
         """Upsert a directed edge into the rel_type-specific table."""
         async with self._lock:
+            rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
             self._ensure_edge_table(rel_type)
             self._conn.execute(
                 f'INSERT OR REPLACE INTO "{rel_type}" '
@@ -150,20 +301,112 @@ class DuckPGQStore(GraphStore):
                 [src_qualified_name, dst_qualified_name, json.dumps(props)],
             )
 
+    async def merge_edges_batch(
+        self,
+        rel_type: str,
+        edges: list[tuple[str, str, dict[str, Any]]],
+    ) -> int:
+        """Batch upsert edges for a single relationship type."""
+        if not edges:
+            return 0
+        async with self._lock:
+            rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
+            self._ensure_edge_table(rel_type)
+            sql = (
+                f'INSERT OR REPLACE INTO "{rel_type}" '
+                f"(src_qualified_name, dst_qualified_name, props) VALUES (?, ?, ?)"
+            )
+            for start in range(0, len(edges), _EDGE_BATCH_SIZE):
+                chunk = edges[start : start + _EDGE_BATCH_SIZE]
+                self._conn.executemany(
+                    sql,
+                    [(src_qn, dst_qn, json.dumps(props)) for src_qn, dst_qn, props in chunk],
+                )
+        return len(edges)
+
+    async def delete_node(self, label: str, qualified_name: str) -> bool:
+        """Delete one node by label + qualified name."""
+        async with self._lock:
+            label = self._ensure_valid_identifier(label, kind="label")
+            if label not in self._node_labels:
+                return False
+            before = self._conn.execute(
+                f'SELECT COUNT(*) FROM "{label}" WHERE qualified_name = $qn',
+                {"qn": qualified_name},
+            ).fetchone()
+            self._conn.execute(
+                f'DELETE FROM "{label}" WHERE qualified_name = $qn',
+                {"qn": qualified_name},
+            )
+            self._conn.execute(
+                "DELETE FROM _sfgraph_node_index WHERE qualified_name = $qn",
+                {"qn": qualified_name},
+            )
+            self._conn.execute(
+                "DELETE FROM _sfgraph_source_index WHERE qualified_name = $qn",
+                {"qn": qualified_name},
+            )
+            return bool(before and int(before[0]) > 0)
+
+    async def delete_edge(
+        self,
+        rel_type: str,
+        src_qualified_name: str,
+        dst_qualified_name: str,
+    ) -> bool:
+        """Delete one edge row."""
+        async with self._lock:
+            rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
+            if rel_type not in self._edge_types:
+                return False
+            before = self._conn.execute(
+                f'SELECT COUNT(*) FROM "{rel_type}" '
+                "WHERE src_qualified_name = $src AND dst_qualified_name = $dst",
+                {"src": src_qualified_name, "dst": dst_qualified_name},
+            ).fetchone()
+            self._conn.execute(
+                f'DELETE FROM "{rel_type}" '
+                "WHERE src_qualified_name = $src AND dst_qualified_name = $dst",
+                {"src": src_qualified_name, "dst": dst_qualified_name},
+            )
+            return bool(before and int(before[0]) > 0)
+
+    async def delete_edges_for_node(self, rel_type: str, qualified_name: str) -> int:
+        """Delete all edges in rel_type touching qualified_name."""
+        async with self._lock:
+            rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
+            if rel_type not in self._edge_types:
+                return 0
+            before = self._conn.execute(
+                f'SELECT COUNT(*) FROM "{rel_type}" '
+                "WHERE src_qualified_name = $qn OR dst_qualified_name = $qn",
+                {"qn": qualified_name},
+            ).fetchone()
+            self._conn.execute(
+                f'DELETE FROM "{rel_type}" '
+                "WHERE src_qualified_name = $qn OR dst_qualified_name = $qn",
+                {"qn": qualified_name},
+            )
+            return int(before[0]) if before else 0
+
     async def query(
         self,
-        cypher: str,
+        query_text: str | None = None,
         params: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Execute a DuckDB SQL or PGQ SQL statement and return rows as dicts.
 
         Note: This store uses DuckDB SQL / PGQ syntax, not Cypher.
-        The parameter name 'cypher' is inherited from the GraphStore ABC;
-        pass DuckDB SQL (including FROM GRAPH_TABLE(...) PGQ queries) here.
+        Pass DuckDB SQL (including FROM GRAPH_TABLE(...) PGQ queries) here.
         Named params use $name syntax: {'name': 'Foo'} binds $name.
         """
+        if query_text is None:
+            query_text = kwargs.pop("cypher", None)
+        if query_text is None:
+            raise ValueError("query_text is required")
         async with self._lock:
-            result = self._conn.execute(cypher, params or {})
+            result = self._conn.execute(query_text, params or {})
             if result.description is None:
                 return []
             columns = [desc[0] for desc in result.description]
@@ -183,4 +426,4 @@ class DuckPGQStore(GraphStore):
             self._conn.close()
             logger.debug("DuckPGQStore closed: %s", self._db_path)
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("DuckPGQStore close failed: %s", self._db_path, exc_info=True)

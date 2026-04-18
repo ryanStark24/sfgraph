@@ -52,6 +52,7 @@ testpaths = ["tests"]
 addopts = "--cov=sfgraph --cov-report=term-missing"
 markers = [
     "integration: marks tests that require an external service (FalkorDB server on localhost:6379). Deselect with -m 'not integration'.",
+    "online_dataset: marks tests that clone public repos and run full ingest/acceptance quality checks.",
 ]
 
 [tool.coverage.run]

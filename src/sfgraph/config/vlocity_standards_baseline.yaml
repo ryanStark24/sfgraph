@@ -1,0 +1,45 @@
+version: 1
+critical_file_suffixes:
+  PromotionItems:
+    node_label: PromotionItem
+    rel_type: HAS_PROMOTION_ITEM
+  PriceListEntries:
+    node_label: PriceListEntryItem
+    rel_type: HAS_PRICE_LIST_ENTRY
+  InterfaceImplementationDetails:
+    node_label: InterfaceImplementationDetail
+    rel_type: HAS_INTERFACE_IMPLEMENTATION_DETAIL
+  ProductChildItems:
+    node_label: ProductChildItem
+    rel_type: HAS_PRODUCT_CHILD_ITEM
+rules:
+  IntegrationProcedure:
+    primary_sobject_type: IntegrationProcedure
+    query_signature: IntegrationProcedure
+    matching_key_fields: ["Name"]
+    return_key_field: Name
+  DataRaptor:
+    primary_sobject_type: DataRaptor
+    query_signature: DataRaptor
+    matching_key_fields: ["Name"]
+    return_key_field: Name
+  OmniScript:
+    primary_sobject_type: OmniScript
+    query_signature: OmniScript
+    matching_key_fields: ["Type", "SubType", "Language"]
+    return_key_field: Name
+  VlocityCard:
+    primary_sobject_type: VlocityCard
+    query_signature: VlocityCard
+    matching_key_fields: ["Name"]
+    return_key_field: Name
+  VlocityUILayout:
+    primary_sobject_type: VlocityUILayout
+    query_signature: VlocityUILayout
+    matching_key_fields: ["Name"]
+    return_key_field: Name
+  VlocityUITemplate:
+    primary_sobject_type: VlocityUITemplate
+    query_signature: VlocityUITemplate
+    matching_key_fields: ["Name"]
+    return_key_field: Name

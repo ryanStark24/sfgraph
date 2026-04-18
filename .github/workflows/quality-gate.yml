@@ -1,0 +1,57 @@
+name: quality-gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  benchmark-and-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Run synthetic benchmark
+        run: |
+          uv run python -m sfgraph.cli benchmark "$RUNNER_TEMP/sfgraph-bench" \
+            --data-dir "$RUNNER_TEMP/sfgraph-bench-data" \
+            --synthetic-classes 250 \
+            --synthetic-flows 120 \
+            --query-iterations 2 > "$RUNNER_TEMP/benchmark.json"
+
+      - name: Ingest fixture metadata for acceptance suite
+        run: |
+          uv run python -m sfgraph.cli ingest tests/fixtures/metadata \
+            --data-dir "$RUNNER_TEMP/sfgraph-accept-data" \
+            --mode graph_only > "$RUNNER_TEMP/ingest.json"
+
+      - name: Run acceptance suite
+        run: |
+          uv run python -m sfgraph.cli acceptance \
+            --data-dir "$RUNNER_TEMP/sfgraph-accept-data" \
+            --suite docs/acceptance_quality_gate_suite.json > "$RUNNER_TEMP/acceptance.json"
+
+      - name: Enforce quality thresholds
+        run: |
+          uv run python bin/assert_quality_gate.py \
+            --benchmark "$RUNNER_TEMP/benchmark.json" \
+            --acceptance "$RUNNER_TEMP/acceptance.json" \
+            --min-pass-rate 1.0 \
+            --max-avg-duration-ms 3000
+
+      - name: Compare sfgraph answers against native code search
+        run: |
+          uv run python bin/compare_sfgraph_vs_native.py \
+            --repo-root tests/fixtures/metadata \
+            --data-dir "$RUNNER_TEMP/sfgraph-accept-data"

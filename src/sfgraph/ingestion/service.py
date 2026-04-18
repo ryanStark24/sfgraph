@@ -3,57 +3,62 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
-import fnmatch
 import subprocess
+import shutil
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sfgraph.common import compute_sha256, descope_qname, parse_json_props, scope_qname
 from sfgraph.ingestion.constants import NODE_WRITE_ORDER
-from sfgraph.ingestion.models import EdgeFact, IngestionSummary, NodeFact, RefreshSummary, VectorizeSummary
+from sfgraph.ingestion.discovery import (
+    DEFAULT_DISCOVERY_ROOTS,
+    SKIP_DIR_NAMES,
+    discover_file_records,
+    discovery_roots,
+    matches_discovery_rules,
+    sfdx_package_directories,
+    should_skip_file,
+)
+from sfgraph.ingestion.parser_dispatch import (
+    AURA_MARKUP_SUFFIXES,
+    is_supported_source_file,
+    parser_name_for_file,
+)
+from sfgraph.ingestion.models import (
+    EdgeFact,
+    IngestionSummary,
+    NodeFact,
+    RefreshSummary,
+    VectorizeSummary,
+)
+from sfgraph.ingestion.org_metadata import SalesforceOrgMetadataClient
+from sfgraph.ingestion.parse_executor import ParseExecutor
 from sfgraph.ingestion.schema_index import materialize_schema_index
+from sfgraph.ingestion.state_io import (
+    build_progress_payload,
+    write_ingestion_meta,
+    write_progress_snapshot,
+    write_refresh_meta,
+)
 from sfgraph.parser.apex_extractor import ApexExtractor
 from sfgraph.parser.dynamic_accessor import DynamicAccessorRegistry
-from sfgraph.parser.flow_parser import parse_flow_xml
-from sfgraph.parser.lwc_parser import parse_lwc_file
-from sfgraph.parser.object_parser import parse_labels_xml, parse_object_dir
 from sfgraph.parser.pool import NodeParserPool
-from sfgraph.parser.vlocity_parser import is_vlocity_datapack_file, parse_vlocity_json
 from sfgraph.storage.base import GraphStore
 from sfgraph.storage.manifest_store import ManifestStore
 from sfgraph.storage.parse_cache import ParseCache
 from sfgraph.storage.vector_store import VectorStore
+from sfgraph.vlocity_standards import VlocityStandardsCore
 
 logger = logging.getLogger(__name__)
-TRANSIENT_WORKER_ERRORS = frozenset({"worker_restarting", "worker_exited", "timeout", "no_workers"})
-
-
-def _sha256(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _parse_props(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            payload = json.loads(value)
-            if isinstance(payload, dict):
-                return payload
-        except Exception:
-            return {}
-    return {}
-
-
+_EDGE_PROGRESS_BATCH_SIZE = 5000
 def _format_parser_failure_details(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -96,28 +101,10 @@ class IngestionService:
     SCHEMA_INDEX_PATH = "./data/schema_index.json"
     INGESTION_META_PATH = "./data/ingestion_meta.json"
     INGESTION_PROGRESS_PATH = "./data/ingestion_progress.json"
-    SKIP_DIR_NAMES = frozenset(
-        {
-            ".git",
-            ".hg",
-            ".svn",
-            ".sfdx",
-            ".sf",
-            "node_modules",
-            ".venv",
-            "venv",
-            "__pycache__",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".cache",
-            "dist",
-            "build",
-        }
-    )
+    SKIP_DIR_NAMES = SKIP_DIR_NAMES
     SKIP_FILE_PREFIXES = ("~$",)
     SKIP_FILE_SUFFIXES = (".tmp", ".swp", ".swo")
-    DEFAULT_DISCOVERY_ROOTS = ("force-app", "vlocity")
-
+    DEFAULT_DISCOVERY_ROOTS = DEFAULT_DISCOVERY_ROOTS
     def __init__(
         self,
         graph: GraphStore,
@@ -125,17 +112,21 @@ class IngestionService:
         pool: NodeParserPool,
         vectors: VectorStore | None = None,
         parse_cache: ParseCache | None = None,
+        cancel_event: threading.Event | None = None,
         schema_index_path: str | None = None,
         ingestion_meta_path: str | None = None,
         ingestion_progress_path: str | None = None,
         include_globs: list[str] | None = None,
         exclude_globs: list[str] | None = None,
+        org_alias: str | None = None,
+        enrich_org: bool = False,
     ) -> None:
         self._graph = graph
         self._manifest = manifest
         self._pool = pool
         self._vectors = vectors
         self._parse_cache = parse_cache
+        self._cancel_event = cancel_event
         self._schema_index_path = schema_index_path or self.SCHEMA_INDEX_PATH
         self._ingestion_meta_path = ingestion_meta_path or self.INGESTION_META_PATH
         self._ingestion_progress_path = ingestion_progress_path or self.INGESTION_PROGRESS_PATH
@@ -147,21 +138,163 @@ class IngestionService:
         self._last_progress_flush_at: float = 0.0
         self._include_globs = include_globs or []
         self._exclude_globs = exclude_globs or []
+        self._org_alias = (org_alias or "").strip() or None
+        self._enrich_org = bool(enrich_org)
+        self._org_enrichment_context: dict[str, Any] | None = None
+        self._vector_upsert_failures = 0
+        self._vector_last_error: str | None = None
+        self._vector_failure_logged = False
+        self._vlocity_standards = VlocityStandardsCore()
+        self._vlocity_rule_bundle = self._vlocity_standards.resolve_bundle(Path.cwd())
+        self._parse_executor = ParseExecutor(
+            pool=self._pool,
+            apex_extractor=self._apex_extractor,
+            dynamic_registry=self._dynamic_registry,
+            parse_cache=self._parse_cache,
+            vlocity_rule_bundle=self._vlocity_rule_bundle,
+            cacheable_parser=self._cacheable_parser,
+            parse_cache_namespace=self._parse_cache_namespace,
+            serialize_parse_result=self._serialize_parse_result,
+            deserialize_parse_result=self._deserialize_parse_result,
+            rebind_cached_nodes=self._rebind_cached_nodes,
+            format_parser_failure_details=_format_parser_failure_details,
+        )
+
+    def _resolve_target_org_alias(self) -> str | None:
+        if self._org_alias:
+            return self._org_alias
+        if not self._enrich_org:
+            return None
+        if shutil.which("sf") is None:
+            return None
+        try:
+            proc = subprocess.run(
+                ["sf", "config", "get", "target-org", "--json"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode != 0:
+                return None
+            payload = json.loads(proc.stdout or "{}")
+            result = payload.get("result")
+            if not isinstance(result, list):
+                return None
+            for item in result:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("name") or "") != "target-org":
+                    continue
+                alias = str(item.get("value") or "").strip()
+                if alias:
+                    return alias
+            return None
+        except Exception:
+            return None
+
+    def _query_tooling_count(self, alias: str, soql: str) -> int | None:
+        return SalesforceOrgMetadataClient(alias).query_count(soql, tooling=True, timeout=20)
+
+    def _prepare_org_enrichment(self, warnings: list[str]) -> None:
+        self._org_enrichment_context = None
+        try:
+            if not self._enrich_org:
+                return
+            if shutil.which("sf") is None:
+                warnings.append("Org enrichment skipped: Salesforce CLI `sf` not found.")
+                return
+            alias = self._resolve_target_org_alias()
+            if not alias:
+                warnings.append("Org enrichment skipped: no org alias provided and no default target-org configured.")
+                return
+            proc = subprocess.run(
+                ["sf", "org", "display", "--target-org", alias, "--json"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if proc.returncode != 0:
+                warnings.append(f"Org enrichment skipped: unable to resolve org alias `{alias}`.")
+                return
+            payload = json.loads(proc.stdout or "{}")
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                warnings.append(f"Org enrichment skipped: unexpected org display payload for `{alias}`.")
+                return
+            context: dict[str, Any] = {
+                "enabled": True,
+                "alias": alias,
+                "username": result.get("username"),
+                "org_id": result.get("id") or result.get("orgId"),
+                "instance_url": result.get("instanceUrl"),
+                "api_version": result.get("apiVersion"),
+            }
+            metadata_client = SalesforceOrgMetadataClient(alias)
+            tooling_counts = {
+                "entity_definition_count": self._query_tooling_count(alias, "SELECT COUNT() total FROM EntityDefinition"),
+                "field_definition_count": self._query_tooling_count(alias, "SELECT COUNT() total FROM FieldDefinition"),
+                "metadata_component_dependency_count": self._query_tooling_count(
+                    alias, "SELECT COUNT() total FROM MetadataComponentDependency"
+                ),
+            }
+            context["tooling_counts"] = tooling_counts
+            context["vlocity_rule_overrides"] = metadata_client.load_vlocity_rule_overrides()
+            self._org_enrichment_context = context
+            warnings.append(
+                "Org enrichment enabled via alias "
+                f"`{alias}` (EntityDefinition={tooling_counts.get('entity_definition_count')}, "
+                f"FieldDefinition={tooling_counts.get('field_definition_count')}, "
+                f"VlocityRules={len(context['vlocity_rule_overrides'])})."
+            )
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Org enrichment skipped: {exc}")
+        finally:
+            export_root = self._active_export_root or Path.cwd()
+            self._vlocity_rule_bundle = self._vlocity_standards.resolve_bundle(
+                export_root,
+                org_alias=self._resolve_target_org_alias(),
+                org_context=self._org_enrichment_context,
+            )
+            self._parse_executor = ParseExecutor(
+                pool=self._pool,
+                apex_extractor=self._apex_extractor,
+                dynamic_registry=self._dynamic_registry,
+                parse_cache=self._parse_cache,
+                vlocity_rule_bundle=self._vlocity_rule_bundle,
+                cacheable_parser=self._cacheable_parser,
+                parse_cache_namespace=self._parse_cache_namespace,
+                serialize_parse_result=self._serialize_parse_result,
+                deserialize_parse_result=self._deserialize_parse_result,
+                rebind_cached_nodes=self._rebind_cached_nodes,
+                format_parser_failure_details=_format_parser_failure_details,
+            )
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            raise asyncio.CancelledError("cancelled")
 
     @staticmethod
-    def _serialize_parse_result(nodes: list[NodeFact], edges: list[EdgeFact]) -> dict[str, Any]:
+    def _serialize_parse_result(
+        nodes: list[NodeFact],
+        edges: list[EdgeFact],
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {
             "nodes": [node.model_dump() for node in nodes],
             "edges": [edge.model_dump() for edge in edges],
+            "metadata": metadata or {},
         }
 
     @staticmethod
-    def _deserialize_parse_result(payload: dict[str, Any]) -> tuple[list[NodeFact], list[EdgeFact]]:
+    def _deserialize_parse_result(payload: dict[str, Any]) -> tuple[list[NodeFact], list[EdgeFact], dict[str, Any]]:
         raw_nodes = payload.get("nodes") if isinstance(payload, dict) else []
         raw_edges = payload.get("edges") if isinstance(payload, dict) else []
+        metadata = payload.get("metadata") if isinstance(payload, dict) else {}
         nodes = [NodeFact.model_validate(node) for node in raw_nodes or []]
         edges = [EdgeFact.model_validate(edge) for edge in raw_edges or []]
-        return nodes, edges
+        return nodes, edges, metadata if isinstance(metadata, dict) else {}
 
     @staticmethod
     def _cacheable_parser(parser_name: str) -> bool:
@@ -174,7 +307,7 @@ class IngestionService:
         # Some parsers derive stable identities from the file path rather than
         # only the file content. Keep those cache entries path-scoped so
         # identical content in different files cannot alias to the same graph ids.
-        if parser_name in {"apex", "flow", "lwc", "vlocity"}:
+        if parser_name in {"apex", "aura", "flow", "lwc", "vlocity"}:
             path_digest = hashlib.sha1(str(Path(fpath).resolve()).encode("utf-8")).hexdigest()[:16]
             return f"{parser_name}@{path_digest}"
         return parser_name
@@ -217,18 +350,10 @@ class IngestionService:
 
     @staticmethod
     def _descope_qname(qualified_name: str) -> str:
-        if "::" not in qualified_name:
-            return qualified_name
-        return qualified_name.split("::", 1)[1]
+        return descope_qname(qualified_name)
 
     def _scope_qname(self, qualified_name: str) -> str:
-        if not qualified_name:
-            return qualified_name
-        if "::" in qualified_name:
-            return qualified_name
-        if not self._active_project_scope:
-            return qualified_name
-        return f"{self._active_project_scope}::{qualified_name}"
+        return scope_qname(self._active_project_scope, qualified_name)
 
     def _scope_node_fact(self, node_fact: NodeFact) -> NodeFact:
         key_props = dict(node_fact.key_props)
@@ -283,12 +408,12 @@ class IngestionService:
         ]
         return " | ".join(p for p in parts if p)
 
-    async def _upsert_vector_for_node(self, scoped_qname: str, props: dict[str, Any]) -> None:
+    async def _upsert_vector_for_node(self, scoped_qname: str, props: dict[str, Any]) -> bool:
         if not self._vectors:
-            return
+            return False
         text = self._node_vector_text(props)
         if not text:
-            return
+            return False
         payload = {
             "qualifiedName": props.get("qualifiedName"),
             "scopedQualifiedName": scoped_qname,
@@ -303,8 +428,48 @@ class IngestionService:
                 payload=payload,
                 project_scope=self._active_project_scope,
             )
+            return True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Vector upsert failed for %s: %s", scoped_qname, exc)
+            self._vector_upsert_failures += 1
+            self._vector_last_error = str(exc)
+            if not self._vector_failure_logged:
+                logger.warning("Vector upsert failed: %s", exc)
+                self._vector_failure_logged = True
+            else:
+                logger.debug("Vector upsert failed for %s: %s", scoped_qname, exc)
+            return False
+
+    def _reset_vector_health(self) -> None:
+        self._vector_upsert_failures = 0
+        self._vector_last_error = None
+        self._vector_failure_logged = False
+
+    def _vector_health_snapshot(self) -> dict[str, Any]:
+        if not self._vectors:
+            return {"enabled": False, "status": "disabled", "upsert_failures": 0}
+        provider_snapshot: dict[str, Any] = {}
+        provider_probe = getattr(self._vectors, "health_snapshot", None)
+        if callable(provider_probe):
+            try:
+                raw = provider_probe()
+                if inspect.isawaitable(raw):
+                    close = getattr(raw, "close", None)
+                    if callable(close):
+                        close()
+                    raw = None
+                if isinstance(raw, dict):
+                    provider_snapshot = raw
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Vector health probe failed", exc_info=True)
+                provider_snapshot = {"probe_error": str(exc)}
+        status = "ok" if self._vector_upsert_failures == 0 else "degraded"
+        return {
+            "enabled": True,
+            "status": status,
+            "upsert_failures": self._vector_upsert_failures,
+            "last_error": self._vector_last_error,
+            **provider_snapshot,
+        }
 
     async def _delete_vectors_for_nodes(self, node_qnames: set[str]) -> None:
         if not self._vectors or not node_qnames:
@@ -317,6 +482,7 @@ class IngestionService:
     async def vectorize(self, export_dir: str) -> VectorizeSummary:
         """Rebuild vectors for all nodes in the active project scope."""
         export_dir = self._activate_scope(export_dir)
+        self._reset_vector_health()
         start = time.monotonic()
         run_id = await self._manifest.create_run()
         warnings: list[str] = []
@@ -328,29 +494,27 @@ class IngestionService:
 
         rows_by_label = await self._load_scoped_nodes_with_props()
         total_nodes = sum(len(rows) for rows in rows_by_label.values())
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "vectorize",
-                "state": "running",
-                "phase": "vectorizing",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "updated_at": self._progress_started_at,
-                "total_files": total_nodes,
-                "processed_files": 0,
-                "failed_files": 0,
-                "current_file": None,
-                "current_parser": "vector",
-                "parser_stats": self._empty_parser_stats(),
-                "unresolved_symbols": 0,
-                "node_counts_by_type": {},
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": 0,
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="vectorize",
+                state="running",
+                phase="vectorizing",
+                export_dir=export_dir,
+                total_files=total_nodes,
+                processed_files=0,
+                failed_files=0,
+                current_file=None,
+                current_parser="vector",
+                parser_stats=self._empty_parser_stats(),
+                unresolved_symbols=0,
+                node_counts_by_type={},
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=0,
+                updated_at=self._progress_started_at,
+            ),
         )
 
         if self._active_project_scope:
@@ -359,6 +523,7 @@ class IngestionService:
                 logger.info("Deleted %d existing vectors for project scope %s", deleted, self._active_project_scope)
 
         processed_nodes = 0
+        failed_nodes = 0
         skipped_nodes = 0
         node_counts_by_type: dict[str, int] = {}
         for label, rows in rows_by_label.items():
@@ -368,32 +533,34 @@ class IngestionService:
                 if not text:
                     skipped_nodes += 1
                     continue
-                try:
-                    await self._upsert_vector_for_node(qname, props | {"label": label})
+                upserted = await self._upsert_vector_for_node(qname, props | {"label": label})
+                if upserted:
                     processed_nodes += 1
-                except Exception as exc:  # noqa: BLE001
-                    warnings.append(f"Vector upsert failed for {qname}: {exc}")
-                self._write_progress_snapshot(
-                    {
-                        "run_id": run_id,
-                        "mode": "vectorize",
-                        "state": "running",
-                        "phase": "vectorizing",
-                        "export_dir": export_dir,
-                        "project_scope": self._active_project_scope,
-                        "started_at": self._progress_started_at,
-                        "total_files": total_nodes,
-                        "processed_files": processed_nodes + skipped_nodes,
-                        "failed_files": 0,
-                        "current_file": qname,
-                        "current_parser": "vector",
-                        "parser_stats": self._empty_parser_stats(),
-                        "unresolved_symbols": 0,
-                        "node_counts_by_type": node_counts_by_type,
-                        "edge_count": 0,
-                        "orphaned_edges": 0,
-                        "warnings_count": len(warnings),
-                    }
+                else:
+                    failed_nodes += 1
+                    if failed_nodes <= 3:
+                        warnings.append(f"Vector upsert failed for {qname}")
+                    elif failed_nodes == 4:
+                        warnings.append("Additional vector upsert failures omitted from warnings list.")
+                self._emit_progress(
+                    **self._progress_payload(
+                        run_id=run_id,
+                        mode="vectorize",
+                        state="running",
+                        phase="vectorizing",
+                        export_dir=export_dir,
+                        total_files=total_nodes,
+                        processed_files=processed_nodes + skipped_nodes,
+                        failed_files=failed_nodes,
+                        current_file=qname,
+                        current_parser="vector",
+                        parser_stats=self._empty_parser_stats(),
+                        unresolved_symbols=0,
+                        node_counts_by_type=node_counts_by_type,
+                        edge_count=0,
+                        orphaned_edges=0,
+                        warnings_count=len(warnings),
+                    )
                 )
 
         await self._manifest.mark_run_complete(
@@ -402,38 +569,43 @@ class IngestionService:
             phase_2_complete=True,
         )
         duration = round(time.monotonic() - start, 3)
+        if self._vector_upsert_failures > 0:
+            warnings.append(
+                f"Vector upsert failures detected: {self._vector_upsert_failures}. "
+                "Check vector_health.last_error for details."
+            )
         summary = VectorizeSummary(
             run_id=run_id,
             export_dir=export_dir,
             duration_seconds=duration,
             processed_nodes=processed_nodes,
+            failed_nodes=failed_nodes,
             skipped_nodes=skipped_nodes,
             warnings=warnings,
         )
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "vectorize",
-                "state": "completed",
-                "phase": "completed",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "duration_seconds": duration,
-                "total_files": total_nodes,
-                "processed_files": processed_nodes + skipped_nodes,
-                "failed_files": 0,
-                "current_file": None,
-                "current_parser": "vector",
-                "parser_stats": self._empty_parser_stats(),
-                "unresolved_symbols": 0,
-                "node_counts_by_type": node_counts_by_type,
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": len(warnings),
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="vectorize",
+                state="completed",
+                phase="completed",
+                export_dir=export_dir,
+                total_files=total_nodes,
+                processed_files=processed_nodes + skipped_nodes,
+                failed_files=failed_nodes,
+                current_file=None,
+                current_parser="vector",
+                parser_stats=self._empty_parser_stats(),
+                unresolved_symbols=0,
+                node_counts_by_type=node_counts_by_type,
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=len(warnings),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                duration_seconds=duration,
+                vector_health=self._vector_health_snapshot(),
+            ),
         )
         return summary
 
@@ -460,9 +632,11 @@ class IngestionService:
     async def ingest(self, export_dir: str) -> IngestionSummary:
         """Ingest a metadata export directory and return summary statistics."""
         export_dir = self._activate_scope(export_dir)
+        self._reset_vector_health()
         start = time.monotonic()
         run_id = await self._manifest.create_run()
         warnings: list[str] = []
+        self._prepare_org_enrichment(warnings)
         self._progress_started_at = datetime.now(timezone.utc).isoformat()
         self._last_progress_flush_at = 0.0
         discovered_files = await self._discover_file_records(
@@ -470,28 +644,26 @@ class IngestionService:
             run_id=run_id,
             mode="full_ingest",
         )
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "full_ingest",
-                "state": "running",
-                "phase": "discovering",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "updated_at": self._progress_started_at,
-                "total_files": len(discovered_files),
-                "processed_files": 0,
-                "failed_files": 0,
-                "current_file": None,
-                "parser_stats": self._empty_parser_stats(),
-                "unresolved_symbols": 0,
-                "node_counts_by_type": {},
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": 0,
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="full_ingest",
+                state="running",
+                phase="discovering",
+                export_dir=export_dir,
+                total_files=len(discovered_files),
+                processed_files=0,
+                failed_files=0,
+                current_file=None,
+                parser_stats=self._empty_parser_stats(),
+                unresolved_symbols=0,
+                node_counts_by_type={},
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=0,
+                updated_at=self._progress_started_at,
+            ),
         )
         for fpath, meta in discovered_files.items():
             await self._manifest.upsert_file(
@@ -510,27 +682,25 @@ class IngestionService:
             total_files=len(discovered_files),
         )
 
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "full_ingest",
-                "state": "running",
-                "phase": "writing_nodes",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "total_files": len(discovered_files),
-                "processed_files": len(discovered_files),
-                "failed_files": len(parse_failures),
-                "current_file": None,
-                "parser_stats": parser_stats,
-                "unresolved_symbols": unresolved_symbols,
-                "node_counts_by_type": {},
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": len(warnings),
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="full_ingest",
+                state="running",
+                phase="writing_nodes",
+                export_dir=export_dir,
+                total_files=len(discovered_files),
+                processed_files=len(discovered_files),
+                failed_files=len(parse_failures),
+                current_file=None,
+                parser_stats=parser_stats,
+                unresolved_symbols=unresolved_symbols,
+                node_counts_by_type={},
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=len(warnings),
+            ),
         )
         node_counts, written_qnames = await self._write_nodes(facts_by_type)
 
@@ -540,31 +710,41 @@ class IngestionService:
 
         node_registry = await self._load_node_registry()
         scoped_edges = [self._scope_edge_fact(edge) for edge in self._apply_picklist_guard(all_edges, facts_by_type)]
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "full_ingest",
-                "state": "running",
-                "phase": "writing_edges",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "total_files": len(discovered_files),
-                "processed_files": len(discovered_files),
-                "failed_files": len(parse_failures),
-                "current_file": None,
-                "parser_stats": parser_stats,
-                "unresolved_symbols": unresolved_symbols,
-                "node_counts_by_type": dict(node_counts),
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": len(warnings),
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="full_ingest",
+                state="running",
+                phase="writing_edges",
+                export_dir=export_dir,
+                total_files=len(discovered_files),
+                processed_files=len(discovered_files),
+                failed_files=len(parse_failures),
+                current_file=None,
+                parser_stats=parser_stats,
+                unresolved_symbols=unresolved_symbols,
+                node_counts_by_type=dict(node_counts),
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=len(warnings),
+            ),
         )
         edge_count, orphaned_edges, edge_warnings = await self._write_edges(
             scoped_edges,
             node_registry=node_registry,
+            progress_context={
+                "run_id": run_id,
+                "mode": "full_ingest",
+                "export_dir": export_dir,
+                "total_files": len(discovered_files),
+                "processed_files": len(discovered_files),
+                "failed_files": len(parse_failures),
+                "parser_stats": parser_stats,
+                "unresolved_symbols": unresolved_symbols,
+                "node_counts_by_type": dict(node_counts),
+                "warnings_count": len(warnings),
+            },
         )
         warnings.extend(edge_warnings)
 
@@ -584,6 +764,11 @@ class IngestionService:
             warnings.append(f"Schema index failed: {exc}")
 
         duration = round(time.monotonic() - start, 3)
+        if self._vector_upsert_failures > 0:
+            warnings.append(
+                f"Vector upsert failures detected: {self._vector_upsert_failures}. "
+                "Check vector_health.last_error for details."
+            )
         summary = IngestionSummary(
             run_id=run_id,
             export_dir=export_dir,
@@ -596,39 +781,41 @@ class IngestionService:
             parser_stats=parser_stats,
             unresolved_symbols=unresolved_symbols,
         )
-        self._write_ingestion_meta(summary)
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "full_ingest",
-                "state": "completed",
-                "phase": "completed",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "duration_seconds": duration,
-                "total_files": len(discovered_files),
-                "processed_files": len(discovered_files),
-                "failed_files": len(parse_failures),
-                "current_file": None,
-                "parser_stats": parser_stats,
-                "unresolved_symbols": unresolved_symbols,
-                "node_counts_by_type": dict(node_counts),
-                "edge_count": edge_count,
-                "orphaned_edges": orphaned_edges,
-                "warnings_count": len(warnings),
-            },
+        status_snapshot = await self._build_status_snapshot()
+        self._write_ingestion_meta(summary, status_snapshot)
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="full_ingest",
+                state="completed",
+                phase="completed",
+                export_dir=export_dir,
+                total_files=len(discovered_files),
+                processed_files=len(discovered_files),
+                failed_files=len(parse_failures),
+                current_file=None,
+                parser_stats=parser_stats,
+                unresolved_symbols=unresolved_symbols,
+                node_counts_by_type=dict(node_counts),
+                edge_count=edge_count,
+                orphaned_edges=orphaned_edges,
+                warnings_count=len(warnings),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                duration_seconds=duration,
+                vector_health=self._vector_health_snapshot(),
+            ),
         )
         return summary
 
     async def refresh(self, export_dir: str) -> RefreshSummary:
         """Incrementally refresh changed/new/deleted files based on manifest delta."""
         export_dir = self._activate_scope(export_dir)
+        self._reset_vector_health()
         start = time.monotonic()
         run_id = await self._manifest.create_run()
         warnings: list[str] = []
+        self._prepare_org_enrichment(warnings)
         self._progress_started_at = datetime.now(timezone.utc).isoformat()
         self._last_progress_flush_at = 0.0
 
@@ -650,31 +837,29 @@ class IngestionService:
             if fpath in current_files and fpath not in deleted_files and fpath not in changed_files:
                 affected_neighbor_files.append(fpath)
         reparse_files = sorted(set(changed_files + affected_neighbor_files))
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "incremental_refresh",
-                "state": "running",
-                "phase": "planning_refresh",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "updated_at": self._progress_started_at,
-                "total_files": len(reparse_files),
-                "processed_files": 0,
-                "failed_files": 0,
-                "current_file": None,
-                "changed_files": changed_files,
-                "deleted_files": deleted_files,
-                "affected_neighbor_files": affected_neighbor_files,
-                "parser_stats": self._empty_parser_stats(),
-                "unresolved_symbols": 0,
-                "node_count": 0,
-                "edge_count": 0,
-                "orphaned_edges": 0,
-                "warnings_count": 0,
-            },
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="incremental_refresh",
+                state="running",
+                phase="planning_refresh",
+                export_dir=export_dir,
+                total_files=len(reparse_files),
+                processed_files=0,
+                failed_files=0,
+                current_file=None,
+                changed_files=changed_files,
+                deleted_files=deleted_files,
+                affected_neighbor_files=affected_neighbor_files,
+                parser_stats=self._empty_parser_stats(),
+                unresolved_symbols=0,
+                node_count=0,
+                edge_count=0,
+                orphaned_edges=0,
+                warnings_count=0,
+                updated_at=self._progress_started_at,
+            ),
         )
 
         # Deleted files: drop sourced nodes and manifest entries.
@@ -719,30 +904,28 @@ class IngestionService:
                 deleted_files=deleted_files,
                 affected_neighbor_files=affected_neighbor_files,
             )
-            self._write_progress_snapshot(
-                {
-                    "run_id": run_id,
-                    "mode": "incremental_refresh",
-                    "state": "running",
-                    "phase": "writing_nodes",
-                    "export_dir": export_dir,
-                    "project_scope": self._active_project_scope,
-                    "started_at": self._progress_started_at,
-                    "total_files": len(reparse_files),
-                    "processed_files": len(reparse_files),
-                    "failed_files": len(parse_failures),
-                    "current_file": None,
-                    "changed_files": changed_files,
-                    "deleted_files": deleted_files,
-                    "affected_neighbor_files": affected_neighbor_files,
-                    "parser_stats": parser_stats,
-                    "unresolved_symbols": unresolved_symbols,
-                    "node_count": 0,
-                    "edge_count": 0,
-                    "orphaned_edges": 0,
-                    "warnings_count": len(warnings),
-                },
+            self._emit_progress(
                 force=True,
+                **self._progress_payload(
+                    run_id=run_id,
+                    mode="incremental_refresh",
+                    state="running",
+                    phase="writing_nodes",
+                    export_dir=export_dir,
+                    total_files=len(reparse_files),
+                    processed_files=len(reparse_files),
+                    failed_files=len(parse_failures),
+                    current_file=None,
+                    changed_files=changed_files,
+                    deleted_files=deleted_files,
+                    affected_neighbor_files=affected_neighbor_files,
+                    parser_stats=parser_stats,
+                    unresolved_symbols=unresolved_symbols,
+                    node_count=0,
+                    edge_count=0,
+                    orphaned_edges=0,
+                    warnings_count=len(warnings),
+                ),
             )
             node_counts, written_qnames = await self._write_nodes(facts_by_type)
             node_count = sum(node_counts.values())
@@ -756,34 +939,47 @@ class IngestionService:
 
             node_registry = await self._load_node_registry()
             scoped_edges = [self._scope_edge_fact(edge) for edge in self._apply_picklist_guard(all_edges, facts_by_type)]
-            self._write_progress_snapshot(
-                {
+            self._emit_progress(
+                force=True,
+                **self._progress_payload(
+                    run_id=run_id,
+                    mode="incremental_refresh",
+                    state="running",
+                    phase="writing_edges",
+                    export_dir=export_dir,
+                    total_files=len(reparse_files),
+                    processed_files=len(reparse_files),
+                    failed_files=len(parse_failures),
+                    current_file=None,
+                    changed_files=changed_files,
+                    deleted_files=deleted_files,
+                    affected_neighbor_files=affected_neighbor_files,
+                    parser_stats=parser_stats,
+                    unresolved_symbols=unresolved_symbols,
+                    node_count=node_count,
+                    edge_count=0,
+                    orphaned_edges=0,
+                    warnings_count=len(warnings),
+                ),
+            )
+            edge_count, orphaned_edges, edge_warnings = await self._write_edges(
+                scoped_edges,
+                node_registry=node_registry,
+                progress_context={
                     "run_id": run_id,
                     "mode": "incremental_refresh",
-                    "state": "running",
-                    "phase": "writing_edges",
                     "export_dir": export_dir,
-                    "project_scope": self._active_project_scope,
-                    "started_at": self._progress_started_at,
                     "total_files": len(reparse_files),
                     "processed_files": len(reparse_files),
                     "failed_files": len(parse_failures),
-                    "current_file": None,
                     "changed_files": changed_files,
                     "deleted_files": deleted_files,
                     "affected_neighbor_files": affected_neighbor_files,
                     "parser_stats": parser_stats,
                     "unresolved_symbols": unresolved_symbols,
                     "node_count": node_count,
-                    "edge_count": 0,
-                    "orphaned_edges": 0,
                     "warnings_count": len(warnings),
                 },
-                force=True,
-            )
-            edge_count, orphaned_edges, edge_warnings = await self._write_edges(
-                scoped_edges,
-                node_registry=node_registry,
             )
             warnings.extend(edge_warnings)
 
@@ -806,6 +1002,11 @@ class IngestionService:
             warnings.append(f"Schema index failed: {exc}")
 
         duration = round(time.monotonic() - start, 3)
+        if self._vector_upsert_failures > 0:
+            warnings.append(
+                f"Vector upsert failures detected: {self._vector_upsert_failures}. "
+                "Check vector_health.last_error for details."
+            )
         summary = RefreshSummary(
             run_id=run_id,
             export_dir=export_dir,
@@ -821,33 +1022,33 @@ class IngestionService:
             parser_stats=parser_stats,
             unresolved_symbols=unresolved_symbols,
         )
-        self._write_refresh_meta(summary)
-        self._write_progress_snapshot(
-            {
-                "run_id": run_id,
-                "mode": "incremental_refresh",
-                "state": "completed",
-                "phase": "completed",
-                "export_dir": export_dir,
-                "project_scope": self._active_project_scope,
-                "started_at": self._progress_started_at,
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "duration_seconds": duration,
-                "total_files": len(reparse_files),
-                "processed_files": len(reparse_files),
-                "failed_files": len(parse_failures),
-                "current_file": None,
-                "changed_files": changed_files,
-                "deleted_files": deleted_files,
-                "affected_neighbor_files": affected_neighbor_files,
-                "parser_stats": parser_stats,
-                "unresolved_symbols": unresolved_symbols,
-                "node_count": node_count,
-                "edge_count": edge_count,
-                "orphaned_edges": orphaned_edges,
-                "warnings_count": len(warnings),
-            },
+        status_snapshot = await self._build_status_snapshot()
+        self._write_refresh_meta(summary, status_snapshot)
+        self._emit_progress(
             force=True,
+            **self._progress_payload(
+                run_id=run_id,
+                mode="incremental_refresh",
+                state="completed",
+                phase="completed",
+                export_dir=export_dir,
+                total_files=len(reparse_files),
+                processed_files=len(reparse_files),
+                failed_files=len(parse_failures),
+                current_file=None,
+                changed_files=changed_files,
+                deleted_files=deleted_files,
+                affected_neighbor_files=affected_neighbor_files,
+                parser_stats=parser_stats,
+                unresolved_symbols=unresolved_symbols,
+                node_count=node_count,
+                edge_count=edge_count,
+                orphaned_edges=orphaned_edges,
+                warnings_count=len(warnings),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                duration_seconds=duration,
+                vector_health=self._vector_health_snapshot(),
+            ),
         )
         return summary
 
@@ -901,88 +1102,20 @@ class IngestionService:
         run_id: str | None = None,
         mode: str = "full_ingest",
     ) -> dict[str, dict[str, int | str]]:
-        """Discover ingestion targets and reuse stored hashes when file stats match."""
-        files: dict[str, dict[str, int | str]] = {}
-        root = export_path.resolve()
         tracked = await self._manifest.get_tracked_files()
-        scanned_files = 0
-        hashed_files = 0
-        reused_hashes = 0
-        for discovery_root in self._discovery_roots(root):
-            for current_root, dirs, filenames in os.walk(discovery_root, topdown=True):
-                current_path = Path(current_root)
-                dirs[:] = [d for d in dirs if d not in self.SKIP_DIR_NAMES]
-
-                # Skip nested repositories entirely. Export roots are allowed to be repos,
-                # but cloned repos inside the export tree should not be indexed.
-                if current_path != discovery_root and any((current_path / marker).exists() for marker in (".git", ".hg", ".svn")):
-                    dirs[:] = []
-                    continue
-
-                for filename in sorted(filenames):
-                    path = current_path / filename
-                    scanned_files += 1
-                    if self._should_skip_file(path):
-                        continue
-                    if not self._matches_discovery_rules(path, root):
-                        continue
-                    if path.suffix == ".json":
-                        if not is_vlocity_datapack_file(path):
-                            continue
-                    elif not any(
-                        path.name.endswith(sfx)
-                        for sfx in (
-                            ".cls",
-                            ".trigger",
-                            ".js",
-                            ".html",
-                            ".object-meta.xml",
-                            ".flow-meta.xml",
-                            ".labels-meta.xml",
-                            ".label-meta.xml",
-                        )
-                    ):
-                        continue
-                    stat = path.stat()
-                    tracked_file = tracked.get(str(path))
-                    sha = None
-                    if self._stat_fingerprint_matches(tracked_file, stat):
-                        sha = str(tracked_file["sha256"])
-                        reused_hashes += 1
-                    else:
-                        sha = _sha256(str(path))
-                        hashed_files += 1
-                    files[str(path)] = {
-                        "sha256": sha,
-                        "size_bytes": stat.st_size,
-                        "mtime_ns": stat.st_mtime_ns,
-                        "ctime_ns": getattr(stat, "st_ctime_ns", None),
-                    }
-                    if run_id:
-                        self._write_progress_snapshot(
-                            {
-                                "run_id": run_id,
-                                "mode": mode,
-                                "state": "running",
-                                "phase": "discovering",
-                                "export_dir": str(root),
-                                "project_scope": self._active_project_scope,
-                                "started_at": self._progress_started_at,
-                                "total_files": max(scanned_files, 1),
-                                "processed_files": hashed_files + reused_hashes,
-                                "failed_files": 0,
-                                "current_file": str(path),
-                                "current_parser": "discovery",
-                                "parser_stats": self._empty_parser_stats(),
-                                "unresolved_symbols": 0,
-                                "warnings_count": 0,
-                                "discovery_scanned_files": scanned_files,
-                                "discovery_discovered_files": len(files),
-                                "discovery_hashed_files": hashed_files,
-                                "discovery_reused_hashes": reused_hashes,
-                            }
-                        )
-        return files
+        return await discover_file_records(
+            export_path,
+            tracked_files=tracked,
+            include_globs=self._include_globs,
+            exclude_globs=self._exclude_globs,
+            stat_fingerprint_matches=self._stat_fingerprint_matches,
+            raise_if_cancelled=self._raise_if_cancelled,
+            emit_progress=self._emit_progress,
+            progress_payload=self._progress_payload,
+            empty_parser_stats=self._empty_parser_stats,
+            run_id=run_id,
+            mode=mode,
+        )
 
     def _discover_files(self, export_path: Path) -> dict[str, str]:
         """Compatibility helper used by tests; returns path->sha mapping."""
@@ -990,62 +1123,146 @@ class IngestionService:
         return {path: str(meta["sha256"]) for path, meta in records.items()}
 
     def _discovery_roots(self, export_path: Path) -> list[Path]:
-        root = export_path.resolve()
-        if self._include_globs:
-            return [root]
-        if root.name in self.DEFAULT_DISCOVERY_ROOTS:
-            return [root]
-        discovered = [
-            child for child in sorted(root.iterdir())
-            if child.is_dir() and child.name in self.DEFAULT_DISCOVERY_ROOTS
-        ]
-        return discovered or [root]
+        return discovery_roots(export_path, include_globs=self._include_globs)
+
+    @staticmethod
+    def _sfdx_package_directories(root: Path) -> list[Path]:
+        return sfdx_package_directories(root)
 
     @classmethod
     def _should_skip_file(cls, path: Path) -> bool:
-        name = path.name
-        if any(name.startswith(prefix) or prefix in name for prefix in cls.SKIP_FILE_PREFIXES):
-            return True
-        if any(name.endswith(suffix) for suffix in cls.SKIP_FILE_SUFFIXES):
-            return True
-        return False
+        return should_skip_file(path)
 
     def _matches_discovery_rules(self, path: Path, root: Path) -> bool:
-        relative = path.relative_to(root).as_posix()
-        if self._include_globs and not any(fnmatch.fnmatch(relative, pattern) for pattern in self._include_globs):
-            return False
-        if self._exclude_globs and any(fnmatch.fnmatch(relative, pattern) for pattern in self._exclude_globs):
-            return False
-        return True
+        return matches_discovery_rules(
+            path,
+            root,
+            include_globs=self._include_globs,
+            exclude_globs=self._exclude_globs,
+        )
+
+    @staticmethod
+    def _parser_name_for_file(fpath: str) -> str:
+        return parser_name_for_file(Path(fpath))
 
     @staticmethod
     def _empty_parser_stats() -> dict[str, dict[str, int]]:
         return {
             "apex": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+            "aura": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
             "flow": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
             "object": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
             "labels": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
             "lwc": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
-            "vlocity": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
+            "vlocity": {
+                "parsed_files": 0,
+                "error_files": 0,
+                "skipped_files": 0,
+                "specialized_files": 0,
+                "generic_files": 0,
+                "invalid_json_files": 0,
+                "non_object_json_files": 0,
+                "non_datapack_json_files": 0,
+                "unsupported_type_files": 0,
+            },
             "unknown": {"parsed_files": 0, "error_files": 0, "skipped_files": 0},
         }
 
+    def _progress_payload(
+        self,
+        *,
+        run_id: str,
+        mode: str,
+        state: str,
+        phase: str,
+        total_files: int,
+        processed_files: int,
+        failed_files: int,
+        current_file: str | None = None,
+        current_parser: str | None = None,
+        export_dir: str | None = None,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        return build_progress_payload(
+            run_id=run_id,
+            mode=mode,
+            state=state,
+            phase=phase,
+            total_files=total_files,
+            processed_files=processed_files,
+            failed_files=failed_files,
+            active_export_root=self._active_export_root,
+            active_project_scope=self._active_project_scope,
+            progress_started_at=self._progress_started_at,
+            current_file=current_file,
+            current_parser=current_parser,
+            export_dir=export_dir,
+            **extra,
+        )
+
+    def _emit_progress(self, *, force: bool = False, **payload: Any) -> None:
+        self._last_progress_flush_at = write_progress_snapshot(
+            ingestion_progress_path=self._ingestion_progress_path,
+            payload=payload,
+            progress_started_at=self._progress_started_at,
+            last_progress_flush_at=self._last_progress_flush_at,
+            force=force,
+        )
+
+    def _write_progress_snapshot(self, payload: dict[str, Any], *, force: bool = False) -> None:
+        self._last_progress_flush_at = write_progress_snapshot(
+            ingestion_progress_path=self._ingestion_progress_path,
+            payload=payload,
+            progress_started_at=self._progress_started_at,
+            last_progress_flush_at=self._last_progress_flush_at,
+            force=force,
+        )
+
     @staticmethod
-    def _parser_name_for_file(fpath: str) -> str:
-        path = Path(fpath)
-        if path.suffix in {".cls", ".trigger"}:
-            return "apex"
-        if path.suffix in {".js", ".html"} and "lwc" in {part.lower() for part in path.parts}:
-            return "lwc"
-        if fpath.endswith(".flow-meta.xml"):
-            return "flow"
-        if fpath.endswith(".object-meta.xml"):
-            return "object"
-        if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
-            return "labels"
-        if path.suffix == ".json" and is_vlocity_datapack_file(path):
-            return "vlocity"
-        return "unknown"
+    def _record_parser_outcome(
+        parser_stats: dict[str, dict[str, int]],
+        parser_name: str,
+        file_nodes: list[NodeFact],
+        file_edges: list[EdgeFact],
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        bucket = parser_stats[parser_name]
+        metadata = metadata or {}
+        if parser_name != "vlocity":
+            if file_nodes or file_edges:
+                bucket["parsed_files"] += 1
+            else:
+                bucket["skipped_files"] += 1
+            return
+
+        outcome = str(metadata.get("outcome") or "")
+        if outcome == "parsed_specialized":
+            bucket["parsed_files"] += 1
+            bucket["specialized_files"] += 1
+            return
+        if outcome == "parsed_generic":
+            bucket["parsed_files"] += 1
+            bucket["generic_files"] += 1
+            if bool(metadata.get("unsupported_type")):
+                bucket["unsupported_type_files"] += 1
+            return
+        if outcome == "invalid_json":
+            bucket["skipped_files"] += 1
+            bucket["invalid_json_files"] += 1
+            return
+        if outcome == "non_object_json":
+            bucket["skipped_files"] += 1
+            bucket["non_object_json_files"] += 1
+            return
+        if outcome == "non_datapack_json":
+            bucket["skipped_files"] += 1
+            bucket["non_datapack_json_files"] += 1
+            return
+
+        if file_nodes or file_edges:
+            bucket["parsed_files"] += 1
+        else:
+            bucket["skipped_files"] += 1
 
     @staticmethod
     def _is_unresolved_dynamic_edge(edge: EdgeFact) -> bool:
@@ -1077,47 +1294,42 @@ class IngestionService:
 
         total = len(files) if total_files is None else total_files
         for index, fpath in enumerate(files, start=1):
-            parser_name = self._parser_name_for_file(fpath)
+            self._raise_if_cancelled()
+            parser_name = parser_name_for_file(Path(fpath))
             try:
                 file_sha = None
                 if file_records and fpath in file_records:
                     file_sha = str(file_records[fpath].get("sha256") or "")
-                file_nodes, file_edges = await self._parse_file(fpath, sha256=file_sha or None)
+                file_nodes, file_edges, parse_metadata = await self._parse_file_with_metadata(fpath, sha256=file_sha or None)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Parse failure for %s: %s", fpath, exc)
                 parse_failures.append(fpath)
                 await self._manifest.set_status(fpath, "FAILED")
                 parser_stats[parser_name]["error_files"] += 1
                 if run_id:
-                    self._write_progress_snapshot(
-                        {
-                            "run_id": run_id,
-                            "mode": mode,
-                            "state": "running",
-                            "phase": "parsing",
-                            "export_dir": str(self._active_export_root) if self._active_export_root else None,
-                            "project_scope": self._active_project_scope,
-                            "started_at": self._progress_started_at,
-                            "total_files": total,
-                            "processed_files": index,
-                            "failed_files": len(parse_failures),
-                            "current_file": fpath,
-                            "current_parser": parser_name,
-                            "changed_files": changed_files or [],
-                            "deleted_files": deleted_files or [],
-                            "affected_neighbor_files": affected_neighbor_files or [],
-                            "parser_stats": parser_stats,
-                            "unresolved_symbols": unresolved_symbols,
-                            "warnings_count": 0,
-                            "cache_enabled": bool(self._parse_cache),
-                        }
+                    self._emit_progress(
+                        **self._progress_payload(
+                            run_id=run_id,
+                            mode=mode,
+                            state="running",
+                            phase="parsing",
+                            total_files=total,
+                            processed_files=index,
+                            failed_files=len(parse_failures),
+                            current_file=fpath,
+                            current_parser=parser_name,
+                            changed_files=changed_files or [],
+                            deleted_files=deleted_files or [],
+                            affected_neighbor_files=affected_neighbor_files or [],
+                            parser_stats=parser_stats,
+                            unresolved_symbols=unresolved_symbols,
+                            warnings_count=0,
+                            cache_enabled=bool(self._parse_cache),
+                        )
                     )
                 continue
 
-            if file_nodes or file_edges:
-                parser_stats[parser_name]["parsed_files"] += 1
-            else:
-                parser_stats[parser_name]["skipped_files"] += 1
+            self._record_parser_outcome(parser_stats, parser_name, file_nodes, file_edges, parse_metadata)
 
             for node_fact in file_nodes:
                 facts_by_type[node_fact.label].append(node_fact)
@@ -1126,71 +1338,28 @@ class IngestionService:
                     unresolved_symbols += 1
             all_edges.extend(file_edges)
             if run_id:
-                self._write_progress_snapshot(
-                    {
-                        "run_id": run_id,
-                        "mode": mode,
-                        "state": "running",
-                        "phase": "parsing",
-                        "export_dir": str(self._active_export_root) if self._active_export_root else None,
-                        "project_scope": self._active_project_scope,
-                        "started_at": self._progress_started_at,
-                        "total_files": total,
-                        "processed_files": index,
-                        "failed_files": len(parse_failures),
-                        "current_file": fpath,
-                        "current_parser": parser_name,
-                        "changed_files": changed_files or [],
-                        "deleted_files": deleted_files or [],
-                        "affected_neighbor_files": affected_neighbor_files or [],
-                        "parser_stats": parser_stats,
-                        "unresolved_symbols": unresolved_symbols,
-                        "warnings_count": 0,
-                        "cache_enabled": bool(self._parse_cache),
-                    }
+                self._emit_progress(
+                    **self._progress_payload(
+                        run_id=run_id,
+                        mode=mode,
+                        state="running",
+                        phase="parsing",
+                        total_files=total,
+                        processed_files=index,
+                        failed_files=len(parse_failures),
+                        current_file=fpath,
+                        current_parser=parser_name,
+                        changed_files=changed_files or [],
+                        deleted_files=deleted_files or [],
+                        affected_neighbor_files=affected_neighbor_files or [],
+                        parser_stats=parser_stats,
+                        unresolved_symbols=unresolved_symbols,
+                        warnings_count=0,
+                        cache_enabled=bool(self._parse_cache),
+                    )
                 )
 
         return facts_by_type, all_edges, parse_failures, parser_stats, unresolved_symbols
-
-    def _write_progress_snapshot(self, payload: dict[str, Any], *, force: bool = False) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        payload = dict(payload)
-        payload.setdefault("updated_at", now)
-        payload.setdefault("started_at", self._progress_started_at)
-
-        total_files = payload.get("total_files")
-        processed_files = payload.get("processed_files")
-        if isinstance(total_files, int) and total_files >= 0 and isinstance(processed_files, int):
-            payload["completion_ratio"] = 1.0 if total_files == 0 else round(min(processed_files / total_files, 1.0), 4)
-            payload["pending_files"] = max(total_files - processed_files, 0)
-            payload["queue_status"] = {
-                "pending": payload["pending_files"],
-                "processed": processed_files,
-                "failed": int(payload.get("failed_files", 0) or 0),
-            }
-        started_at = payload.get("started_at")
-        if isinstance(started_at, str):
-            try:
-                started_dt = datetime.fromisoformat(started_at)
-                elapsed_seconds = max((datetime.now(timezone.utc) - started_dt).total_seconds(), 0.0)
-                payload["elapsed_seconds"] = round(elapsed_seconds, 3)
-                if isinstance(processed_files, int) and elapsed_seconds > 0:
-                    files_per_second = processed_files / elapsed_seconds
-                    payload["files_per_second"] = round(files_per_second, 3)
-                    pending_files = payload.get("pending_files")
-                    if isinstance(pending_files, int) and files_per_second > 0:
-                        payload["estimated_remaining_seconds"] = round(pending_files / files_per_second, 1)
-            except Exception:
-                pass
-
-        monotonic_now = time.monotonic()
-        if not force and (monotonic_now - self._last_progress_flush_at) < 0.25:
-            return
-
-        out = Path(self._ingestion_progress_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        self._last_progress_flush_at = monotonic_now
 
     async def _load_scoped_nodes_with_props(self) -> dict[str, list[tuple[str, dict[str, Any]]]]:
         rows_by_label: dict[str, list[tuple[str, dict[str, Any]]]] = {}
@@ -1205,7 +1374,7 @@ class IngestionService:
                 qn = str(row.get("qualified_name", ""))
                 if not qn:
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 if self._belongs_to_active_scope(qn, props):
                     kept.append((qn, props))
             rows_by_label[label] = kept
@@ -1214,40 +1383,45 @@ class IngestionService:
     async def _write_nodes(self, facts_by_type: dict[str, list[NodeFact]]) -> tuple[dict[str, int], set[str]]:
         node_counts: dict[str, int] = defaultdict(int)
         written_qnames: set[str] = set()
+        merge_nodes_batch = getattr(self._graph, "merge_nodes_batch", None)
+        has_batch_nodes = callable(merge_nodes_batch)
 
-        for label in NODE_WRITE_ORDER:
+        ordered_labels = list(NODE_WRITE_ORDER)
+        ordered_labels.extend(label for label in facts_by_type if label not in set(NODE_WRITE_ORDER))
+        for label in ordered_labels:
+            self._raise_if_cancelled()
+            pending_facts: list[NodeFact] = []
+            batch_rows: list[tuple[str, dict[str, Any]]] = []
             for node_fact in facts_by_type.get(label, []):
+                self._raise_if_cancelled()
                 scoped_fact = self._scope_node_fact(node_fact)
                 qname = scoped_fact.key_props.get("qualifiedName")
                 if qname and qname in written_qnames:
                     continue
-                merged_qname = await self._graph.merge_node(
-                    scoped_fact.label,
-                    scoped_fact.key_props,
-                    scoped_fact.all_props,
-                )
-                actual_qname = qname or merged_qname
-                if actual_qname:
+                pending_facts.append(scoped_fact)
+                if qname:
+                    batch_rows.append((qname, scoped_fact.all_props))
+
+            if has_batch_nodes and pending_facts and len(batch_rows) == len(pending_facts):
+                await merge_nodes_batch(label, batch_rows)
+                for scoped_fact in pending_facts:
+                    actual_qname = str(scoped_fact.key_props.get("qualifiedName", ""))
+                    if not actual_qname:
+                        continue
                     written_qnames.add(actual_qname)
                     vector_props = dict(scoped_fact.all_props)
                     vector_props.setdefault("label", scoped_fact.label)
                     await self._upsert_vector_for_node(actual_qname, vector_props)
-                node_counts[scoped_fact.label] += 1
-
-        known_labels = set(NODE_WRITE_ORDER)
-        for label, node_facts in facts_by_type.items():
-            if label in known_labels:
+                    node_counts[scoped_fact.label] += 1
                 continue
-            for node_fact in node_facts:
-                scoped_fact = self._scope_node_fact(node_fact)
-                qname = scoped_fact.key_props.get("qualifiedName")
-                if qname and qname in written_qnames:
-                    continue
+
+            for scoped_fact in pending_facts:
                 merged_qname = await self._graph.merge_node(
                     scoped_fact.label,
                     scoped_fact.key_props,
                     scoped_fact.all_props,
                 )
+                qname = scoped_fact.key_props.get("qualifiedName")
                 actual_qname = qname or merged_qname
                 if actual_qname:
                     written_qnames.add(actual_qname)
@@ -1258,10 +1432,72 @@ class IngestionService:
 
         return dict(node_counts), written_qnames
 
+    @staticmethod
+    def _sql_list_params(prefix: str, values: list[str] | set[str]) -> tuple[str, dict[str, str]]:
+        params: dict[str, str] = {}
+        placeholders: list[str] = []
+        for index, value in enumerate(values):
+            key = f"{prefix}{index}"
+            placeholders.append(f"${key}")
+            params[key] = str(value)
+        return ", ".join(placeholders), params
+
+    @staticmethod
+    def _safe_count(rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        try:
+            return int(rows[0].get("count", 0) or 0)
+        except Exception:
+            return 0
+
+    async def _build_status_snapshot(self) -> dict[str, Any]:
+        labels = await self._graph.get_labels()
+        rel_types = await self._graph.get_relationship_types()
+        node_counts_by_type: dict[str, int] = {}
+        edge_counts_by_type: dict[str, int] = {}
+
+        for label in labels:
+            self._raise_if_cancelled()
+            try:
+                rows = await self._graph.query(f'SELECT COUNT(*) AS count FROM "{label}"')
+            except Exception:
+                rows = []
+            node_counts_by_type[label] = self._safe_count(rows)
+
+        for rel in rel_types:
+            self._raise_if_cancelled()
+            try:
+                rows = await self._graph.query(f'SELECT COUNT(*) AS count FROM "{rel}"')
+            except Exception:
+                rows = []
+            edge_counts_by_type[rel] = self._safe_count(rows)
+
+        return {
+            "node_counts_by_type": node_counts_by_type,
+            "edge_counts_by_type": edge_counts_by_type,
+            "status_counts": await self._manifest.get_status_counts(),
+            "latest_completed_run": await self._manifest.get_latest_completed_run(),
+        }
+
     async def _load_node_registry(self) -> dict[str, str]:
+        try:
+            rows = await self._graph.query("SELECT qualified_name, label FROM _sfgraph_node_index")
+        except Exception:
+            rows = []
+        if rows:
+            registry: dict[str, str] = {}
+            for row in rows:
+                qn = str(row.get("qualified_name", ""))
+                label = str(row.get("label", ""))
+                if qn and label and self._belongs_to_active_scope(qn, {}):
+                    registry[qn] = label
+            return registry
+
         registry: dict[str, str] = {}
         labels = await self._graph.get_labels()
         for label in labels:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
             except Exception:
@@ -1270,7 +1506,7 @@ class IngestionService:
                 qn = str(row.get("qualified_name", ""))
                 if not qn:
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 if self._belongs_to_active_scope(qn, props):
                     registry[qn] = label
         return registry
@@ -1278,10 +1514,31 @@ class IngestionService:
     async def _nodes_for_source_files(self, source_files: list[str]) -> set[str]:
         if not source_files:
             return set()
+        placeholders, params = self._sql_list_params("sf", source_files)
+        if placeholders:
+            try:
+                rows = await self._graph.query(
+                    "SELECT qualified_name, project_scope "
+                    "FROM _sfgraph_source_index "
+                    f"WHERE source_file IN ({placeholders})",
+                    params,
+                )
+            except Exception:
+                rows = []
+            if rows:
+                matched: set[str] = set()
+                for row in rows:
+                    qn = str(row.get("qualified_name", ""))
+                    props = {"projectScope": row.get("project_scope")}
+                    if qn and self._belongs_to_active_scope(qn, props):
+                        matched.add(qn)
+                return matched
+
         labels = await self._graph.get_labels()
         source_set = set(source_files)
         matched: set[str] = set()
         for label in labels:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
             except Exception:
@@ -1290,7 +1547,7 @@ class IngestionService:
                 qn = str(row.get("qualified_name", ""))
                 if not qn:
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 if not self._belongs_to_active_scope(qn, props):
                     continue
                 if props.get("sourceFile") in source_set:
@@ -1300,9 +1557,37 @@ class IngestionService:
     async def _collect_neighbor_nodes(self, node_qnames: set[str], limit: int = 1500) -> set[str]:
         if not node_qnames:
             return set()
+        placeholders, params = self._sql_list_params("qn", sorted(node_qnames))
+        if placeholders:
+            try:
+                rows = await self._graph.query(
+                    "SELECT src_qualified_name, dst_qualified_name "
+                    "FROM _sfgraph_all_edges "
+                    f"WHERE src_qualified_name IN ({placeholders}) "
+                    f"OR dst_qualified_name IN ({placeholders})",
+                    params,
+                )
+            except Exception:
+                rows = []
+            if rows:
+                neighbors: set[str] = set()
+                for row in rows:
+                    src = str(row.get("src_qualified_name", ""))
+                    dst = str(row.get("dst_qualified_name", ""))
+                    if not src or not dst:
+                        continue
+                    if src in node_qnames and dst not in node_qnames:
+                        neighbors.add(dst)
+                    elif dst in node_qnames and src not in node_qnames:
+                        neighbors.add(src)
+                    if len(neighbors) >= limit:
+                        return neighbors
+                return neighbors
+
         rel_types = await self._graph.get_relationship_types()
         neighbors: set[str] = set()
         for rel in rel_types:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(
                     f'SELECT src_qualified_name, dst_qualified_name FROM "{rel}"'
@@ -1329,10 +1614,32 @@ class IngestionService:
     async def _source_files_for_nodes(self, node_qnames: set[str]) -> set[str]:
         if not node_qnames:
             return set()
+        placeholders, params = self._sql_list_params("qn", sorted(node_qnames))
+        if placeholders:
+            try:
+                rows = await self._graph.query(
+                    "SELECT source_file, qualified_name, project_scope "
+                    "FROM _sfgraph_source_index "
+                    f"WHERE qualified_name IN ({placeholders})",
+                    params,
+                )
+            except Exception:
+                rows = []
+            if rows:
+                files: set[str] = set()
+                for row in rows:
+                    qn = str(row.get("qualified_name", ""))
+                    source = str(row.get("source_file", ""))
+                    props = {"projectScope": row.get("project_scope")}
+                    if source and qn and self._belongs_to_active_scope(qn, props):
+                        files.add(source)
+                return files
+
         labels = await self._graph.get_labels()
         files: set[str] = set()
         qn_set = set(node_qnames)
         for label in labels:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
             except Exception:
@@ -1341,7 +1648,7 @@ class IngestionService:
                 qn = str(row.get("qualified_name", ""))
                 if qn not in qn_set:
                     continue
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 if not self._belongs_to_active_scope(qn, props):
                     continue
                 source = props.get("sourceFile")
@@ -1352,12 +1659,40 @@ class IngestionService:
     async def _purge_nodes_by_source_files(self, source_files: list[str]) -> set[str]:
         if not source_files:
             return set()
+        placeholders, params = self._sql_list_params("sf", source_files)
+        if placeholders:
+            try:
+                rows = await self._graph.query(
+                    "SELECT qualified_name, label, project_scope "
+                    "FROM _sfgraph_source_index "
+                    f"WHERE source_file IN ({placeholders})",
+                    params,
+                )
+            except Exception:
+                rows = []
+            if rows:
+                removed_qnames: set[str] = set()
+                for row in rows:
+                    qn = str(row.get("qualified_name", ""))
+                    label = str(row.get("label", ""))
+                    props = {"projectScope": row.get("project_scope")}
+                    if not qn or not label or not self._belongs_to_active_scope(qn, props):
+                        continue
+                    self._raise_if_cancelled()
+                    try:
+                        deleted = await self._graph.delete_node(label, qn)
+                        if deleted:
+                            removed_qnames.add(qn)
+                    except Exception:
+                        continue
+                return removed_qnames
 
         labels = await self._graph.get_labels()
         source_set = set(source_files)
         removed_qnames: set[str] = set()
 
         for label in labels:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(f'SELECT qualified_name, props FROM "{label}"')
             except Exception:
@@ -1365,17 +1700,16 @@ class IngestionService:
             to_delete: list[str] = []
             for row in rows:
                 qn = str(row.get("qualified_name", ""))
-                props = _parse_props(row.get("props"))
+                props = parse_json_props(row.get("props"))
                 source = props.get("sourceFile")
                 if qn and source in source_set and self._belongs_to_active_scope(qn, props):
                     to_delete.append(qn)
             for qn in to_delete:
+                self._raise_if_cancelled()
                 try:
-                    await self._graph.query(
-                        f'DELETE FROM "{label}" WHERE qualified_name = $qn',
-                        {"qn": qn},
-                    )
-                    removed_qnames.add(qn)
+                    deleted = await self._graph.delete_node(label, qn)
+                    if deleted:
+                        removed_qnames.add(qn)
                 except Exception:
                     continue
 
@@ -1386,12 +1720,11 @@ class IngestionService:
             return
         rel_types = await self._graph.get_relationship_types()
         for rel in rel_types:
+            self._raise_if_cancelled()
             for qn in node_qnames:
+                self._raise_if_cancelled()
                 try:
-                    await self._graph.query(
-                        f'DELETE FROM "{rel}" WHERE src_qualified_name = $qn OR dst_qualified_name = $qn',
-                        {"qn": qn},
-                    )
+                    await self._graph.delete_edges_for_node(rel, qn)
                 except Exception:
                     continue
 
@@ -1400,6 +1733,7 @@ class IngestionService:
         rel_types = await self._graph.get_relationship_types()
 
         for rel in rel_types:
+            self._raise_if_cancelled()
             try:
                 rows = await self._graph.query(
                     f'SELECT src_qualified_name, dst_qualified_name FROM "{rel}"'
@@ -1407,6 +1741,7 @@ class IngestionService:
             except Exception:
                 continue
             for row in rows:
+                self._raise_if_cancelled()
                 src = str(row.get("src_qualified_name", ""))
                 dst = str(row.get("dst_qualified_name", ""))
                 if not src or not dst:
@@ -1418,10 +1753,7 @@ class IngestionService:
                 if src in registry and dst in registry:
                     continue
                 try:
-                    await self._graph.query(
-                        f'DELETE FROM "{rel}" WHERE src_qualified_name = $src AND dst_qualified_name = $dst',
-                        {"src": src, "dst": dst},
-                    )
+                    await self._graph.delete_edge(rel, src, dst)
                 except Exception:
                     continue
 
@@ -1429,12 +1761,18 @@ class IngestionService:
         self,
         edge_facts: list[EdgeFact],
         node_registry: dict[str, str],
+        *,
+        progress_context: dict[str, Any] | None = None,
     ) -> tuple[int, int, list[str]]:
         edge_count = 0
         orphaned_edges = 0
         warnings: list[str] = []
+        merge_edges_batch = getattr(self._graph, "merge_edges_batch", None)
+        has_batch_edges = callable(merge_edges_batch)
+        batch_edges: dict[str, list[tuple[str, str, dict[str, Any]]]] = defaultdict(list)
 
         for edge_fact in edge_facts:
+            self._raise_if_cancelled()
             src_known = edge_fact.src_qualified_name in node_registry
             dst_known = edge_fact.dst_qualified_name in node_registry
 
@@ -1474,99 +1812,73 @@ class IngestionService:
             edge_props = edge_fact.to_merge_props()
             if self._active_project_scope:
                 edge_props["projectScope"] = self._active_project_scope
-            await self._graph.merge_edge(
-                edge_fact.src_qualified_name,
-                edge_fact.src_label,
-                edge_fact.rel_type,
-                edge_fact.dst_qualified_name,
-                edge_fact.dst_label,
-                edge_props,
-            )
+            if has_batch_edges:
+                batch_edges[edge_fact.rel_type].append(
+                    (
+                        edge_fact.src_qualified_name,
+                        edge_fact.dst_qualified_name,
+                        edge_props,
+                    )
+                )
+            else:
+                await self._graph.merge_edge(
+                    edge_fact.src_qualified_name,
+                    edge_fact.src_label,
+                    edge_fact.rel_type,
+                    edge_fact.dst_qualified_name,
+                    edge_fact.dst_label,
+                    edge_props,
+                )
             edge_count += 1
+
+        if has_batch_edges:
+            for rel_type, rows in batch_edges.items():
+                self._raise_if_cancelled()
+                for start in range(0, len(rows), _EDGE_PROGRESS_BATCH_SIZE):
+                    chunk = rows[start : start + _EDGE_PROGRESS_BATCH_SIZE]
+                    await merge_edges_batch(rel_type, chunk)
+                    if progress_context:
+                        self._emit_progress(
+                            **self._progress_payload(
+                                run_id=str(progress_context["run_id"]),
+                                mode=str(progress_context["mode"]),
+                                state="running",
+                                phase="writing_edges",
+                                export_dir=str(progress_context["export_dir"]),
+                                total_files=int(progress_context["total_files"]),
+                                processed_files=int(progress_context["processed_files"]),
+                                failed_files=int(progress_context["failed_files"]),
+                                edge_count=edge_count,
+                                orphaned_edges=orphaned_edges,
+                                **{
+                                    key: value
+                                    for key, value in progress_context.items()
+                                    if key
+                                    not in {
+                                        "run_id",
+                                        "mode",
+                                        "export_dir",
+                                        "total_files",
+                                        "processed_files",
+                                        "failed_files",
+                                    }
+                                },
+                            )
+                        )
 
         return edge_count, orphaned_edges, warnings
 
     async def _parse_file(self, fpath: str, *, sha256: str | None = None) -> tuple[list[NodeFact], list[EdgeFact]]:
-        path = Path(fpath)
-        parser_name = self._parser_name_for_file(fpath)
-        cache_namespace = self._parse_cache_namespace(parser_name, fpath)
-        can_cache = self._cacheable_parser(parser_name)
-        if self._parse_cache and sha256 and can_cache:
-            cached = await self._parse_cache.get(cache_namespace, sha256)
-            if cached is not None:
-                nodes, edges = self._deserialize_parse_result(cached)
-                return self._rebind_cached_nodes(nodes, fpath), edges
+        nodes, edges, _ = await self._parse_file_with_metadata(fpath, sha256=sha256)
+        return nodes, edges
 
-        if path.suffix in {".cls", ".trigger"}:
-            result = await self._pool.parse(fpath, "apex")
-            if not result.get("ok") and str(result.get("error", "")) in TRANSIENT_WORKER_ERRORS:
-                # One retry for transient parser worker lifecycle events.
-                await asyncio.sleep(0.05)
-                result = await self._pool.parse(fpath, "apex")
-            if not result.get("ok"):
-                error = str(result.get("error") or "worker_parse_failed")
-                payload = result.get("payload")
-                detail_suffix = _format_parser_failure_details(payload)
-                if detail_suffix:
-                    raise RuntimeError(f"{error} | {detail_suffix}")
-                raise RuntimeError(error)
-            payload = result.get("payload") or {}
-            nodes, edges = self._apex_extractor.extract(payload, fpath)
-
-            # APEX-11 dynamic accessor edge candidates from raw method refs.
-            primary_class = next((n.key_props.get("qualifiedName") for n in nodes if n.label == "ApexClass"), path.stem)
-            for ref in payload.get("potential_refs", []):
-                if ref.get("refType") != "CALLS_CLASS_METHOD":
-                    continue
-                target_class = ref.get("targetClass", "")
-                target_method = ref.get("method", "")
-                if not target_class or not target_method:
-                    continue
-                edges.extend(
-                    self._dynamic_registry.match(
-                        class_name=target_class,
-                        method_name=target_method,
-                        src_qualified_name=primary_class,
-                        src_label="ApexClass",
-                        context_snippet=ref.get("contextSnippet", ""),
-                    )
-                )
-
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
-
-        if path.suffix in {".js", ".html"} and "lwc" in {part.lower() for part in path.parts}:
-            nodes, edges = parse_lwc_file(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
-
-        if fpath.endswith(".flow-meta.xml"):
-            nodes, edges = parse_flow_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
-
-        if fpath.endswith(".object-meta.xml"):
-            nodes, edges = parse_object_dir(str(path.parent))
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
-
-        if fpath.endswith(".labels-meta.xml") or fpath.endswith(".label-meta.xml"):
-            nodes, edges = parse_labels_xml(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(cache_namespace, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
-
-        if path.suffix == ".json" and is_vlocity_datapack_file(path):
-            nodes, edges = parse_vlocity_json(fpath)
-            if self._parse_cache and sha256 and can_cache:
-                await self._parse_cache.put(parser_name, sha256, self._serialize_parse_result(nodes, edges))
-            return nodes, edges
-
-        return [], []
+    async def _parse_file_with_metadata(
+        self,
+        fpath: str,
+        *,
+        sha256: str | None = None,
+    ) -> tuple[list[NodeFact], list[EdgeFact], dict[str, Any]]:
+        return await self._parse_executor.execute(fpath, sha256=sha256)
 
     def _apply_picklist_guard(
         self,
@@ -1608,63 +1920,24 @@ class IngestionService:
 
         return resolved
 
-    def _write_ingestion_meta(self, summary: IngestionSummary) -> None:
-        """Persist latest ingestion metadata for freshness contract responses."""
-        project_scope = self._compute_project_scope(summary.export_dir)
-        payload = {
-            "run_id": summary.run_id,
-            "indexed_at": datetime.now(timezone.utc).isoformat(),
-            "indexed_commit": self._current_git_commit(),
-            "export_dir": summary.export_dir,
-            "project_scope": project_scope,
-            "total_nodes": summary.total_nodes,
-            "edge_count": summary.edge_count,
-            "orphaned_edges": summary.orphaned_edges,
-            "parse_failures": len(summary.parse_failures),
-            "warnings": len(summary.warnings),
-            "mode": "full_ingest",
-            "parser_stats": summary.parser_stats,
-            "unresolved_symbols": summary.unresolved_symbols,
-        }
-        out = Path(self._ingestion_meta_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    def _write_ingestion_meta(self, summary: IngestionSummary, status_snapshot: dict[str, Any]) -> None:
+        write_ingestion_meta(
+            ingestion_meta_path=self._ingestion_meta_path,
+            ingestion_progress_path=self._ingestion_progress_path,
+            summary=summary,
+            status_snapshot=status_snapshot,
+            project_scope=self._compute_project_scope(summary.export_dir),
+            org_enrichment=self._org_enrichment_context or {"enabled": False},
+            vlocity_standards=self._vlocity_rule_bundle.describe(),
+        )
 
-    def _write_refresh_meta(self, summary: RefreshSummary) -> None:
-        project_scope = self._compute_project_scope(summary.export_dir)
-        payload = {
-            "run_id": summary.run_id,
-            "indexed_at": datetime.now(timezone.utc).isoformat(),
-            "indexed_commit": self._current_git_commit(),
-            "export_dir": summary.export_dir,
-            "project_scope": project_scope,
-            "processed_files": summary.processed_files,
-            "changed_files": summary.changed_files,
-            "deleted_files": summary.deleted_files,
-            "affected_neighbor_files": summary.affected_neighbor_files,
-            "node_count": summary.node_count,
-            "edge_count": summary.edge_count,
-            "orphaned_edges": summary.orphaned_edges,
-            "warnings": len(summary.warnings),
-            "mode": "incremental_refresh",
-            "parser_stats": summary.parser_stats,
-            "unresolved_symbols": summary.unresolved_symbols,
-        }
-        out = Path(self._ingestion_meta_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-    @staticmethod
-    def _current_git_commit() -> str | None:
-        try:
-            root = Path(__file__).resolve().parents[3]
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=str(root),
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            return result.stdout.strip()
-        except Exception:
-            return None
+    def _write_refresh_meta(self, summary: RefreshSummary, status_snapshot: dict[str, Any]) -> None:
+        write_refresh_meta(
+            ingestion_meta_path=self._ingestion_meta_path,
+            ingestion_progress_path=self._ingestion_progress_path,
+            summary=summary,
+            status_snapshot=status_snapshot,
+            project_scope=self._compute_project_scope(summary.export_dir),
+            org_enrichment=self._org_enrichment_context or {"enabled": False},
+            vlocity_standards=self._vlocity_rule_bundle.describe(),
+        )

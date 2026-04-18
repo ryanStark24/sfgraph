@@ -15,7 +15,12 @@ from sfgraph.storage import DuckPGQStore as DuckPGQStoreExport
 class MockGraphStore(GraphStore):
     async def merge_node(self, label, key_props, all_props): return "mock_qn"
     async def merge_edge(self, src_qn, src_label, rel_type, dst_qn, dst_label, props): pass
-    async def query(self, cypher, params=None): return []
+    async def merge_nodes_batch(self, label, nodes): return len(nodes)
+    async def merge_edges_batch(self, rel_type, edges): return len(edges)
+    async def delete_node(self, label, qualified_name): return True
+    async def delete_edge(self, rel_type, src_qn, dst_qn): return True
+    async def delete_edges_for_node(self, rel_type, qualified_name): return 0
+    async def query(self, query_text, params=None): return []
     async def get_labels(self): return []
     async def get_relationship_types(self): return []
     async def close(self): pass
@@ -30,7 +35,7 @@ def test_incomplete_implementation_raises():
     class BrokenStore(GraphStore):
         async def merge_node(self, label, key_props, all_props): return ""
         async def merge_edge(self, src_qn, src_label, rel_type, dst_qn, dst_label, props): pass
-        # missing: query, get_labels, get_relationship_types, close
+        # missing: batch/delete/query, get_labels, get_relationship_types, close
     with pytest.raises(TypeError):
         BrokenStore()
 

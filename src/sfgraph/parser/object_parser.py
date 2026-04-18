@@ -1,6 +1,7 @@
 """Object metadata XML parser for Salesforce.
 
-Parses .object-meta.xml, .field-meta.xml, .labels-meta.xml, and .label-meta.xml files.
+Parses .object-meta.xml, .field-meta.xml, .labels-meta.xml/.label-meta.xml,
+.globalValueSet-meta.xml, and customMetadata/*.md-meta.xml files.
 Returns NodeFact + EdgeFact lists consumed by IngestionService.
 
 PITFALL: All elements are in NS="http://soap.sforce.com/2006/04/metadata"
@@ -10,7 +11,6 @@ PITFALL: Field files can be in <object_dir>/fields/<field>.field-meta.xml
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
@@ -24,8 +24,181 @@ def _tag(name: str) -> str:
     return f"{{{NS}}}{name}"
 
 
-# Regex to find field references in formula text (e.g. Date_Listed__c, Name)
-_FORMULA_FIELD_RE = re.compile(r'\b([A-Z][A-Za-z0-9_]*(?:__c|__r)?)\b')
+_FORMULA_KEYWORDS = {
+    "ABS",
+    "AND",
+    "BEGINS",
+    "BLANKVALUE",
+    "BR",
+    "CASE",
+    "CONTAINS",
+    "DATE",
+    "DATEVALUE",
+    "DATETIMEVALUE",
+    "FALSE",
+    "IF",
+    "IMAGE",
+    "ISBLANK",
+    "ISCHANGED",
+    "ISCLONE",
+    "ISNEW",
+    "ISPICKVAL",
+    "LEFT",
+    "LEN",
+    "LOWER",
+    "MID",
+    "NOT",
+    "NOW",
+    "NULL",
+    "OR",
+    "PRIORVALUE",
+    "RIGHT",
+    "ROUND",
+    "TEXT",
+    "TODAY",
+    "TRIM",
+    "TRUE",
+    "UPPER",
+    "VALUE",
+}
+
+
+def _normalize_formula_identifier(token: str, trailing_char: str) -> str | None:
+    candidate = token.strip().strip(".")
+    if not candidate:
+        return None
+    if candidate.startswith("$"):
+        return None
+    candidate = candidate.split(":")[-1]
+    segments = [part for part in candidate.split(".") if part]
+    if not segments:
+        return None
+    candidate = segments[-1]
+    if not candidate or candidate[0].isdigit():
+        return None
+    # Formula function call (e.g. TEXT(...), IF(...)).
+    if trailing_char == "(":
+        return None
+    upper = candidate.upper()
+    if upper in _FORMULA_KEYWORDS:
+        return None
+    if candidate.endswith(("__c", "__r", "__pc", "__mdt", "__e")):
+        return candidate
+    if candidate[0].isupper() and all(ch.isalnum() or ch == "_" for ch in candidate):
+        return candidate
+    return None
+
+
+def _extract_formula_field_references(formula_text: str) -> list[str]:
+    refs: list[str] = []
+    seen: set[str] = set()
+    token_chars: list[str] = []
+    in_single = False
+    in_double = False
+
+    def _flush_token(next_char: str) -> None:
+        if not token_chars:
+            return
+        token = "".join(token_chars)
+        token_chars.clear()
+        normalized = _normalize_formula_identifier(token, next_char)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            refs.append(normalized)
+
+    for ch in formula_text:
+        if in_single:
+            if ch == "'":
+                in_single = False
+            continue
+        if in_double:
+            if ch == '"':
+                in_double = False
+            continue
+        if ch == "'":
+            _flush_token(ch)
+            in_single = True
+            continue
+        if ch == '"':
+            _flush_token(ch)
+            in_double = True
+            continue
+        if ch.isalnum() or ch in {"_", ".", "$", ":"}:
+            token_chars.append(ch)
+            continue
+        _flush_token(ch)
+
+    _flush_token("")
+    return refs
+
+
+def _parse_validation_rules(
+    root: ET.Element,
+    *,
+    object_api_name: str,
+    source_file: str,
+) -> tuple[list[NodeFact], list[EdgeFact]]:
+    nodes: list[NodeFact] = []
+    edges: list[EdgeFact] = []
+
+    for rule_elem in root.findall(_tag("validationRules")):
+        full_name = rule_elem.findtext(_tag("fullName")) or ""
+        if not full_name:
+            continue
+        active = (rule_elem.findtext(_tag("active")) or "").lower() == "true"
+        formula = rule_elem.findtext(_tag("errorConditionFormula")) or ""
+        error_message = rule_elem.findtext(_tag("errorMessage")) or ""
+        description = rule_elem.findtext(_tag("description")) or ""
+        rule_qname = f"{object_api_name}.{full_name}"
+
+        nodes.append(
+            NodeFact(
+                label="ValidationRule",
+                key_props={"qualifiedName": rule_qname},
+                all_props={
+                    "qualifiedName": rule_qname,
+                    "apiName": full_name,
+                    "objectApiName": object_api_name,
+                    "active": active,
+                    "errorConditionFormula": formula,
+                    "errorMessage": error_message,
+                    "description": description,
+                },
+                sourceFile=source_file,
+                lineNumber=0,
+                parserType="xml_object",
+            )
+        )
+        edges.append(
+            EdgeFact(
+                src_qualified_name=object_api_name,
+                src_label="SFObject",
+                rel_type="CONTAINS_CHILD",
+                dst_qualified_name=rule_qname,
+                dst_label="ValidationRule",
+                confidence=1.0,
+                resolutionMethod="direct",
+                edgeCategory="STRUCTURAL",
+                contextSnippet=f"validation rule: {full_name}",
+            )
+        )
+
+        for ref in _extract_formula_field_references(formula):
+            edges.append(
+                EdgeFact(
+                    src_qualified_name=rule_qname,
+                    src_label="ValidationRule",
+                    rel_type="VALIDATION_RULE_REFERENCES_FIELD",
+                    dst_qualified_name=f"{object_api_name}.{ref}",
+                    dst_label="SFField",
+                    confidence=0.85,
+                    resolutionMethod="regex",
+                    edgeCategory="DATA_FLOW",
+                    contextSnippet=f"validation formula: {formula[:80]}",
+                )
+            )
+
+    return nodes, edges
 
 
 def _detect_object_node_type(obj_xml_path: Path) -> str:
@@ -81,15 +254,32 @@ def parse_field_xml(
         sourceFile=field_path, lineNumber=0, parserType="xml_object",
     )
     nodes.append(field_node)
+    # Emit CustomMetadataField nodes for __mdt objects so the declared graph
+    # labels are actually populated during ingestion.
+    if object_api_name.endswith("__mdt"):
+        nodes.append(
+            NodeFact(
+                label="CustomMetadataField",
+                key_props={"qualifiedName": field_qname},
+                all_props={
+                    "qualifiedName": field_qname,
+                    "apiName": full_name,
+                    "objectApiName": object_api_name,
+                    "apiLabel": label,
+                    "fieldType": field_type,
+                    "required": required,
+                    "isFormula": is_formula,
+                },
+                sourceFile=field_path,
+                lineNumber=0,
+                parserType="xml_object",
+            )
+        )
 
     # OBJ-06: Formula field dependencies
     if is_formula and formula_text:
-        refs = set(_FORMULA_FIELD_RE.findall(formula_text))
-        # Filter out obvious non-field tokens (functions, keywords)
-        skip = {"TODAY", "NOW", "DATE", "DATEVALUE", "IF", "AND", "OR", "NOT", "TRUE", "FALSE", "NULL"}
+        refs = _extract_formula_field_references(formula_text)
         for ref in refs:
-            if ref in skip:
-                continue
             dst_qname = f"{object_api_name}.{ref}"
             edges.append(EdgeFact(
                 src_qualified_name=field_qname, src_label="SFField",
@@ -186,6 +376,14 @@ def parse_object_dir(object_dir: str) -> tuple[list[NodeFact], list[EdgeFact]]:
             sourceFile=str(obj_xml_path), lineNumber=0, parserType="xml_object",
         ))
 
+        validation_nodes, validation_edges = _parse_validation_rules(
+            root,
+            object_api_name=object_api_name,
+            source_file=str(obj_xml_path),
+        )
+        nodes.extend(validation_nodes)
+        edges.extend(validation_edges)
+
         # Parse inline <fields> elements if present
         for field_elem in root.findall(_tag("fields")):
             field_name = field_elem.findtext(_tag("fullName")) or ""
@@ -267,6 +465,103 @@ def parse_labels_xml(labels_path: str) -> tuple[list[NodeFact], list[EdgeFact]]:
                 sourceFile=labels_path, lineNumber=0, parserType="xml_object",
             ))
 
+    return nodes, edges
+
+
+def parse_global_value_set_xml(gvs_path: str) -> tuple[list[NodeFact], list[EdgeFact]]:
+    """Parse a .globalValueSet-meta.xml file."""
+    nodes: list[NodeFact] = []
+    edges: list[EdgeFact] = []
+    tree = ET.parse(gvs_path)
+    root = tree.getroot()
+    full_name = root.findtext(_tag("fullName")) or Path(gvs_path).stem.replace(".globalValueSet-meta", "")
+    label = root.findtext(_tag("masterLabel")) or full_name
+
+    nodes.append(
+        NodeFact(
+            label="GlobalValueSet",
+            key_props={"qualifiedName": full_name},
+            all_props={"qualifiedName": full_name, "apiName": full_name, "apiLabel": label},
+            sourceFile=gvs_path,
+            lineNumber=0,
+            parserType="xml_object",
+        )
+    )
+
+    for value in root.findall(_tag("customValue")):
+        val_name = value.findtext(_tag("fullName")) or ""
+        val_label = value.findtext(_tag("label")) or val_name
+        is_default = value.findtext(_tag("default")) == "true"
+        if not val_name:
+            continue
+        val_qname = f"{full_name}.{val_name}"
+        nodes.append(
+            NodeFact(
+                label="SFPicklistValue",
+                key_props={"qualifiedName": val_qname},
+                all_props={
+                    "qualifiedName": val_qname,
+                    "apiName": val_name,
+                    "apiLabel": val_label,
+                    "isDefault": is_default,
+                    "globalValueSet": full_name,
+                },
+                sourceFile=gvs_path,
+                lineNumber=0,
+                parserType="xml_object",
+            )
+        )
+        edges.append(
+            EdgeFact(
+                src_qualified_name=full_name,
+                src_label="GlobalValueSet",
+                rel_type="GLOBAL_VALUE_SET_HAS_VALUE",
+                dst_qualified_name=val_qname,
+                dst_label="SFPicklistValue",
+                confidence=1.0,
+                resolutionMethod="direct",
+                edgeCategory="STRUCTURAL",
+                contextSnippet=f"global value set value: {val_name}",
+            )
+        )
+    return nodes, edges
+
+
+def parse_custom_metadata_record_xml(record_path: str) -> tuple[list[NodeFact], list[EdgeFact]]:
+    """Parse a customMetadata/*.md-meta.xml record file."""
+    nodes: list[NodeFact] = []
+    edges: list[EdgeFact] = []
+    tree = ET.parse(record_path)
+    root = tree.getroot()
+    full_name = root.findtext(_tag("fullName")) or Path(record_path).stem.replace(".md-meta", "")
+    if "." not in full_name:
+        return nodes, edges
+    type_api, _record_name = full_name.split(".", 1)
+    type_qname = f"{type_api}__mdt" if not type_api.endswith("__mdt") else type_api
+
+    nodes.append(
+        NodeFact(
+            label="CustomMetadataRecord",
+            key_props={"qualifiedName": full_name},
+            all_props={"qualifiedName": full_name, "typeQualifiedName": type_qname},
+            sourceFile=record_path,
+            lineNumber=0,
+            parserType="xml_object",
+        )
+    )
+    edges.append(
+        EdgeFact(
+            src_qualified_name=type_qname,
+            src_label="CustomMetadataType",
+            rel_type="CONTAINS_CHILD",
+            dst_qualified_name=full_name,
+            dst_label="CustomMetadataRecord",
+            confidence=1.0,
+            resolutionMethod="direct",
+            edgeCategory="STRUCTURAL",
+            contextSnippet=f"custom metadata record: {full_name}",
+        )
+    )
     return nodes, edges
 
 

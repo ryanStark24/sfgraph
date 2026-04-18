@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
+import multiprocessing as mp
+import queue
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sfgraph.ingestion.models import IngestionSummary, RefreshSummary, VectorizeSummary
 from sfgraph.ingestion.job_manager import IngestJobManager
 from sfgraph.ingestion.scope_migration import ScopeMigrationService
 from sfgraph.ingestion.snapshot import GraphSnapshotService
@@ -22,8 +28,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DaemonAppContext:
-    graph: DuckPGQStore
-    vectors: VectorStore
+    graph: DuckPGQStore | None
+    graph_db_path: Path
+    vectors: VectorStore | None
     manifest: ManifestStore
     parse_cache: ParseCache
     pool: NodeParserPool
@@ -39,23 +46,35 @@ def _as_string_list(value: Any) -> list[str]:
     return [str(value)] if str(value) else []
 
 
-def _deprecated_tool_payload(*, tool_name: str, replacement: str) -> dict[str, Any]:
-    return {
-        "deprecated": True,
-        "tool": tool_name,
-        "replacement_tool": replacement,
-        "message": (
-            f"{tool_name} is deprecated and will be removed in a future release. "
-            f"Use {replacement} for background execution and progress polling."
-        ),
-    }
-
-
 def _merge_job_with_progress(job: dict[str, Any], progress: dict[str, Any]) -> dict[str, Any]:
     payload = dict(job)
     if progress.get("available"):
         payload["progress"] = progress
     return payload
+
+
+def _vector_health_payload(app: DaemonAppContext, progress: dict[str, Any] | None = None) -> dict[str, Any]:
+    progress = progress or {}
+    progress_health = progress.get("vector_health")
+    if isinstance(progress_health, dict):
+        return dict(progress_health)
+    if app.vectors is None:
+        return {"enabled": False, "status": "disabled", "upsert_failures": 0}
+    probe = getattr(app.vectors, "health_snapshot", None)
+    if callable(probe):
+        try:
+            raw = probe()
+            if inspect.isawaitable(raw):
+                close = getattr(raw, "close", None)
+                if callable(close):
+                    close()
+                raw = None
+            if isinstance(raw, dict):
+                return raw
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("vector health probe failed", exc_info=True)
+            return {"enabled": True, "status": "probe_failed", "error": str(exc)}
+    return {"enabled": True, "status": "unknown"}
 
 
 def read_progress_snapshot(data_root: Path) -> dict[str, Any]:
@@ -73,54 +92,77 @@ def read_progress_snapshot(data_root: Path) -> dict[str, Any]:
     return payload
 
 
+def read_ingestion_meta_snapshot(data_root: Path) -> dict[str, Any]:
+    meta_path = data_root / "ingestion_meta.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _status_from_snapshots(*, data_root: Path) -> dict[str, Any]:
+    meta = read_ingestion_meta_snapshot(data_root)
+    node_counts = meta.get("node_counts_by_type")
+    edge_counts = meta.get("edge_counts_by_type")
+    status_counts = meta.get("status_counts")
+    latest_completed_run = meta.get("latest_completed_run")
+    return {
+        "node_counts_by_type": node_counts if isinstance(node_counts, dict) else {},
+        "edge_counts_by_type": edge_counts if isinstance(edge_counts, dict) else {},
+        "status_counts": status_counts if isinstance(status_counts, dict) else {},
+        "latest_completed_run": latest_completed_run if isinstance(latest_completed_run, dict) else None,
+        "dirty_files_pending": 0,
+        "parser_stats": meta.get("parser_stats", {}) if isinstance(meta.get("parser_stats"), dict) else {},
+        "unresolved_symbols": int(meta.get("unresolved_symbols", 0) or 0),
+    }
+
+
 async def create_app_context(data_root: Path) -> DaemonAppContext:
     data_root.mkdir(parents=True, exist_ok=True)
-    graph = DuckPGQStore(db_path=str(data_root / "sfgraph.duckdb"))
+    graph_path = data_root / "sfgraph.duckdb"
+    if not graph_path.exists():
+        bootstrap_graph = DuckPGQStore(db_path=str(graph_path))
+        await bootstrap_graph.close()
+    graph = DuckPGQStore(db_path=str(graph_path), read_only=True)
     vectors = VectorStore(path=str(data_root / "vectors"))
     manifest = ManifestStore(db_path=str(data_root / "manifest.sqlite"))
     parse_cache = ParseCache(db_path=str(data_root / "parse_cache.sqlite"))
     pool = NodeParserPool()
     jobs = IngestJobManager(
-        ingest_factory=lambda export_dir, options: build_ingestion_service_from_parts(
-            graph=graph,
-            manifest=manifest,
-            parse_cache=parse_cache,
-            pool=pool,
-            vectors=vectors,
+        ingest_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_process(
+            job_type="ingest",
             data_root=data_root,
-            mode=str(options.get("mode", "full")),
-            include_globs=_as_string_list(options.get("include_globs")),
-            exclude_globs=_as_string_list(options.get("exclude_globs")),
-        ).ingest(export_dir),
-        refresh_factory=lambda export_dir, options: build_ingestion_service_from_parts(
-            graph=graph,
-            manifest=manifest,
-            parse_cache=parse_cache,
-            pool=pool,
-            vectors=vectors,
+            export_dir=export_dir,
+            options=options,
+            cancel_event=cancel_event,
+        ),
+        refresh_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_process(
+            job_type="refresh",
             data_root=data_root,
-            mode=str(options.get("mode", "full")),
-            include_globs=_as_string_list(options.get("include_globs")),
-            exclude_globs=_as_string_list(options.get("exclude_globs")),
-        ).refresh(export_dir),
-        vectorize_factory=lambda export_dir, options: build_ingestion_service_from_parts(
-            graph=graph,
-            manifest=manifest,
-            parse_cache=parse_cache,
-            pool=pool,
-            vectors=vectors,
+            export_dir=export_dir,
+            options=options,
+            cancel_event=cancel_event,
+        ),
+        vectorize_factory=lambda export_dir, options, cancel_event: _run_job_in_worker_process(
+            job_type="vectorize",
             data_root=data_root,
-            mode="full",
-            include_globs=[],
-            exclude_globs=[],
-        ).vectorize(export_dir),
+            export_dir=export_dir,
+            options=options,
+            cancel_event=cancel_event,
+        ),
+        db_path=str(data_root / "ingest_jobs.sqlite"),
     )
     await manifest.initialize()
     await parse_cache.initialize()
     await vectors.initialize()
     await pool.start()
+    await jobs.initialize()
     return DaemonAppContext(
         graph=graph,
+        graph_db_path=graph_path,
         vectors=vectors,
         manifest=manifest,
         parse_cache=parse_cache,
@@ -132,12 +174,39 @@ async def create_app_context(data_root: Path) -> DaemonAppContext:
 
 async def close_app_context(app: DaemonAppContext) -> None:
     await app.pool.shutdown()
+    await app.jobs.close()
+    if app.vectors is not None:
+        await app.vectors.close()
     await app.parse_cache.close()
     await app.manifest.close()
-    await app.graph.close()
+    if app.graph is not None:
+        await app.graph.close()
+
+
+async def _close_runtime_parts(
+    *,
+    graph: DuckPGQStore,
+    manifest: ManifestStore,
+    parse_cache: ParseCache,
+    pool: NodeParserPool,
+) -> None:
+    await pool.shutdown()
+    await parse_cache.close()
+    await manifest.close()
+    await graph.close()
 
 
 def build_ingestion_service(app: DaemonAppContext) -> IngestionService:
+    if app.graph is None:
+        app.graph = DuckPGQStore(db_path=str(app.graph_db_path))
+    elif bool(getattr(app.graph, "_read_only", False)):
+        # Re-open writable graph connection for in-process ingestion compatibility tools.
+        old_graph = app.graph
+        try:
+            old_graph._conn.close()  # type: ignore[attr-defined]
+        except Exception:
+            logger.debug("Failed closing read-only graph before writable reopen", exc_info=True)
+        app.graph = DuckPGQStore(db_path=str(app.graph_db_path))
     return build_ingestion_service_from_parts(
         graph=app.graph,
         manifest=app.manifest,
@@ -154,12 +223,17 @@ def build_ingestion_service_from_parts(
     manifest: ManifestStore,
     parse_cache: ParseCache,
     pool: NodeParserPool,
-    vectors: VectorStore,
+    vectors: VectorStore | None,
     data_root: Path,
+    cancel_event: threading.Event | None = None,
     mode: str = "full",
     include_globs: list[str] | None = None,
     exclude_globs: list[str] | None = None,
+    org_alias: str | None = None,
+    enrich_org: bool = False,
 ) -> IngestionService:
+    if mode == "full" and vectors is None:
+        raise RuntimeError("Vector store is required for full mode ingestion.")
     vector_store = vectors if mode != "graph_only" else None
     return IngestionService(
         graph=graph,
@@ -167,14 +241,19 @@ def build_ingestion_service_from_parts(
         parse_cache=parse_cache,
         pool=pool,
         vectors=vector_store,
+        cancel_event=cancel_event,
         ingestion_meta_path=str(data_root / "ingestion_meta.json"),
         ingestion_progress_path=str(data_root / "ingestion_progress.json"),
         include_globs=include_globs,
         exclude_globs=exclude_globs,
+        org_alias=org_alias,
+        enrich_org=enrich_org,
     )
 
 
 def build_query_service(app: DaemonAppContext) -> GraphQueryService:
+    if app.graph is None:
+        app.graph = DuckPGQStore(db_path=str(app.graph_db_path), read_only=True)
     return GraphQueryService(
         graph=app.graph,
         manifest=app.manifest,
@@ -183,6 +262,159 @@ def build_query_service(app: DaemonAppContext) -> GraphQueryService:
         ingestion_meta_path=str(app.data_root / "ingestion_meta.json"),
         ingestion_progress_path=str(app.data_root / "ingestion_progress.json"),
     )
+
+
+async def _run_isolated_job(
+    *,
+    job_type: str,
+    data_root: Path,
+    export_dir: str,
+    options: dict[str, Any],
+    cancel_event: threading.Event,
+):
+    mode = str(options.get("mode", "full"))
+    vectors_enabled = job_type == "vectorize" or mode != "graph_only"
+    graph = DuckPGQStore(db_path=str(data_root / "sfgraph.duckdb"))
+    vectors: VectorStore | None = VectorStore(path=str(data_root / "vectors")) if vectors_enabled else None
+    manifest = ManifestStore(db_path=str(data_root / "manifest.sqlite"))
+    parse_cache = ParseCache(db_path=str(data_root / "parse_cache.sqlite"))
+    pool = NodeParserPool()
+    await manifest.initialize()
+    await parse_cache.initialize()
+    if vectors is not None:
+        await vectors.initialize()
+    await pool.start()
+    try:
+        resume_checkpoint = bool(options.get("resume_checkpoint", False))
+        include_globs = _as_string_list(options.get("include_globs"))
+        exclude_globs = _as_string_list(options.get("exclude_globs"))
+        org_alias = str(options.get("org_alias") or "").strip() or None
+        enrich_org = bool(options.get("enrich_org", False))
+        service = build_ingestion_service_from_parts(
+            graph=graph,
+            manifest=manifest,
+            parse_cache=parse_cache,
+            pool=pool,
+            vectors=vectors,
+            data_root=data_root,
+            cancel_event=cancel_event,
+            mode="full" if job_type == "vectorize" else mode,
+            include_globs=[] if job_type == "vectorize" else include_globs,
+            exclude_globs=[] if job_type == "vectorize" else exclude_globs,
+            org_alias=None if job_type == "vectorize" else org_alias,
+            enrich_org=False if job_type == "vectorize" else enrich_org,
+        )
+        if job_type == "ingest" and resume_checkpoint:
+            logger.info(
+                "Resuming ingest job via incremental refresh strategy for export_dir=%s",
+                export_dir,
+            )
+            return await service.refresh(export_dir)
+        if job_type == "ingest":
+            return await service.ingest(export_dir)
+        if job_type == "refresh":
+            return await service.refresh(export_dir)
+        if job_type == "vectorize":
+            return await service.vectorize(export_dir)
+        raise ValueError(f"Unsupported job type: {job_type}")
+    finally:
+        await _close_runtime_parts(
+            graph=graph,
+            manifest=manifest,
+            parse_cache=parse_cache,
+            pool=pool,
+        )
+
+
+def _run_isolated_job_entrypoint(
+    *,
+    result_queue: mp.Queue,
+    job_type: str,
+    data_root: str,
+    export_dir: str,
+    options: dict[str, Any],
+) -> None:
+    try:
+        summary = asyncio.run(
+            _run_isolated_job(
+                job_type=job_type,
+                data_root=Path(data_root),
+                export_dir=export_dir,
+                options=dict(options),
+                cancel_event=threading.Event(),
+            )
+        )
+        payload = summary.model_dump() if hasattr(summary, "model_dump") else dict(summary)
+        result_queue.put({"ok": True, "payload": payload})
+    except Exception as exc:  # noqa: BLE001
+        result_queue.put({"ok": False, "error": str(exc)})
+
+
+def _hydrate_job_summary(job_type: str, payload: dict[str, Any]):
+    if job_type == "ingest":
+        return IngestionSummary.model_validate(payload)
+    if job_type == "refresh":
+        return RefreshSummary.model_validate(payload)
+    if job_type == "vectorize":
+        return VectorizeSummary.model_validate(payload)
+    raise ValueError(f"Unsupported job type: {job_type}")
+
+
+async def _run_job_in_worker_process(
+    *,
+    job_type: str,
+    data_root: Path,
+    export_dir: str,
+    options: dict[str, Any],
+    cancel_event: threading.Event,
+):
+    ctx = mp.get_context("spawn")
+    result_queue: mp.Queue = ctx.Queue(maxsize=1)
+    process = ctx.Process(
+        target=_run_isolated_job_entrypoint,
+        kwargs={
+            "result_queue": result_queue,
+            "job_type": job_type,
+            "data_root": str(data_root),
+            "export_dir": export_dir,
+            "options": dict(options),
+        },
+        daemon=True,
+    )
+    process.start()
+
+    try:
+        while True:
+            if cancel_event.is_set():
+                if process.is_alive():
+                    process.terminate()
+                    await asyncio.to_thread(process.join, 5.0)
+                raise asyncio.CancelledError()
+
+            try:
+                message = result_queue.get_nowait()
+            except queue.Empty:
+                if not process.is_alive():
+                    raise RuntimeError(
+                        f"Background {job_type} process exited before emitting a result payload."
+                    )
+                await asyncio.sleep(0.1)
+                continue
+
+            if not isinstance(message, dict):
+                raise RuntimeError(f"Background {job_type} process returned malformed payload.")
+            if message.get("ok"):
+                payload = message.get("payload")
+                if not isinstance(payload, dict):
+                    raise RuntimeError(f"Background {job_type} process returned invalid summary payload.")
+                return _hydrate_job_summary(job_type, payload)
+            raise RuntimeError(str(message.get("error") or f"{job_type} process failed"))
+    finally:
+        if process.is_alive():
+            process.terminate()
+            await asyncio.to_thread(process.join, 2.0)
+        result_queue.close()
+        result_queue.join_thread()
 
 
 async def assert_no_active_background_job(app: DaemonAppContext, tool_name: str) -> None:
@@ -196,6 +428,17 @@ async def assert_no_active_background_job(app: DaemonAppContext, tool_name: str)
     )
 
 
+async def _release_graph_for_background_job(app: DaemonAppContext) -> None:
+    # DuckDB allows only one writer; drop daemon-held connections before worker starts.
+    if app.graph is not None:
+        await app.graph.close()
+        app.graph = None
+    # Local Qdrant mode is single-process; release during background jobs.
+    if app.vectors is not None:
+        await app.vectors.close()
+        app.vectors = None
+
+
 class DaemonOperations:
     def __init__(self, app: DaemonAppContext) -> None:
         self.app = app
@@ -204,43 +447,8 @@ class DaemonOperations:
         _ = params
         return {"ok": True, "pool_size": len(self.app.pool._workers)}
 
-    async def ingest_org(self, params: dict[str, Any]) -> dict[str, Any]:
-        await assert_no_active_background_job(self.app, "ingest_org")
-        mode = str(params.get("mode", "full"))
-        include_globs = _as_string_list(params.get("include_globs"))
-        exclude_globs = _as_string_list(params.get("exclude_globs"))
-        export_dir = str(params["export_dir"])
-        service = build_ingestion_service_from_parts(
-            graph=self.app.graph,
-            manifest=self.app.manifest,
-            parse_cache=self.app.parse_cache,
-            pool=self.app.pool,
-            vectors=self.app.vectors,
-            data_root=self.app.data_root,
-            mode=mode,
-            include_globs=include_globs,
-            exclude_globs=exclude_globs,
-        )
-        summary = await service.ingest(export_dir)
-        return {
-            **_deprecated_tool_payload(tool_name="ingest_org", replacement="start_ingest_job"),
-            "run_id": summary.run_id,
-            "export_dir": summary.export_dir,
-            "duration_seconds": summary.duration_seconds,
-            "total_nodes": summary.total_nodes,
-            "node_counts_by_type": summary.node_counts_by_type,
-            "edge_count": summary.edge_count,
-            "parse_failures": summary.parse_failures,
-            "orphaned_edges": summary.orphaned_edges,
-            "parser_stats": summary.parser_stats,
-            "unresolved_symbols": summary.unresolved_symbols,
-            "warnings": summary.warnings[:20],
-            "mode": mode,
-            "include_globs": include_globs,
-            "exclude_globs": exclude_globs,
-        }
-
     async def start_ingest_job(self, params: dict[str, Any]) -> dict[str, Any]:
+        await _release_graph_for_background_job(self.app)
         return await self.app.jobs.start_job(
             job_type="ingest",
             export_dir=str(params["export_dir"]),
@@ -248,10 +456,13 @@ class DaemonOperations:
                 "mode": str(params.get("mode", "full")),
                 "include_globs": _as_string_list(params.get("include_globs")),
                 "exclude_globs": _as_string_list(params.get("exclude_globs")),
+                "org_alias": str(params.get("org_alias") or "").strip() or None,
+                "enrich_org": bool(params.get("enrich_org", False)),
             },
         )
 
     async def start_refresh_job(self, params: dict[str, Any]) -> dict[str, Any]:
+        await _release_graph_for_background_job(self.app)
         return await self.app.jobs.start_job(
             job_type="refresh",
             export_dir=str(params["export_dir"]),
@@ -259,10 +470,13 @@ class DaemonOperations:
                 "mode": str(params.get("mode", "full")),
                 "include_globs": _as_string_list(params.get("include_globs")),
                 "exclude_globs": _as_string_list(params.get("exclude_globs")),
+                "org_alias": str(params.get("org_alias") or "").strip() or None,
+                "enrich_org": bool(params.get("enrich_org", False)),
             },
         )
 
     async def start_vectorize_job(self, params: dict[str, Any]) -> dict[str, Any]:
+        await _release_graph_for_background_job(self.app)
         return await self.app.jobs.start_job(
             job_type="vectorize",
             export_dir=str(params["export_dir"]),
@@ -277,6 +491,7 @@ class DaemonOperations:
         progress = read_progress_snapshot(self.app.data_root)
         if self.app.jobs.active_job_id == job_id and progress.get("state") == "running":
             job = _merge_job_with_progress(job, progress)
+        job["vector_health"] = _vector_health_payload(self.app, progress)
         job["available"] = True
         return job
 
@@ -292,57 +507,12 @@ class DaemonOperations:
         except KeyError:
             return {"job_id": job_id, "available": False, "error": "job_not_found"}
 
-    async def refresh(self, params: dict[str, Any]) -> dict[str, Any]:
-        await assert_no_active_background_job(self.app, "refresh")
-        mode = str(params.get("mode", "full"))
-        include_globs = _as_string_list(params.get("include_globs"))
-        exclude_globs = _as_string_list(params.get("exclude_globs"))
-        export_dir = str(params["export_dir"])
-        service = build_ingestion_service_from_parts(
-            graph=self.app.graph,
-            manifest=self.app.manifest,
-            parse_cache=self.app.parse_cache,
-            pool=self.app.pool,
-            vectors=self.app.vectors,
-            data_root=self.app.data_root,
-            mode=mode,
-            include_globs=include_globs,
-            exclude_globs=exclude_globs,
-        )
-        summary = await service.refresh(export_dir)
-        return {
-            **_deprecated_tool_payload(tool_name="refresh", replacement="start_refresh_job"),
-            "run_id": summary.run_id,
-            "export_dir": summary.export_dir,
-            "duration_seconds": summary.duration_seconds,
-            "processed_files": summary.processed_files,
-            "changed_files": summary.changed_files,
-            "deleted_files": summary.deleted_files,
-            "affected_neighbor_files": summary.affected_neighbor_files,
-            "node_count": summary.node_count,
-            "edge_count": summary.edge_count,
-            "orphaned_edges": summary.orphaned_edges,
-            "parser_stats": summary.parser_stats,
-            "unresolved_symbols": summary.unresolved_symbols,
-            "warnings": summary.warnings[:20],
-            "mode": mode,
-            "include_globs": include_globs,
-            "exclude_globs": exclude_globs,
-        }
-
-    async def vectorize(self, params: dict[str, Any]) -> dict[str, Any]:
-        await assert_no_active_background_job(self.app, "vectorize")
-        service = build_ingestion_service_from_parts(
-            graph=self.app.graph,
-            manifest=self.app.manifest,
-            parse_cache=self.app.parse_cache,
-            pool=self.app.pool,
-            vectors=self.app.vectors,
-            data_root=self.app.data_root,
-            mode="full",
-        )
-        summary = await service.vectorize(str(params["export_dir"]))
-        return summary.model_dump()
+    async def resume_ingest_job(self, params: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(params["job_id"])
+        try:
+            return await self.app.jobs.resume_job(job_id)
+        except KeyError:
+            return {"job_id": job_id, "available": False, "error": "job_not_found"}
 
     async def watch_refresh(self, params: dict[str, Any]) -> dict[str, Any]:
         await assert_no_active_background_job(self.app, "watch_refresh")
@@ -357,26 +527,56 @@ class DaemonOperations:
 
     async def get_ingestion_status(self, params: dict[str, Any]) -> dict[str, Any]:
         _ = params
-        service = build_query_service(self.app)
-        status = await service.get_ingestion_status()
         active_job = await self.app.jobs.get_active_job()
+        progress = read_progress_snapshot(self.app.data_root)
         if active_job is not None:
-            progress = read_progress_snapshot(self.app.data_root)
+            status = _status_from_snapshots(data_root=self.app.data_root)
+        else:
+            service = build_query_service(self.app)
+            status = await service.get_ingestion_status()
+        if active_job is not None:
             status["active_job"] = _merge_job_with_progress(active_job, progress)
         else:
             status["active_job"] = None
+        status["vector_health"] = _vector_health_payload(self.app, progress)
         return status
 
     async def get_ingestion_progress(self, params: dict[str, Any]) -> dict[str, Any]:
         _ = params
-        service = build_query_service(self.app)
-        payload = await service.get_ingestion_progress()
         active_job = await self.app.jobs.get_active_job()
         if active_job is not None:
+            payload = read_progress_snapshot(self.app.data_root)
+        else:
+            service = build_query_service(self.app)
+            payload = await service.get_ingestion_progress()
+        if active_job is not None:
             payload["active_job"] = active_job
+        payload["vector_health"] = _vector_health_payload(self.app, payload)
         return payload
 
+    async def export_diagnostics_md(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = build_query_service(self.app)
+        return await service.export_diagnostics_md(
+            destination=str(params["destination"]) if params.get("destination") is not None else None,
+            export_dir=str(params["export_dir"]) if params.get("export_dir") is not None else None,
+            run_id=str(params["run_id"]) if params.get("run_id") is not None else None,
+            job_id=str(params["job_id"]) if params.get("job_id") is not None else None,
+        )
+
+    async def graph_subgraph(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "graph_subgraph")
+        service = build_query_service(self.app)
+        return await service.graph_subgraph(
+            node_id=str(params["node_id"]) if params.get("node_id") is not None else None,
+            question=str(params["question"]) if params.get("question") is not None else None,
+            hops=int(params.get("hops", 2)),
+            max_nodes=int(params.get("max_nodes", 80)),
+            format=str(params.get("format", "mermaid")),
+            focus=str(params.get("focus", "lineage")),
+        )
+
     async def trace_upstream(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "trace_upstream")
         service = build_query_service(self.app)
         return await service.trace_upstream(
             start_node=str(params["node_id"]),
@@ -387,6 +587,7 @@ class DaemonOperations:
         )
 
     async def trace_downstream(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "trace_downstream")
         service = build_query_service(self.app)
         return await service.trace_downstream(
             start_node=str(params["node_id"]),
@@ -397,14 +598,56 @@ class DaemonOperations:
         )
 
     async def get_node(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "get_node")
         service = build_query_service(self.app)
         return await service.get_node(node_id=str(params["node_id"]))
 
     async def explain_field(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "explain_field")
         service = build_query_service(self.app)
         return await service.explain_field(field_qualified_name=str(params["field_qualified_name"]))
 
+    async def analyze_field(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "analyze_field")
+        service = build_query_service(self.app)
+        return await service.analyze_field(
+            field_name=str(params["field_name"]),
+            focus=str(params.get("focus", "both")),
+            max_results=int(params.get("max_results", 100)),
+        )
+
+    async def analyze_object_event(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "analyze_object_event")
+        service = build_query_service(self.app)
+        return await service.analyze_object_event(
+            object_name=str(params["object_name"]),
+            event=str(params["event"]),
+            max_results=int(params.get("max_results", 50)),
+        )
+
+    async def analyze_component(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "analyze_component")
+        service = build_query_service(self.app)
+        return await service.analyze_component(
+            component_name=str(params["component_name"]),
+            token=str(params["token"]) if params.get("token") is not None else None,
+            focus=str(params.get("focus", "both")),
+            max_results=int(params.get("max_results", 100)),
+        )
+
+    async def analyze_change(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "analyze_change")
+        service = build_query_service(self.app)
+        changed_files = params.get("changed_files")
+        return await service.analyze_change(
+            target=str(params["target"]) if params.get("target") is not None else None,
+            changed_files=[str(item) for item in changed_files] if isinstance(changed_files, list) else None,
+            max_hops=int(params.get("max_hops", 2)),
+            max_results_per_component=int(params.get("max_results_per_component", 25)),
+        )
+
     async def query(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "query")
         service = build_query_service(self.app)
         return await service.query(
             question=str(params["question"]),
@@ -412,9 +655,26 @@ class DaemonOperations:
             max_results=int(params.get("max_results", 50)),
             time_budget_ms=int(params.get("time_budget_ms", 1500)),
             offset=int(params.get("offset", 0)),
+            allow_vector_fallback=bool(params.get("allow_vector_fallback", True)),
+        )
+
+    async def analyze(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "analyze")
+        service = build_query_service(self.app)
+        return await service.analyze(
+            question=str(params["question"]),
+            mode=str(params.get("mode", "auto")),
+            strict=bool(params.get("strict", True)),
+            max_results=int(params.get("max_results", 50)),
+            max_hops=int(params.get("max_hops", 3)),
+            time_budget_ms=int(params.get("time_budget_ms", 1500)),
+            offset=int(params.get("offset", 0)),
+            render=str(params.get("render", "json")),
+            include_mermaid=bool(params.get("include_mermaid", False)),
         )
 
     async def impact_from_git_diff(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "impact_from_git_diff")
         service = build_query_service(self.app)
         return await service.impact_from_git_diff(
             base_ref=str(params.get("base_ref", "HEAD~1")),
@@ -424,6 +684,7 @@ class DaemonOperations:
         )
 
     async def cross_layer_flow_map(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "cross_layer_flow_map")
         service = build_query_service(self.app)
         return await service.cross_layer_flow_map(
             start_node=str(params["node_id"]),
@@ -434,6 +695,7 @@ class DaemonOperations:
         )
 
     async def list_unknown_dynamic_edges(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "list_unknown_dynamic_edges")
         service = build_query_service(self.app)
         return await service.list_unknown_dynamic_edges(
             limit=int(params.get("limit", 200)),
@@ -441,10 +703,12 @@ class DaemonOperations:
         )
 
     async def create_snapshot(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "create_snapshot")
         snapshot_service = GraphSnapshotService(graph=self.app.graph)
         return await snapshot_service.create_snapshot(name=params.get("name"))
 
     async def diff_snapshots(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "diff_snapshots")
         return GraphSnapshotService.diff_snapshots(
             snapshot_a_path=str(params["snapshot_a_path"]),
             snapshot_b_path=str(params["snapshot_b_path"]),
@@ -452,14 +716,20 @@ class DaemonOperations:
         )
 
     async def migrate_project_scope(self, params: dict[str, Any]) -> dict[str, Any]:
-        service = ScopeMigrationService(graph=self.app.graph, vectors=self.app.vectors)
-        return await service.migrate_project_scope(
-            export_dir=str(params["export_dir"]),
-            dry_run=bool(params.get("dry_run", True)),
-            prune_legacy=bool(params.get("prune_legacy", False)),
-        )
+        await assert_no_active_background_job(self.app, "migrate_project_scope")
+        graph = DuckPGQStore(db_path=str(self.app.data_root / "sfgraph.duckdb"))
+        try:
+            service = ScopeMigrationService(graph=graph, vectors=self.app.vectors)
+            return await service.migrate_project_scope(
+                export_dir=str(params["export_dir"]),
+                dry_run=bool(params.get("dry_run", True)),
+                prune_legacy=bool(params.get("prune_legacy", False)),
+            )
+        finally:
+            await graph.close()
 
     async def test_gap_intelligence_from_git_diff(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "test_gap_intelligence_from_git_diff")
         service = build_query_service(self.app)
         return await service.test_gap_intelligence_from_git_diff(
             base_ref=str(params.get("base_ref", "HEAD~1")),

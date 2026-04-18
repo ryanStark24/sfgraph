@@ -1,0 +1,60 @@
+[
+  {
+    "id": "field_writes_service_id",
+    "question": "where is Service_Id__c populated?",
+    "expected_mode": "field_writes"
+  },
+  {
+    "id": "field_reads_clarity",
+    "question": "where is Account.Clarity_Customer_ID__c used?",
+    "expected_mode": "field_reads"
+  },
+  {
+    "id": "field_reads_with_punctuation",
+    "question": "where is Account.Clarity_Customer_ID__c used",
+    "expected_mode": "field_reads"
+  },
+  {
+    "id": "field_writes_explicit_object",
+    "question": "where is Account.Status__c assigned?",
+    "expected_mode": "field_writes"
+  },
+  {
+    "id": "object_event_insert",
+    "question": "what happens when a QuoteLineItem is inserted?",
+    "expected_mode": "analyze_object_event"
+  },
+  {
+    "id": "object_event_update",
+    "question": "what runs when QuoteLineItem is updated?",
+    "expected_mode": "analyze_object_event"
+  },
+  {
+    "id": "component_token_accessid",
+    "question": "In class OSS_ServiceabilityTask, where is accessId populated? show method and source file.",
+    "expected_mode": "analyze_component"
+  },
+  {
+    "id": "change_impact_service",
+    "question": "what breaks if I change AccountService?",
+    "expected_mode": "analyze_change"
+  },
+  {
+    "id": "change_impact_field",
+    "question": "what breaks if I change Account.Status__c?",
+    "expected_mode": "analyze_change"
+  },
+  {
+    "id": "discovery_find_field",
+    "question": "find Account.Status__c",
+    "expected_mode": "node_search"
+  },
+  {
+    "id": "discovery_broad",
+    "question": "show me account service logic"
+  },
+  {
+    "id": "discovery_quotelineitem",
+    "question": "search quote line item trigger helper"
+  }
+]

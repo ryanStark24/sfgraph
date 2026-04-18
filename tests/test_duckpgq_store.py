@@ -196,6 +196,12 @@ async def test_schema_registry_persists_across_reconnect(tmp_path):
     assert "ApexClass" in labels
     assert "SFObject" in labels
     assert "CALLS" in rel_types
+    idx = await store2.query(
+        "SELECT label FROM _sfgraph_node_index WHERE qualified_name = $qn",
+        {"qn": "Foo"},
+    )
+    assert idx
+    assert idx[0]["label"] == "ApexClass"
     await store2.close()
 
 
@@ -207,3 +213,111 @@ async def test_close_is_idempotent():
     store = DuckPGQStore()
     await store.close()
     await store.close()  # second close must not raise
+
+
+async def test_merge_node_rejects_invalid_label(store):
+    with pytest.raises(ValueError, match="Invalid label identifier"):
+        await store.merge_node(
+            'Bad"Label',
+            {"qualifiedName": "Q"},
+            {"qualifiedName": "Q"},
+        )
+
+
+async def test_merge_edge_rejects_invalid_relationship_type(store):
+    await store.merge_node("ApexClass", {"qualifiedName": "A"}, {"qualifiedName": "A"})
+    await store.merge_node("ApexClass", {"qualifiedName": "B"}, {"qualifiedName": "B"})
+    with pytest.raises(ValueError, match="Invalid relationship type identifier"):
+        await store.merge_edge("A", "ApexClass", 'BAD"REL', "B", "ApexClass", {})
+
+
+async def test_merge_nodes_batch_upserts_nodes_and_index(store):
+    inserted = await store.merge_nodes_batch(
+        "ApexClass",
+        [
+            ("BatchA", {"qualifiedName": "BatchA"}),
+            ("BatchB", {"qualifiedName": "BatchB"}),
+        ],
+    )
+    assert inserted == 2
+    rows = await store.query('SELECT qualified_name FROM "ApexClass" ORDER BY qualified_name')
+    assert [r["qualified_name"] for r in rows] == ["BatchA", "BatchB"]
+    idx = await store.query(
+        "SELECT qualified_name, label FROM _sfgraph_node_index WHERE qualified_name IN ($a, $b) ORDER BY qualified_name",
+        {"a": "BatchA", "b": "BatchB"},
+    )
+    assert len(idx) == 2
+    assert all(row["label"] == "ApexClass" for row in idx)
+
+
+async def test_merge_edges_batch_upserts_edges(store):
+    await store.merge_node("ApexClass", {"qualifiedName": "Src"}, {"qualifiedName": "Src"})
+    await store.merge_node("ApexClass", {"qualifiedName": "Dst"}, {"qualifiedName": "Dst"})
+    inserted = await store.merge_edges_batch(
+        "CALLS",
+        [
+            ("Src", "Dst", {"confidence": 0.8}),
+            ("Src", "Dst2", {"confidence": 0.6}),
+        ],
+    )
+    assert inserted == 2
+    rows = await store.query('SELECT src_qualified_name, dst_qualified_name FROM "CALLS" ORDER BY dst_qualified_name')
+    assert [r["dst_qualified_name"] for r in rows] == ["Dst", "Dst2"]
+
+
+async def test_unified_edge_view_contains_multiple_relationship_types(store):
+    await store.merge_node("ApexClass", {"qualifiedName": "Caller"}, {"qualifiedName": "Caller"})
+    await store.merge_node("ApexClass", {"qualifiedName": "Callee"}, {"qualifiedName": "Callee"})
+    await store.merge_node("SFField", {"qualifiedName": "Account.Name"}, {"qualifiedName": "Account.Name"})
+    await store.merge_edge(
+        "Caller",
+        "ApexClass",
+        "CALLS",
+        "Callee",
+        "ApexClass",
+        {"confidence": 0.9},
+    )
+    await store.merge_edge(
+        "Caller",
+        "ApexClass",
+        "READS_FIELD",
+        "Account.Name",
+        "SFField",
+        {"confidence": 0.8},
+    )
+    rows = await store.query(
+        "SELECT rel_type, src_qualified_name, dst_qualified_name "
+        "FROM _sfgraph_all_edges WHERE src_qualified_name = $src ORDER BY rel_type",
+        {"src": "Caller"},
+    )
+    assert [row["rel_type"] for row in rows] == ["CALLS", "READS_FIELD"]
+
+
+async def test_delete_node_removes_row_and_index(store):
+    await store.merge_node("ApexClass", {"qualifiedName": "DeleteMe"}, {"qualifiedName": "DeleteMe"})
+    deleted = await store.delete_node("ApexClass", "DeleteMe")
+    assert deleted is True
+    rows = await store.query('SELECT qualified_name FROM "ApexClass" WHERE qualified_name = $qn', {"qn": "DeleteMe"})
+    assert rows == []
+    idx = await store.query(
+        "SELECT qualified_name FROM _sfgraph_node_index WHERE qualified_name = $qn",
+        {"qn": "DeleteMe"},
+    )
+    assert idx == []
+
+
+async def test_delete_edge_and_delete_edges_for_node(store):
+    await store.merge_node("ApexClass", {"qualifiedName": "A"}, {"qualifiedName": "A"})
+    await store.merge_node("ApexClass", {"qualifiedName": "B"}, {"qualifiedName": "B"})
+    await store.merge_node("ApexClass", {"qualifiedName": "C"}, {"qualifiedName": "C"})
+    await store.merge_edge("A", "ApexClass", "CALLS", "B", "ApexClass", {})
+    await store.merge_edge("C", "ApexClass", "CALLS", "A", "ApexClass", {})
+
+    deleted_single = await store.delete_edge("CALLS", "A", "B")
+    assert deleted_single is True
+
+    deleted_count = await store.delete_edges_for_node("CALLS", "A")
+    assert deleted_count == 1
+
+    rows = await store.query('SELECT src_qualified_name, dst_qualified_name FROM "CALLS"')
+    assert rows == []

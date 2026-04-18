@@ -1,0 +1,17 @@
+[
+  {
+    "id": "find_field",
+    "question": "find Account.Status__c",
+    "expected_mode": "node_search"
+  },
+  {
+    "id": "where_populated",
+    "question": "where is Status__c populated?",
+    "expected_mode": "field_writes"
+  },
+  {
+    "id": "impact_question",
+    "question": "what breaks if I change Account.Status__c?",
+    "expected_mode": "analyze_change"
+  }
+]

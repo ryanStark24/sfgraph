@@ -61,15 +61,81 @@ class GraphStore(ABC):
         ...
 
     @abstractmethod
-    async def query(
+    async def merge_nodes_batch(
         self,
-        cypher: str,
-        params: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Execute a read-only Cypher query and return results.
+        label: str,
+        nodes: list[tuple[str, dict[str, Any]]],
+    ) -> int:
+        """Batch upsert nodes for a single label.
 
         Args:
-            cypher: The Cypher query string.
+            label: Node label.
+            nodes: Sequence of (qualified_name, props).
+
+        Returns:
+            Number of rows written.
+        """
+        ...
+
+    @abstractmethod
+    async def merge_edges_batch(
+        self,
+        rel_type: str,
+        edges: list[tuple[str, str, dict[str, Any]]],
+    ) -> int:
+        """Batch upsert edges for a single relationship type.
+
+        Args:
+            rel_type: Relationship type.
+            edges: Sequence of (src_qualified_name, dst_qualified_name, props).
+
+        Returns:
+            Number of rows written.
+        """
+        ...
+
+    @abstractmethod
+    async def delete_node(self, label: str, qualified_name: str) -> bool:
+        """Delete one node by label + qualified name.
+
+        Returns:
+            True when a node row was removed, otherwise False.
+        """
+        ...
+
+    @abstractmethod
+    async def delete_edge(
+        self,
+        rel_type: str,
+        src_qualified_name: str,
+        dst_qualified_name: str,
+    ) -> bool:
+        """Delete one edge row.
+
+        Returns:
+            True when an edge row was removed, otherwise False.
+        """
+        ...
+
+    @abstractmethod
+    async def delete_edges_for_node(self, rel_type: str, qualified_name: str) -> int:
+        """Delete all edges of a relationship type touching a node.
+
+        Returns:
+            Number of edge rows deleted.
+        """
+        ...
+
+    @abstractmethod
+    async def query(
+        self,
+        query_text: str,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Execute a read-only backend query and return results.
+
+        Args:
+            query_text: Backend query string (SQL, PGQ, Cypher, etc.).
             params: Optional parameters to bind into the query.
 
         Returns:

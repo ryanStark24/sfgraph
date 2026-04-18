@@ -122,6 +122,50 @@ Check:
 - are there parse failures or unresolved symbols?
 - are you querying the right workspace/project scope?
 
+Recommended first call:
+
+- use `ask("...")` for user questions instead of raw `query("...")`
+- use `analyze_*` tools directly when intent is known (field/event/component/change)
+
+## `get_ingest_job` Seems Fast Once, Then Waits
+
+Symptom:
+
+- first status call returns immediately, later calls appear to wait/hang
+
+Why:
+
+- the daemon may be busy with long-running phases, or there may be workspace contention/restarts
+- if a background job was cancelled or crashed, stale route context can make polling confusing
+
+What to do:
+
+- check `get_ingestion_progress()` for `state`, `phase`, `updated_at`
+- check `get_ingestion_status()` for `active_job` and `vector_health`
+- if needed, call `list_ingest_jobs()` and then `get_ingest_job(job_id)` using the latest active job id
+- if the job is terminal and you want to continue, use `resume_ingest_job(job_id)`
+
+Progress snapshot location:
+
+- `<workspace-data-root>/ingestion_progress.json`
+
+## Cancelled Job Still Consumes Resources
+
+Symptom:
+
+- you cancel an ingest but CPU remains high for a while
+
+Current behavior:
+
+- background jobs run in subprocesses and are terminated on cancel
+- a short shutdown grace period may still be visible while process cleanup completes
+
+What to do:
+
+- poll `get_ingest_job(job_id)` until `state` is `cancelled`
+- confirm no active job via `list_ingest_jobs()`
+- then start the next job
+
 ## Managed Skills Dashboard Sync Errors
 
 Symptom:

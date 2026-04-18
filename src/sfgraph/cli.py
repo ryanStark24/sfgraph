@@ -5,10 +5,12 @@ import argparse
 import asyncio
 import inspect
 import json
+import time
 from pathlib import Path
 from typing import Any
 
 from sfgraph.benchmark import run_benchmark
+from sfgraph.mcp_selftest import render_selftest_markdown, run_mcp_selftest
 from sfgraph.ingestion.scope_migration import ScopeMigrationService
 from sfgraph.ingestion.service import IngestionService
 from sfgraph.parser.pool import NodeParserPool
@@ -38,6 +40,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--mode", choices=("full", "graph_only"), default="full")
     ingest.add_argument("--include", action="append", default=[], help="Include glob relative to export root. Overrides the default force-app/vlocity root selection.")
     ingest.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root")
+    ingest.add_argument("--org-alias", default=None, help="Salesforce org alias to enrich ingest metadata (optional)")
+    ingest.add_argument("--enrich-org", action="store_true", help="Use Salesforce CLI metadata probes during ingest/refresh")
     ingest.set_defaults(func=_cmd_ingest)
 
     refresh = sub.add_parser("refresh", help="Run incremental refresh for an export directory (defaults to workspace-root force-app/ and vlocity/ when present)")
@@ -46,6 +50,8 @@ def _build_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--mode", choices=("full", "graph_only"), default="full")
     refresh.add_argument("--include", action="append", default=[], help="Include glob relative to export root. Overrides the default force-app/vlocity root selection.")
     refresh.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root")
+    refresh.add_argument("--org-alias", default=None, help="Salesforce org alias to enrich ingest metadata (optional)")
+    refresh.add_argument("--enrich-org", action="store_true", help="Use Salesforce CLI metadata probes during ingest/refresh")
     refresh.set_defaults(func=_cmd_refresh)
 
     vectorize = sub.add_parser("vectorize", help="Rebuild vectors for an already ingested export")
@@ -68,6 +74,21 @@ def _build_parser() -> argparse.ArgumentParser:
     progress.add_argument("--data-dir", default="./data")
     progress.set_defaults(func=_cmd_progress)
 
+    diagnostics = sub.add_parser("diagnostics", help="Render ingestion diagnostics markdown")
+    diagnostics.add_argument("--data-dir", default="./data")
+    diagnostics.add_argument("--destination", default=None)
+    diagnostics.set_defaults(func=_cmd_diagnostics)
+
+    subgraph = sub.add_parser("subgraph", help="Render a graph neighborhood around a node or question")
+    subgraph.add_argument("--data-dir", default="./data")
+    subgraph.add_argument("--node-id", default=None)
+    subgraph.add_argument("--question", default=None)
+    subgraph.add_argument("--hops", type=int, default=2)
+    subgraph.add_argument("--max-nodes", type=int, default=80)
+    subgraph.add_argument("--format", choices=("mermaid", "json"), default="mermaid")
+    subgraph.add_argument("--focus", default="lineage")
+    subgraph.set_defaults(func=_cmd_subgraph)
+
     migrate = sub.add_parser("migrate-scope", help="Migrate legacy unscoped rows for a project")
     migrate.add_argument("export_dir")
     migrate.add_argument("--data-dir", default="./data")
@@ -82,6 +103,27 @@ def _build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--synthetic-classes", type=int, default=0)
     benchmark.add_argument("--synthetic-flows", type=int, default=0)
     benchmark.set_defaults(func=_cmd_benchmark)
+
+    acceptance = sub.add_parser("acceptance", help="Run a question suite and report quality/latency/token-size estimates")
+    acceptance.add_argument("--data-dir", default="./data")
+    acceptance.add_argument(
+        "--suite",
+        default="docs/acceptance_question_suite.json",
+        help="Path to JSON suite file with an array of {id, question, expected_mode?}",
+    )
+    acceptance.set_defaults(func=_cmd_acceptance)
+
+    selftest = sub.add_parser("selftest", help="Run MCP/daemon-level ingest + analyze benchmark against a repo and suite")
+    selftest.add_argument("export_dir")
+    selftest.add_argument("--data-dir", default="./data")
+    selftest.add_argument("--suite", default="docs/acceptance_quality_gate_suite.json")
+    selftest.add_argument("--mode", choices=("full", "graph_only"), default="graph_only")
+    selftest.add_argument("--include", action="append", default=[], help="Include glob relative to export root.")
+    selftest.add_argument("--exclude", action="append", default=[], help="Exclude glob relative to export root.")
+    selftest.add_argument("--poll-interval", type=float, default=0.5)
+    selftest.add_argument("--timeout-seconds", type=float, default=3600.0)
+    selftest.add_argument("--report-md", default=None, help="Optional path to write a markdown selftest report.")
+    selftest.set_defaults(func=_cmd_selftest)
     return parser
 
 
@@ -137,6 +179,8 @@ async def _cmd_ingest(args: argparse.Namespace) -> int:
             ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
             include_globs=args.include,
             exclude_globs=args.exclude,
+            org_alias=args.org_alias,
+            enrich_org=bool(args.enrich_org),
         )
         summary = await service.ingest(args.export_dir)
         print(json.dumps(summary.model_dump(), indent=2))
@@ -158,6 +202,8 @@ async def _cmd_refresh(args: argparse.Namespace) -> int:
             ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
             include_globs=args.include,
             exclude_globs=args.exclude,
+            org_alias=args.org_alias,
+            enrich_org=bool(args.enrich_org),
         )
         summary = await service.refresh(args.export_dir)
         print(json.dumps(summary.model_dump(), indent=2))
@@ -181,6 +227,49 @@ async def _cmd_query(args: argparse.Namespace) -> int:
             args.question,
             max_hops=args.max_hops,
             max_results=args.max_results,
+        )
+        print(json.dumps(payload, indent=2))
+        return 0
+    finally:
+        await _close_runtime(runtime)
+
+
+async def _cmd_diagnostics(args: argparse.Namespace) -> int:
+    runtime = await _build_runtime(args.data_dir, needs_pool=False)
+    try:
+        service = GraphQueryService(
+            graph=runtime["graph"],
+            manifest=runtime["manifest"],
+            vectors=runtime["vectors"],
+            repo_root=str(Path.cwd()),
+            ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
+        )
+        payload = await service.export_diagnostics_md(destination=args.destination)
+        print(json.dumps(payload, indent=2))
+        return 0
+    finally:
+        await _close_runtime(runtime)
+
+
+async def _cmd_subgraph(args: argparse.Namespace) -> int:
+    runtime = await _build_runtime(args.data_dir, needs_pool=False)
+    try:
+        service = GraphQueryService(
+            graph=runtime["graph"],
+            manifest=runtime["manifest"],
+            vectors=runtime["vectors"],
+            repo_root=str(Path.cwd()),
+            ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
+        )
+        payload = await service.graph_subgraph(
+            node_id=args.node_id,
+            question=args.question,
+            hops=args.hops,
+            max_nodes=args.max_nodes,
+            format=args.format,
+            focus=args.focus,
         )
         print(json.dumps(payload, indent=2))
         return 0
@@ -267,6 +356,102 @@ async def _cmd_benchmark(args: argparse.Namespace) -> int:
         synthetic_flows=args.synthetic_flows,
     )
     print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _estimate_tokens(text: str) -> int:
+    # Rough estimate for trend tracking in acceptance runs.
+    return max(1, (len(text) + 3) // 4)
+
+
+async def _cmd_acceptance(args: argparse.Namespace) -> int:
+    suite_path = Path(args.suite).expanduser().resolve()
+    if not suite_path.exists():
+        raise FileNotFoundError(f"Suite file not found: {suite_path}")
+    raw = json.loads(suite_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError("Acceptance suite must be a JSON array.")
+
+    runtime = await _build_runtime(args.data_dir, needs_pool=False)
+    try:
+        service = GraphQueryService(
+            graph=runtime["graph"],
+            manifest=runtime["manifest"],
+            vectors=runtime["vectors"],
+            repo_root=str(Path.cwd()),
+            ingestion_meta_path=str(Path(args.data_dir) / "ingestion_meta.json"),
+            ingestion_progress_path=str(Path(args.data_dir) / "ingestion_progress.json"),
+        )
+        results: list[dict[str, Any]] = []
+        passed_expectations = 0
+        expectation_count = 0
+        for idx, entry in enumerate(raw, start=1):
+            if not isinstance(entry, dict):
+                continue
+            question = str(entry.get("question", "")).strip()
+            if not question:
+                continue
+            case_id = str(entry.get("id") or f"q{idx}")
+            expected_mode = entry.get("expected_mode")
+            t0 = time.perf_counter()
+            payload = await service.query(question, max_hops=3, max_results=50)
+            elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+            response_json = json.dumps(payload, separators=(",", ":"))
+            mode = str(payload.get("mode", "unknown"))
+            status = "info"
+            if expected_mode is not None:
+                expectation_count += 1
+                if mode == str(expected_mode):
+                    passed_expectations += 1
+                    status = "pass"
+                else:
+                    status = "fail"
+            results.append(
+                {
+                    "id": case_id,
+                    "question": question,
+                    "mode": mode,
+                    "expected_mode": expected_mode,
+                    "status": status,
+                    "duration_ms": elapsed_ms,
+                    "response_bytes": len(response_json.encode("utf-8")),
+                    "response_tokens_est": _estimate_tokens(response_json),
+                    "partial_results": bool(payload.get("partial_results", False)),
+                }
+            )
+
+        total = len(results)
+        summary = {
+            "suite_path": str(suite_path),
+            "total_cases": total,
+            "expectation_count": expectation_count,
+            "expectation_passed": passed_expectations,
+            "expectation_pass_rate": round((passed_expectations / expectation_count), 3) if expectation_count else None,
+            "avg_duration_ms": round(sum(item["duration_ms"] for item in results) / total, 2) if total else 0.0,
+            "avg_response_tokens_est": round(sum(item["response_tokens_est"] for item in results) / total, 2) if total else 0.0,
+        }
+        print(json.dumps({"summary": summary, "cases": results}, indent=2))
+        return 0
+    finally:
+        await _close_runtime(runtime)
+
+
+def _cmd_selftest(args: argparse.Namespace) -> int:
+    payload = run_mcp_selftest(
+        export_dir=args.export_dir,
+        data_dir=args.data_dir,
+        suite_path=args.suite,
+        include_globs=args.include,
+        exclude_globs=args.exclude,
+        mode=args.mode,
+        poll_interval_seconds=float(args.poll_interval),
+        timeout_seconds=float(args.timeout_seconds),
+    )
+    print(json.dumps(payload, indent=2))
+    if args.report_md:
+        report_path = Path(args.report_md).expanduser().resolve()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(render_selftest_markdown(payload), encoding="utf-8")
     return 0
 
 

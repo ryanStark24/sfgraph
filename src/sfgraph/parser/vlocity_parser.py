@@ -5,6 +5,7 @@ NodeFact and EdgeFact structures consumed by IngestionService.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import re
 from pathlib import Path
@@ -15,6 +16,7 @@ from sfgraph.parser.vlocity_registry import (
     SUPPORTED_VLOCITY_DATAPACK_TYPE_HINTS,
     SUPPORTED_VLOCITY_DATAPACK_TYPE_SET,
 )
+from sfgraph.vlocity_standards import VlocityRuleBundle, matching_key_candidates
 
 _MERGE_FIELD_RE = re.compile(r"%([A-Za-z0-9_]+):([A-Za-z0-9_]+)%")
 _VLOCITY_NAME_HINTS = SUPPORTED_VLOCITY_DATAPACK_TYPE_HINTS + (
@@ -23,6 +25,47 @@ _VLOCITY_NAME_HINTS = SUPPORTED_VLOCITY_DATAPACK_TYPE_HINTS + (
     "vlocity",
     "omnistudio",
 )
+
+_SPECIALIZED_UI_PACK_TYPES: frozenset[str] = frozenset(
+    {
+        "UIFacet",
+        "UISection",
+        "VlocityCard",
+        "VlocityUILayout",
+        "VlocityUITemplate",
+    }
+)
+_SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES: frozenset[str] = frozenset(
+    {
+        "PromotionItems",
+        "PriceListEntries",
+        "InterfaceImplementationDetails",
+        "ProductChildItems",
+    }
+)
+_SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_NODE_LABELS: dict[str, str] = {
+    "PromotionItems": "PromotionItem",
+    "PriceListEntries": "PriceListEntryItem",
+    "InterfaceImplementationDetails": "InterfaceImplementationDetail",
+    "ProductChildItems": "ProductChildItem",
+}
+_SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_REL_TYPES: dict[str, str] = {
+    "PromotionItems": "HAS_PROMOTION_ITEM",
+    "PriceListEntries": "HAS_PRICE_LIST_ENTRY",
+    "InterfaceImplementationDetails": "HAS_INTERFACE_IMPLEMENTATION_DETAIL",
+    "ProductChildItems": "HAS_PRODUCT_CHILD_ITEM",
+}
+
+
+@dataclass(frozen=True)
+class VlocityParseMetadata:
+    outcome: str
+    pack_type: str = ""
+    parser_strategy: str = "none"
+    node_label: str = ""
+    unsupported_type: bool = False
+    standards_rule_source: str = ""
+    matching_key_fields: tuple[str, ...] = ()
 
 
 def is_vlocity_datapack_file(file_path: str | Path) -> bool:
@@ -48,6 +91,27 @@ def _safe_pack_type_for_qname(pack_type: str) -> str:
     return cleaned or "Unknown"
 
 
+def _matching_key_qname(
+    data: dict[str, Any],
+    *,
+    pack_type: str,
+    standards: VlocityRuleBundle | None,
+) -> str | None:
+    candidate_fields: list[str] = []
+    rule = standards.get(pack_type) if standards else None
+    if rule and rule.matching_key_fields:
+        candidate_fields.extend(rule.matching_key_fields)
+    candidate_fields.extend(field for field in matching_key_candidates(data) if field not in candidate_fields)
+    values: list[str] = []
+    for field_name in candidate_fields:
+        value = data.get(field_name)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+    if not values:
+        return None
+    return f"{pack_type}." + ".".join(values)
+
+
 def _iter_keyed_strings(value: Any, key_path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], str]]:
     hits: list[tuple[tuple[str, ...], str]] = []
     if isinstance(value, dict):
@@ -66,6 +130,79 @@ def _normalize_namespace(value: str, namespace: str) -> str:
     return value.replace("%vlocity_namespace%", namespace)
 
 
+def _qname_from_record_source_key(record_source_key: str) -> str | None:
+    parts = [part for part in record_source_key.split("/") if part]
+    if len(parts) < 2:
+        return None
+    pack_type = _safe_pack_type_for_qname(parts[0])
+    suffix = ".".join(_safe_pack_type_for_qname(part) for part in parts[1:])
+    return f"{pack_type}.{suffix}" if suffix else None
+
+
+def _lookup_reference_qname(lookup: dict[str, Any], namespace: str) -> str | None:
+    sobject_type = _normalize_namespace(str(lookup.get("VlocityRecordSObjectType") or "").strip(), namespace)
+    global_key = _normalize_namespace(str(lookup.get("%vlocity_namespace%__GlobalKey__c") or lookup.get("GlobalKey") or "").strip(), namespace)
+    name = _normalize_namespace(str(lookup.get("Name") or "").strip(), namespace)
+    record_source_key = _normalize_namespace(
+        str(
+            lookup.get("VlocityLookupRecordSourceKey")
+            or lookup.get("VlocityMatchingRecordSourceKey")
+            or ""
+        ).strip(),
+        namespace,
+    )
+    if sobject_type and global_key:
+        return f"{_safe_pack_type_for_qname(sobject_type)}.{global_key}"
+    if sobject_type and name:
+        return f"{_safe_pack_type_for_qname(sobject_type)}.{name}"
+    if record_source_key:
+        return _qname_from_record_source_key(record_source_key)
+    return None
+
+
+def _collect_lookup_reference_edges(
+    src_qname: str,
+    src_label: str,
+    payload: Any,
+    namespace: str,
+    context: str,
+) -> list[EdgeFact]:
+    edges: list[EdgeFact] = []
+    seen_edges: set[tuple[str, str]] = set()
+
+    def _walk(value: Any, path: tuple[str, ...] = ()) -> None:
+        if isinstance(value, dict):
+            pack_marker = str(value.get("VlocityDataPackType") or "")
+            if pack_marker in {"VlocityMatchingKeyObject", "VlocityLookupMatchingKeyObject"}:
+                dst_qname = _lookup_reference_qname(value, namespace)
+                if dst_qname:
+                    key = (dst_qname, ".".join(path[-3:]) or context)
+                    if key not in seen_edges:
+                        seen_edges.add(key)
+                        edges.append(
+                            _edge(
+                                src_qname,
+                                src_label,
+                                "REFERENCES_COMPONENT",
+                                dst_qname,
+                                "VlocityDataPack",
+                                0.9,
+                                "matching_key_object",
+                                "CONFIG",
+                                ".".join(path[-3:]) or context,
+                            )
+                        )
+            for child_key, child_value in value.items():
+                if isinstance(child_key, str):
+                    _walk(child_value, path + (child_key,))
+        elif isinstance(value, list):
+            for item in value:
+                _walk(item, path)
+
+    _walk(payload)
+    return edges
+
+
 def _pack_type(data: dict[str, Any], file_path: str) -> str:
     candidates = [
         data.get("VlocityDataPackType"),
@@ -81,6 +218,19 @@ def _pack_type(data: dict[str, Any], file_path: str) -> str:
     for supported in SUPPORTED_VLOCITY_DATAPACK_TYPE_SET:
         if supported.lower() in lower_name:
             return supported
+    return ""
+
+
+def _supported_non_object_pack_type(file_path: str, standards: VlocityRuleBundle | None = None) -> str:
+    stem = Path(file_path).stem
+    if "_" not in stem:
+        return ""
+    suffix = stem.rsplit("_", 1)[-1]
+    supported_suffixes = set(_SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES)
+    if standards:
+        supported_suffixes.update(str(key) for key in standards.critical_file_suffixes.keys())
+    if suffix in supported_suffixes:
+        return suffix
     return ""
 
 
@@ -120,6 +270,51 @@ def _node(label: str, qname: str, props: dict[str, Any], source_file: str) -> No
     )
 
 
+def _collect_reference_edges(
+    src_qname: str,
+    src_label: str,
+    data: dict[str, Any],
+    namespace: str,
+    default_context: str,
+) -> list[EdgeFact]:
+    edges: list[EdgeFact] = []
+    seen_edges: set[tuple[str, str, str]] = set()
+    for key_path, raw_value in _iter_keyed_strings(data):
+        normalized = _normalize_namespace(raw_value, namespace)
+        lower_path = [part.lower() for part in key_path]
+        if not lower_path:
+            continue
+        dest_label = ""
+        if any("integrationprocedure" in part for part in lower_path):
+            dest_label = "IntegrationProcedure"
+        elif any("dataraptor" in part for part in lower_path):
+            dest_label = "DataRaptor"
+        elif any("omniscript" in part for part in lower_path):
+            dest_label = "OmniScript"
+        elif any("apex" in part or part == "classname" or part == "class" for part in lower_path):
+            dest_label = "ApexClass"
+        if not dest_label:
+            continue
+        edge_key = ("CALLS", dest_label, normalized)
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        edges.append(
+            _edge(
+                src_qname,
+                src_label,
+                "CALLS",
+                normalized,
+                dest_label,
+                0.65,
+                "heuristic",
+                "CONFIG",
+                ".".join(key_path[-3:]) or default_context,
+            )
+        )
+    return edges
+
+
 def _parse_integration_procedure(
     data: dict[str, Any],
     source_file: str,
@@ -146,6 +341,7 @@ def _parse_integration_procedure(
     )
 
     steps = data.get("Steps") or data.get("steps") or []
+    known_steps: set[str] = set()
     if isinstance(steps, list):
         for step in steps:
             if not isinstance(step, dict):
@@ -153,6 +349,7 @@ def _parse_integration_procedure(
             step_name = step.get("Name") or step.get("name")
             if not step_name:
                 continue
+            known_steps.add(step_name)
             step_qname = f"{name}.{step_name}"
             nodes.append(
                 _node(
@@ -166,24 +363,79 @@ def _parse_integration_procedure(
                     source_file,
                 )
             )
+            edges.append(
+                _edge(
+                    name,
+                    "IntegrationProcedure",
+                    "HAS_STEP",
+                    step_qname,
+                    "IPElement",
+                    1.0,
+                    "direct",
+                    "STRUCTURAL",
+                    f"step {step_name}",
+                )
+            )
+            edges.extend(_collect_reference_edges(step_qname, "IPElement", step, namespace, "step"))
 
     text_blob = json.dumps(data)
+    variable_nodes: set[str] = set()
+    seen_merge_edges: set[tuple[str, str, str]] = set()
     for step_name, field_name in _MERGE_FIELD_RE.findall(text_blob):
-        step_qname = f"{name}.{step_name}"
-        edges.append(
-            _edge(
-                name,
-                "IntegrationProcedure",
-                "REFERENCES_STEP_OUTPUT",
-                step_qname,
-                "IPElement",
-                0.85,
-                "regex_merge_field",
-                "DATA_FLOW",
-                f"%{step_name}:{field_name}%",
+        snippet = f"%{step_name}:{field_name}%"
+        if step_name in known_steps:
+            step_qname = f"{name}.{step_name}"
+            edge_key = ("REFERENCES_STEP_OUTPUT", step_qname, snippet)
+            if edge_key in seen_merge_edges:
+                continue
+            seen_merge_edges.add(edge_key)
+            edges.append(
+                _edge(
+                    name,
+                    "IntegrationProcedure",
+                    "REFERENCES_STEP_OUTPUT",
+                    step_qname,
+                    "IPElement",
+                    0.85,
+                    "regex_merge_field",
+                    "DATA_FLOW",
+                    snippet,
+                )
             )
-        )
+        else:
+            variable_qname = f"{name}.var.{step_name}"
+            if variable_qname not in variable_nodes:
+                variable_nodes.add(variable_qname)
+                nodes.append(
+                    _node(
+                        "IPVariable",
+                        variable_qname,
+                        {
+                            "name": step_name,
+                            "integrationProcedure": name,
+                        },
+                        source_file,
+                    )
+                )
+            edge_key = ("READS_VALUE", variable_qname, snippet)
+            if edge_key in seen_merge_edges:
+                continue
+            seen_merge_edges.add(edge_key)
+            edges.append(
+                _edge(
+                    name,
+                    "IntegrationProcedure",
+                    "READS_VALUE",
+                    variable_qname,
+                    "IPVariable",
+                    0.75,
+                    "regex_merge_field",
+                    "DATA_FLOW",
+                    snippet,
+                )
+            )
 
+    edges.extend(_collect_reference_edges(name, "IntegrationProcedure", data, namespace, "integration_procedure"))
     return nodes, edges
 
 
@@ -387,64 +639,326 @@ def _parse_generic_datapack(
         )
     )
 
-    seen_edges: set[tuple[str, str, str]] = set()
-    for key_path, raw_value in _iter_keyed_strings(data):
-        normalized = _normalize_namespace(raw_value, namespace)
-        lower_path = [part.lower() for part in key_path]
-        if not lower_path:
-            continue
-        dest_label = ""
-        if any("integrationprocedure" in part for part in lower_path):
-            dest_label = "IntegrationProcedure"
-        elif any("dataraptor" in part for part in lower_path):
-            dest_label = "DataRaptor"
-        elif any("omniscript" in part for part in lower_path):
-            dest_label = "OmniScript"
-        elif any("apex" in part or part == "classname" or part == "class" for part in lower_path):
-            dest_label = "ApexClass"
-        if not dest_label:
-            continue
-        edge_key = ("CALLS", dest_label, normalized)
-        if edge_key in seen_edges:
-            continue
-        seen_edges.add(edge_key)
-        edges.append(
-            _edge(
-                qualified_name,
-                "VlocityDataPack",
-                "CALLS",
-                normalized,
-                dest_label,
-                0.65,
-                "heuristic",
-                "CONFIG",
-                ".".join(key_path[-3:]) or pack_type,
-            )
-        )
-
+    edges.extend(_collect_reference_edges(qualified_name, "VlocityDataPack", data, namespace, pack_type))
     return nodes, edges
 
 
-def parse_vlocity_json(file_path: str, namespace: str = "vlocity_cmt") -> tuple[list[NodeFact], list[EdgeFact]]:
-    """Parse one Vlocity JSON DataPack file."""
+def _parse_component_datapack(
+    data: dict[str, Any],
+    source_file: str,
+    namespace: str,
+    pack_type: str,
+    label: str,
+) -> tuple[list[NodeFact], list[EdgeFact]]:
+    name = _first_string(
+        data.get("Name"),
+        data.get("DeveloperName"),
+        data.get("MasterLabel"),
+        data.get("GlobalKey"),
+        Path(source_file).stem,
+    )
+    qualified_name = f"{_safe_pack_type_for_qname(pack_type)}.{name}"
+    nodes = [
+        _node(
+            label,
+            qualified_name,
+            {
+                "name": name,
+                "dataPackType": pack_type,
+                "subType": _first_string(data.get("SubType"), data.get("subType")),
+                "componentFamily": "ui",
+                "templateName": _first_string(
+                    data.get("TemplateName"),
+                    data.get("templateName"),
+                    data.get("Template"),
+                ),
+                "isActive": bool(data.get("IsActive", data.get("isActive", True))),
+            },
+            source_file,
+        )
+    ]
+    edges = _collect_reference_edges(qualified_name, label, data, namespace, pack_type)
+    return nodes, edges
+
+
+def _parse_non_object_vlocity_array(
+    data: list[Any],
+    source_file: str,
+    namespace: str,
+    pack_type: str,
+    standards: VlocityRuleBundle | None = None,
+) -> tuple[list[NodeFact], list[EdgeFact]]:
+    stem = Path(source_file).stem
+    parent_name = stem.rsplit("_", 1)[0] if "_" in stem else stem
+    container_qname = f"{_safe_pack_type_for_qname(pack_type)}.{parent_name}"
+    nodes: list[NodeFact] = [
+        _node(
+            "VlocityDataPack",
+            container_qname,
+            {
+                "name": parent_name,
+                "dataPackType": pack_type,
+                "sourceShape": "non_object_json_array",
+            },
+            source_file,
+        )
+    ]
+    edges: list[EdgeFact] = []
+    configured_family = standards.critical_file_suffixes.get(pack_type, {}) if standards else {}
+    item_label = str(
+        configured_family.get("node_label")
+        or _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_NODE_LABELS.get(pack_type, "VlocityDataPack")
+    )
+    item_rel_type = str(
+        configured_family.get("rel_type")
+        or _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_REL_TYPES.get(pack_type, "CONTAINS_CHILD")
+    )
+
+    for idx, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            continue
+        item_name = _first_string(
+            item.get("Name"),
+            item.get("DeveloperName"),
+            item.get("%vlocity_namespace%__GlobalKey__c"),
+            item.get("GlobalKey"),
+            item.get("Id"),
+            f"item_{idx}",
+        )
+        child_qname = _matching_key_qname(item, pack_type=f"{pack_type}Item", standards=standards) or f"{container_qname}.{item_name}"
+        nodes.append(
+            _node(
+                item_label,
+                child_qname,
+                {
+                    "name": item_name,
+                    "dataPackType": f"{pack_type}Item",
+                    "parentDataPack": container_qname,
+                    "sourceShape": "non_object_json_array_item",
+                    "globalKey": _first_string(item.get("GlobalKey"), item.get("globalKey")),
+                    "sobjectType": _first_string(
+                        item.get("VlocityRecordSObjectType"),
+                        item.get("SObjectType"),
+                        item.get("sObjectType"),
+                        item.get("ObjectType"),
+                        item.get("objectType"),
+                    ),
+                },
+                source_file,
+            )
+        )
+        edges.append(
+            _edge(
+                container_qname,
+                "VlocityDataPack",
+                "CONTAINS_CHILD",
+                child_qname,
+                item_label,
+                0.85,
+                "array_item",
+                "STRUCTURAL",
+                f"{pack_type} item {idx}",
+            )
+        )
+        edges.append(
+            _edge(
+                container_qname,
+                "VlocityDataPack",
+                item_rel_type,
+                child_qname,
+                item_label,
+                0.95,
+                "array_item",
+                "STRUCTURAL",
+                f"{pack_type} typed item {idx}",
+            )
+        )
+        edges.extend(_collect_reference_edges(child_qname, item_label, item, namespace, pack_type))
+        edges.extend(_collect_lookup_reference_edges(child_qname, item_label, item, namespace, pack_type))
+
+    edges.extend(_collect_reference_edges(container_qname, "VlocityDataPack", {"items": data}, namespace, pack_type))
+    edges.extend(_collect_lookup_reference_edges(container_qname, "VlocityDataPack", {"items": data}, namespace, pack_type))
+    return nodes, edges
+
+
+def _extract_non_object_vlocity_array_from_dict(
+    data: dict[str, Any],
+    pack_type: str,
+) -> list[Any] | None:
+    """Extract known non-object array payloads wrapped by vendor export envelopes."""
+    direct = data.get(pack_type)
+    if isinstance(direct, list):
+        return direct
+
+    candidates = (
+        data.get("records"),
+        data.get("items"),
+        data.get("data"),
+        data.get("values"),
+        data.get("children"),
+        data.get("result"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            return candidate
+        if isinstance(candidate, dict):
+            nested = candidate.get(pack_type)
+            if isinstance(nested, list):
+                return nested
+            for nested_key in ("records", "items", "data", "values", "children", "result"):
+                nested_list = candidate.get(nested_key)
+                if isinstance(nested_list, list):
+                    return nested_list
+    return None
+
+
+def parse_vlocity_json_detailed(
+    file_path: str,
+    namespace: str = "vlocity_cmt",
+    standards: VlocityRuleBundle | None = None,
+) -> tuple[list[NodeFact], list[EdgeFact], VlocityParseMetadata]:
+    """Parse one Vlocity JSON candidate file and report the parse outcome."""
     path = Path(file_path)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return [], []
+        return [], [], VlocityParseMetadata(outcome="invalid_json")
 
     if not isinstance(data, dict):
-        return [], []
+        if isinstance(data, list):
+            non_object_pack_type = _supported_non_object_pack_type(file_path, standards=standards)
+            if non_object_pack_type:
+                nodes, edges = _parse_non_object_vlocity_array(
+                    data,
+                    file_path,
+                    namespace,
+                    non_object_pack_type,
+                    standards=standards,
+                )
+                return nodes, edges, VlocityParseMetadata(
+                    outcome="parsed_specialized",
+                    pack_type=non_object_pack_type,
+                    parser_strategy="specialized",
+                    node_label="VlocityDataPack",
+                )
+        return [], [], VlocityParseMetadata(outcome="non_object_json")
 
+    explicit_type_marker = any(key in data for key in ("VlocityDataPackType", "DataPackType", "Type", "type"))
     raw_pack_type = _pack_type(data, file_path)
+    non_object_pack_type = _supported_non_object_pack_type(file_path, standards=standards)
+    candidate_non_object_type = raw_pack_type if raw_pack_type in _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES else non_object_pack_type
+    if candidate_non_object_type and (not explicit_type_marker or raw_pack_type in _SUPPORTED_NON_OBJECT_VLOCITY_ARRAY_SUFFIXES):
+        maybe_items = _extract_non_object_vlocity_array_from_dict(data, candidate_non_object_type)
+        if isinstance(maybe_items, list):
+            nodes, edges = _parse_non_object_vlocity_array(
+                maybe_items,
+                file_path,
+                namespace,
+                candidate_non_object_type,
+                standards=standards,
+            )
+            return nodes, edges, VlocityParseMetadata(
+                outcome="parsed_specialized",
+                pack_type=candidate_non_object_type,
+                parser_strategy="specialized",
+                node_label="VlocityDataPack",
+                standards_rule_source=(standards.get(candidate_non_object_type).source_provenance if standards and standards.get(candidate_non_object_type) else ""),
+                matching_key_fields=tuple(matching_key_candidates(data)),
+            )
+
+    if not raw_pack_type and not explicit_type_marker:
+        if non_object_pack_type:
+            maybe_items = _extract_non_object_vlocity_array_from_dict(data, non_object_pack_type)
+            if isinstance(maybe_items, list):
+                nodes, edges = _parse_non_object_vlocity_array(
+                    maybe_items,
+                    file_path,
+                    namespace,
+                    non_object_pack_type,
+                    standards=standards,
+                )
+                return nodes, edges, VlocityParseMetadata(
+                    outcome="parsed_specialized",
+                    pack_type=non_object_pack_type,
+                    parser_strategy="specialized",
+                    node_label="VlocityDataPack",
+                    standards_rule_source=(standards.get(non_object_pack_type).source_provenance if standards and standards.get(non_object_pack_type) else ""),
+                    matching_key_fields=tuple(matching_key_candidates(data)),
+                )
+        return [], [], VlocityParseMetadata(outcome="non_datapack_json")
+
     ptype = raw_pack_type.lower()
     if ptype == "integrationprocedure":
-        return _parse_integration_procedure(data, file_path, namespace)
+        nodes, edges = _parse_integration_procedure(data, file_path, namespace)
+        return nodes, edges, VlocityParseMetadata(
+            outcome="parsed_specialized",
+            pack_type=raw_pack_type,
+            parser_strategy="specialized",
+            node_label="IntegrationProcedure",
+            standards_rule_source=(standards.get(raw_pack_type).source_provenance if standards and standards.get(raw_pack_type) else ""),
+            matching_key_fields=tuple(matching_key_candidates(data)),
+        )
     if ptype == "dataraptor":
-        return _parse_data_raptor(data, file_path, namespace)
+        nodes, edges = _parse_data_raptor(data, file_path, namespace)
+        return nodes, edges, VlocityParseMetadata(
+            outcome="parsed_specialized",
+            pack_type=raw_pack_type,
+            parser_strategy="specialized",
+            node_label="DataRaptor",
+            standards_rule_source=(standards.get(raw_pack_type).source_provenance if standards and standards.get(raw_pack_type) else ""),
+            matching_key_fields=tuple(matching_key_candidates(data)),
+        )
     if ptype == "omniscript":
-        return _parse_omniscript(data, file_path)
-    return _parse_generic_datapack(data, file_path, namespace, raw_pack_type or "Unknown")
+        nodes, edges = _parse_omniscript(data, file_path)
+        return nodes, edges, VlocityParseMetadata(
+            outcome="parsed_specialized",
+            pack_type=raw_pack_type,
+            parser_strategy="specialized",
+            node_label="OmniScript",
+            standards_rule_source=(standards.get(raw_pack_type).source_provenance if standards and standards.get(raw_pack_type) else ""),
+            matching_key_fields=tuple(matching_key_candidates(data)),
+        )
+    if raw_pack_type in _SPECIALIZED_UI_PACK_TYPES:
+        nodes, edges = _parse_component_datapack(data, file_path, namespace, raw_pack_type, raw_pack_type)
+        return nodes, edges, VlocityParseMetadata(
+            outcome="parsed_specialized",
+            pack_type=raw_pack_type,
+            parser_strategy="specialized",
+            node_label=raw_pack_type,
+            standards_rule_source=(standards.get(raw_pack_type).source_provenance if standards and standards.get(raw_pack_type) else ""),
+            matching_key_fields=tuple(matching_key_candidates(data)),
+        )
+
+    pack_type = raw_pack_type or "Unknown"
+    nodes, edges = _parse_generic_datapack(data, file_path, namespace, pack_type)
+    standards_rule = standards.get(pack_type) if standards else None
+    matching_qname = _matching_key_qname(data, pack_type=pack_type, standards=standards)
+    if matching_qname:
+        for index, node in enumerate(nodes):
+            if node.label != "VlocityDataPack":
+                continue
+            nodes[index] = node.model_copy(
+                update={
+                    "key_props": {"qualifiedName": matching_qname},
+                    "all_props": {**node.all_props, "qualifiedName": matching_qname},
+                }
+            )
+            break
+    return nodes, edges, VlocityParseMetadata(
+        outcome="parsed_generic",
+        pack_type=pack_type,
+        parser_strategy="generic",
+        node_label="VlocityDataPack",
+        unsupported_type=bool(raw_pack_type and raw_pack_type not in SUPPORTED_VLOCITY_DATAPACK_TYPE_SET),
+        standards_rule_source=standards_rule.source_provenance if standards_rule else "",
+        matching_key_fields=standards_rule.matching_key_fields if standards_rule else tuple(matching_key_candidates(data)),
+    )
+
+
+def parse_vlocity_json(file_path: str, namespace: str = "vlocity_cmt") -> tuple[list[NodeFact], list[EdgeFact]]:
+    """Parse one Vlocity JSON DataPack file."""
+    nodes, edges, _ = parse_vlocity_json_detailed(file_path, namespace=namespace)
+    return nodes, edges
 
 
 class VlocityParser:
@@ -458,7 +972,7 @@ class VlocityParser:
         all_edges: list[EdgeFact] = []
 
         for path in sorted(Path(datapacks_dir).rglob("*.json")):
-            nodes, edges = parse_vlocity_json(str(path), namespace=self._namespace)
+            nodes, edges, _ = parse_vlocity_json_detailed(str(path), namespace=self._namespace)
             all_nodes.extend(nodes)
             all_edges.extend(edges)
 
