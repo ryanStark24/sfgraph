@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from sfgraph.ingestion.models import EdgeFact
 from sfgraph.ingestion.models import IngestionSummary
 from sfgraph.ingestion.schema_index import materialize_schema_index
 from sfgraph.ingestion.service import IngestionService
@@ -201,6 +202,53 @@ async def test_ingest_parse_failure_logs_diagnostics(svc, caplog):
     assert "error_node=ERROR" in caplog.text
     assert "file_size_bytes=1234" in caplog.text
     assert "classes=Broken" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_write_edges_emits_progress_for_chunked_batches(svc):
+    service, graph, _, _ = svc
+    service._active_project_scope = "scope"
+    emitted: list[dict] = []
+    service._emit_progress = lambda **payload: emitted.append(payload)  # type: ignore[method-assign]
+    node_registry = {"scope::Src": "ApexClass", "scope::Dst": "ApexClass"}
+    edge_facts = [
+        EdgeFact(
+            src_qualified_name="scope::Src",
+            src_label="ApexClass",
+            rel_type="CALLS",
+            dst_qualified_name="scope::Dst",
+            dst_label="ApexClass",
+            confidence=0.8,
+            resolutionMethod="direct",
+            edgeCategory="CONTROL_FLOW",
+        )
+        for _ in range(5001)
+    ]
+
+    edge_count, orphaned_edges, warnings = await service._write_edges(
+        edge_facts,
+        node_registry=node_registry,
+        progress_context={
+            "run_id": "run-1",
+            "mode": "full_ingest",
+            "export_dir": FIXTURE_EXPORT,
+            "total_files": 1,
+            "processed_files": 1,
+            "failed_files": 0,
+            "parser_stats": service._empty_parser_stats(),
+            "unresolved_symbols": 0,
+            "node_counts_by_type": {"ApexClass": 2},
+            "warnings_count": 0,
+        },
+    )
+
+    assert edge_count == 5001
+    assert orphaned_edges == 0
+    assert warnings == []
+    assert graph.merge_edges_batch.await_count == 2
+    assert emitted
+    assert emitted[-1]["phase"] == "writing_edges"
+    assert emitted[-1]["edge_count"] == 5001
 
 
 @pytest.mark.asyncio

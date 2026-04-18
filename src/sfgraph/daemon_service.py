@@ -92,6 +92,34 @@ def read_progress_snapshot(data_root: Path) -> dict[str, Any]:
     return payload
 
 
+def read_ingestion_meta_snapshot(data_root: Path) -> dict[str, Any]:
+    meta_path = data_root / "ingestion_meta.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _status_from_snapshots(*, data_root: Path) -> dict[str, Any]:
+    meta = read_ingestion_meta_snapshot(data_root)
+    node_counts = meta.get("node_counts_by_type")
+    edge_counts = meta.get("edge_counts_by_type")
+    status_counts = meta.get("status_counts")
+    latest_completed_run = meta.get("latest_completed_run")
+    return {
+        "node_counts_by_type": node_counts if isinstance(node_counts, dict) else {},
+        "edge_counts_by_type": edge_counts if isinstance(edge_counts, dict) else {},
+        "status_counts": status_counts if isinstance(status_counts, dict) else {},
+        "latest_completed_run": latest_completed_run if isinstance(latest_completed_run, dict) else None,
+        "dirty_files_pending": 0,
+        "parser_stats": meta.get("parser_stats", {}) if isinstance(meta.get("parser_stats"), dict) else {},
+        "unresolved_symbols": int(meta.get("unresolved_symbols", 0) or 0),
+    }
+
+
 async def create_app_context(data_root: Path) -> DaemonAppContext:
     data_root.mkdir(parents=True, exist_ok=True)
     graph_path = data_root / "sfgraph.duckdb"
@@ -499,10 +527,13 @@ class DaemonOperations:
 
     async def get_ingestion_status(self, params: dict[str, Any]) -> dict[str, Any]:
         _ = params
-        service = build_query_service(self.app)
-        status = await service.get_ingestion_status()
         active_job = await self.app.jobs.get_active_job()
         progress = read_progress_snapshot(self.app.data_root)
+        if active_job is not None:
+            status = _status_from_snapshots(data_root=self.app.data_root)
+        else:
+            service = build_query_service(self.app)
+            status = await service.get_ingestion_status()
         if active_job is not None:
             status["active_job"] = _merge_job_with_progress(active_job, progress)
         else:
@@ -512,9 +543,12 @@ class DaemonOperations:
 
     async def get_ingestion_progress(self, params: dict[str, Any]) -> dict[str, Any]:
         _ = params
-        service = build_query_service(self.app)
-        payload = await service.get_ingestion_progress()
         active_job = await self.app.jobs.get_active_job()
+        if active_job is not None:
+            payload = read_progress_snapshot(self.app.data_root)
+        else:
+            service = build_query_service(self.app)
+            payload = await service.get_ingestion_progress()
         if active_job is not None:
             payload["active_job"] = active_job
         payload["vector_health"] = _vector_health_payload(self.app, payload)
@@ -530,6 +564,7 @@ class DaemonOperations:
         )
 
     async def graph_subgraph(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "graph_subgraph")
         service = build_query_service(self.app)
         return await service.graph_subgraph(
             node_id=str(params["node_id"]) if params.get("node_id") is not None else None,
@@ -541,6 +576,7 @@ class DaemonOperations:
         )
 
     async def trace_upstream(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "trace_upstream")
         service = build_query_service(self.app)
         return await service.trace_upstream(
             start_node=str(params["node_id"]),
@@ -551,6 +587,7 @@ class DaemonOperations:
         )
 
     async def trace_downstream(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "trace_downstream")
         service = build_query_service(self.app)
         return await service.trace_downstream(
             start_node=str(params["node_id"]),
@@ -561,14 +598,17 @@ class DaemonOperations:
         )
 
     async def get_node(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "get_node")
         service = build_query_service(self.app)
         return await service.get_node(node_id=str(params["node_id"]))
 
     async def explain_field(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "explain_field")
         service = build_query_service(self.app)
         return await service.explain_field(field_qualified_name=str(params["field_qualified_name"]))
 
     async def analyze_field(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "analyze_field")
         service = build_query_service(self.app)
         return await service.analyze_field(
             field_name=str(params["field_name"]),
@@ -577,6 +617,7 @@ class DaemonOperations:
         )
 
     async def analyze_object_event(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "analyze_object_event")
         service = build_query_service(self.app)
         return await service.analyze_object_event(
             object_name=str(params["object_name"]),
@@ -585,6 +626,7 @@ class DaemonOperations:
         )
 
     async def analyze_component(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "analyze_component")
         service = build_query_service(self.app)
         return await service.analyze_component(
             component_name=str(params["component_name"]),
@@ -594,6 +636,7 @@ class DaemonOperations:
         )
 
     async def analyze_change(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "analyze_change")
         service = build_query_service(self.app)
         changed_files = params.get("changed_files")
         return await service.analyze_change(
@@ -604,6 +647,7 @@ class DaemonOperations:
         )
 
     async def query(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "query")
         service = build_query_service(self.app)
         return await service.query(
             question=str(params["question"]),
@@ -615,6 +659,7 @@ class DaemonOperations:
         )
 
     async def analyze(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "analyze")
         service = build_query_service(self.app)
         return await service.analyze(
             question=str(params["question"]),
@@ -629,6 +674,7 @@ class DaemonOperations:
         )
 
     async def impact_from_git_diff(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "impact_from_git_diff")
         service = build_query_service(self.app)
         return await service.impact_from_git_diff(
             base_ref=str(params.get("base_ref", "HEAD~1")),
@@ -638,6 +684,7 @@ class DaemonOperations:
         )
 
     async def cross_layer_flow_map(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "cross_layer_flow_map")
         service = build_query_service(self.app)
         return await service.cross_layer_flow_map(
             start_node=str(params["node_id"]),
@@ -648,6 +695,7 @@ class DaemonOperations:
         )
 
     async def list_unknown_dynamic_edges(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "list_unknown_dynamic_edges")
         service = build_query_service(self.app)
         return await service.list_unknown_dynamic_edges(
             limit=int(params.get("limit", 200)),
@@ -655,10 +703,12 @@ class DaemonOperations:
         )
 
     async def create_snapshot(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "create_snapshot")
         snapshot_service = GraphSnapshotService(graph=self.app.graph)
         return await snapshot_service.create_snapshot(name=params.get("name"))
 
     async def diff_snapshots(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "diff_snapshots")
         return GraphSnapshotService.diff_snapshots(
             snapshot_a_path=str(params["snapshot_a_path"]),
             snapshot_b_path=str(params["snapshot_b_path"]),
@@ -666,6 +716,7 @@ class DaemonOperations:
         )
 
     async def migrate_project_scope(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "migrate_project_scope")
         graph = DuckPGQStore(db_path=str(self.app.data_root / "sfgraph.duckdb"))
         try:
             service = ScopeMigrationService(graph=graph, vectors=self.app.vectors)
@@ -678,6 +729,7 @@ class DaemonOperations:
             await graph.close()
 
     async def test_gap_intelligence_from_git_diff(self, params: dict[str, Any]) -> dict[str, Any]:
+        await assert_no_active_background_job(self.app, "test_gap_intelligence_from_git_diff")
         service = build_query_service(self.app)
         return await service.test_gap_intelligence_from_git_diff(
             base_ref=str(params.get("base_ref", "HEAD~1")),

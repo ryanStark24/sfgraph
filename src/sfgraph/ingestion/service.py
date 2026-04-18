@@ -58,6 +58,7 @@ from sfgraph.storage.vector_store import VectorStore
 from sfgraph.vlocity_standards import VlocityStandardsCore
 
 logger = logging.getLogger(__name__)
+_EDGE_PROGRESS_BATCH_SIZE = 5000
 def _format_parser_failure_details(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -732,6 +733,18 @@ class IngestionService:
         edge_count, orphaned_edges, edge_warnings = await self._write_edges(
             scoped_edges,
             node_registry=node_registry,
+            progress_context={
+                "run_id": run_id,
+                "mode": "full_ingest",
+                "export_dir": export_dir,
+                "total_files": len(discovered_files),
+                "processed_files": len(discovered_files),
+                "failed_files": len(parse_failures),
+                "parser_stats": parser_stats,
+                "unresolved_symbols": unresolved_symbols,
+                "node_counts_by_type": dict(node_counts),
+                "warnings_count": len(warnings),
+            },
         )
         warnings.extend(edge_warnings)
 
@@ -952,6 +965,21 @@ class IngestionService:
             edge_count, orphaned_edges, edge_warnings = await self._write_edges(
                 scoped_edges,
                 node_registry=node_registry,
+                progress_context={
+                    "run_id": run_id,
+                    "mode": "incremental_refresh",
+                    "export_dir": export_dir,
+                    "total_files": len(reparse_files),
+                    "processed_files": len(reparse_files),
+                    "failed_files": len(parse_failures),
+                    "changed_files": changed_files,
+                    "deleted_files": deleted_files,
+                    "affected_neighbor_files": affected_neighbor_files,
+                    "parser_stats": parser_stats,
+                    "unresolved_symbols": unresolved_symbols,
+                    "node_count": node_count,
+                    "warnings_count": len(warnings),
+                },
             )
             warnings.extend(edge_warnings)
 
@@ -1733,6 +1761,8 @@ class IngestionService:
         self,
         edge_facts: list[EdgeFact],
         node_registry: dict[str, str],
+        *,
+        progress_context: dict[str, Any] | None = None,
     ) -> tuple[int, int, list[str]]:
         edge_count = 0
         orphaned_edges = 0
@@ -1804,7 +1834,37 @@ class IngestionService:
         if has_batch_edges:
             for rel_type, rows in batch_edges.items():
                 self._raise_if_cancelled()
-                await merge_edges_batch(rel_type, rows)
+                for start in range(0, len(rows), _EDGE_PROGRESS_BATCH_SIZE):
+                    chunk = rows[start : start + _EDGE_PROGRESS_BATCH_SIZE]
+                    await merge_edges_batch(rel_type, chunk)
+                    if progress_context:
+                        self._emit_progress(
+                            **self._progress_payload(
+                                run_id=str(progress_context["run_id"]),
+                                mode=str(progress_context["mode"]),
+                                state="running",
+                                phase="writing_edges",
+                                export_dir=str(progress_context["export_dir"]),
+                                total_files=int(progress_context["total_files"]),
+                                processed_files=int(progress_context["processed_files"]),
+                                failed_files=int(progress_context["failed_files"]),
+                                edge_count=edge_count,
+                                orphaned_edges=orphaned_edges,
+                                **{
+                                    key: value
+                                    for key, value in progress_context.items()
+                                    if key
+                                    not in {
+                                        "run_id",
+                                        "mode",
+                                        "export_dir",
+                                        "total_files",
+                                        "processed_files",
+                                        "failed_files",
+                                    }
+                                },
+                            )
+                        )
 
         return edge_count, orphaned_edges, warnings
 

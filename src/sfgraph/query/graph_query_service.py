@@ -30,6 +30,7 @@ from sfgraph.query.question_patterns import (
     change_query_target,
     component_token_query_parts,
     extract_method_calls,
+    looks_like_method_reference,
     object_event_query_parts,
     parse_trigger_declaration,
 )
@@ -1483,7 +1484,10 @@ class GraphQueryService:
             else:
                 field_targets = await self._field_targets_for_question(q)
                 field_mode = self._field_query_mode(q)
-                if field_targets or (field_mode is not None and self._contains_field_token(q)):
+                if (
+                    not looks_like_method_reference(q)
+                    and (field_targets or (field_mode is not None and self._contains_field_token(q)))
+                ):
                     field_mode = self._field_query_mode(q)
                     focus = "writes" if strict and field_mode in {"writes", "explain"} else (field_mode or "both")
                     routed_to = "analyze_field"
@@ -1656,7 +1660,10 @@ class GraphQueryService:
                     else:
                         field_targets = await self._field_targets_for_question(q)
                         field_mode = self._field_query_mode(q)
-                        if field_targets or (field_mode is not None and self._contains_field_token(q)):
+                        if (
+                            not looks_like_method_reference(q)
+                            and (field_targets or (field_mode is not None and self._contains_field_token(q)))
+                        ):
                             routed_to = "analyze_field"
                             focus = "writes" if strict and field_mode in {"writes", "explain"} else (field_mode or "both")
                             result = await self.analyze_field(

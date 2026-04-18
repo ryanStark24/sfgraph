@@ -879,6 +879,35 @@ async def test_analyze_auto_routes_to_component_for_token_population(svc: GraphQ
 
 
 @pytest.mark.asyncio
+async def test_analyze_does_not_treat_method_reference_as_field_query(tmp_path: Path):
+    graph = DuckPGQStore()
+    manifest = ManifestStore(str(tmp_path / "manifest_method_reference.db"))
+    await manifest.initialize()
+    class_file = tmp_path / "force-app" / "main" / "default" / "classes" / "SiteLoginController.cls"
+    class_file.parent.mkdir(parents=True, exist_ok=True)
+    class_file.write_text(
+        "public with sharing class SiteLoginController {\n"
+        "  public PageReference login() { return null; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    service = GraphQueryService(
+        graph=graph,
+        manifest=manifest,
+        repo_root=str(tmp_path),
+        ingestion_meta_path=str(tmp_path / "ingestion_meta.json"),
+    )
+    payload = await service.analyze("find SiteLoginController.login", mode="auto", strict=True)
+    assert payload["mode"] == "analyze"
+    assert payload["routed_to"] == "query"
+    assert payload["result"]["mode"] == "node_search"
+    assert payload["result"].get("resolved_fields") is None
+    assert payload["result"]["pipeline"]["intent"] == "node_search"
+    await manifest.close()
+    await graph.close()
+
+
+@pytest.mark.asyncio
 async def test_analyze_lineage_routes_to_object_event(tmp_path: Path):
     graph = DuckPGQStore()
     manifest = ManifestStore(str(tmp_path / "manifest_analyze_lineage.db"))

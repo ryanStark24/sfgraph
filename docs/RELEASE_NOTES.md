@@ -1,5 +1,32 @@
 # Release Notes
 
+## 0.1.0-beta.6
+
+This beta is focused on release hardening: safer daemon reads during background ingest, better refresh/write progress behavior on large datasets, and cleaner exact-query routing on live OmniStudio data.
+
+### Added
+
+- Background-job snapshot reads in the daemon so status/progress calls stay responsive while ingest is active.
+- Chunked edge-write progress heartbeats during `writing_edges`, improving visibility on larger graph builds.
+- Regression coverage for `Class.method` exact queries so method lookups do not fall into field-analysis paths.
+
+### Changed
+
+- `analyze(...)` now treats method references like `SiteLoginController.login` as node/method queries instead of field-population questions.
+- Edge batch writes are chunked more aggressively to reduce long silent stretches during large ingests and refreshes.
+- Daemon graph-reading tools now guard against lock conflicts while a background ingest job is active.
+
+### Fixed
+
+- Live OmniStudio validation no longer misroutes method lookups into `analyze_field`.
+- `get_ingestion_status()` and `get_ingestion_progress()` prefer persisted snapshots while background ingest is running, avoiding avoidable DuckDB lock contention.
+- Long `writing_edges` phases now emit fresh progress updates instead of appearing stalled on large datasets.
+
+### Notes
+
+- Full non-integration test suite: `348 passed, 8 deselected`.
+- Live validation was rerun against `datasets/OmnistudioComponents` after the routing fix.
+
 ## 0.1.0-beta.5
 
 This beta focuses on job isolation/cancellation correctness, lower-noise query workflows, and better OmniStudio array-pack ingestion.

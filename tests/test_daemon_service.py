@@ -71,10 +71,10 @@ async def test_get_ingestion_status_merges_active_job_and_vector_health(monkeypa
 
 @pytest.mark.asyncio
 async def test_get_ingestion_progress_exposes_vector_health(monkeypatch: pytest.MonkeyPatch):
-    fake_query_service = SimpleNamespace(
-        get_ingestion_progress=AsyncMock(return_value={"available": True, "state": "running", "vector_health": {"enabled": False, "status": "disabled"}}),
+    monkeypatch.setattr(
+        "sfgraph.daemon_service.read_progress_snapshot",
+        lambda data_root: {"available": True, "state": "running", "phase": "vectorizing", "vector_health": {"enabled": False, "status": "disabled"}},
     )
-    monkeypatch.setattr("sfgraph.daemon_service.build_query_service", lambda app: fake_query_service)
 
     app = SimpleNamespace(
         jobs=_FakeJobs(
@@ -89,6 +89,52 @@ async def test_get_ingestion_progress_exposes_vector_health(monkeypatch: pytest.
 
     assert payload["active_job"]["job_id"] == "job-2"
     assert payload["vector_health"]["status"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_get_ingestion_status_uses_snapshots_while_background_job_is_active(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr(
+        "sfgraph.daemon_service.read_progress_snapshot",
+        lambda data_root: {"available": True, "state": "running", "phase": "writing_edges"},
+    )
+    (tmp_path / "ingestion_meta.json").write_text(
+        '{"node_counts_by_type":{"ApexClass":3},"edge_counts_by_type":{"CALLS":2},"status_counts":{"tracked":5},"latest_completed_run":{"run_id":"r1"},"parser_stats":{"apex":{"parsed_files":1}},"unresolved_symbols":4}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("sfgraph.daemon_service.build_query_service", lambda app: (_ for _ in ()).throw(AssertionError("should not build query service")))
+
+    app = SimpleNamespace(
+        jobs=_FakeJobs(
+            active_job_id="job-4",
+            job_payload={"job_id": "job-4", "job_type": "ingest", "state": "running", "export_dir": "/tmp/repo"},
+        ),
+        vectors=None,
+        data_root=tmp_path,
+        manifest=SimpleNamespace(),
+    )
+    ops = DaemonOperations(app)
+    payload = await ops.get_ingestion_status({})
+
+    assert payload["node_counts_by_type"]["ApexClass"] == 3
+    assert payload["edge_counts_by_type"]["CALLS"] == 2
+    assert payload["status_counts"]["tracked"] == 5
+    assert payload["active_job"]["job_id"] == "job-4"
+
+
+@pytest.mark.asyncio
+async def test_analyze_is_blocked_while_background_job_is_active(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("sfgraph.daemon_service.build_query_service", lambda app: (_ for _ in ()).throw(AssertionError("should not build query service")))
+    app = SimpleNamespace(
+        jobs=_FakeJobs(
+            active_job_id="job-5",
+            job_payload={"job_id": "job-5", "job_type": "ingest", "state": "running", "export_dir": "/tmp/repo"},
+        ),
+        vectors=None,
+        data_root=Path("/tmp"),
+    )
+    ops = DaemonOperations(app)
+    with pytest.raises(RuntimeError, match="analyze cannot run while background job"):
+        await ops.analyze({"question": "find AccountService"})
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,7 @@ from sfgraph.storage.base import GraphStore
 
 logger = logging.getLogger(__name__)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EDGE_BATCH_SIZE = 5000
 
 
 class DuckPGQStore(GraphStore):
@@ -311,11 +312,16 @@ class DuckPGQStore(GraphStore):
         async with self._lock:
             rel_type = self._ensure_valid_identifier(rel_type, kind="relationship type")
             self._ensure_edge_table(rel_type)
-            self._conn.executemany(
+            sql = (
                 f'INSERT OR REPLACE INTO "{rel_type}" '
-                f"(src_qualified_name, dst_qualified_name, props) VALUES (?, ?, ?)",
-                [(src_qn, dst_qn, json.dumps(props)) for src_qn, dst_qn, props in edges],
+                f"(src_qualified_name, dst_qualified_name, props) VALUES (?, ?, ?)"
             )
+            for start in range(0, len(edges), _EDGE_BATCH_SIZE):
+                chunk = edges[start : start + _EDGE_BATCH_SIZE]
+                self._conn.executemany(
+                    sql,
+                    [(src_qn, dst_qn, json.dumps(props)) for src_qn, dst_qn, props in chunk],
+                )
         return len(edges)
 
     async def delete_node(self, label: str, qualified_name: str) -> bool:

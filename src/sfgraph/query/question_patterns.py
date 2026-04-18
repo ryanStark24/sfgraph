@@ -38,6 +38,15 @@ def component_token_query_parts(question: str) -> tuple[str, str] | None:
     return None
 
 
+def looks_like_method_reference(question: str) -> bool:
+    q = " ".join(question.strip().split())
+    match = re.search(r"\b([A-Z][A-Za-z0-9_]*)\.([a-z][A-Za-z0-9_]*)\b", q)
+    if not match:
+        return False
+    token = match.group(2)
+    return not re.search(r"__(?:c|r|mdt|e)$", token)
+
+
 def object_event_query_parts(question: str) -> tuple[str, str] | None:
     q = " ".join(question.strip().split())
     patterns = (
