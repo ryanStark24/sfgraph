@@ -7,6 +7,8 @@ export const ErrorCode = {
   VALIDATION: "VALIDATION",
   E_SF_AUTH: "E_SF_AUTH",
   E_SF_INGEST: "E_SF_INGEST",
+  E_MODEL_NOT_VENDORED: "E_MODEL_NOT_VENDORED",
+  E_MODEL_CHECKSUM_MISMATCH: "E_MODEL_CHECKSUM_MISMATCH",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

@@ -1,10 +1,12 @@
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+export {
+  E_MODEL_CHECKSUM_MISMATCH,
+  E_MODEL_NOT_VENDORED,
+  type ChecksumManifest,
+  readChecksumManifest,
+  verifyVendoredModel,
+} from "./checksum.js";
+export { type EmbedderHandle, load } from "./loader.js";
+export { MODEL_DATA_DIR, VENDORED_MODEL_DIM, VENDORED_MODEL_ID } from "./paths.js";
 
-const here = fileURLToPath(new URL(".", import.meta.url));
-
-export const MODELS_DIR = join(here, "..", "data");
-
-export function loadEmbeddingModel(): never {
-  throw new Error("loadEmbeddingModel: not implemented in Phase 0");
-}
+// Back-compat alias from Phase 0.
+export { MODEL_DATA_DIR as MODELS_DIR } from "./paths.js";

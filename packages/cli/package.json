@@ -1,6 +1,6 @@
 {
   "name": "@sfgraph/cli",
-  "version": "0.0.0",
+  "version": "1.0.0-alpha.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -23,6 +23,7 @@
     "@sfgraph/core": "workspace:*",
     "@sfgraph/mcp-server": "workspace:*",
     "@sfgraph/shared": "workspace:*",
+    "@sfgraph/skills": "workspace:*",
     "commander": "^12.0.0"
   },
   "devDependencies": {

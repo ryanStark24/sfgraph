@@ -10,7 +10,8 @@
     "lint": "pnpm -r lint",
     "lint:fix": "pnpm -r lint:fix",
     "typecheck": "pnpm -r typecheck",
-    "clean": "pnpm -r clean"
+    "clean": "pnpm -r clean",
+    "models:refresh": "tsx scripts/refresh-vendored-model.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

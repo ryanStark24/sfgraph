@@ -24,11 +24,26 @@ export function buildProgram(): Command {
 
   program
     .command("install")
-    .description("install MCP config for a target")
-    .option("--target <target>", "claude | cursor | all", "all")
-    .action(async (opts: { target: string }) => {
-      await installCmd(opts.target);
-    });
+    .description("install skills + MCP config for the target editor(s)")
+    .option("--target <target>", "claude | cursor | vscode | all", "all")
+    .option("--dry-run", "show what would be written without writing", false)
+    .option("--skills-only", "only install skills; skip MCP config", false)
+    .option("--mcp-only", "only write MCP config; skip skills", false)
+    .action(
+      async (opts: {
+        target: "claude" | "cursor" | "vscode" | "all";
+        dryRun: boolean;
+        skillsOnly: boolean;
+        mcpOnly: boolean;
+      }) => {
+        await installCmd({
+          target: opts.target,
+          dryRun: opts.dryRun,
+          skillsOnly: opts.skillsOnly,
+          mcpOnly: opts.mcpOnly,
+        });
+      },
+    );
 
   program
     .command("ingest")
