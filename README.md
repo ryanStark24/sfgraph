@@ -398,7 +398,42 @@ Run the result yourself: `sf project deploy start --manifest package.xml`. `sfgr
 
 ## How the analysis actually works
 
-Every tool answers a question by traversing a typed property graph stored locally in SQLite. The graph is built ingest-time by per-type parsers; analysis at query-time is mostly bounded graph traversal plus a few cached scores. This section explains the algorithms — what each tool reads from the graph, how it traverses, and what it returns.
+Every tool answers a question by traversing a typed property graph stored locally in SQLite. The graph is built ingest-time by **dynamically-discovered, capability-driven parsers** (see the dispatch flow below) and analysis at query-time is mostly bounded graph traversal plus a few cached scores. This section explains the algorithms — what each tool reads from the graph, how it traverses, and what it returns.
+
+### How parsers get picked
+
+There is no hardcoded list of supported metadata types. At ingest start:
+
+1. **`probeCapabilities()`** detects which managed packages are installed (Vlocity-CMT, Vlocity-INS / -HC / -PS / -FS, OmniStudio-on-Core, Agentforce, Experience Cloud, Source Tracking).
+2. **`conn.metadata.describe(apiVersion)`** asks the org to list every metadata type it actually supports at this API version. This includes types added by any installed managed package — so a new Salesforce release or a freshly installed package surfaces automatically.
+3. The **dispatch table** maps each type to a fetch strategy: `toolingSoql` for code metadata (Apex, LWC, Aura, StaticResource), `metadataReadList` for XML configuration (Profile, Layout, Workflow, etc.), `vlocityRunner` for legacy Vlocity DataPacks (gated on `caps.vlocityLegacy`).
+4. The **parser registry** routes each fetched record to either a **code parser** (Apex AST, LWC bundle, Flow, Object, 4 Vlocity JSON content parsers) or a **declarative rule** (YAML files under `packages/core/src/parsers/rules/`). Unknown types fall through to a generic-opaque rule that emits a NodeFact with raw props so the type is still queryable.
+
+Adding support for a new XML metadata type is a YAML file, not TypeScript. The rule format:
+
+```yaml
+type: Profile
+category: security
+input: object              # the jsforce-parsed JS object
+applies_when:
+  always: true
+nodes:
+  - label: Profile
+    qname: "Profile:${record.fullName}"
+    props:
+      userType: "${record.userType}"
+edges:
+  - relType: GRANTS_FIELD_ACCESS
+    iterate: "${record.fieldPermissions}"
+    when: "${item.readable || item.editable}"
+    src: "Profile:${record.fullName}"
+    dst: "CustomField:${item.field}"
+    props:
+      readable: "${item.readable}"
+      editable: "${item.editable}"
+```
+
+A small interpolation evaluator handles `${path.to.field}` and conditionals (`||`, `&&`, `==`, `!`, `match`, `split`, `stripNs`, …). Rules are zod-validated at load time; invalid rules fail at startup.
 
 ### The underlying graph
 
@@ -559,20 +594,26 @@ Output is two strings; running `sf project deploy start` is your job.
 
 ### Live sync algorithm (powers `start_ingest_job` / CLI `ingest`)
 1. **Auth**: `@salesforce/core` `AuthInfo.create({ username: alias })` reads the token from `~/.sfdx/`. Connection is wrapped in `wrapConnectionReadOnly()` before any other code can touch it.
-2. **Capability probe**: 7 cheap `describe` calls to detect Vlocity-CMT, OmniStudio-on-Core, Agentforce, Experience Cloud, Source Tracking. Used to gate extractor fan-out.
-3. **Pre-sync snapshot**: `SnapshotStore.createSnapshot(orgId, "pre-sync-<iso>", isAuto=true)`. This is what `what_broke` looks back to.
-4. **Decide mode**: if `caps.sourceTracking && org.last_synced_at` → incremental. Else → full.
-5. **Fan out**:
-   - **Full**: each extractor (`apex`, `lwc`, `flow`, `object`, `security`, `integration`, `vlocity` if detected, `omnistudio` if detected) returns an async iterable of `RawMember`. Multiplexed sequentially.
-   - **Incremental**: `iterChanges(conn, orgId, since)` runs a single Tooling SOQL `SELECT MemberName, MemberType, IsNameObsolete FROM SourceMember WHERE LastModifiedDate > <since>`. For each obsolete member → delete from graph. For each changed member → refetch via the relevant extractor's `iterOne(name)`.
-6. **For each member**: look up parser via the Phase 2 registry → `parser.parse(input, ctx)` → `graphStore.mergeNodes(nodes); graphStore.mergeEdges(edges)`.
-   - `mergeNodes` is content-hash short-circuited: an unchanged Apex class with the same source hash returns `{ unchanged: 1 }` and skips the write. This is why incremental sync is fast.
-7. **Cross-flavor resolver**: post-pass that joins `DataRaptor` ↔ `OmniDataTransform`, `IntegrationProcedure` ↔ `OmniIntegrationProcedure`, etc., by normalized name. Emits `CANONICAL_OF` edges.
-8. **Populate analysis tables**: governor risks, dead-code scores, test coverage, security findings (Phase 6).
-9. **Touch sync timestamp**: `UPDATE _sfgraph_orgs SET last_synced_at = ?`.
-10. **Prune snapshots**: drop auto snapshots older than the retention window; keep the most recent always.
+2. **Capability probe**: parallel `describe` calls detect OmniStudio-on-Core, Agentforce, Experience Cloud, Source Tracking, and all 5 Vlocity industry namespaces (`vlocity_cmt`, `vlocity_ins`, `vlocity_hc`, `vlocity_ps`, `vlocity_fs`). Result feeds the dispatch table.
+3. **Discover metadata types**: `conn.metadata.describe(apiVersion)` returns the org's full supported type list, including types added by installed managed packages. **No hardcoded type list on our side.**
+4. **Load rule files**: `loadAllRules()` scans `packages/core/src/parsers/rules/*.yml`, zod-validates each, and registers a `RuleBasedParser` per file. Code parsers register themselves on barrel import.
+5. **Build dispatch table**: for each discovered type, decide a fetch strategy — `toolingSoql` for code metadata, `metadataReadList` for XML config, `vlocityRunner` for Vlocity DataPacks (gated on `caps.vlocityLegacy`). Unknown types fall through to generic-opaque.
+6. **Pre-sync snapshot**: `SnapshotStore.createSnapshot(orgId, "pre-sync-<iso>", isAuto=true)`. This is what `what_broke` looks back to.
+7. **Decide mode**: if `caps.sourceTracking && org.last_synced_at` → incremental. Else → full.
+8. **Fan out across three pools**:
+   - **`toolingPool`** (maxConcurrent=5) — Apex, LWC, Aura, StaticResource via Tooling SOQL.
+   - **`metadataPool`** (maxConcurrent=3) — `metadata.list` + `metadata.read` for everything else.
+   - **`dataPool`** (maxConcurrent=10) — Vlocity DataPacks (per detected namespace), CMDT records, anything SOQL-shaped.
+   - **Incremental** path uses `iterChanges(conn, orgId, since)` — single Tooling SOQL on `SourceMember`, refetches only changed members.
+9. **For each member**: look up parser via the registry. Code parser → run native logic. Rule parser → `RuleBasedParser` walks the rule's `nodes` + `edges` against the jsforce-parsed record. Unknown type → generic-opaque rule emits a NodeFact with raw props. Result is merged into the graph.
+   - `mergeNodes` is content-hash short-circuited: an unchanged record with the same source hash returns `{ unchanged: 1 }` and skips the write. This is why incremental sync is fast.
+10. **Embedding queue (side-stream)**: each new node pushes `{ qname, text }` onto an `EmbeddingQueue`. The queue batches in groups of 16 and invokes the lazy-imported transformers.js MiniLM pipeline. Vectors land in `vec0` partitioned by `org_id`. Parsing never blocks on embedding.
+11. **Cross-flavor resolver**: post-pass that joins `DataRaptor` ↔ `OmniDataTransform`, `IntegrationProcedure` ↔ `OmniIntegrationProcedure`, etc., by normalized name. Emits `CANONICAL_OF` edges.
+12. **Populate analysis tables**: governor risks, dead-code scores, test coverage, security findings.
+13. **Touch sync timestamp**: `UPDATE _sfgraph_orgs SET last_synced_at = ?`.
+14. **Drain embedding queue + prune snapshots**: drop auto snapshots older than the retention window; keep the most recent always.
 
-Rate limits: `p-limit(5)` per extractor + global `Bottleneck` at 20 req/s ceiling, 10 req/s sustained. 429 + `Retry-After` triggers an exponential retry up to 3 attempts.
+Rate limits: three independent `Bottleneck` pools with separate concurrency budgets and reservoir refills. Each pool has its own 429 + `Retry-After` handler with exponential retry up to 3 attempts.
 
 ### Why this design is fast
 
@@ -633,28 +674,48 @@ Agent: *invokes sf-impact-from-diff skill*
 
 ## Metadata coverage
 
-`sfgraph` ships typed parsers for **~50 Salesforce metadata types** emitting **~80 typed edge types**. A generic opaque-node fallback captures everything else so nothing is invisible.
+Coverage is **dynamic**, not hardcoded. At ingest start, `conn.metadata.describe(apiVersion)` asks the org for its full supported type list — which automatically includes any types added by installed managed packages or by new Salesforce releases. Each type is then routed to either a code parser, a declarative rule, or the generic opaque-node fallback.
 
-| Category | Types covered |
+**Code parsers (6, complex AST work)**
+
+| Category | Types | Why code |
+|---|---|---|
+| Apex | `ApexClass`, `ApexInterface`, `ApexMethod`, `ApexTrigger`, `TestMethod` | ANTLR-based source extraction, SOQL/DML detection, annotation walk |
+| LWC | `LWC`, `LWCBundle`, `LWCEvent` | Babel for JS + parse5 for HTML + XML meta |
+| Flow | `Flow`, `FlowVersion` | Deeply nested conditional XML structure |
+| Schema | `CustomObject`, `CustomField`, `RecordType`, `ValidationRule`, `PlatformEvent` | sfdx-source dir layout + formula extractor |
+| Vlocity DataPacks | `DataRaptor`, `IntegrationProcedure`, `OmniScript`, `VlocityCard` | JSON `Content__c` blob walking for procedure trees |
+| OmniStudio native | `OmniProcess`, `OmniDataTransform`, `OmniUiCard`, `OmniIntegrationProcedure` | Shared with Vlocity parsers via common helpers |
+
+**Declarative rules (21 YAML files, simple field/edge mapping)**
+
+| Category | Types | Rule file |
+|---|---|---|
+| Security | `Profile`, `PermissionSet`, `SharingRule`, `PermissionSetGroup` | `rules/profile.yml`, `rules/permission-set.yml`, … |
+| Integration | `NamedCredential`, `ExternalServiceRegistration`, `PlatformEvent` | `rules/named-credential.yml`, … |
+| Visualforce | `ApexPage`, `ApexComponent` | `rules/apex-page.yml`, `rules/apex-component.yml` |
+| Presentation | `Layout`, `LightningPage` (FlexiPage) | `rules/layout.yml`, `rules/lightning-page.yml` |
+| Reporting | `Report`, `Dashboard` | `rules/report.yml`, `rules/dashboard.yml` |
+| GenAI | `GenAiPlanner`, `GenAiPlugin` | `rules/gen-ai-planner.yml`, `rules/gen-ai-plugin.yml` |
+| Experience Cloud | `Network` | `rules/network.yml` |
+| Automation | `Workflow`, `ApprovalProcess`, `DuplicateRule`, `MatchingRule` | `rules/workflow.yml`, … |
+| Other | `CustomMetadataType`, `CustomLabel` | `rules/custom-metadata-type.yml`, `rules/custom-label.yml` |
+
+**Cross-flavor resolver** runs as a post-pass and emits `CANONICAL_OF` edges so the agent treats `DataRaptor:X` and `OmniDataTransform:X` as the same logical asset.
+
+**Vlocity legacy industry clouds** — all 5 namespaces covered by a single vendored registry (`vlocity_build`'s `QueryDefinitions.yaml`, MIT, 48 DataPack types). The capability probe detects which namespaces are installed:
+
+| Namespace | Industry cloud(s) |
 |---|---|
-| Apex | `ApexClass`, `ApexInterface`, `ApexMethod`, `ApexTrigger`, `TestMethod` |
-| Lightning | `LWC`, `LWCBundle`, `AuraComponent`, `LightningPage` (FlexiPage) |
-| Flow | `Flow`, `FlowVersion` |
-| Schema | `CustomObject`, `CustomField`, `RecordType`, `ValidationRule`, `PlatformEvent` |
-| Vlocity DataPacks | `DataRaptor`, `IntegrationProcedure`, `OmniScript`, `VlocityCard` (+ generic for long tail) |
-| OmniStudio native | `OmniProcess`, `OmniDataTransform`, `OmniUiCard`, `OmniIntegrationProcedure` |
-| Security | `Profile`, `PermissionSet`, `PermissionSetGroup`, `SharingRule` |
-| Integration | `NamedCredential`, `ExternalServiceRegistration`, `PlatformEvent` |
-| Visualforce | `ApexPage`, `ApexComponent` |
-| UI | `Layout`, `CompactLayout`, `CustomTab`, `CustomApplication` |
-| Reporting | `Report`, `Dashboard`, `ReportType` |
-| GenAI | `GenAiPlanner`, `GenAiPlugin`, `GenAiFunction` |
-| Experience Cloud | `Network`, `ExperienceBundle` |
-| Automation | `Workflow`, `ApprovalProcess`, `DuplicateRule`, `MatchingRule` |
-| Other | `CustomMetadataType`, `CustomLabel`, `StaticResource`, `Group`, `Queue`, `Role` |
-| Cross-flavor | `CANONICAL_OF` edges automatically join Vlocity-CMT ↔ OmniStudio-on-Core duplicates |
+| `vlocity_cmt` | Communications, Media, Energy & Utilities |
+| `vlocity_ins` | Insurance |
+| `vlocity_hc` | Health |
+| `vlocity_ps` | Public Sector |
+| `vlocity_fs` | Financial Services (legacy) |
 
-Cross-flavor resolver runs as a post-pass and emits `CANONICAL_OF` edges so the agent treats `DataRaptor:X` and `OmniDataTransform:X` as the same logical asset.
+Multi-namespace installs are supported — both namespaces are ingested in parallel. The registry re-syncs from upstream via `pnpm vlocity:refresh`.
+
+**Anything else** — types that `describeMetadata()` lists but we don't have a rule for — emits an opaque NodeFact with the raw fields so the agent can still answer "does X exist?" while a more specific rule is being authored. Zero-day coverage.
 
 ---
 
@@ -702,14 +763,23 @@ What is **never** stored: passwords, access tokens (they stay in `~/.sfdx/`, own
 
 ```
 apps/
-  sfgraph/              # the unscoped npm binary (this is `npx sfgraph`)
+  sfgraph/                              # the unscoped npm binary (this is `npx sfgraph`)
 packages/
-  shared/               # cross-cutting types, errors, logger, paths
-  core/                 # engine: storage, parsers, extractors, analyze, render
-  mcp-server/           # stdio MCP, 19 tools, shutdown discipline
-  cli/                  # install, ingest, mcp, telemetry, version
-  skills/               # 10 SKILL.md playbooks + installer
-  models/               # vendored MiniLM ONNX + loader
+  shared/                               # cross-cutting types, errors, logger, paths
+  core/                                 # engine
+    src/storage/                        #   SQLite + sqlite-vec graph/vector/snapshot stores
+    src/extractors/live-org/            #   capability probe + describeMetadata dispatch
+      vlocity/                          #     vendored QueryDefinitions.yaml (5 namespaces)
+    src/parsers/
+      apex/ lwc/ flow/ object/ vlocity/ #     code parsers (complex AST work)
+      rules/                            #     21 YAML rule files (declarative parsers)
+    src/embedding/                      #   batched transformers.js queue
+    src/analyze/                        #   dependents, freshness, governor, dead-code, ...
+    src/render/mermaid/                 #   diagram generators
+  mcp-server/                           # stdio MCP, 19 tools, shutdown discipline
+  cli/                                  # install, ingest, mcp, telemetry, version
+  skills/                               # 10 SKILL.md playbooks + installer
+  models/                               # vendored MiniLM ONNX + loader
 ```
 
 Each package publishes independently:

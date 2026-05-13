@@ -38,10 +38,40 @@ Failure events only. Each line is one JSON object with:
 
 No qualified names, no source, no error messages from external systems.
 
-## HTTP sink
+## How telemetry data flows — and where it goes
 
-Deferred to 1.1. Until then, there is no path that sends data off-host even
-if `telemetry.enabled = true`.
+There is **no operator-side telemetry collection**. The project does not run
+a backend; nobody on the project side receives telemetry. The pipeline exists
+so users can opt into local diagnostics for their own debugging, nothing more.
+
+Concretely:
+
+- **Default state**: telemetry is OFF. `TelemetryPipeline.record()` is wired
+  to `NullSink`, which discards every event. Zero filesystem writes, zero
+  machine-id generation.
+- **If a user opts in** with `sfgraph telemetry enable --local`, a random
+  UUIDv4 is generated and stored at `~/.config/sfgraph/machine-id`. The
+  pipeline switches to `LocalFileSink`, which appends one JSONL line per
+  event to `~/.config/sfgraph/events.jsonl` after passing the allowlist
+  check + sanitizer.
+- **Local sink is the only sink that exists.** There is no remote endpoint,
+  no upload step, no fallback path that could exfiltrate data even if
+  `telemetry.enabled = true`. The "HTTP sink" slot in the code is a TODO
+  reserved for v1.1; it has never been implemented and never will be without
+  a second, explicit user opt-in.
+- **The user is the only consumer of their own telemetry file.** Common
+  use case: `cat ~/.config/sfgraph/events.jsonl | jq` to debug a failed
+  ingest. `sfgraph telemetry purge` deletes the file; `reset-id`
+  regenerates the UUID; `preview` shows what a sample event would look
+  like after sanitization so users can inspect the format before opting in.
+
+If you're an organization considering enabling local telemetry across many
+developer machines, you can:
+1. Inspect `packages/core/src/telemetry/event-schema.ts` to see the exact
+   field allowlist per event kind.
+2. Inspect `packages/core/src/telemetry/sanitizer.ts` for the scrub patterns.
+3. Run `sfgraph telemetry preview` on a representative machine to see real
+   sanitized output before broad rollout.
 
 ## Verifying
 
