@@ -396,6 +396,194 @@ Run the result yourself: `sf project deploy start --manifest package.xml`. `sfgr
 
 ---
 
+## How the analysis actually works
+
+Every tool answers a question by traversing a typed property graph stored locally in SQLite. The graph is built ingest-time by per-type parsers; analysis at query-time is mostly bounded graph traversal plus a few cached scores. This section explains the algorithms — what each tool reads from the graph, how it traverses, and what it returns.
+
+### The underlying graph
+
+- **Nodes** (`NodeFact`): one per metadata entity. Keyed by `(org_id, qualified_name)`. Stored in per-label SQLite tables (`_sfg_n_apexclass`, `_sfg_n_lwc`, `_sfg_n_customfield`, …) created lazily on first ingest of that label.
+- **Edges** (`EdgeFact`): typed relationships. Keyed by `(org_id, src_qname, dst_qname)` per rel-type table (`_sfg_e_calls`, `_sfg_e_reads_field`, …). Each edge table has a reverse-traversal index `(org_id, dst_qname)` so backward walks are as cheap as forward walks.
+- **Snapshots**: copy-on-snapshot into `_sfgraph_node_snapshots` / `_sfgraph_edge_snapshots`. Diff is set arithmetic over `qualified_name`; "changed" is hash-mismatch between the same qname in two snapshots.
+- **Vectors**: 384-dim embeddings in `vec0(org_id PARTITION KEY, embedding float[384])`. KNN is `MATCH ? AND k = ?`, partition-pruned by org.
+
+Everything is partition-keyed on `org_id`. Cross-org queries are unions; same-org queries never read another org's rows.
+
+### `ping`
+Returns `{ ok: true, ts: Date.now() }`. Exists so MCP clients can verify the server is alive.
+
+### `start_ingest_job` / `get_ingest_job`
+In-memory job queue (Map keyed by jobId). `start_ingest_job` enqueues; the live-ingest pipeline pulls from the queue and runs `liveIngest` (see "Live sync algorithm" below). `get_ingest_job` reads back state.
+
+### `snapshot_create`
+Single transaction. For every known node-label table, `INSERT INTO _sfgraph_node_snapshots SELECT snapshot_id, ... FROM <table> WHERE org_id = ?`. Same for edges. ~360ms for 50K nodes.
+
+### `snapshot_list`
+`SELECT * FROM _sfgraph_snapshots WHERE org_id = ? ORDER BY created_at DESC LIMIT 20`.
+
+### `point_in_time_diff`
+Three set operations on `qualified_name`, scoped by `(org_id, snapshot_id)`:
+- **added** = `to.qnames - from.qnames`
+- **removed** = `from.qnames - to.qnames`
+- **changed** = `from.qnames ∩ to.qnames` where `from.source_hash ≠ to.source_hash`
+
+When `to === 'current'`, the right side reads live label tables via `UNION ALL` instead of `_sfgraph_node_snapshots`. Same row shape, so the merger is shape-agnostic.
+
+Edges: same algorithm on `(src_qname, rel_type, dst_qname)` keys; edges have no "changed" bucket because edge attributes are derived from the source nodes.
+
+### `freshness_report`
+Each `NodeFact` carries `last_modified_at` (from SF) and `last_seen_at` (from this ingest). The freshness score is computed on demand:
+
+```
+freshness =  0.5 * exp(-age_days / 180)            # recency of last modification
+          +  0.3 * dependent_recency_avg            # average freshness of nodes that depend on this
+          +  0.2 * (1 if has_modifications_in_window else 0)
+```
+
+Buckets: `dead < 0.1`, `stale 0.1–0.4`, `current 0.4–0.8`, `hot > 0.8`. Returns top 20 per bucket (or all of the requested bucket).
+
+### `analyze_field`
+1. Find the node: `SELECT * FROM _sfg_n_customfield WHERE org_id = ? AND qualified_name = 'CustomField:<Obj>.<Field>'`.
+2. **Readers** (reverse traversal): `SELECT src_qname FROM _sfg_e_reads_field WHERE org_id = ? AND dst_qname = ?` — the reverse-index makes this an indexed lookup, not a scan.
+3. **Writers**: same against `_sfg_e_writes_field`.
+4. **FLS grants**: reverse traversal on `_sfg_e_grants_field_access`; joins each grant edge to its source `Profile` / `PermissionSet` node for the access matrix.
+5. Truncate by centrality (sum of in+out degree) to 40 nodes; emit "(+N more)" pseudo-node.
+6. Mermaid: radial flowchart LR with field at center, readers left, writers right, FLS grants top.
+
+p95 ≈ 80ms on a 50K-node graph because step 2–4 are three indexed reads.
+
+### `trace_upstream` / `trace_downstream`
+BFS over edges, bounded by `depth` (1–5). Upstream uses the reverse index `(org_id, dst_qname)`; downstream uses the forward PK `(org_id, src_qname)`. Visited set keyed by qname to avoid cycles. Truncation by centrality applied to the final node set.
+
+### `cross_layer_flow_map`
+Forward BFS prioritized by rel-type:
+
+```
+LWC  --CALLS_APEX_FROM_LWC-->  ApexMethod
+ApexMethod  --CALLS-->  ApexMethod
+ApexMethod  --EXECUTES_SOQL-->  CustomObject
+ApexMethod  --READS_FIELD-->  CustomField
+```
+
+The walker uses a rel-type priority list so it descends layer-by-layer instead of fanning out indiscriminately. Output is a sequence of `(from, to, via)` triples rendered as a Mermaid `sequenceDiagram`.
+
+### `cross_org_diff`
+For each label (or just one when `category` is specified):
+1. `SELECT qualified_name, source_hash FROM _sfg_n_<label> WHERE org_id = ?` for both orgs.
+2. Set arithmetic on qnames → `onlyInA`, `onlyInB`. Set intersection with hash mismatch → `changed`.
+
+This is the building block `deployment_manifest_gen` uses.
+
+### `impact_from_git_diff`
+1. **Parse the diff**: extract `+++ b/<path>` headers and the `--- a/<path>` paired entries; classify each file as `added`/`modified`/`deleted`.
+2. **Path → qname mapping** (`analyze/path-to-qname.ts`):
+   - `force-app/main/default/classes/Foo.cls` → `ApexClass:Foo`
+   - `lwc/<bundle>/<bundle>.js` → `LWC:<bundle>`
+   - `flows/<name>.flow-meta.xml` → `Flow:<name>`
+   - `objects/<Obj>/fields/<Field>.field-meta.xml` → `CustomField:<Obj>.<Field>`
+3. **BFS** in both directions (forward to find dependencies, reverse to find dependents) bounded by `depth`. Each hop tagged with its rel-type so the agent can explain *why* a node is impacted.
+4. Truncate by centrality. Mermaid flowchart LR with changed nodes in red, dependents in default color.
+
+The path→qname mapping is the one place where we leave the graph and touch filesystem conventions; everything else is pure graph traversal.
+
+### `test_gap_intelligence_from_git_diff`
+Same diff parsing → impact set as `impact_from_git_diff`. For each impacted node, query reverse `IS_TEST_FOR` edges:
+
+```sql
+SELECT 1 FROM _sfg_e_is_test_for WHERE org_id = ? AND dst_qname = ? LIMIT 1
+```
+
+If zero rows → emit a gap entry. If `_sfgraph_test_coverage` has been populated by Phase 6 ingest, use `covered_pct < threshold` instead of the existence check.
+
+### `what_broke`
+The headline tool. Algorithm:
+1. **Find the baseline snapshot**: if `since` is provided, use it. Otherwise `SELECT id FROM _sfgraph_snapshots WHERE org_id = ? AND is_auto = 1 ORDER BY created_at DESC LIMIT 1` — the latest pre-sync snapshot.
+2. **Compute the diff**: `point_in_time_diff(baseline, 'current')`.
+3. **Find dependents of changed nodes**: reverse-edge traversal for each `changed` and `added` qname, depth = 1.
+4. **Bucket each dependent**:
+   - Skip if the dependent is itself a test (has an outgoing `IS_TEST_FOR` edge).
+   - **at_risk**: dependent has no incoming `IS_TEST_FOR` from any TestMethod.
+   - **covered**: dependent has at least one `IS_TEST_FOR` incoming edge.
+5. Mermaid `flowchart LR` with three `classDef`s: `changed` (red `#E74C3C`), `risk` (yellow `#F4D03F`), `safe` (green `#52BE80`).
+
+The "skip if it's a test class" rule is why a changed `AccountController` doesn't show its own `AccountControllerTest` as "at risk" — the test depends on the controller but isn't a regression candidate.
+
+### `governor_risk_check`
+**Cached path** (after Phase 6 ingest populates `_sfgraph_governor_risks`):
+```sql
+SELECT qualified_name, risk_type, line, snippet FROM _sfgraph_governor_risks WHERE org_id = ?
+```
+Returns in <50ms.
+
+**Inline path** (fallback): runs the heuristic detector on each Apex method's stored source. The detector is a single-pass character walker that tracks `for` / `while` loop depth and flags:
+- `GOV_SOQL_IN_LOOP`: an inline `[SELECT … FROM …]` literal where `loop_depth > 0`
+- `GOV_DML_IN_LOOP`: an `insert` / `update` / `delete` / `upsert` statement where `loop_depth > 0`
+- `GOV_QUERY_NO_LIMIT`: any SOQL literal without a `LIMIT` clause
+- `GOV_TRIGGER_NO_BULKIFY`: ApexTrigger whose body does not iterate `Trigger.new`
+
+It's not a real AST analyzer (the parser is regex-driven, see Phase 2 spec), so it can miss tricky cases like SOQL hidden inside `Database.query(str)`. Documented in the response as "approximate".
+
+### `dead_code_audit`
+**Cached path** (after Phase 6 ingest populates `_sfgraph_dead_code_scores`):
+```sql
+SELECT qualified_name, confidence, reasons FROM _sfgraph_dead_code_scores
+WHERE org_id = ? AND confidence > 0.5 ORDER BY confidence DESC
+```
+
+**Inline path**: for each node, compute
+```
+confidence_dead =  0.5 * (1 - normalize(inbound_edges))    # nobody calls / references it
+                +  0.3 * (1 - freshness)                    # not modified recently
+                +  0.2 * (1 - dependent_recency_avg)        # neighborhood is stale too
+```
+The `reasons` array is filled with strings like `"no_incoming_edges"`, `"stale_freshness:0.04"`, `"no_recent_dependents"` so the agent can explain *why*.
+
+Buckets: `confident-dead > 0.8`, `likely-dead 0.5–0.8`, `suspicious 0.3–0.5`. We never recommend deletion below 0.7 (enforced in the skill playbook).
+
+### `security_audit`
+Four queries:
+1. **Sharing rules with `accessLevel=All`**: `SELECT qualified_name FROM _sfg_n_sharingrule WHERE org_id = ? AND json_extract(attributes, '$.audit.fullAccess') = 1`.
+2. **FLS gaps** (PII fields not granted in any PermSet): find `CustomField` nodes whose name matches a PII heuristic (`SSN`, `Email`, `Phone`, `Tax`, `Birth`, …) AND have no incoming `GRANTS_FIELD_ACCESS` edge from any `PermissionSet`.
+3. **Field access matrix**: cross-join `Profile`/`PermissionSet` nodes with `GRANTS_FIELD_ACCESS` edges to a chosen object's fields.
+4. **Cached findings**: `SELECT … FROM _sfgraph_findings WHERE org_id = ? AND rule_id LIKE 'SEC_%'` (when Phase 6 cache is populated).
+
+### `deployment_manifest_gen`
+1. **Cross-org diff** (reuses the algorithm above) between `from_org` and `to_org`.
+2. **Bucket nodes** by their target metadata type via `LABEL_TO_METADATA_TYPE` (a ~30-entry map: `ApexClass→ApexClass`, `LWC→LightningComponentBundle`, `CustomField→CustomField`, …).
+3. **Format member names** per-label:
+   - Most types: member name = `qualified_name.split(':')[1]` (e.g. `ApexClass:Foo` → `Foo`).
+   - Composite types (CustomField, RecordType, ValidationRule): member name = `Object.X` form (e.g. `CustomField:Account.Status__c` → `Account.Status__c`).
+4. **Emit XML**: `added + changed` → `package.xml`; `removed` → `destructiveChanges.xml`. API version pulled from the source org's stored `apiVersion` attribute on the `_sfgraph_orgs` row, defaulting to `60.0`.
+
+Output is two strings; running `sf project deploy start` is your job.
+
+### Live sync algorithm (powers `start_ingest_job` / CLI `ingest`)
+1. **Auth**: `@salesforce/core` `AuthInfo.create({ username: alias })` reads the token from `~/.sfdx/`. Connection is wrapped in `wrapConnectionReadOnly()` before any other code can touch it.
+2. **Capability probe**: 7 cheap `describe` calls to detect Vlocity-CMT, OmniStudio-on-Core, Agentforce, Experience Cloud, Source Tracking. Used to gate extractor fan-out.
+3. **Pre-sync snapshot**: `SnapshotStore.createSnapshot(orgId, "pre-sync-<iso>", isAuto=true)`. This is what `what_broke` looks back to.
+4. **Decide mode**: if `caps.sourceTracking && org.last_synced_at` → incremental. Else → full.
+5. **Fan out**:
+   - **Full**: each extractor (`apex`, `lwc`, `flow`, `object`, `security`, `integration`, `vlocity` if detected, `omnistudio` if detected) returns an async iterable of `RawMember`. Multiplexed sequentially.
+   - **Incremental**: `iterChanges(conn, orgId, since)` runs a single Tooling SOQL `SELECT MemberName, MemberType, IsNameObsolete FROM SourceMember WHERE LastModifiedDate > <since>`. For each obsolete member → delete from graph. For each changed member → refetch via the relevant extractor's `iterOne(name)`.
+6. **For each member**: look up parser via the Phase 2 registry → `parser.parse(input, ctx)` → `graphStore.mergeNodes(nodes); graphStore.mergeEdges(edges)`.
+   - `mergeNodes` is content-hash short-circuited: an unchanged Apex class with the same source hash returns `{ unchanged: 1 }` and skips the write. This is why incremental sync is fast.
+7. **Cross-flavor resolver**: post-pass that joins `DataRaptor` ↔ `OmniDataTransform`, `IntegrationProcedure` ↔ `OmniIntegrationProcedure`, etc., by normalized name. Emits `CANONICAL_OF` edges.
+8. **Populate analysis tables**: governor risks, dead-code scores, test coverage, security findings (Phase 6).
+9. **Touch sync timestamp**: `UPDATE _sfgraph_orgs SET last_synced_at = ?`.
+10. **Prune snapshots**: drop auto snapshots older than the retention window; keep the most recent always.
+
+Rate limits: `p-limit(5)` per extractor + global `Bottleneck` at 20 req/s ceiling, 10 req/s sustained. 429 + `Retry-After` triggers an exponential retry up to 3 attempts.
+
+### Why this design is fast
+
+- **Reverse-edge index** makes "who depends on X?" the same cost as "what does X depend on?".
+- **Composite PKs partition every table by org_id**, so SQLite range-scans only the rows for the org in question.
+- **Content-hash short-circuit** on merge means no write amplification on unchanged metadata.
+- **Cached analysis tables** turn governor / dead-code / security audits from full-table scans into single SELECTs.
+- **vec0 partition key** prunes vector search to one org without spilling RAM on the others.
+
+---
+
 ## The 10 skill playbooks
 
 When you `sfgraph install`, ten `SKILL.md` files land in `~/.claude/skills/` and `~/.cursor/rules/`. They route LLM intent to tool sequences so the agent picks up the right tool without you having to name it.
