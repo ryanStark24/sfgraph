@@ -1,1 +1,2 @@
-packages/models/data/*.onnx filter=lfs diff=lfs merge=lfs -text
+packages/models/data/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+packages/models/data/**/*.bin filter=lfs diff=lfs merge=lfs -text
