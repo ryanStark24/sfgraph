@@ -45,7 +45,9 @@
     "p-limit": "^7.3.0",
     "parse5": "^8.0.1",
     "piscina": "^5.1.4",
-    "sqlite-vec": "^0.1.9"
+    "sqlite-vec": "^0.1.9",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

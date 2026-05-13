@@ -32,4 +32,25 @@ export class ToolRegistry {
   list(): RegisteredTool[] {
     return Array.from(this.tools.values());
   }
+
+  clear(): void {
+    this.tools.clear();
+  }
+}
+
+/**
+ * Global default registry. `defineTool` registers here on side-effect import.
+ */
+export const defaultRegistry = new ToolRegistry();
+
+export function registerTool(spec: {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  execute: ToolHandler;
+}): void {
+  defaultRegistry.register(spec.name, spec.execute, {
+    description: spec.description,
+    inputSchema: spec.inputSchema,
+  });
 }

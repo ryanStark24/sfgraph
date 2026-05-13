@@ -22,7 +22,9 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@sfgraph/core": "workspace:*",
-    "@sfgraph/shared": "workspace:*"
+    "@sfgraph/shared": "workspace:*",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
