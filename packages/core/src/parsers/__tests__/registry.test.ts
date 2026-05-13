@@ -1,4 +1,4 @@
-import { StorageError } from "@sfgraph/shared";
+import { StorageError } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it } from "vitest";
 import "../index.js"; // trigger registration
 import { METADATA_CATEGORY } from "../../domain/index.js";

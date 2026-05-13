@@ -1,4 +1,4 @@
-import type { OrgId } from "@sfgraph/shared";
+import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import type { GraphStore } from "../storage/interfaces.js";
 

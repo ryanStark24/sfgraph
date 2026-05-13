@@ -1,4 +1,4 @@
-import { ErrorCode, SfgraphError } from "@sfgraph/shared";
+import { ErrorCode, SfgraphError } from "@ryanstark24/sfgraph-shared";
 import { verifyVendoredModel } from "./checksum.js";
 import { MODEL_DATA_DIR, VENDORED_MODEL_DIM, VENDORED_MODEL_ID } from "./paths.js";
 

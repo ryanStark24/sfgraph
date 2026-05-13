@@ -1,5 +1,5 @@
-import { analyze, render } from "@sfgraph/core";
-import { asOrgId } from "@sfgraph/shared";
+import { analyze, render } from "@ryanstark24/sfgraph-core";
+import { asOrgId } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 

@@ -1,5 +1,5 @@
-import type { OrgId, QualifiedName, Sha256 } from "@sfgraph/shared";
-import { asQualifiedName, asSha256 } from "@sfgraph/shared";
+import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
+import { asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 
 export interface EmbeddingItem {
   qname: string;
@@ -101,7 +101,7 @@ async function defaultEmbed(texts: string[]): Promise<Float32Array[]> {
     const { pipeline, env } = mod;
     env.allowRemoteModels = false;
     try {
-      const models = (await import("@sfgraph/models" as unknown as string)) as {
+      const models = (await import("@ryanstark24/sfgraph-models" as unknown as string)) as {
         MODEL_DATA_DIR?: string;
       };
       if (models?.MODEL_DATA_DIR) env.localModelPath = models.MODEL_DATA_DIR;

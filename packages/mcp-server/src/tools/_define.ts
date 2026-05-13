@@ -1,4 +1,4 @@
-import type { ToolResponse } from "@sfgraph/core";
+import type { ToolResponse } from "@ryanstark24/sfgraph-core";
 import { type ZodTypeAny, z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { registerTool } from "../tool-registry.js";

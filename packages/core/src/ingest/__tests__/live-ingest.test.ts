@@ -1,5 +1,5 @@
-import { asOrgId } from "@sfgraph/shared";
-import { ConsoleLogger } from "@sfgraph/shared";
+import { asOrgId } from "@ryanstark24/sfgraph-shared";
+import { ConsoleLogger } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it } from "vitest";
 import { buildJsforceMock } from "../../extractors/live-org/__tests__/_jsforce-mock.js";
 import { wrapConnectionReadOnly } from "../../extractors/live-org/read-only-proxy.js";

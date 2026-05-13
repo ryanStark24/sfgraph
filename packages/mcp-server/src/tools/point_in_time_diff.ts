@@ -1,4 +1,4 @@
-import { render } from "@sfgraph/core";
+import { render } from "@ryanstark24/sfgraph-core";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 

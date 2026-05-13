@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ErrorCode, SfgraphError } from "@sfgraph/shared";
+import { ErrorCode, SfgraphError } from "@ryanstark24/sfgraph-shared";
 import { MODEL_DATA_DIR } from "./paths.js";
 
 export const E_MODEL_NOT_VENDORED = ErrorCode.E_MODEL_NOT_VENDORED;

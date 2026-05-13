@@ -1,5 +1,5 @@
 {
-  "name": "@sfgraph/core",
+  "name": "@ryanstark24/sfgraph-core",
   "version": "1.0.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -35,7 +35,6 @@
     "@babel/traverse": "^7.29.0",
     "@babel/types": "^7.29.0",
     "@salesforce/core": "^8.30.0",
-    "@sfgraph/shared": "workspace:*",
     "apex-parser": "^2.17.0",
     "better-sqlite3": "^12.10.0",
     "bottleneck": "^2.19.5",
@@ -47,7 +46,8 @@
     "sqlite-vec": "^0.1.9",
     "yaml": "^2.9.0",
     "zod": "^3.25.76",
-    "zod-to-json-schema": "^3.25.2"
+    "zod-to-json-schema": "^3.25.2",
+    "@ryanstark24/sfgraph-shared": "workspace:*"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

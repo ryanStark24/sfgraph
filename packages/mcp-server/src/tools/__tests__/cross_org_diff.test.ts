@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { SqliteGraphStore, SqliteSnapshotStore } from "@sfgraph/core";
-import type { EdgeFact, NodeFact } from "@sfgraph/core";
-import { asOrgId, asQualifiedName, asSha256 } from "@sfgraph/shared";
+import { SqliteGraphStore, SqliteSnapshotStore } from "@ryanstark24/sfgraph-core";
+import type { EdgeFact, NodeFact } from "@ryanstark24/sfgraph-core";
+import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setToolContextFactory } from "../../context.js";
 import { callTool } from "./_runner.js";

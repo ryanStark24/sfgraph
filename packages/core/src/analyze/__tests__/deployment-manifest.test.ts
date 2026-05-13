@@ -1,4 +1,4 @@
-import { asOrgId, asQualifiedName, asSha256 } from "@sfgraph/shared";
+import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { NodeFact } from "../../domain/index.js";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";

@@ -1,6 +1,6 @@
 # sfgraph Skills
 
-Skills are SKILL.md playbooks bundled in `@sfgraph/skills`. Each ships an
+Skills are SKILL.md playbooks bundled in `@ryanstark24/sfgraph-skills`. Each ships an
 intent description, decision rubric, and a chain of MCP tool calls. After
 `sfgraph install` they are written to the host IDE's skill directory.
 

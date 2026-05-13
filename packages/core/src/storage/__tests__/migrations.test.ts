@@ -1,7 +1,7 @@
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { MigrationError } from "@sfgraph/shared";
+import { MigrationError } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Migration } from "../interfaces.js";

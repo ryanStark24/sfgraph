@@ -1,5 +1,5 @@
-import { ErrorCode, type OrgId, SfgraphError, asQualifiedName } from "@sfgraph/shared";
-import type { Logger } from "@sfgraph/shared";
+import { ErrorCode, type OrgId, SfgraphError, asQualifiedName } from "@ryanstark24/sfgraph-shared";
+import type { Logger } from "@ryanstark24/sfgraph-shared";
 import type { ParseContext, ParseResult } from "../parsers/contract.js";
 import { parserRegistry } from "../parsers/registry.js";
 // Ensure all parsers are registered before we look them up.

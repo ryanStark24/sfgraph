@@ -1,4 +1,4 @@
-import { StorageError } from "@sfgraph/shared";
+import { StorageError } from "@ryanstark24/sfgraph-shared";
 
 const IDENT_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 

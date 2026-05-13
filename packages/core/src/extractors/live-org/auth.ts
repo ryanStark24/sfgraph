@@ -1,5 +1,5 @@
-import { ErrorCode, SfgraphError, asOrgId } from "@sfgraph/shared";
-import type { OrgId } from "@sfgraph/shared";
+import { ErrorCode, SfgraphError, asOrgId } from "@ryanstark24/sfgraph-shared";
+import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import { wrapConnectionReadOnly } from "./read-only-proxy.js";
 
 export interface ResolvedOrg {

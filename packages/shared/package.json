@@ -1,5 +1,5 @@
 {
-  "name": "@sfgraph/shared",
+  "name": "@ryanstark24/sfgraph-shared",
   "version": "1.0.0",
   "type": "module",
   "main": "./dist/index.js",

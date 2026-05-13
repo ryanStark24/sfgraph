@@ -1,5 +1,5 @@
-import { asOrgId } from "@sfgraph/shared";
-import type { OrgId } from "@sfgraph/shared";
+import { asOrgId } from "@ryanstark24/sfgraph-shared";
+import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import { REL_TYPES } from "../domain/index.js";
 import type { NodeFact } from "../domain/index.js";
 import type { GraphStore } from "../storage/interfaces.js";

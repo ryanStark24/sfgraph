@@ -1,5 +1,5 @@
 {
-  "name": "@sfgraph/cli",
+  "name": "@ryanstark24/sfgraph-cli",
   "version": "1.0.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -19,11 +19,11 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@sfgraph/core": "workspace:*",
-    "@sfgraph/mcp-server": "workspace:*",
-    "@sfgraph/shared": "workspace:*",
-    "@sfgraph/skills": "workspace:*",
-    "commander": "^12.0.0"
+    "commander": "^12.0.0",
+    "@ryanstark24/sfgraph-core": "workspace:*",
+    "@ryanstark24/sfgraph-server": "workspace:*",
+    "@ryanstark24/sfgraph-shared": "workspace:*",
+    "@ryanstark24/sfgraph-skills": "workspace:*"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

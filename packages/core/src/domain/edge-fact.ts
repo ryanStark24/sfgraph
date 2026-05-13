@@ -1,4 +1,4 @@
-import type { OrgId, QualifiedName } from "@sfgraph/shared";
+import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { RelType } from "./rel-types.js";
 
 export interface EdgeFact {

@@ -1,4 +1,4 @@
-import { asOrgId } from "@sfgraph/shared";
+import { asOrgId } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it } from "vitest";
 import type { RawMember } from "../../interfaces/metadata-source.js";
 import { bulkRetrieve } from "../bulk-retrieve.js";

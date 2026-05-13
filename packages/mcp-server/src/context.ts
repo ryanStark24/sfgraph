@@ -1,6 +1,6 @@
 import path from "node:path";
-import type { GraphStore, SnapshotStore } from "@sfgraph/core";
-import { type OrgId, asOrgId, getSfgraphPaths } from "@sfgraph/shared";
+import type { GraphStore, SnapshotStore } from "@ryanstark24/sfgraph-core";
+import { type OrgId, asOrgId, getSfgraphPaths } from "@ryanstark24/sfgraph-shared";
 
 export interface ToolContext {
   graphStore: GraphStore;
@@ -29,7 +29,7 @@ async function defaultFactory(opts: { orgId?: string }): Promise<ToolContext> {
   const orgIdOrAlias = opts.orgId ?? "default";
   const paths = getSfgraphPaths();
   const dbPath = path.join(paths.data, `${orgIdOrAlias}.sqlite`);
-  const { SqliteGraphStore, SqliteSnapshotStore } = await import("@sfgraph/core");
+  const { SqliteGraphStore, SqliteSnapshotStore } = await import("@ryanstark24/sfgraph-core");
   const graphStore = new SqliteGraphStore({ dbPath });
   await graphStore.init();
   const snapshotStore = new SqliteSnapshotStore({

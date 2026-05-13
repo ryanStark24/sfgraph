@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { StorageError, asOrgId, asQualifiedName, asSha256 } from "@sfgraph/shared";
-import type { OrgId, QualifiedName, Sha256 } from "@sfgraph/shared";
+import { StorageError, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
+import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, Org, RelType } from "../../domain/index.js";
 import { edgeTableName, nodeTableName, validateLabel, validateRelType } from "../identifier.js";

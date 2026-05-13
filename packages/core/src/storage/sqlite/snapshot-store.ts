@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { StorageError, asOrgId, asQualifiedName, asSha256 } from "@sfgraph/shared";
-import type { OrgId, QualifiedName, Sha256 } from "@sfgraph/shared";
+import { StorageError, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
+import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, RelType, Snapshot } from "../../domain/index.js";
 import type { BetterSqlite3Database, EdgeDiff, NodeDiff, SnapshotStore } from "../interfaces.js";

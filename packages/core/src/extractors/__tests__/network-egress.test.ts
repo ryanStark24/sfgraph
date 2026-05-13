@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 const ALLOW = new Set(["localhost", "127.0.0.1", "::1"]);
 
 describe("network egress", () => {
-  it("no external DNS resolution during @sfgraph/core import or MCP server construction", async () => {
+  it("no external DNS resolution during @ryanstark24/sfgraph-core import or MCP server construction", async () => {
     const lookups: string[] = [];
     const originalLookup = dns.lookup;
     const originalPromisesLookup = dns.promises.lookup;

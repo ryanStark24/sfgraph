@@ -1,4 +1,4 @@
-import type { OrgId, QualifiedName } from "@sfgraph/shared";
+import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { EdgeFact, NodeFact } from "../domain/index.js";
 import type { GraphStore } from "../storage/interfaces.js";
 import type { TraversalResult } from "./dependents.js";

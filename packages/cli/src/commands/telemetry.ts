@@ -1,5 +1,10 @@
-import { LocalFileSink, Sanitizer, getOrCreateMachineId, resetMachineId } from "@sfgraph/core";
-import { getSfgraphPaths } from "@sfgraph/shared";
+import {
+  LocalFileSink,
+  Sanitizer,
+  getOrCreateMachineId,
+  resetMachineId,
+} from "@ryanstark24/sfgraph-core";
+import { getSfgraphPaths } from "@ryanstark24/sfgraph-shared";
 import { defaultSinkPath, readConfig, writeConfig } from "../config.js";
 
 export interface TelemetryEnv {

@@ -75,7 +75,7 @@ developer machines, you can:
 
 ## Verifying
 
-- `network-egress.test.ts` asserts that importing `@sfgraph/core` and
+- `network-egress.test.ts` asserts that importing `@ryanstark24/sfgraph-core` and
   constructing the MCP server resolves no external DNS.
 - `read-only-proxy.test.ts` asserts every mutating method on a mock
   Connection throws.

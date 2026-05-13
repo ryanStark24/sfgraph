@@ -1,4 +1,4 @@
-import { ReadOnlyViolationError, SfgraphError } from "@sfgraph/shared";
+import { ReadOnlyViolationError, SfgraphError } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it } from "vitest";
 import { resolveDefaultOrgAlias, resolveOrg } from "../auth.js";
 import { buildJsforceMock } from "./_jsforce-mock.js";

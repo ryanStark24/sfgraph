@@ -1,4 +1,4 @@
-import type { OrgId } from "@sfgraph/shared";
+import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import type { GraphStore } from "../../storage/interfaces.js";
 import { diffOrgs } from "../cross-org.js";
 import { formatMemberName } from "./member-name-formatters.js";

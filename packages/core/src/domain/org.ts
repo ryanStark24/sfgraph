@@ -1,4 +1,4 @@
-import type { OrgId } from "@sfgraph/shared";
+import type { OrgId } from "@ryanstark24/sfgraph-shared";
 
 export interface Org {
   id: OrgId;

@@ -1,4 +1,4 @@
-import type { OrgId } from "@sfgraph/shared";
+import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import { REL_TYPES } from "../domain/rel-types.js";
 import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";

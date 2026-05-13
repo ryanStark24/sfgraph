@@ -1,5 +1,5 @@
 {
-  "name": "@sfgraph/skills",
+  "name": "@ryanstark24/sfgraph-skills",
   "version": "1.0.0",
   "type": "module",
   "main": "./dist/index.js",

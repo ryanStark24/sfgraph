@@ -1,4 +1,4 @@
-import { asOrgId, asQualifiedName, asSha256 } from "@sfgraph/shared";
+import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import type { EdgeFact, NodeFact, RelType } from "../domain/index.js";
 import type { ParseContext } from "./contract.js";
 

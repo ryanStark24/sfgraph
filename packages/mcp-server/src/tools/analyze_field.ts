@@ -1,6 +1,6 @@
-import { render } from "@sfgraph/core";
-import { REL_TYPES } from "@sfgraph/core";
-import { asQualifiedName } from "@sfgraph/shared";
+import { render } from "@ryanstark24/sfgraph-core";
+import { REL_TYPES } from "@ryanstark24/sfgraph-core";
+import { asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 

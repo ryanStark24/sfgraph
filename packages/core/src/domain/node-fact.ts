@@ -1,4 +1,4 @@
-import type { OrgId, QualifiedName, Sha256 } from "@sfgraph/shared";
+import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 
 export interface NodeFact {
   orgId: OrgId;

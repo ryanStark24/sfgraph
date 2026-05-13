@@ -1,6 +1,6 @@
 import path from "node:path";
-import { SqliteGraphStore, SqliteSnapshotStore, liveIngest } from "@sfgraph/core";
-import { ConsoleLogger, SfgraphError, getSfgraphPaths } from "@sfgraph/shared";
+import { SqliteGraphStore, SqliteSnapshotStore, liveIngest } from "@ryanstark24/sfgraph-core";
+import { ConsoleLogger, SfgraphError, getSfgraphPaths } from "@ryanstark24/sfgraph-shared";
 
 export interface IngestOpts {
   org?: string | undefined;
@@ -11,7 +11,7 @@ export interface IngestOpts {
 export async function ingestCmd(opts: IngestOpts): Promise<void> {
   const logger = new ConsoleLogger("info");
   try {
-    const { resolveOrg, resolveDefaultOrgAlias } = await import("@sfgraph/core");
+    const { resolveOrg, resolveDefaultOrgAlias } = await import("@ryanstark24/sfgraph-core");
 
     let alias: string;
     if (opts.org) {

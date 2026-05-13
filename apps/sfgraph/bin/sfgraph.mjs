@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { run } from "@sfgraph/cli";
+import { run } from "@ryanstark24/sfgraph-cli";
 
 // Bare invocation (e.g. `npx sfgraph` from an MCP client config) starts the
 // stdio MCP server. Any subcommand or flag (ingest, install, --help, etc.)

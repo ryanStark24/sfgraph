@@ -32,10 +32,10 @@ importers:
 
   apps/sfgraph:
     dependencies:
-      '@sfgraph/cli':
+      '@ryanstark24/sfgraph-cli':
         specifier: workspace:*
         version: link:../../packages/cli
-      '@sfgraph/mcp-server':
+      '@ryanstark24/sfgraph-server':
         specifier: workspace:*
         version: link:../../packages/mcp-server
     devDependencies:
@@ -48,16 +48,16 @@ importers:
 
   packages/cli:
     dependencies:
-      '@sfgraph/core':
+      '@ryanstark24/sfgraph-core':
         specifier: workspace:*
         version: link:../core
-      '@sfgraph/mcp-server':
+      '@ryanstark24/sfgraph-server':
         specifier: workspace:*
         version: link:../mcp-server
-      '@sfgraph/shared':
+      '@ryanstark24/sfgraph-shared':
         specifier: workspace:*
         version: link:../shared
-      '@sfgraph/skills':
+      '@ryanstark24/sfgraph-skills':
         specifier: workspace:*
         version: link:../skills
       commander:
@@ -88,12 +88,12 @@ importers:
       '@babel/types':
         specifier: ^7.29.0
         version: 7.29.0
+      '@ryanstark24/sfgraph-shared':
+        specifier: workspace:*
+        version: link:../shared
       '@salesforce/core':
         specifier: ^8.30.0
         version: 8.30.0
-      '@sfgraph/shared':
-        specifier: workspace:*
-        version: link:../shared
       apex-parser:
         specifier: ^2.17.0
         version: 2.17.0
@@ -108,7 +108,7 @@ importers:
         version: 5.8.0
       jsforce:
         specifier: ^3.10.14
-        version: 3.10.14(@types/node@22.19.19)
+        version: 3.10.15(@types/node@22.19.19)
       p-limit:
         specifier: ^7.3.0
         version: 7.3.0
@@ -158,10 +158,10 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.0
         version: 1.29.0(zod@3.25.76)
-      '@sfgraph/core':
+      '@ryanstark24/sfgraph-core':
         specifier: workspace:*
         version: link:../core
-      '@sfgraph/shared':
+      '@ryanstark24/sfgraph-shared':
         specifier: workspace:*
         version: link:../shared
       zod:
@@ -186,7 +186,7 @@ importers:
 
   packages/models:
     dependencies:
-      '@sfgraph/shared':
+      '@ryanstark24/sfgraph-shared':
         specifier: workspace:*
         version: link:../shared
     devDependencies:
@@ -741,8 +741,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@jsforce/jsforce-node@3.10.14':
-    resolution: {integrity: sha512-p8Ug1SypcAT7Q0zZA0+7fyBmgUpB/aXkde4Bxmu0S/O4p28CVwgYvKyFd9vswmHIhFabd/QqUCrlYuVhYdr2Ew==}
+  '@jsforce/jsforce-node@3.10.15':
+    resolution: {integrity: sha512-rtl4MCmy5EzUQ8ehJfjcQCVW2EPCBfopxpZjmXzJrKdtwH6ptjeC5VdyfjS40XNjD7k7heXRZr1jRVU3Ej6kcQ==}
     engines: {node: '>=18'}
 
   '@jsonjoy.com/base64@1.1.2':
@@ -2004,8 +2004,8 @@ packages:
     engines: {node: '>=6'}
     hasBin: true
 
-  jsforce@3.10.14:
-    resolution: {integrity: sha512-T719ErAVBJZU5Nl+mPFYkcTew9IRWhjllFceAL3ytoAFJXZUHij/Baxxjshcz6bjmGJlpaDc3/JRGOT0lFfncg==}
+  jsforce@3.10.15:
+    resolution: {integrity: sha512-PCepDvkS3046ElmMI5Ft6bI1QzJvMlJ/FDpw4Nk7XWWMDNe3kiFCRlaWnmc58bYtJ4qgx4LSE9BkZe7YUbGEjQ==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -3398,7 +3398,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@jsforce/jsforce-node@3.10.14':
+  '@jsforce/jsforce-node@3.10.15':
     dependencies:
       '@sindresorhus/is': 4.6.0
       base64url: 3.0.1
@@ -3689,7 +3689,7 @@ snapshots:
 
   '@salesforce/core@8.30.0':
     dependencies:
-      '@jsforce/jsforce-node': 3.10.14
+      '@jsforce/jsforce-node': 3.10.15
       '@salesforce/kit': 3.2.6
       '@salesforce/ts-types': 2.0.12
       ajv: 8.20.0
@@ -4689,7 +4689,7 @@ snapshots:
 
   jsesc@3.1.0: {}
 
-  jsforce@3.10.14(@types/node@22.19.19):
+  jsforce@3.10.15(@types/node@22.19.19):
     dependencies:
       '@babel/runtime': 7.29.2
       '@babel/runtime-corejs3': 7.29.2

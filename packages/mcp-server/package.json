@@ -1,5 +1,5 @@
 {
-  "name": "@sfgraph/mcp-server",
+  "name": "@ryanstark24/sfgraph-server",
   "version": "1.0.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -20,10 +20,10 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@sfgraph/core": "workspace:*",
-    "@sfgraph/shared": "workspace:*",
     "zod": "^3.25.76",
-    "zod-to-json-schema": "^3.25.2"
+    "zod-to-json-schema": "^3.25.2",
+    "@ryanstark24/sfgraph-core": "workspace:*",
+    "@ryanstark24/sfgraph-shared": "workspace:*"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

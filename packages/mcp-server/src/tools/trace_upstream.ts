@@ -1,5 +1,5 @@
-import { analyze, render } from "@sfgraph/core";
-import { asQualifiedName } from "@sfgraph/shared";
+import { analyze, render } from "@ryanstark24/sfgraph-core";
+import { asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 

@@ -1,4 +1,4 @@
-import { type QualifiedName, asQualifiedName } from "@sfgraph/shared";
+import { type QualifiedName, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 
 export function pathToQualifiedName(p: string): QualifiedName | null {
   const norm = p.replace(/\\/g, "/");

@@ -1,4 +1,4 @@
-import { StorageError } from "@sfgraph/shared";
+import { StorageError } from "@ryanstark24/sfgraph-shared";
 import type { Parser, ParserRegistry } from "./contract.js";
 
 class DefaultParserRegistry implements ParserRegistry {

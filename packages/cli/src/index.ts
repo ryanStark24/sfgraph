@@ -49,7 +49,7 @@ export function buildProgram(): Command {
     .command("mcp")
     .description("start the MCP server over stdio (this is what IDEs invoke)")
     .action(async () => {
-      const { runMcpServer } = await import("@sfgraph/mcp-server");
+      const { runMcpServer } = await import("@ryanstark24/sfgraph-server");
       await runMcpServer();
     });
 

@@ -45,7 +45,7 @@ export function findSkillsRoot(): string {
     if (existsSync(c)) return c;
   }
   throw new Error(
-    `@sfgraph/skills: bundled skills directory not found (looked in ${candidates.join(", ")})`,
+    `@ryanstark24/sfgraph-skills: bundled skills directory not found (looked in ${candidates.join(", ")})`,
   );
 }
 

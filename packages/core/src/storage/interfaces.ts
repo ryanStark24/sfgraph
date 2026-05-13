@@ -1,4 +1,4 @@
-import type { OrgId, QualifiedName, Sha256 } from "@sfgraph/shared";
+import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import type Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, Org, RelType, Snapshot } from "../domain/index.js";
 

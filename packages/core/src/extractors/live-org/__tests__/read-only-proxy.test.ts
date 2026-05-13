@@ -1,4 +1,4 @@
-import { ReadOnlyViolationError } from "@sfgraph/shared";
+import { ReadOnlyViolationError } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it, vi } from "vitest";
 import { wrapConnectionReadOnly } from "../read-only-proxy.js";
 

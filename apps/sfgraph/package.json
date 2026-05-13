@@ -1,5 +1,5 @@
 {
-  "name": "sfgraph",
+  "name": "@ryanstark24/sfgraph-mcp",
   "version": "1.0.0",
   "type": "module",
   "bin": {
@@ -17,8 +17,8 @@
     "clean": "echo no-op"
   },
   "dependencies": {
-    "@sfgraph/cli": "workspace:*",
-    "@sfgraph/mcp-server": "workspace:*"
+    "@ryanstark24/sfgraph-cli": "workspace:*",
+    "@ryanstark24/sfgraph-server": "workspace:*"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
@@ -42,5 +42,8 @@
     "code-analysis",
     "apex",
     "lwc"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

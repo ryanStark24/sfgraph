@@ -1,1 +1,1 @@
-export { ReadOnlyViolationError } from "@sfgraph/shared";
+export { ReadOnlyViolationError } from "@ryanstark24/sfgraph-shared";

@@ -1,4 +1,4 @@
-import { ReadOnlyViolationError, asOrgId } from "@sfgraph/shared";
+import { ReadOnlyViolationError, asOrgId } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it } from "vitest";
 import { buildJsforceMock } from "../../extractors/live-org/__tests__/_jsforce-mock.js";
 import { wrapConnectionReadOnly } from "../../extractors/live-org/read-only-proxy.js";

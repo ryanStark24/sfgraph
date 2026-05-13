@@ -1,4 +1,4 @@
-import { ReadOnlyViolationError } from "@sfgraph/shared";
+import { ReadOnlyViolationError } from "@ryanstark24/sfgraph-shared";
 
 const SOBJECT_WRITE_METHODS = new Set([
   "create",

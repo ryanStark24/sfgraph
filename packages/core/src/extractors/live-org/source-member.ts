@@ -1,4 +1,4 @@
-import type { OrgId } from "@sfgraph/shared";
+import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import { METADATA_CATEGORY, type MetadataCategory } from "../../domain/index.js";
 import type { MemberRef } from "../interfaces/metadata-source.js";
 import { scheduleQuery } from "./rate-limit.js";

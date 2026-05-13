@@ -1,4 +1,4 @@
-import type { OrgId, QualifiedName } from "@sfgraph/shared";
+import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { NodeFact } from "../domain/index.js";
 import { REL_TYPES } from "../domain/rel-types.js";
 import type { GraphStore } from "../storage/interfaces.js";

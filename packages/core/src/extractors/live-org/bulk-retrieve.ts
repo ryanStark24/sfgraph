@@ -1,4 +1,4 @@
-import type { OrgId } from "@sfgraph/shared";
+import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import type { RawMember } from "../interfaces/metadata-source.js";
 import type { OrgCapabilities } from "./capabilities.js";
 import { discoverMetadataTypes } from "./discovery.js";

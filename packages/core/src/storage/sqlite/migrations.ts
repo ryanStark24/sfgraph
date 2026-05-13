@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
-import { MigrationError } from "@sfgraph/shared";
+import { MigrationError } from "@ryanstark24/sfgraph-shared";
 import * as sqliteVec from "sqlite-vec";
 import type { BetterSqlite3Database, Migration } from "../interfaces.js";
 

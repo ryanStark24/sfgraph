@@ -7,8 +7,8 @@ import {
   REL_TYPES,
   SqliteGraphStore,
   SqliteSnapshotStore,
-} from "@sfgraph/core";
-import { type OrgId, asOrgId, asQualifiedName, asSha256 } from "@sfgraph/shared";
+} from "@ryanstark24/sfgraph-core";
+import { type OrgId, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { type ToolContext, setToolContextFactory } from "../../context.js";
 
 export interface Fixture {

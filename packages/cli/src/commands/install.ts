@@ -1,4 +1,4 @@
-import { type SkillTarget, install as installSkills } from "@sfgraph/skills";
+import { type SkillTarget, install as installSkills } from "@ryanstark24/sfgraph-skills";
 import { type McpTarget, writeMcpConfig } from "./_mcp-config.js";
 
 export interface InstallCmdOpts {

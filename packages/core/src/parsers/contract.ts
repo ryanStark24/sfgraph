@@ -1,4 +1,4 @@
-import type { Logger } from "@sfgraph/shared";
+import type { Logger } from "@ryanstark24/sfgraph-shared";
 import type { EdgeFact, MetadataCategory, NodeFact } from "../domain/index.js";
 
 export interface ParseContext {

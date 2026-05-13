@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { ConsoleLogger } from "@sfgraph/shared";
+import { ConsoleLogger } from "@ryanstark24/sfgraph-shared";
 import { expect } from "vitest";
 import type { EdgeFact, NodeFact } from "../../domain/index.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";

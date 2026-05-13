@@ -1,4 +1,4 @@
-import { asOrgId } from "@sfgraph/shared";
+import { asOrgId } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it, vi } from "vitest";
 import { iterChanges } from "../source-member.js";
 

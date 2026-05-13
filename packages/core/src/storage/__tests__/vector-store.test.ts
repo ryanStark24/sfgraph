@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { asOrgId, asQualifiedName, asSha256 } from "@sfgraph/shared";
+import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteVectorStore } from "../sqlite/vector-store.js";
 

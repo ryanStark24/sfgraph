@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { StorageError, asQualifiedName } from "@sfgraph/shared";
-import type { OrgId, QualifiedName, Sha256 } from "@sfgraph/shared";
+import { StorageError, asQualifiedName } from "@ryanstark24/sfgraph-shared";
+import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { validateLabel } from "../identifier.js";

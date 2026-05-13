@@ -1,4 +1,4 @@
-import { ConsoleLogger } from "@sfgraph/shared";
+import { ConsoleLogger } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it } from "vitest";
 import type { ParseContext } from "../../contract.js";
 import { RuleBasedParser } from "../_engine.js";
