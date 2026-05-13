@@ -3,22 +3,34 @@ import { SqliteGraphStore, SqliteSnapshotStore, liveIngest } from "@sfgraph/core
 import { ConsoleLogger, SfgraphError, getSfgraphPaths } from "@sfgraph/shared";
 
 export interface IngestOpts {
-  org: string;
+  org?: string | undefined;
   mode?: "full" | "incremental" | "auto" | undefined;
   db?: string | undefined;
 }
 
 export async function ingestCmd(opts: IngestOpts): Promise<void> {
   const logger = new ConsoleLogger("info");
-  if (!opts.org) {
-    console.error("ingest: --org <alias> is required");
-    process.exitCode = 1;
-    return;
-  }
   try {
+    const { resolveOrg, resolveDefaultOrgAlias } = await import("@sfgraph/core");
+
+    let alias: string;
+    if (opts.org) {
+      alias = opts.org;
+    } else {
+      const detected = await resolveDefaultOrgAlias();
+      if (!detected) {
+        console.error(
+          "ingest: no --org provided and no default org configured. Run `sf config set target-org <alias>` or pass --org.",
+        );
+        process.exitCode = 1;
+        return;
+      }
+      alias = detected;
+      logger.info(`ingest: using default org from sf config: ${alias}`);
+    }
+
     // Resolve org first so we can pick the db path based on its orgId.
-    const { resolveOrg } = await import("@sfgraph/core");
-    const resolved = await resolveOrg(opts.org);
+    const resolved = await resolveOrg(alias);
 
     const dbPath = opts.db ?? path.join(getSfgraphPaths().data, `${resolved.orgId}.sqlite`);
     const graphStore = new SqliteGraphStore({ dbPath });
@@ -31,9 +43,9 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
     await snapshotStore.init();
 
     const startedAt = Date.now();
-    logger.info(`ingest: starting alias=${opts.org} db=${dbPath}`);
+    logger.info(`ingest: starting alias=${alias} db=${dbPath}`);
     const result = await liveIngest({
-      alias: opts.org,
+      alias,
       mode: opts.mode ?? "auto",
       graphStore,
       snapshotStore,

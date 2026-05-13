@@ -87,3 +87,37 @@ export async function resolveOrg(alias: string, deps: ResolveOrgDeps = {}): Prom
 }
 
 export { wrapConnectionReadOnly };
+
+/**
+ * Resolve the default org alias for the current process. Reads `target-org`
+ * (sfdx-style `defaultusername` is also accepted) from the @salesforce/core
+ * ConfigAggregator, which transparently merges local `.sf/config.json`,
+ * project `sfdx-project.json`, and global `~/.sf/config.json`.
+ *
+ * @returns the resolved alias/username string, or `null` if none configured.
+ */
+export async function resolveDefaultOrgAlias(
+  deps: {
+    ConfigAggregator?: any;
+  } = {},
+): Promise<string | null> {
+  let ConfigAggregator: any = deps.ConfigAggregator;
+  if (!ConfigAggregator) {
+    try {
+      const sfCore = await import("@salesforce/core");
+      ConfigAggregator = sfCore.ConfigAggregator;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const aggregator = await ConfigAggregator.create();
+    const info =
+      aggregator.getInfo?.("target-org") ?? aggregator.getInfo?.("defaultusername") ?? null;
+    const value = info?.value;
+    if (typeof value === "string" && value.length > 0) return value;
+    return null;
+  } catch {
+    return null;
+  }
+}

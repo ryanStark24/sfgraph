@@ -1,6 +1,6 @@
 export { wrapConnectionReadOnly } from "./read-only-proxy.js";
 export { ReadOnlyViolationError } from "./errors.js";
-export { resolveOrg, safeOrgInfo } from "./auth.js";
+export { resolveOrg, resolveDefaultOrgAlias, safeOrgInfo } from "./auth.js";
 export type { ResolvedOrg, ResolveOrgDeps } from "./auth.js";
 export { probeCapabilities } from "./capabilities.js";
 export type { OrgCapabilities } from "./capabilities.js";

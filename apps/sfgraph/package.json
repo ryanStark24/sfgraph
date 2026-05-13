@@ -1,7 +1,6 @@
 {
   "name": "sfgraph",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
   "bin": {
     "sfgraph": "./bin/sfgraph.mjs"
@@ -24,5 +23,24 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
     "vitest": "^2.1.0"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ryanStark24/sfgraph"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "description": "Local, privacy-first Salesforce org knowledge graph for MCP clients (Cursor, Claude, VS Code)",
+  "keywords": [
+    "salesforce",
+    "sfgraph",
+    "mcp",
+    "cursor",
+    "claude",
+    "code-analysis",
+    "apex",
+    "lwc"
+  ]
 }

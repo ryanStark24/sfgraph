@@ -46,12 +46,20 @@ export function buildProgram(): Command {
     );
 
   program
+    .command("mcp")
+    .description("start the MCP server over stdio (this is what IDEs invoke)")
+    .action(async () => {
+      const { runMcpServer } = await import("@sfgraph/mcp-server");
+      await runMcpServer();
+    });
+
+  program
     .command("ingest")
     .description("sync a Salesforce org into the local graph (read-only)")
-    .requiredOption("--org <alias>", "Salesforce alias/username from sf CLI")
+    .option("--org <alias>", "Salesforce alias/username (defaults to `sf config` target-org)")
     .option("--mode <mode>", "full | incremental | auto", "auto")
     .option("--db <path>", "override SQLite database path")
-    .action(async (opts: { org: string; mode: "full" | "incremental" | "auto"; db?: string }) => {
+    .action(async (opts: { org?: string; mode: "full" | "incremental" | "auto"; db?: string }) => {
       await ingestCmd({ org: opts.org, mode: opts.mode, db: opts.db });
     });
 

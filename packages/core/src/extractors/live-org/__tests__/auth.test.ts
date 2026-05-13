@@ -1,6 +1,6 @@
 import { ReadOnlyViolationError, SfgraphError } from "@sfgraph/shared";
 import { describe, expect, it } from "vitest";
-import { resolveOrg } from "../auth.js";
+import { resolveDefaultOrgAlias, resolveOrg } from "../auth.js";
 import { buildJsforceMock } from "./_jsforce-mock.js";
 
 const state = { lastUsername: undefined as string | undefined, shouldFail: false };
@@ -54,6 +54,34 @@ describe("resolveOrg", () => {
       expect((e as SfgraphError).code).toBe("E_SF_AUTH");
       expect((e as SfgraphError).message).toContain("ghost");
     }
+  });
+
+  it("resolveDefaultOrgAlias returns target-org from ConfigAggregator", async () => {
+    const FakeAggregator = {
+      async create() {
+        return {
+          getInfo(key: string) {
+            return key === "target-org" ? { value: "my-default-alias" } : null;
+          },
+        };
+      },
+    };
+    const alias = await resolveDefaultOrgAlias({ ConfigAggregator: FakeAggregator });
+    expect(alias).toBe("my-default-alias");
+  });
+
+  it("resolveDefaultOrgAlias returns null when no default is configured", async () => {
+    const FakeAggregator = {
+      async create() {
+        return {
+          getInfo() {
+            return null;
+          },
+        };
+      },
+    };
+    const alias = await resolveDefaultOrgAlias({ ConfigAggregator: FakeAggregator });
+    expect(alias).toBeNull();
   });
 
   it("returns a read-only-wrapped connection (writes throw synchronously when invoked)", async () => {

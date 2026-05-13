@@ -1,7 +1,6 @@
 {
   "name": "@sfgraph/skills",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -24,5 +23,29 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ryanStark24/sfgraph"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "sfgraph SKILL.md playbooks for Cursor and Claude",
+  "files": [
+    "dist",
+    "skills",
+    "README.md"
+  ],
+  "keywords": [
+    "salesforce",
+    "sfgraph",
+    "mcp",
+    "skills",
+    "playbook"
+  ]
 }
