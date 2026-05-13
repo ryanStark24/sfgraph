@@ -5,16 +5,36 @@ import pLimit from "p-limit";
 export const queryLimit = pLimit(5);
 
 /**
- * Per-org Salesforce REST rate-limiter. Conservative defaults; reservoir replenishes
- * every minute. On 429-style failures with Retry-After, retry once after the indicated
- * delay (or fall back to a 30s back-off).
+ * Three Bottleneck pools, each with its own concurrency + reservoir budget.
+ * Splitting them avoids head-of-line blocking: a slow Metadata API retrieve
+ * doesn't starve fast Tooling SOQL calls.
  */
-export const limiter = new Bottleneck({
-  maxConcurrent: 10,
+
+// Tooling SOQL (fast path for code metadata)
+export const toolingPool = new Bottleneck({
+  maxConcurrent: 5,
   minTime: 50,
   reservoir: 100,
   reservoirRefreshAmount: 100,
-  reservoirRefreshInterval: 60_000,
+  reservoirRefreshInterval: 10_000,
+});
+
+// Metadata API retrieve (slow, async retrieve-then-poll)
+export const metadataPool = new Bottleneck({
+  maxConcurrent: 3,
+  minTime: 100,
+  reservoir: 50,
+  reservoirRefreshAmount: 50,
+  reservoirRefreshInterval: 10_000,
+});
+
+// SObject SOQL + Bulk (Vlocity, CMDT records, anything record-shaped)
+export const dataPool = new Bottleneck({
+  maxConcurrent: 10,
+  minTime: 50,
+  reservoir: 200,
+  reservoirRefreshAmount: 200,
+  reservoirRefreshInterval: 10_000,
 });
 
 function parseRetryAfter(err: unknown): number | null {
@@ -42,15 +62,40 @@ function parseRetryAfter(err: unknown): number | null {
   return null;
 }
 
-limiter.on("failed", (err, jobInfo) => {
-  const wait = parseRetryAfter(err);
-  if (wait != null && jobInfo.retryCount < 1) {
-    return wait * 1000;
-  }
-  return null;
-});
+for (const pool of [toolingPool, metadataPool, dataPool]) {
+  pool.on("failed", (err: unknown, jobInfo) => {
+    const e = err as { errorCode?: string } | undefined;
+    if (e?.errorCode === "REQUEST_LIMIT_EXCEEDED" && jobInfo.retryCount < 3) {
+      const wait = parseRetryAfter(err);
+      if (wait != null) return wait * 1000;
+      return 5000 * (jobInfo.retryCount + 1);
+    }
+    const wait = parseRetryAfter(err);
+    if (wait != null && jobInfo.retryCount < 1) {
+      return wait * 1000;
+    }
+    return null;
+  });
+}
+
+/**
+ * Back-compat alias. The original `limiter` export is preserved so callers
+ * that haven't migrated to a specific pool continue to work; it points at
+ * the tooling pool (the closest match to the previous single-pool defaults).
+ */
+export const limiter = toolingPool;
 
 /** Helper that runs a single SOQL/Tooling callable through both gates. */
 export function scheduleQuery<T>(fn: () => Promise<T>): Promise<T> {
-  return limiter.schedule(() => queryLimit(fn));
+  return toolingPool.schedule(() => queryLimit(fn));
+}
+
+/** Schedule a Metadata API call (list/read/retrieve/deploy). */
+export function scheduleMetadata<T>(fn: () => Promise<T>): Promise<T> {
+  return metadataPool.schedule(fn);
+}
+
+/** Schedule a SObject SOQL / Bulk query (Vlocity, CMDT, generic records). */
+export function scheduleData<T>(fn: () => Promise<T>): Promise<T> {
+  return dataPool.schedule(fn);
 }

@@ -136,6 +136,16 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   const caps = await probeCapabilities(resolved.conn);
   logger.info("live-ingest: probed capabilities", { caps });
 
+  // Discovery is also invoked implicitly inside bulkRetrieve, but logging the
+  // type-count up-front gives operators a quick coverage signal.
+  try {
+    const { discoverMetadataTypes } = await import("../extractors/live-org/discovery.js");
+    const discovered = await discoverMetadataTypes(resolved.conn, apiVersion);
+    logger.info("live-ingest: discovered metadata types", { count: discovered.length });
+  } catch (e) {
+    logger.warn("live-ingest: metadata.describe failed", { err: (e as Error).message });
+  }
+
   const existing = graph.getOrg(resolved.orgId);
   const requestedMode = opts.mode ?? "auto";
   let mode: IngestMode;

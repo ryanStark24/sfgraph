@@ -7,6 +7,15 @@ export interface MockJsforceOpts {
   toolingDescribeResults?: Record<string, boolean>;
   metadataList?: Record<string, any[]>;
   metadataRead?: Record<string, (names: string[]) => any[]>;
+  /** Items returned by conn.metadata.describe(). When omitted, describe throws. */
+  metadataDescribe?: Array<{
+    xmlName: string;
+    suffix?: string;
+    directoryName?: string;
+    childXmlNames?: string[];
+    inFolder?: boolean;
+    metaFile?: boolean;
+  }>;
   apiVersion?: string;
   instanceUrl?: string;
   userInfo?: { organizationId?: string };
@@ -75,6 +84,12 @@ export function buildJsforceMock(opts: MockJsforceOpts = {}): any {
       }),
     },
     metadata: {
+      describe: async (_apiVersion?: string) => {
+        if (!opts.metadataDescribe) {
+          throw new Error("mock: metadata.describe not configured");
+        }
+        return { metadataObjects: opts.metadataDescribe };
+      },
       list: async (req: any) => {
         const types = Array.isArray(req) ? req : [req];
         const out: any[] = [];
