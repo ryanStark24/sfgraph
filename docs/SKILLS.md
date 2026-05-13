@@ -11,11 +11,16 @@ intent description, decision rubric, and a chain of MCP tool calls. After
 | `sf-cross-layer-trace`         | LWC -> Apex -> SOQL -> Field path with Mermaid.            |
 | `sf-dead-code-audit`           | Surface stale, orphaned metadata with confidence.          |
 | `sf-deployment-manifest`       | Emit package.xml + destructiveChanges.xml between orgs.    |
+| `sf-explain-code`              | Explain an Apex method or code unit and cache it back.     |
 | `sf-flow-impact`               | Map a Flow's runtime to dependents.                        |
 | `sf-governor-risk-fix`         | Find SOQL/DML in loops and propose remediation.            |
+| `sf-metadata-refresh`          | Orchestrate `start_ingest_job` and surface progress.       |
 | `sf-omnistudio-migration-audit`| Audit Vlocity -> OmniStudio migrations.                    |
+| `sf-schema-overview`           | Summarise an org's object/field topology.                  |
 | `sf-security-audit`            | Sharing rules, FLS gaps, shadow access.                    |
+| `sf-snapshot-compare`          | Walk an operator through two-snapshot diffs.               |
 | `sf-what-broke`                | Correlate a recent failure to the metadata that changed.   |
+| `sf-wip-impact`                | Blast-radius for uncommitted working-tree changes.         |
 
 ## How a skill is wired
 
@@ -24,8 +29,9 @@ Each skill directory contains:
 ```
 skills/<name>/
   SKILL.md      # playbook (intent + steps + verifications)
-  meta.json     # which tools it calls, max hops, etc.
 ```
 
-`sfgraph install` reads the manifest and writes IDE-specific configuration
-(`~/.cursor/skills/`, `~/.claude/skills/`, VS Code workspace settings).
+`sfgraph install` reads the bundled SKILL.md files and writes IDE-specific configuration
+(`~/.cursor/rules/` for Cursor, `~/.claude/skills/` for Claude Code, VS Code via the Claude extension).
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how skills compose tool calls into agent flows.

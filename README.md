@@ -40,6 +40,8 @@ A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-s
   ```
   Verify with `sf org list` — you should see `my-prod` listed and marked as the default target.
 
+**Windows note.** sfgraph runs on Windows 10/11 under Node ≥ 20. Install via `npm install -g @ryanstark24/sfgraph-mcp`; the `sfgraph install` command writes the MCP host config with `npx.cmd` (not `npx`) so Claude Code / Cursor on Windows invoke the right binary. Make sure Git LFS is installed before `npm install` so the vendored embedding model resolves on first ingest.
+
 ### Step 1 — Install sfgraph
 
 ```bash
@@ -125,6 +127,30 @@ sfgraph ingest                       # re-sync; incremental on Source-Tracking o
 sfgraph snapshot list                # see all snapshots
 sfgraph snapshot create --label "before-mass-deploy"   # take a labeled snapshot
 ```
+
+### Custom embedding model
+
+sfgraph ships a vendored, quantized **all-MiniLM-L6-v2** model that runs locally via `@xenova/transformers` (WASM, zero network). If you need a different model — a domain-tuned one, a multilingual variant, or your own internal embedding — point sfgraph at it:
+
+```bash
+# CLI flag (per-invocation)
+sfgraph ingest --embed-model /path/to/model.onnx
+
+# Environment variable (persistent)
+export SFGRAPH_EMBED_MODEL=/path/to/model.onnx
+```
+
+The model must produce 384-dimensional vectors to match the existing `vec0` schema. The first embed of an ingest loads the model lazily; subsequent ingests of unchanged content short-circuit on the cached `content_hash` and never re-embed.
+
+### Parallel org ingest
+
+Bottleneck rate-limit pools live **per Node process**. That means:
+
+- Multiple `sfgraph ingest` processes for **different orgs** run in parallel and don't fight each other — each has its own Tooling/Metadata/Data pools, and Salesforce's per-org API budgets are also separate. Spawn one process per org.
+- Multiple `sfgraph ingest` processes for the **same org** are not supported and will contend on the SQLite write lock. Don't do this.
+- A single process can serially ingest several orgs (`sfgraph ingest --org A && sfgraph ingest --org B`), but throughput is lower than two parallel processes.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full ingestion-pipeline deep-dive.
 
 ---
 
@@ -236,13 +262,14 @@ Per-tool input/output samples and the algorithm each one uses live in [`docs/TOO
 
 ---
 
-## The 10 skill playbooks
+## The 15 skill playbooks
 
-When you `sfgraph install`, ten `SKILL.md` files land in `~/.claude/skills/` and `~/.cursor/rules/`. They route LLM intent to tool sequences so the agent picks up the right tool without you having to name it.
+When you `sfgraph install`, 15 `SKILL.md` files land in `~/.claude/skills/` and `~/.cursor/rules/`. They route LLM intent to tool sequences so the agent picks up the right tool without you having to name it.
 
 | Skill | Triggers like… | Tools used |
 |---|---|---|
 | `sf-impact-from-diff` | "what does this PR break", "impact of this diff" | `impact_from_git_diff`, `test_gap_intelligence_from_git_diff` |
+| `sf-wip-impact` | "what does my WIP touch", "before I commit" | `wip_impact`, `wip_diff`, `wip_test_gap` |
 | `sf-what-broke` | "what broke", "post-deploy regression", "since deploy" | `what_broke`, `point_in_time_diff` |
 | `sf-cross-layer-trace` | "how does this LWC reach the DB", "end-to-end path" | `cross_layer_flow_map`, `analyze_field` |
 | `sf-dead-code-audit` | "what can I delete", "unused", "dead code" | `dead_code_audit`, `freshness_report`, `trace_upstream` |
@@ -252,6 +279,10 @@ When you `sfgraph install`, ten `SKILL.md` files land in `~/.claude/skills/` and
 | `sf-cross-org-diff` | "sandbox vs prod", "what changed in prod" | `cross_org_diff`, `point_in_time_diff` |
 | `sf-deployment-manifest` | "generate package.xml", "deploy these changes" | `deployment_manifest_gen`, `cross_org_diff` |
 | `sf-omnistudio-migration-audit` | "Vlocity → OmniStudio status", "migration audit" | `cross_org_diff` + direct queries |
+| `sf-schema-overview` | "describe this org's schema", "object topology" | `analyze_field`, `trace_upstream` |
+| `sf-snapshot-compare` | "compare these snapshots", "what changed between releases" | `snapshot_list`, `point_in_time_diff` |
+| `sf-metadata-refresh` | "re-ingest", "refresh the graph" | `start_ingest_job`, `get_ingest_job`, `staleness_check` |
+| `sf-explain-code` | "explain `Foo.bar`", "walk me through this method" | `explain_code`, `trace_downstream`, `staleness_check` |
 
 Every skill includes a **Visualization** section specifying the Mermaid diagram type the agent should render (flowchart LR for impact, sequenceDiagram for cross-layer trace, erDiagram for schema questions, gitGraph for point-in-time). Skills also chain to each other via `follow_up_tools`.
 
@@ -485,6 +516,7 @@ pnpm models:refresh
 
 ## Further reading
 
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — storage model, ingestion pipeline, embedding strategy, snippet store, Windows support
 - [`docs/TOOLS.md`](docs/TOOLS.md) — full MCP tool reference (schemas, examples, algorithms)
 - [`docs/SKILLS.md`](docs/SKILLS.md) — skill playbooks
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — read-only enforcement, sanitizer, telemetry flow

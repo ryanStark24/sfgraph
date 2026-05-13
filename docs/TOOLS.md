@@ -27,6 +27,12 @@ Nineteen MCP tools ship in `@ryanstark24/sfgraph-server`. Every tool returns a
 | `dead_code_audit`                 | Low-freshness, orphan candidates with confidence.        |
 | `security_audit`                  | Sharing, FLS, security findings.                         |
 | `deployment_manifest_gen`         | package.xml + destructiveChanges.xml from cross-org diff.|
+| `list_orgs`                       | List ingested orgs with last-sync timestamps.            |
+| `staleness_check`                 | Check how old the local ingest is (warns at >=7 days).   |
+| `explain_code`                    | Read a stored code snippet; optionally cache an LLM explanation. |
+| `wip_impact`                      | Blast-radius for uncommitted local changes.              |
+| `wip_diff`                        | Compute the WIP overlay vs the ingested baseline.        |
+| `wip_test_gap`                    | Test coverage gaps for WIP changes.                      |
 
 ## Schemas
 
@@ -198,3 +204,78 @@ falls back to inline scan otherwise.
 
 API version is read from the source org's stored `apiVersion`; defaults to
 `59.0` when unknown.
+
+### `list_orgs`
+
+```jsonc
+// input
+{}
+// output.data
+{
+  "orgs": [
+    { "id": "00Dxx0000000ABCEAA", "alias": "my-prod", "lastSyncedAt": 1715000000000 }
+  ]
+}
+```
+
+### `staleness_check`
+
+```jsonc
+{ "org": "alias" }
+// output.data
+{ "lastSyncedAt": 1715000000000, "ageDays": 3, "stale": false, "recommendation": "..." }
+```
+
+Stale threshold is 7 days.
+
+### `explain_code`
+
+```jsonc
+// Read mode
+{ "org": "alias", "qname": "ApexMethod:AccountSvc.calculate(2)" }
+// output.data
+{
+  "qname": "ApexMethod:AccountSvc.calculate(2)",
+  "sourceFormat": "apex",
+  "sourceText": "Decimal total = 0; ...",
+  "startLine": 42,
+  "endLine": 71,
+  "cachedExplanation": null,
+  "cachedAt": null,
+  "stored": false
+}
+
+// Write mode — caches an explanation back
+{ "org": "alias", "qname": "ApexMethod:...", "annotation": "Computes the discount..." }
+// output.data.stored: true
+```
+
+Source comes from the `_sfgraph_snippets` table populated by code parsers
+during ingest. Currently emitted for Apex methods; future work covers LWC and
+Flow.
+
+### `wip_impact`
+
+```jsonc
+{ "org": "alias", "diff_base": "origin/main" }
+// output.data
+{ "changed": [...], "blastRadius": [...], "transient": true }
+```
+
+Reads your sfdx-project working tree, parses with the same parsers used in
+ingest, joins with the persistent graph in-memory (no writes), and returns
+the blast radius for uncommitted changes.
+
+### `wip_diff`
+
+```jsonc
+{ "org": "alias", "diff_base": "origin/main" }
+// output.data: { added: [...], removed: [...], changed: [...] }
+```
+
+### `wip_test_gap`
+
+```jsonc
+{ "org": "alias", "diff_base": "origin/main" }
+// output.data: { gaps: [...], suggestions: [...] }
+```
