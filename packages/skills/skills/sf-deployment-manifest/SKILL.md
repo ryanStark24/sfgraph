@@ -10,6 +10,7 @@ triggers:
 tools_used:
   - deployment_manifest_gen
   - cross_org_diff
+  - staleness_check
 ---
 
 # sf-deployment-manifest
@@ -24,6 +25,33 @@ Use when the user wants a `package.xml` that captures a set of changes plus ever
 4. Inspect the result for ambiguous dependencies (managed-package types, namespace mismatches) and surface them as warnings.
 5. Emit the `package.xml` inside a fenced code block. Also emit `destructiveChanges.xml` if the change set includes removals.
 6. Render the Mermaid dependency graph the tool returns so the user can sanity-check the closure.
+
+## Visualization
+
+Render a **`flowchart LR`** dependency closure graph. The user's explicit change set is one subgraph; auto-pulled dependencies are another. Edge labels carry the dependency reason (`parent-of`, `layout-for`, `required-permission`).
+
+```
+flowchart LR
+  subgraph Requested
+    F[Field:Account.Tier__c]
+  end
+  subgraph Closure
+    O[CustomObject:Account]
+    L[Layout:Account-Layout]
+  end
+  F -->|parent-of| O
+  F -->|layout-for| L
+```
+
+If the closure expands past 60 nodes, summarise per metadata type and only render the diagram for the top 20 — beyond that the graph becomes unreadable.
+
+## Staleness check
+
+Before calling `deployment_manifest_gen`, invoke `staleness_check` for the source org. A stale graph means missing dependencies in the manifest, which fail at deploy time. If the report says stale, surface a warning to the user:
+
+> Your ingest is N days old. Run `sfgraph ingest --org <alias>` to refresh, or proceed with the understanding that the graph may not reflect recent changes.
+
+Then continue with the playbook.
 
 ## Response Shape
 

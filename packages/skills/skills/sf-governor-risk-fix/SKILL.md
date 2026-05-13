@@ -10,6 +10,7 @@ triggers:
   - "bulkification"
 tools_used:
   - governor_risk_check
+  - staleness_check
 ---
 
 # sf-governor-risk-fix
@@ -24,6 +25,29 @@ Use when the user wants to find Apex code that risks hitting governor limits at 
 4. Render the Mermaid heat-map (class-by-rule) from the tool response.
 5. Produce a checklist the user can copy into a ticket: `- [ ] ClassName.methodName:line — rule — recommended pattern`.
 6. Recommend `sf-impact-from-diff` after the user applies fixes, to verify nothing downstream regressed.
+
+## Visualization
+
+Render a **`flowchart TD`** heat-map: rows are Apex classes (top N by fan-in), columns are rule ids. Cell colour encodes severity (high/medium/low). When the tool returns its own Mermaid heat-map, embed that and skip this template.
+
+```
+flowchart TD
+  ClassA -->|SOQL_IN_LOOP: high| Risk1[:::hi]
+  ClassA -->|UNBOUNDED_QUERY: med| Risk2[:::med]
+  ClassB -->|DML_IN_LOOP: high| Risk3[:::hi]
+  classDef hi fill:#fcc,stroke:#900
+  classDef med fill:#ffe6cc,stroke:#c60
+```
+
+If the scan returns >50 findings, render only the top-10-by-fan-in row and link to the full table — a wall of cells doesn't help triage.
+
+## Staleness check
+
+Before calling `governor_risk_check`, invoke `staleness_check` for the target org. If the report says stale, surface a warning to the user:
+
+> Your ingest is N days old. Run `sfgraph ingest --org <alias>` to refresh, or proceed with the understanding that the graph may not reflect recent changes.
+
+Then continue with the playbook.
 
 ## Response Shape
 

@@ -10,6 +10,7 @@ triggers:
 tools_used:
   - what_broke
   - point_in_time_diff
+  - staleness_check
 ---
 
 # sf-what-broke
@@ -24,6 +25,28 @@ Use when the user is triaging a regression and wants to know which metadata chan
 4. Triage in descending suspicion order. For each suspect, summarise the change (what attribute moved) and the dependency path to the failure surface.
 5. Render the Mermaid path-to-failure diagram returned by `what_broke`.
 6. Recommend the smallest revert or follow-up investigation (e.g. "inspect `AccountTrigger.handleInsert` — its SOQL selector lost a filter between snapshot X and Y").
+
+## Visualization
+
+Render a **`flowchart LR`** path-to-failure diagram. Each suspect change is a node on the left; intermediate dependency hops are middle nodes; the failure surface (test, route, error) is the rightmost node. Highlight the top-suspect path with a thicker edge.
+
+```
+flowchart LR
+  S1[ApexClass:AccountTrigger]:::suspect --> H1[Service:AccountSvc] --> F1[Test:AccountTriggerTest]:::fail
+  S2[Flow:AccountAfterUpdate] --> H1
+  classDef suspect fill:#fee,stroke:#c00
+  classDef fail fill:#fcc,stroke:#900,stroke-width:2px
+```
+
+If the suspect set is large (>15 nodes) collapse non-top suspects into a single "other changes" node — readability beats completeness.
+
+## Staleness check
+
+Before calling `what_broke`, invoke `staleness_check` for the target org. If the report says stale, surface a warning to the user:
+
+> Your ingest is N days old. Run `sfgraph ingest --org <alias>` to refresh, or proceed with the understanding that the graph may not reflect recent changes.
+
+Then continue with the playbook.
 
 ## Response Shape
 

@@ -10,6 +10,7 @@ triggers:
 tools_used:
   - analyze_field
   - trace_upstream
+  - staleness_check
 ---
 
 # sf-flow-impact
@@ -24,6 +25,30 @@ Use when the user asks which automation references a specific field or object â€
 4. Bucket results into **reads**, **writes**, **both**. Note whether each Flow is `Active`, `Draft`, or `Obsolete`.
 5. Render the Mermaid field-to-flow diagram returned by the tool. If more than 20 flows reference the field, group by entry trigger type.
 6. Call out compatibility risk: type changes break decision criteria; deletions break assignments.
+
+## Visualization
+
+Render a **`flowchart LR`** field-to-flow diagram. The target field is the central node; each Flow is a leaf node. Edge style encodes read (`-->`) vs write (`==>`); colour encodes Flow status (Active / Draft / Obsolete).
+
+```
+flowchart LR
+  F[(Account.Tier__c)]
+  F --> Fl1[Flow:Account_OnUpdate]:::active
+  F ==> Fl2[Flow:Account_BeforeInsert]:::active
+  F --> Fl3[Flow:Account_Legacy]:::obsolete
+  classDef active fill:#cfc
+  classDef obsolete fill:#eee,stroke-dasharray:3 3
+```
+
+If more than 20 flows reference the field, group leaves by entry-trigger type and render at the group level rather than per-flow.
+
+## Staleness check
+
+Before calling `analyze_field`, invoke `staleness_check` for the target org. Newly-created or recently-modified Flows are invisible in a stale graph, which makes this skill produce false negatives. If the report says stale, surface a warning to the user:
+
+> Your ingest is N days old. Run `sfgraph ingest --org <alias>` to refresh, or proceed with the understanding that the graph may not reflect recent changes.
+
+Then continue with the playbook.
 
 ## Response Shape
 

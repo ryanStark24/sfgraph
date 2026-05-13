@@ -11,6 +11,7 @@ tools_used:
   - dead_code_audit
   - freshness_report
   - trace_upstream
+  - staleness_check
 ---
 
 # sf-dead-code-audit
@@ -28,6 +29,31 @@ Use when the user wants to inventory metadata that appears unreferenced. Output 
    - **suspicious-uncertain** — looks dead but the graph has known blind spots (dynamic SOQL string-interpolated field name, reflection-style `Type.forName`, external system reference).
 5. Render the Mermaid bar-chart / treemap returned by the tool grouped by category.
 6. For confident-dead items, propose a destructive-changes.xml snippet but do not save it. The user owns the delete decision.
+
+## Visualization
+
+Render a **`flowchart TD`** treemap-style grouping. Top-level nodes are metadata categories (ApexClass, LWC, Flow, Field); under each, sub-nodes are the three confidence buckets, sized loosely by item count. Avoid drawing the dead items themselves — the table carries that detail.
+
+```
+flowchart TD
+  Root --> Apex
+  Apex --> A_conf[confident-dead: 12]:::conf
+  Apex --> A_likely[likely-dead: 8]:::likely
+  Apex --> A_uncert[uncertain: 4]:::uncert
+  classDef conf fill:#fcc
+  classDef likely fill:#ffe6cc
+  classDef uncert fill:#ffd
+```
+
+When the org has >100 dead candidates, drop the diagram and rely on the per-bucket tables — the chart becomes noise.
+
+## Staleness check
+
+Before calling `dead_code_audit`, invoke `staleness_check` for the target org. Stale ingests make dead-code analysis dangerously wrong (a recently-added caller would be invisible). If the report says stale, surface a warning to the user:
+
+> Your ingest is N days old. Run `sfgraph ingest --org <alias>` to refresh, or proceed with the understanding that the graph may not reflect recent changes.
+
+Then continue with the playbook.
 
 ## Response Shape
 

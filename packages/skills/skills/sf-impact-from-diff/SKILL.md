@@ -10,6 +10,7 @@ triggers:
 tools_used:
   - impact_from_git_diff
   - test_gap_intelligence_from_git_diff
+  - staleness_check
 ---
 
 # sf-impact-from-diff
@@ -24,6 +25,28 @@ Use when the user wants to understand the downstream consequences of a pending c
 4. Group findings by risk tier — **direct edits**, **first-degree dependents**, **transitive (depth ≥ 2)** — and call out anything that crosses metadata layers (LWC -> Apex -> Flow).
 5. Render the Mermaid impact graph returned by the tool. If the impact set is large (>40 nodes), summarise by category and offer a follow-up call scoped to a single changed file.
 6. If test gaps exist, list the specific impacted classes + methods that lack assertions, not just totals.
+
+## Visualization
+
+Render a **`flowchart LR`** impact graph. Changed nodes are leftmost (highlighted), first-degree dependents in the middle, transitive (depth >= 2) on the right. Edge style encodes edge type (`CALLS_METHOD`, `READS_FIELD`, `INVOKES_FLOW`, `RENDERS_COMPONENT`).
+
+```
+flowchart LR
+  C[ApexClass:AccountSvc]:::changed --> D1[ApexClass:AccountCtl]
+  C --> D2[Flow:Account_OnUpdate]
+  D1 --> T1[LWC:accountList]
+  classDef changed fill:#fcc,stroke:#900
+```
+
+When the impact set exceeds 40 nodes, summarise per category and offer the user a follow-up scoped to a single changed file before drawing the diagram.
+
+## Staleness check
+
+Before calling `impact_from_git_diff`, invoke `staleness_check` for the linked org. A stale graph will under-report dependents added since the last sync. If the report says stale, surface a warning to the user:
+
+> Your ingest is N days old. Run `sfgraph ingest --org <alias>` to refresh, or proceed with the understanding that the graph may not reflect recent changes.
+
+Then continue with the playbook.
 
 ## Response Shape
 

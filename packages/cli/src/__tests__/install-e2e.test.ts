@@ -23,7 +23,7 @@ describe("installCmd e2e", () => {
     });
     const skillRows = rows.filter((r) => r.kind === "skill");
     const mcpRows = rows.filter((r) => r.kind === "mcp");
-    expect(skillRows.length).toBe(30); // 10 skills * 3 targets
+    expect(skillRows.length).toBe(42); // 14 skills * 3 targets
     expect(mcpRows.length).toBe(3);
     expect(existsSync(join(home, ".claude", "skills"))).toBe(true);
     expect(existsSync(join(home, ".cursor", "rules"))).toBe(true);
