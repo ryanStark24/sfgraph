@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "Profile:System_Administrator",
+      "label": "Profile",
+      "attributes": {
+        "name": "System_Administrator"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "Profile:System_Administrator",
+      "dstQualifiedName": "ApexClass:AccountController",
+      "relType": "GRANTS_APEX_ACCESS",
+      "attributes": {
+        "enabled": true
+      }
+    },
+    {
+      "srcQualifiedName": "Profile:System_Administrator",
+      "dstQualifiedName": "CustomField:Account.Status__c",
+      "relType": "GRANTS_FIELD_ACCESS",
+      "attributes": {
+        "readable": true,
+        "editable": true
+      }
+    },
+    {
+      "srcQualifiedName": "Profile:System_Administrator",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "GRANTS_OBJECT_ACCESS",
+      "attributes": {
+        "allowRead": true,
+        "allowEdit": true,
+        "allowCreate": true,
+        "allowDelete": true,
+        "modifyAllRecords": true,
+        "viewAllRecords": true
+      }
+    }
+  ]
+}

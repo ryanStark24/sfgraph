@@ -1,0 +1,15 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "PlatformEvent:Order_Event__e",
+      "label": "PlatformEvent",
+      "attributes": {
+        "apiName": "Order_Event__e",
+        "label": "Order Event",
+        "eventType": "HighVolume",
+        "publishBehavior": "PublishAfterCommit"
+      }
+    }
+  ],
+  "edges": []
+}

@@ -1,0 +1,46 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "Flow:Subflow_Caller",
+      "label": "Flow",
+      "attributes": {
+        "name": "Subflow_Caller",
+        "processType": "AutoLaunchedFlow",
+        "status": "Active"
+      }
+    },
+    {
+      "qualifiedName": "FlowVersion:Subflow_Caller.v59",
+      "label": "FlowVersion",
+      "attributes": {
+        "name": "Subflow_Caller",
+        "apiVersion": "59",
+        "status": "Active"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "Flow:Subflow_Caller",
+      "dstQualifiedName": "FlowVersion:Subflow_Caller.v59",
+      "relType": "CONTAINS",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "FlowVersion:Subflow_Caller.v59",
+      "dstQualifiedName": "Flow:Child_Flow",
+      "relType": "FLOW_INVOKES_SUBFLOW",
+      "attributes": {
+        "flowName": "Child_Flow"
+      }
+    },
+    {
+      "srcQualifiedName": "FlowVersion:Subflow_Caller.v59",
+      "dstQualifiedName": "Flow:Other_Flow",
+      "relType": "FLOW_INVOKES_SUBFLOW",
+      "attributes": {
+        "flowName": "Other_Flow"
+      }
+    }
+  ]
+}

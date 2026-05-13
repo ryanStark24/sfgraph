@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "ParseError:ApexClass:BrokenSyntax",
+      "label": "ParseError",
+      "attributes": {
+        "className": "BrokenSyntax",
+        "message": "[object Object]"
+      }
+    }
+  ],
+  "edges": []
+}

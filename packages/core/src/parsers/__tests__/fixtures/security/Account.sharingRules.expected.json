@@ -1,0 +1,38 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "SharingRule:Account.Share_All_Accounts",
+      "label": "SharingRule",
+      "attributes": {
+        "ruleName": "Share_All_Accounts",
+        "object": "Account",
+        "kind": "owner",
+        "accessLevel": "All",
+        "audit": true
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "SharingRule:Account.Share_All_Accounts",
+      "dstQualifiedName": "Group:AllInternalUsers",
+      "relType": "SHARING_FROM_OWNER_GROUP",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "SharingRule:Account.Share_All_Accounts",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "SHARING_GRANTS",
+      "attributes": {
+        "accessLevel": "All",
+        "audit": true
+      }
+    },
+    {
+      "srcQualifiedName": "SharingRule:Account.Share_All_Accounts",
+      "dstQualifiedName": "Group:SalesTeam",
+      "relType": "SHARING_TO_GROUP",
+      "attributes": {}
+    }
+  ]
+}

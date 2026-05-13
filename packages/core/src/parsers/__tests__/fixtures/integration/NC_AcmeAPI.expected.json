@@ -1,0 +1,15 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "NamedCredential:NC_AcmeAPI",
+      "label": "NamedCredential",
+      "attributes": {
+        "name": "NC_AcmeAPI",
+        "endpoint": "https://api.acme.example.com",
+        "principalType": "NamedUser",
+        "protocol": "OAuth"
+      }
+    }
+  ],
+  "edges": []
+}

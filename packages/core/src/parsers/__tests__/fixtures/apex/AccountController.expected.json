@@ -1,0 +1,142 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "ApexClass:AccountController",
+      "label": "ApexClass",
+      "attributes": {
+        "name": "AccountController",
+        "modifiers": [
+          "public",
+          "with",
+          "sharing"
+        ],
+        "isTest": false,
+        "apiVersion": "59.0"
+      }
+    },
+    {
+      "qualifiedName": "ApexMethod:AccountController.getAccountById(1)",
+      "label": "ApexMethod",
+      "attributes": {
+        "name": "getAccountById",
+        "arity": 1,
+        "returnType": "Account",
+        "modifiers": [
+          "public",
+          "static"
+        ],
+        "annotations": [
+          "AuraEnabled"
+        ],
+        "auraEnabled": true,
+        "isInvocable": false,
+        "isRemote": false,
+        "isFuture": false,
+        "httpVerbs": []
+      }
+    },
+    {
+      "qualifiedName": "ApexMethod:AccountController.pingExternal(0)",
+      "label": "ApexMethod",
+      "attributes": {
+        "name": "pingExternal",
+        "arity": 0,
+        "returnType": "String",
+        "modifiers": [
+          "public",
+          "static"
+        ],
+        "annotations": [
+          "AuraEnabled"
+        ],
+        "auraEnabled": true,
+        "isInvocable": false,
+        "isRemote": false,
+        "isFuture": false,
+        "httpVerbs": []
+      }
+    },
+    {
+      "qualifiedName": "ApexMethod:AccountController.updateAccountStatus(2)",
+      "label": "ApexMethod",
+      "attributes": {
+        "name": "updateAccountStatus",
+        "arity": 2,
+        "returnType": "void",
+        "modifiers": [
+          "public",
+          "static",
+          "void"
+        ],
+        "annotations": [
+          "AuraEnabled"
+        ],
+        "auraEnabled": true,
+        "isInvocable": false,
+        "isRemote": false,
+        "isFuture": false,
+        "httpVerbs": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "ApexClass:AccountController",
+      "dstQualifiedName": "ApexMethod:AccountController.getAccountById(1)",
+      "relType": "CONTAINS_METHOD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexClass:AccountController",
+      "dstQualifiedName": "ApexMethod:AccountController.pingExternal(0)",
+      "relType": "CONTAINS_METHOD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexClass:AccountController",
+      "dstQualifiedName": "ApexMethod:AccountController.updateAccountStatus(2)",
+      "relType": "CONTAINS_METHOD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexMethod:AccountController.getAccountById(1)",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "EXECUTES_SOQL",
+      "attributes": {
+        "query": "[SELECT Id, Name, Status__c FROM Account"
+      }
+    },
+    {
+      "srcQualifiedName": "ApexMethod:AccountController.getAccountById(1)",
+      "dstQualifiedName": "CustomField:Account.Id",
+      "relType": "READS_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexMethod:AccountController.getAccountById(1)",
+      "dstQualifiedName": "CustomField:Account.Name",
+      "relType": "READS_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexMethod:AccountController.getAccountById(1)",
+      "dstQualifiedName": "CustomField:Account.Status__c",
+      "relType": "READS_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexMethod:AccountController.pingExternal(0)",
+      "dstQualifiedName": "NamedCredential:AcmeAPI",
+      "relType": "CALLS_NAMED_CREDENTIAL",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexMethod:AccountController.updateAccountStatus(2)",
+      "dstQualifiedName": "DML:update",
+      "relType": "EXECUTES_DML",
+      "attributes": {
+        "target": "a"
+      }
+    }
+  ]
+}

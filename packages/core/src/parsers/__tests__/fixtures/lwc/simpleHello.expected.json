@@ -1,0 +1,35 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "LWC:simpleHello",
+      "label": "LWC",
+      "attributes": {
+        "name": "simpleHello",
+        "apiVersion": 59,
+        "isExposed": false,
+        "targets": [],
+        "masterLabel": null
+      }
+    },
+    {
+      "qualifiedName": "LWCBundle:simpleHello",
+      "label": "LWCBundle",
+      "attributes": {
+        "name": "simpleHello",
+        "files": [
+          "simpleHello.html",
+          "simpleHello.js",
+          "simpleHello.js-meta.xml"
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "LWCBundle:simpleHello",
+      "dstQualifiedName": "LWC:simpleHello",
+      "relType": "CONTAINS_COMPONENT",
+      "attributes": {}
+    }
+  ]
+}

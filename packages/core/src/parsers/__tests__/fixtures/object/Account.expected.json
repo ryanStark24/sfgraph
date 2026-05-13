@@ -1,0 +1,96 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "CustomField:Account.Owner_Manager__c",
+      "label": "CustomField",
+      "attributes": {
+        "apiName": "Owner_Manager__c",
+        "type": "Text",
+        "formula": "Owner.Manager.Name",
+        "required": false,
+        "object": "Account"
+      }
+    },
+    {
+      "qualifiedName": "CustomField:Account.Status__c",
+      "label": "CustomField",
+      "attributes": {
+        "apiName": "Status__c",
+        "type": "Picklist",
+        "formula": null,
+        "required": false,
+        "object": "Account"
+      }
+    },
+    {
+      "qualifiedName": "CustomObject:Account",
+      "label": "CustomObject",
+      "attributes": {
+        "apiName": "Account",
+        "label": "Account",
+        "sharingModel": "Private",
+        "isPlatformEvent": false
+      }
+    },
+    {
+      "qualifiedName": "RecordType:Account.Customer",
+      "label": "RecordType",
+      "attributes": {
+        "apiName": "Customer",
+        "label": "Customer",
+        "active": true,
+        "object": "Account"
+      }
+    },
+    {
+      "qualifiedName": "ValidationRule:Account.Status_Required",
+      "label": "ValidationRule",
+      "attributes": {
+        "apiName": "Status_Required",
+        "active": true,
+        "errorConditionFormula": "ISBLANK(Account.Status__c)",
+        "object": "Account"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "CustomField:Account.Owner_Manager__c",
+      "dstQualifiedName": "CustomField:Owner.Manager",
+      "relType": "READS_FIELD",
+      "attributes": {
+        "via": "formula"
+      }
+    },
+    {
+      "srcQualifiedName": "CustomObject:Account",
+      "dstQualifiedName": "CustomField:Account.Owner_Manager__c",
+      "relType": "DEFINES_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "CustomObject:Account",
+      "dstQualifiedName": "CustomField:Account.Status__c",
+      "relType": "DEFINES_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "CustomObject:Account",
+      "dstQualifiedName": "RecordType:Account.Customer",
+      "relType": "HAS_RECORD_TYPE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "CustomObject:Account",
+      "dstQualifiedName": "ValidationRule:Account.Status_Required",
+      "relType": "HAS_VALIDATION_RULE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ValidationRule:Account.Status_Required",
+      "dstQualifiedName": "CustomField:Account.Status__c",
+      "relType": "READS_FIELD",
+      "attributes": {}
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "LWC:accountTile",
+      "label": "LWC",
+      "attributes": {
+        "name": "accountTile",
+        "apiVersion": 59,
+        "isExposed": true,
+        "targets": [
+          "lightning__RecordPage"
+        ],
+        "masterLabel": "Account Tile"
+      }
+    },
+    {
+      "qualifiedName": "LWCBundle:accountTile",
+      "label": "LWCBundle",
+      "attributes": {
+        "name": "accountTile",
+        "files": [
+          "accountTile.html",
+          "accountTile.js",
+          "accountTile.js-meta.xml"
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "LWC:accountTile",
+      "dstQualifiedName": "ApexMethod:AccountController.getAccountById(?)",
+      "relType": "CALLS_APEX_FROM_LWC",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "LWC:accountTile",
+      "dstQualifiedName": "LWCEvent:selected",
+      "relType": "DISPATCHES_EVENT",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "LWC:accountTile",
+      "dstQualifiedName": "LWC:accountDetail",
+      "relType": "EMBEDS_LWC",
+      "attributes": {
+        "tag": "c-account-detail"
+      }
+    },
+    {
+      "srcQualifiedName": "LWC:accountTile",
+      "dstQualifiedName": "ApexMethod:AccountController.getAccountById(?)",
+      "relType": "IMPORTS_APEX",
+      "attributes": {
+        "className": "AccountController",
+        "methodName": "getAccountById"
+      }
+    },
+    {
+      "srcQualifiedName": "LWC:accountTile",
+      "dstQualifiedName": "CustomLabel:Account_Tile_Title",
+      "relType": "IMPORTS_CUSTOM_LABEL",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "LWC:accountTile",
+      "dstQualifiedName": "StaticResource:AcmeLogo",
+      "relType": "IMPORTS_STATIC_RESOURCE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "LWC:accountTile",
+      "dstQualifiedName": "LWCEvent:click",
+      "relType": "LISTENS_TO_EVENT",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "LWC:accountTile",
+      "dstQualifiedName": "ApexMethod:AccountController.getAccountById(?)",
+      "relType": "USES_WIRE",
+      "attributes": {
+        "kind": "apex"
+      }
+    },
+    {
+      "srcQualifiedName": "LWCBundle:accountTile",
+      "dstQualifiedName": "LWC:accountTile",
+      "relType": "CONTAINS_COMPONENT",
+      "attributes": {}
+    }
+  ]
+}

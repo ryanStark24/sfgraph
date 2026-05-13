@@ -1,0 +1,42 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "PermissionSet:Sales_User",
+      "label": "PermissionSet",
+      "attributes": {
+        "name": "Sales_User",
+        "label": "Sales User"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "PermissionSet:Sales_User",
+      "dstQualifiedName": "ApexClass:AccountController",
+      "relType": "GRANTS_APEX_ACCESS",
+      "attributes": {
+        "enabled": true
+      }
+    },
+    {
+      "srcQualifiedName": "PermissionSet:Sales_User",
+      "dstQualifiedName": "CustomField:Account.Status__c",
+      "relType": "GRANTS_FIELD_ACCESS",
+      "attributes": {
+        "readable": true,
+        "editable": true
+      }
+    },
+    {
+      "srcQualifiedName": "PermissionSet:Sales_User",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "GRANTS_OBJECT_ACCESS",
+      "attributes": {
+        "allowRead": true,
+        "allowEdit": true,
+        "allowCreate": false,
+        "allowDelete": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SharingRules xmlns="http://soap.sforce.com/2006/04/metadata">
+    <sharingOwnerRules>
+        <fullName>Share_All_Accounts</fullName>
+        <accessLevel>All</accessLevel>
+        <sharedFrom>
+            <group>AllInternalUsers</group>
+        </sharedFrom>
+        <sharedTo>
+            <group>SalesTeam</group>
+        </sharedTo>
+    </sharingOwnerRules>
+</SharingRules>

@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "ApexTrigger:AccountTrigger",
+      "label": "ApexTrigger",
+      "attributes": {
+        "name": "AccountTrigger",
+        "object": "Account",
+        "events": [
+          "after insert",
+          "after update"
+        ],
+        "apiVersion": "59.0"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "ApexTrigger:AccountTrigger",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "TRIGGERS_ON",
+      "attributes": {
+        "events": [
+          "after insert",
+          "after update"
+        ]
+      }
+    }
+  ]
+}

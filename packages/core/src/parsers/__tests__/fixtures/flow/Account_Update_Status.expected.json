@@ -1,0 +1,55 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "Flow:Account_Update_Status",
+      "label": "Flow",
+      "attributes": {
+        "name": "Account_Update_Status",
+        "processType": "AutoLaunchedFlow",
+        "status": "Active"
+      }
+    },
+    {
+      "qualifiedName": "FlowVersion:Account_Update_Status.v59",
+      "label": "FlowVersion",
+      "attributes": {
+        "name": "Account_Update_Status",
+        "apiVersion": "59",
+        "status": "Active"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "Flow:Account_Update_Status",
+      "dstQualifiedName": "FlowVersion:Account_Update_Status.v59",
+      "relType": "CONTAINS",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "FlowVersion:Account_Update_Status.v59",
+      "dstQualifiedName": "ApexClass:AccountController",
+      "relType": "FLOW_INVOKES_APEX",
+      "attributes": {
+        "actionName": "AccountController"
+      }
+    },
+    {
+      "srcQualifiedName": "FlowVersion:Account_Update_Status.v59",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "REFERENCES_OBJECT",
+      "attributes": {
+        "kind": "recordUpdates"
+      }
+    },
+    {
+      "srcQualifiedName": "FlowVersion:Account_Update_Status.v59",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "TRIGGER_FIRES_ON",
+      "attributes": {
+        "triggerType": "RecordAfterSave",
+        "recordTriggerType": "CreateAndUpdate"
+      }
+    }
+  ]
+}

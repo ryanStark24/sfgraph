@@ -33,7 +33,8 @@
       "**/node_modules/**",
       "legacy/**",
       "**/coverage/**",
-      "**/*.tsbuildinfo"
+      "**/*.tsbuildinfo",
+      "**/__tests__/fixtures/**"
     ]
   }
 }

@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "ExternalServiceRegistration:ESR_Acme",
+      "label": "ExternalServiceRegistration",
+      "attributes": {
+        "name": "ESR_Acme",
+        "status": "Complete",
+        "schemaType": "OpenApi3"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "ExternalServiceRegistration:ESR_Acme",
+      "dstQualifiedName": "NamedCredential:NC_AcmeAPI",
+      "relType": "ESR_USES_NAMED_CREDENTIAL",
+      "attributes": {}
+    }
+  ]
+}

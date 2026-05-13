@@ -40,6 +40,10 @@ export const METADATA_CATEGORY = {
   VLOCITY_INTEGRATION_PROCEDURE: "VlocityIntegrationProcedure",
   VLOCITY_OMNISCRIPT: "VlocityOmniScript",
   VLOCITY_CARD: "VlocityCard",
+  VLOCITY: "Vlocity",
+  OMNISTUDIO: "OmniStudio",
+  SECURITY: "Security",
+  INTEGRATION: "Integration",
 } as const;
 
 export type MetadataCategory = (typeof METADATA_CATEGORY)[keyof typeof METADATA_CATEGORY];
