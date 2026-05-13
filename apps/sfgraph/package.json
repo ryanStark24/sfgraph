@@ -1,0 +1,28 @@
+{
+  "name": "sfgraph",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "sfgraph": "./bin/sfgraph.mjs"
+  },
+  "files": [
+    "bin"
+  ],
+  "scripts": {
+    "build": "echo no-op",
+    "test": "vitest run --passWithNoTests",
+    "lint": "biome check bin",
+    "lint:fix": "biome check --write bin",
+    "typecheck": "echo no-op",
+    "clean": "echo no-op"
+  },
+  "dependencies": {
+    "@sfgraph/cli": "workspace:*",
+    "@sfgraph/mcp-server": "workspace:*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "vitest": "^2.1.0"
+  }
+}

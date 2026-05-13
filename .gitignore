@@ -15,8 +15,11 @@ htmlcov/
 dist/
 build/
 *.egg-info/
-data/
+/data/
 node_modules/
+coverage/
+*.tsbuildinfo
+.DS_Store
 
 # IDE
 .idea/
