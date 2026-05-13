@@ -5,6 +5,8 @@ export const ErrorCode = {
   MIGRATION: "MIGRATION",
   TELEMETRY: "TELEMETRY",
   VALIDATION: "VALIDATION",
+  E_SF_AUTH: "E_SF_AUTH",
+  E_SF_INGEST: "E_SF_INGEST",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

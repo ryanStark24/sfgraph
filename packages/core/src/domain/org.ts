@@ -6,4 +6,5 @@ export interface Org {
   instanceUrl: string;
   apiVersion: string;
   createdAt: number;
+  lastSyncedAt?: number | null;
 }

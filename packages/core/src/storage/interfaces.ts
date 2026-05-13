@@ -21,6 +21,9 @@ export interface GraphStore {
   close(): Promise<void>;
   upsertOrg(org: Org): void;
   getOrg(id: OrgId): Org | null;
+  touchSync(orgId: OrgId, iso: string): void;
+  deleteNode(orgId: OrgId, qname: QualifiedName): void;
+  deleteEdgesFor(orgId: OrgId, qname: QualifiedName): void;
   mergeNodes(facts: NodeFact[]): MergeResult;
   mergeEdges(facts: EdgeFact[]): MergeResult;
   getNode(orgId: OrgId, qname: QualifiedName): NodeFact | null;

@@ -173,17 +173,24 @@ export class SqliteGraphStore implements GraphStore {
   upsertOrg(org: Org): void {
     this.db
       .prepare(
-        `INSERT INTO _sfgraph_orgs(id, alias, instance_url, api_version, created_at)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO _sfgraph_orgs(id, alias, instance_url, api_version, created_at, last_synced_at)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET alias=excluded.alias, instance_url=excluded.instance_url, api_version=excluded.api_version`,
       )
-      .run(org.id, org.alias, org.instanceUrl, org.apiVersion, org.createdAt);
+      .run(
+        org.id,
+        org.alias,
+        org.instanceUrl,
+        org.apiVersion,
+        org.createdAt,
+        org.lastSyncedAt ?? null,
+      );
   }
 
   getOrg(id: OrgId): Org | null {
     const row = this.db
       .prepare(
-        "SELECT id, alias, instance_url, api_version, created_at FROM _sfgraph_orgs WHERE id = ?",
+        "SELECT id, alias, instance_url, api_version, created_at, last_synced_at FROM _sfgraph_orgs WHERE id = ?",
       )
       .get(id) as
       | {
@@ -192,16 +199,60 @@ export class SqliteGraphStore implements GraphStore {
           instance_url: string;
           api_version: string;
           created_at: number;
+          last_synced_at: number | null;
         }
       | undefined;
     if (!row) return null;
-    return {
+    const org: Org = {
       id: asOrgId(row.id),
       alias: row.alias,
       instanceUrl: row.instance_url,
       apiVersion: row.api_version,
       createdAt: row.created_at,
     };
+    if (row.last_synced_at != null) {
+      org.lastSyncedAt = row.last_synced_at;
+    }
+    return org;
+  }
+
+  touchSync(orgId: OrgId, iso: string): void {
+    const ts = Date.parse(iso);
+    if (!Number.isFinite(ts)) {
+      throw new StorageError(`touchSync: invalid ISO timestamp ${JSON.stringify(iso)}`);
+    }
+    this.db.prepare("UPDATE _sfgraph_orgs SET last_synced_at = ? WHERE id = ?").run(ts, orgId);
+  }
+
+  deleteNode(orgId: OrgId, qname: QualifiedName): void {
+    const apply = this.db.transaction(() => {
+      const idx = this.db
+        .prepare("SELECT label FROM _sfgraph_node_index WHERE org_id = ? AND qualified_name = ?")
+        .get(orgId, qname) as { label: string } | undefined;
+      if (idx) {
+        const tbl = this.nodeLabelCache.get(idx.label);
+        if (tbl) {
+          this.db
+            .prepare(`DELETE FROM ${tbl} WHERE org_id = ? AND qualified_name = ?`)
+            .run(orgId, qname);
+        }
+        this.db
+          .prepare("DELETE FROM _sfgraph_node_index WHERE org_id = ? AND qualified_name = ?")
+          .run(orgId, qname);
+      }
+    });
+    apply();
+  }
+
+  deleteEdgesFor(orgId: OrgId, qname: QualifiedName): void {
+    const apply = this.db.transaction(() => {
+      for (const tbl of this.edgeRelCache.values()) {
+        this.db
+          .prepare(`DELETE FROM ${tbl} WHERE org_id = ? AND (src_qname = ? OR dst_qname = ?)`)
+          .run(orgId, qname, qname);
+      }
+    });
+    apply();
   }
 
   mergeNodes(facts: NodeFact[]): MergeResult {

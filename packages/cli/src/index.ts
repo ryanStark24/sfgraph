@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { ingestCmd } from "./commands/ingest.js";
 import { installCmd } from "./commands/install.js";
 import {
   disableCmd,
@@ -27,6 +28,16 @@ export function buildProgram(): Command {
     .option("--target <target>", "claude | cursor | all", "all")
     .action(async (opts: { target: string }) => {
       await installCmd(opts.target);
+    });
+
+  program
+    .command("ingest")
+    .description("sync a Salesforce org into the local graph (read-only)")
+    .requiredOption("--org <alias>", "Salesforce alias/username from sf CLI")
+    .option("--mode <mode>", "full | incremental | auto", "auto")
+    .option("--db <path>", "override SQLite database path")
+    .action(async (opts: { org: string; mode: "full" | "incremental" | "auto"; db?: string }) => {
+      await ingestCmd({ org: opts.org, mode: opts.mode, db: opts.db });
     });
 
   const telemetry = program.command("telemetry").description("manage local telemetry");

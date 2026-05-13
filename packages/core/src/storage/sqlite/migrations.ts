@@ -82,6 +82,14 @@ export const MIGRATIONS: Migration[] = [
     },
   },
   {
+    version: 4,
+    description: "org last_synced_at",
+    up(db) {
+      // SQLite forbids ALTER TABLE ADD COLUMN with a non-constant default; NULL is fine.
+      db.exec("ALTER TABLE _sfgraph_orgs ADD COLUMN last_synced_at INTEGER");
+    },
+  },
+  {
     version: 3,
     description: "vector tables (sqlite-vec)",
     up(db) {
