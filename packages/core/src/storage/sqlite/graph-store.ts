@@ -5,7 +5,14 @@ import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, Org, RelType } from "../../domain/index.js";
 import { edgeTableName, nodeTableName, validateLabel, validateRelType } from "../identifier.js";
-import type { BetterSqlite3Database, GraphStore, MergeResult } from "../interfaces.js";
+import type {
+  BetterSqlite3Database,
+  GraphStore,
+  MergeResult,
+  SnippetRecord,
+  SnippetSourceFormat,
+  SnippetUpsertResult,
+} from "../interfaces.js";
 import { MIGRATIONS, MigrationRunner } from "./migrations.js";
 
 export interface SqliteGraphStoreOptions {
@@ -477,6 +484,137 @@ export class SqliteGraphStore implements GraphStore {
 
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)();
+  }
+
+  upsertSnippet(rec: SnippetRecord): SnippetUpsertResult {
+    const existing = this.db
+      .prepare("SELECT source_hash FROM _sfgraph_snippets WHERE org_id = ? AND qualified_name = ?")
+      .get(rec.orgId, rec.qualifiedName) as { source_hash: string } | undefined;
+    if (existing && existing.source_hash === rec.sourceHash) {
+      return { inserted: false, updated: false, unchanged: true };
+    }
+    if (existing) {
+      this.db
+        .prepare(
+          `UPDATE _sfgraph_snippets
+             SET source_format = ?, source_text = ?, start_line = ?, end_line = ?,
+                 source_hash = ?, llm_explanation = NULL, explained_at = NULL
+           WHERE org_id = ? AND qualified_name = ?`,
+        )
+        .run(
+          rec.sourceFormat,
+          rec.sourceText,
+          rec.startLine ?? null,
+          rec.endLine ?? null,
+          rec.sourceHash,
+          rec.orgId,
+          rec.qualifiedName,
+        );
+      return { inserted: false, updated: true, unchanged: false };
+    }
+    this.db
+      .prepare(
+        `INSERT INTO _sfgraph_snippets
+           (org_id, qualified_name, source_format, source_text, start_line, end_line, source_hash, llm_explanation, explained_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        rec.orgId,
+        rec.qualifiedName,
+        rec.sourceFormat,
+        rec.sourceText,
+        rec.startLine ?? null,
+        rec.endLine ?? null,
+        rec.sourceHash,
+        rec.llmExplanation ?? null,
+        rec.explainedAt ?? null,
+      );
+    return { inserted: true, updated: false, unchanged: false };
+  }
+
+  getSnippet(orgId: OrgId, qname: QualifiedName): SnippetRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT org_id, qualified_name, source_format, source_text, start_line, end_line,
+                source_hash, llm_explanation, explained_at
+           FROM _sfgraph_snippets WHERE org_id = ? AND qualified_name = ?`,
+      )
+      .get(orgId, qname) as
+      | {
+          org_id: string;
+          qualified_name: string;
+          source_format: string;
+          source_text: string;
+          start_line: number | null;
+          end_line: number | null;
+          source_hash: string;
+          llm_explanation: string | null;
+          explained_at: number | null;
+        }
+      | undefined;
+    if (!row) return null;
+    const rec: SnippetRecord = {
+      orgId: asOrgId(row.org_id),
+      qualifiedName: asQualifiedName(row.qualified_name),
+      sourceFormat: row.source_format as SnippetSourceFormat,
+      sourceText: row.source_text,
+      sourceHash: asSha256(row.source_hash),
+    };
+    if (row.start_line != null) rec.startLine = row.start_line;
+    if (row.end_line != null) rec.endLine = row.end_line;
+    if (row.llm_explanation != null) rec.llmExplanation = row.llm_explanation;
+    if (row.explained_at != null) rec.explainedAt = row.explained_at;
+    return rec;
+  }
+
+  updateSnippetExplanation(
+    orgId: OrgId,
+    qname: QualifiedName,
+    llmExplanation: string,
+    explainedAt: number,
+  ): boolean {
+    const r = this.db
+      .prepare(
+        `UPDATE _sfgraph_snippets
+            SET llm_explanation = ?, explained_at = ?
+          WHERE org_id = ? AND qualified_name = ?`,
+      )
+      .run(llmExplanation, explainedAt, orgId, qname);
+    return r.changes > 0;
+  }
+
+  listSnippetsMissingExplanation(orgId: OrgId, limit?: number): SnippetRecord[] {
+    const sql = `SELECT org_id, qualified_name, source_format, source_text, start_line, end_line,
+                        source_hash, llm_explanation, explained_at
+                   FROM _sfgraph_snippets
+                  WHERE org_id = ? AND llm_explanation IS NULL${
+                    typeof limit === "number" ? " LIMIT ?" : ""
+                  }`;
+    const params: unknown[] = [orgId];
+    if (typeof limit === "number") params.push(limit);
+    const rows = this.db.prepare(sql).all(...params) as Array<{
+      org_id: string;
+      qualified_name: string;
+      source_format: string;
+      source_text: string;
+      start_line: number | null;
+      end_line: number | null;
+      source_hash: string;
+      llm_explanation: string | null;
+      explained_at: number | null;
+    }>;
+    return rows.map((row) => {
+      const rec: SnippetRecord = {
+        orgId: asOrgId(row.org_id),
+        qualifiedName: asQualifiedName(row.qualified_name),
+        sourceFormat: row.source_format as SnippetSourceFormat,
+        sourceText: row.source_text,
+        sourceHash: asSha256(row.source_hash),
+      };
+      if (row.start_line != null) rec.startLine = row.start_line;
+      if (row.end_line != null) rec.endLine = row.end_line;
+      return rec;
+    });
   }
 
   // Helpers for shared usage

@@ -1,5 +1,6 @@
 import type { Logger } from "@ryanstark24/sfgraph-shared";
 import type { EdgeFact, MetadataCategory, NodeFact } from "../domain/index.js";
+import type { SnippetRecord } from "../storage/interfaces.js";
 
 export interface ParseContext {
   orgId: string;
@@ -12,6 +13,8 @@ export interface ParseContext {
 export interface ParseResult {
   nodes: NodeFact[];
   edges: EdgeFact[];
+  /** Optional source-text snippets for code parsers (e.g. Apex methods). */
+  snippets?: SnippetRecord[];
 }
 
 export interface Parser<TInput = unknown> {

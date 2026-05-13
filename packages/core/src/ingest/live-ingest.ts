@@ -198,6 +198,13 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   const handleParsed = (parsed: ParseResult): void => {
     if (parsed.nodes.length) graph.mergeNodes(parsed.nodes);
     if (parsed.edges.length) graph.mergeEdges(parsed.edges);
+    if (parsed.snippets?.length) {
+      graph.transaction(() => {
+        for (const s of parsed.snippets ?? []) {
+          graph.upsertSnippet(s);
+        }
+      });
+    }
     if (embedQueue) {
       for (const n of parsed.nodes) {
         const desc = (n.attributes as Record<string, unknown>)?.description;

@@ -150,6 +150,27 @@ export const MIGRATIONS: Migration[] = [
     },
   },
   {
+    version: 6,
+    description: "snippet store (source text + lazy LLM explanations)",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS _sfgraph_snippets (
+          org_id TEXT NOT NULL,
+          qualified_name TEXT NOT NULL,
+          source_format TEXT NOT NULL,
+          source_text TEXT NOT NULL,
+          start_line INTEGER,
+          end_line INTEGER,
+          source_hash TEXT NOT NULL,
+          llm_explanation TEXT,
+          explained_at INTEGER,
+          PRIMARY KEY (org_id, qualified_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_snippets_org ON _sfgraph_snippets (org_id);
+      `);
+    },
+  },
+  {
     version: 3,
     description: "vector tables (sqlite-vec)",
     up(db) {

@@ -16,6 +16,26 @@ export interface MergeResult {
   unchanged: number;
 }
 
+export type SnippetSourceFormat = "apex" | "js" | "html" | "xml" | "json" | "flow" | "soql";
+
+export interface SnippetRecord {
+  orgId: OrgId;
+  qualifiedName: QualifiedName;
+  sourceFormat: SnippetSourceFormat;
+  sourceText: string;
+  startLine?: number;
+  endLine?: number;
+  sourceHash: Sha256;
+  llmExplanation?: string;
+  explainedAt?: number;
+}
+
+export interface SnippetUpsertResult {
+  inserted: boolean;
+  updated: boolean;
+  unchanged: boolean;
+}
+
 export interface GraphStore {
   init(): Promise<void>;
   close(): Promise<void>;
@@ -33,6 +53,15 @@ export interface GraphStore {
   countNodes(orgId: OrgId): number;
   countEdges(orgId: OrgId): number;
   transaction<T>(fn: () => T): T;
+  upsertSnippet(rec: SnippetRecord): SnippetUpsertResult;
+  getSnippet(orgId: OrgId, qname: QualifiedName): SnippetRecord | null;
+  updateSnippetExplanation(
+    orgId: OrgId,
+    qname: QualifiedName,
+    llmExplanation: string,
+    explainedAt: number,
+  ): boolean;
+  listSnippetsMissingExplanation(orgId: OrgId, limit?: number): SnippetRecord[];
 }
 
 export interface VectorUpsertResult {

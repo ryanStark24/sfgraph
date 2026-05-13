@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../../domain/index.js";
+import type { SnippetRecord } from "../../storage/interfaces.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
 import { parseAnnotations, stripCommentsAndStrings } from "./common.js";
@@ -181,6 +183,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
   async parse(input: ApexClassInput, ctx: ParseContext): Promise<ParseResult> {
     const nodes: NodeFact[] = [];
     const edges: EdgeFact[] = [];
+    const snippets: SnippetRecord[] = [];
     const className = stripNs(input.className, ctx.namespace);
     const fileHash = sha256(input.body);
 
@@ -301,6 +304,33 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       );
       edges.push(makeEdge(ctx, classQname, REL_TYPES.CONTAINS_METHOD, methodQname));
 
+      // Snippet: emit the raw method body from the ORIGINAL source (preserves
+      // comments + strings) keyed on the method's qname.
+      const rawBody = (() => {
+        const idx = input.body.indexOf(m.name);
+        if (idx < 0) return m.body;
+        const open = input.body.indexOf("{", idx);
+        if (open < 0) return m.body;
+        const close = findMatchingBrace(input.body, open);
+        return close > 0 ? input.body.slice(open + 1, close) : m.body;
+      })();
+      const startLine = (() => {
+        const idx = input.body.indexOf(m.name);
+        if (idx < 0) return undefined;
+        return input.body.slice(0, idx).split("\n").length;
+      })();
+      const endLine = startLine != null ? startLine + rawBody.split("\n").length - 1 : undefined;
+      const snippetRec: SnippetRecord = {
+        orgId: asOrgId(ctx.orgId),
+        qualifiedName: asQualifiedName(methodQname),
+        sourceFormat: "apex",
+        sourceText: rawBody,
+        sourceHash: asSha256(sha256(rawBody)),
+      };
+      if (startLine != null) snippetRec.startLine = startLine;
+      if (endLine != null) snippetRec.endLine = endLine;
+      snippets.push(snippetRec);
+
       // Body analysis
       const body = m.body;
 
@@ -410,6 +440,6 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       }
     }
 
-    return { nodes, edges };
+    return { nodes, edges, snippets };
   }
 }
