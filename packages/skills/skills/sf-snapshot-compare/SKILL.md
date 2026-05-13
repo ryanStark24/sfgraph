@@ -21,7 +21,11 @@ Use when the user wants to compare two named points in time — typically a pre-
 ## Playbook
 
 1. Call `snapshot_list` for the org. Present available snapshots with their `id`, `label`, `createdAt`, and `kind` (auto/manual).
-2. If the user has not yet taken a snapshot, suggest `snapshot_create --label "before-X"` first and stop until they confirm.
+2. If the user has not yet taken a snapshot, suggest one of:
+   - **MCP**: invoke `snapshot_create` with a descriptive `name` (e.g. `before-deploy-v42`).
+   - **CLI**: `sfgraph snapshot create --label "before-deploy-v42"` (add `--kind scheduled` if the user is wiring this into cron / GitHub Actions).
+
+   Both write into the same per-org SQLite store. Recommend the CLI form when the user asks "how do I take a snapshot before this deploy?" from a script; recommend the MCP tool when they're already in agent conversation. Stop until they confirm.
 3. Call `staleness_check` for the org. Warn if stale — note: even with a stale ingest, snapshot vs snapshot comparisons are still meaningful, but snapshot vs `current` would be stale-on-stale.
 4. Call `point_in_time_diff(from=snapA, to=snapB | 'current')`. Capture nodes added / removed / changed grouped by metadata category.
 5. Summarise totals by category. For each category, list the top items by impact (e.g. ApexClass changes ranked by fan-in).

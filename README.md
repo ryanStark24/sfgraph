@@ -128,6 +128,56 @@ sfgraph snapshot list                # see all snapshots
 sfgraph snapshot create --label "before-mass-deploy"   # take a labeled snapshot
 ```
 
+#### Refreshing multiple orgs at once
+
+```bash
+# Explicit alias list, sequentially:
+sfgraph ingest --orgs prod,uat,qa
+
+# Every authenticated org from `sf`, sequentially:
+sfgraph ingest --all
+
+# Same, but fan out concurrently (per-org failures don't kill the batch):
+sfgraph ingest --orgs prod,uat,qa --parallel
+sfgraph ingest --all --parallel
+```
+
+Each run prints a per-org results table (Org | Mode | Members | Deletions | ParseErrors | Elapsed | Status). With `--parallel`, the rate-limit pools (Tooling 5 / Metadata 3 / Data 10) are shared across orgs in the same process — Bottleneck handles concurrent `schedule()` calls and the conservative budget stays well under per-token SF limits.
+
+#### Full rebuild from scratch
+
+```bash
+sfgraph ingest --rebuild --org prod
+# Existing graph moved to ~/<sfgraph-data>/backups/<orgId>.rebuild-<ISO>.sqlite
+
+sfgraph ingest --rebuild --no-backup --org prod
+# Existing graph deleted outright (no backup taken)
+```
+
+`--rebuild` forces `mode=full` regardless of Source Tracking and starts from an empty DB. Useful when parser logic has changed and you want a clean reparse, or when you suspect the graph has drifted from reality.
+
+#### Snapshot management
+
+```bash
+sfgraph snapshot list                                       # all snapshots for current org
+sfgraph snapshot create --label "before-deploy-v42"         # labelled manual snapshot
+sfgraph snapshot create --label "nightly-2026-01-15" --kind scheduled
+sfgraph snapshot diff snap_abc123 current                   # diff a snap vs. current graph
+sfgraph snapshot diff snap_abc123 snap_def456               # diff two snaps
+sfgraph snapshot prune --retain-days 30                     # delete auto-snapshots older than 30d
+sfgraph snapshot delete snap_abc123                         # delete a specific snapshot
+```
+
+Pre-sync auto-snapshots are created automatically by `sfgraph ingest`; the CLI commands above are for manual / scheduled snapshots.
+
+#### Detect deletions on a full sync
+
+```bash
+sfgraph ingest --detect-deletions --org prod
+```
+
+On Source-Tracking-enabled orgs, deletions surface automatically via `SourceMember.IsNameObsolete` during incremental sync. On production orgs without Source Tracking, full syncs don't see what's gone — they only see what currently exists. `--detect-deletions` computes the set of qnames present in the graph before the sync but NOT touched during it, and removes them. **Bails out if any parse error occurred during the run** so a transient SF API hiccup never wipes the graph.
+
 ### Custom embedding model
 
 sfgraph ships a vendored, quantized **all-MiniLM-L6-v2** model that runs locally via `@xenova/transformers` (WASM, zero network). If you need a different model — a domain-tuned one, a multilingual variant, or your own internal embedding — point sfgraph at it:
@@ -230,10 +280,26 @@ Commands:
 | Option | Default | Description |
 |---|---|---|
 | `--org <alias>` | `sf config target-org` | Salesforce alias/username from `sf` CLI |
+| `--orgs <a,b,c>` | — | Comma-separated alias list (ignores `--org`) |
+| `--all` | `false` | Iterate every authenticated org from `sf` (ignores `--org`) |
+| `--parallel` | `false` | With `--orgs`/`--all`, run all orgs concurrently |
 | `--mode <mode>` | `auto` | `full`, `incremental`, or `auto` |
+| `--rebuild` | `false` | Move existing graph to `backups/`, open fresh DB, force full sync |
+| `--no-backup` | — | With `--rebuild`, delete existing graph instead of backing it up |
+| `--detect-deletions` | `false` | After full sync, delete qnames present in the graph but not touched this run |
 | `--db <path>` | `~/.sfgraph/<orgId>.sqlite` | Override SQLite database path |
 
 Auto-detects default org from `sf config`. Auto-snapshot taken before every sync.
+
+### `sfgraph snapshot`
+
+```bash
+sfgraph snapshot list [--org <alias>]
+sfgraph snapshot create --label <name> [--kind manual|scheduled] [--org <alias>]
+sfgraph snapshot diff <fromId> <toId|current> [--org <alias>]
+sfgraph snapshot prune --retain-days <n> [--org <alias>]
+sfgraph snapshot delete <snapshotId> [--org <alias>]
+```
 
 ### `sfgraph telemetry`
 
@@ -411,6 +477,10 @@ Agent: *invokes sf-cross-org-diff*
 
        Note: my-prod ingest is 6 days old. Run `sfgraph ingest --org my-prod`
        for a fresher comparison.
+
+       Tip: to refresh both at once, run
+         `sfgraph ingest --orgs my-prod,my-sandbox --parallel`
+       (or `sfgraph ingest --all --parallel` to refresh every authenticated org).
 ```
 
 ### Initial onboarding

@@ -162,23 +162,60 @@ Every schema migration triggers a `VACUUM INTO` backup of the prior-version DB. 
 
 ### Point-in-time and `is_auto` snapshots
 
-Two flavours:
+Three flavours:
 
-1. **Manual** — operator runs `snapshot_create` before a release.
-2. **Auto pre-sync** — `liveIngest` (when given a `snapshotStore`) takes one before each ingest, tagged `is_auto = 1`. This is what `what_broke` uses to compare "before the last sync" vs "now."
+1. **Auto pre-sync** — `liveIngest` (when given a `snapshotStore`) takes one before each ingest, tagged `is_auto = 1`. This is what `what_broke` uses to compare "before the last sync" vs "now."
+2. **Manual** — operator runs `sfgraph snapshot create --label X` (or the `snapshot_create` MCP tool) before a release.
+3. **Scheduled** — user-driven: `sfgraph snapshot create --kind scheduled --label nightly-2026-01-15` from cron / GitHub Actions / etc. The `kind` is encoded as a `manual:` / `scheduled:` prefix in the stored label so they're distinguishable from auto-snapshots in `snapshot list`.
 
-Pruning runs at the end of each ingest using `snapshotRetentionDays` (default 30).
+Only auto-snapshots are subject to retention. The CLI `sfgraph snapshot prune --retain-days <n>` and the implicit prune at the end of each ingest (default 30 days) both leave manual and scheduled snapshots untouched. Delete those explicitly with `sfgraph snapshot delete <id>`.
 
 ### Diff
 
 `diffNodes(orgId, fromId, toId)` joins the two snapshot rowsets on qname and returns `added`, `removed`, and `changed` (rows where `source_hash` differs). `point_in_time_diff` and `cross_org_diff` are both thin wrappers over this.
 
-## 6. Parallel-org ingest math
+## 6. Multi-org ingest model
+
+### Sequential vs parallel
+
+`sfgraph ingest --orgs a,b,c` (or `--all`) walks the list and calls `liveIngest` per alias. Sequential by default; `--parallel` fans the orgs out via `Promise.allSettled` so one alias's failure (auth error, mid-run API blip) doesn't abort the others. At the end the CLI prints a per-org results table and exits non-zero if any entry failed.
+
+Each org has its own `SqliteGraphStore` / `SqliteSnapshotStore` instance — they don't share file handles. SQLite WAL handles concurrent writes to *different* files fine. Same-org parallel is still disallowed (two processes/threads hitting one file = lock contention).
+
+### Per-org pool tradeoffs
 
 - **Per-process pools.** Bottleneck pools live in module scope inside each Node process. Two ingests in the same process share the same pools and the same per-org-API budget.
-- **Across processes.** If you `sfgraph ingest --org A &` and `sfgraph ingest --org B &` (different orgs), each process has its own pools. Salesforce's per-org limits are separate too, so this scales linearly until you hit your machine's CPU or your network's bandwidth.
+- **Across processes.** If you spawn separate `sfgraph ingest --org A` and `sfgraph ingest --org B` processes, each has its own pools and Salesforce's per-org limits are separate too, so this scales linearly until you hit your machine's CPU or your network's bandwidth.
+- **In-process `--parallel`.** Currently shares the default pools across orgs. Bottleneck handles concurrent `schedule()` calls safely; the conservative budget (5 Tooling / 3 Metadata / 10 Data concurrent) keeps total usage well under per-token SF limits even when several orgs are firing through it. For the spec, the priority was keeping the rate-limit refactor minimal — `createRateLimitPools()` is exported as a public factory so future work can thread per-org pools through `LiveIngestOpts.pools` without breaking the orchestrator's public surface.
 - **Same-org parallel is disallowed.** Two processes for the same org will fight over the SQLite write lock and waste the API budget. Don't do it.
 - **Throughput.** A representative production org (~80k metadata members) full-ingests in ~3-5 minutes on a 16-thread laptop on a fast connection. Incremental ingest after that is seconds.
+
+## 6a. Full rebuild semantics
+
+`sfgraph ingest --rebuild` is the "throw it all away" escape hatch. It:
+
+1. Moves the existing per-org SQLite file to `<sfgraph-data>/backups/<orgId>.rebuild-<ISO>.sqlite` (or deletes it outright with `--no-backup`).
+2. Opens a fresh DB at the original path and applies all migrations.
+3. Forces `mode='full'` regardless of Source Tracking state.
+
+Use it when:
+- Parser logic has changed and you want a clean reparse rather than relying on incremental
+- The graph has drifted from reality (deletions on a non-source-tracked org, partially-completed prior sync)
+- A schema migration backup is from a known-bad state
+
+The backup is intentionally a plain `.sqlite` file with a timestamp — to restore, stop sfgraph and rename it back.
+
+## 6b. Deletion detection
+
+Two complementary paths cover deletions:
+
+- **Incremental (SourceMember).** `iterChanges()` polls the Tooling `SourceMember` table since the last sync. Rows where `IsNameObsolete = true` surface with `MemberRef.obsolete = true`; `liveIngest` calls `graph.deleteEdgesFor(qname)` and `graph.deleteNode(qname)` directly. Only available on Source-Tracking-enabled orgs (sandboxes, scratch orgs).
+
+- **Full sync (`--detect-deletions`).** Production orgs without Source Tracking have no SourceMember table. After a full sync, the orchestrator collects the set of qnames touched during the run (every `parsed.nodes` entry) and reads the set of qnames already persisted via `graphStore.listAllQnames(orgId)`. The set difference is the deletion candidate list. Two safety bars:
+  - Run with `parseErrors > 0` → bail out, delete nothing. A transient SF API error during apex retrieval should not wipe the apex layer.
+  - Deletion is per-node-and-edges (same code path as incremental). No bulk truncate.
+
+`--detect-deletions` is off by default — opt-in with the flag, or pair with `--rebuild` for the cleanest possible state.
 
 ## 7. WIP local-impact
 

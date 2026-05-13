@@ -24,6 +24,10 @@ Use when the user asks whether their sfgraph data is current, how to refresh it,
 2. If stale, tell the user the exact CLI command to run:
    - For their default org: `sfgraph ingest`
    - For a named alias: `sfgraph ingest --org <alias>`
+   - For **multiple orgs** in one run: `sfgraph ingest --orgs prod,uat,qa` (sequential) or add `--parallel` to fan them out concurrently.
+   - For **every authenticated org**: `sfgraph ingest --all` (add `--parallel` to refresh them all at once).
+   - For a **clean rebuild from scratch** (when the graph has drifted or parser logic changed): `sfgraph ingest --rebuild --org <alias>` (existing graph moves to `backups/`; pair with `--no-backup` to delete instead).
+   - On **production orgs without Source Tracking**, add `--detect-deletions` so qnames that disappeared upstream get removed during the full sync.
 3. Optionally call `start_ingest_job` if the user explicitly wants to kick the ingest off from chat. Note that this only enqueues the job; the actual run happens out-of-band. Use `get_ingest_job` to poll progress if the user asks.
 4. Call `freshness_report` to surface dead/stale metadata in the org itself (not the graph) — Apex classes/Flows/LWCs/objects that haven't been touched in months. This explains _what content might be old_ even after the graph is refreshed.
 5. Bucket the `freshness_report` output into hot / current / stale / dead and call out the worst offenders.
