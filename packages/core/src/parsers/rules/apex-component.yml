@@ -1,0 +1,26 @@
+type: ApexComponent
+category: ApexComponent
+input: xml-string
+root: ApexComponent
+applies_when:
+  always: true
+
+nodes:
+  - label: ApexComponent
+    qname: "ApexComponent:${record.name}"
+    props:
+      name: "${record.name}"
+      apiVersion: "${record.apiVersion | raw}"
+      label: "${record.label | raw}"
+
+edges:
+  - relType: CONTROLLED_BY
+    when: "${match(toString(record.body),'controller\\s*=\\s*\"([^\"]+)\"','i')}"
+    src: "ApexComponent:${record.name}"
+    dst: "ApexClass:${match(toString(record.body),'controller\\s*=\\s*\"([^\"]+)\"','i')}"
+
+  - relType: EXTENDS_CONTROLLER
+    iterate: "${splitCsv(match(toString(record.body),'extensions\\s*=\\s*\"([^\"]+)\"','i'))}"
+    when: "${item}"
+    src: "ApexComponent:${record.name}"
+    dst: "ApexClass:${item}"

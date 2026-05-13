@@ -1,14 +1,4 @@
-import { parserRegistry } from "../registry.js";
-import { PermissionSetParser } from "./permission-set.js";
-import { ProfileParser } from "./profile.js";
-import { SharingRulesParser } from "./sharing-rule.js";
-
-export const profileParser = new ProfileParser();
-export const permissionSetParser = new PermissionSetParser();
-export const sharingRulesParser = new SharingRulesParser();
-
-parserRegistry.register(profileParser);
-parserRegistry.register(permissionSetParser);
-parserRegistry.register(sharingRulesParser);
-
-export { PermissionSetParser, ProfileParser, SharingRulesParser };
+// Security parsers now live in declarative rule files under ../rules/.
+// This file intentionally has no parser registrations; rules are loaded
+// asynchronously via `loadAllRules()` from `../rules/_loader.js`.
+export {};

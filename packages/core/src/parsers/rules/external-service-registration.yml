@@ -1,0 +1,20 @@
+type: ExternalServiceRegistration
+category: ExternalServiceRegistration
+input: xml-string
+root: ExternalServiceRegistration
+applies_when:
+  always: true
+
+nodes:
+  - label: ExternalServiceRegistration
+    qname: "ExternalServiceRegistration:${record.name}"
+    props:
+      name: "${record.name}"
+      status: "${record.status | raw}"
+      schemaType: "${record.schemaType | raw}"
+
+edges:
+  - relType: ESR_USES_NAMED_CREDENTIAL
+    when: "${record.namedCredential || record.namedCredentialReference}"
+    src: "ExternalServiceRegistration:${record.name}"
+    dst: "NamedCredential:${record.namedCredential || record.namedCredentialReference}"

@@ -1,0 +1,26 @@
+type: CustomMetadata
+category: CustomMetadataType
+input: xml-string
+root: CustomMetadata
+applies_when:
+  always: true
+
+nodes:
+  - label: CustomMetadataRecord
+    when: "${record.kind == 'record' || split(toString(record.name),'.')[1]}"
+    qname: "CustomMetadataRecord:${record.name}"
+    props:
+      name: "${record.name}"
+
+  - label: CustomMetadataType
+    when: "${record.kind != 'record' && !split(toString(record.name),'.')[1]}"
+    qname: "CustomMetadataType:${record.name}"
+    props:
+      name: "${record.name}"
+      label: "${record.label | raw}"
+
+edges:
+  - relType: INSTANCE_OF
+    when: "${(record.kind == 'record' || split(toString(record.name),'.')[1]) && split(toString(record.name),'.')[0]}"
+    src: "CustomMetadataRecord:${record.name}"
+    dst: "CustomMetadataType:${split(toString(record.name),'.')[0]}"

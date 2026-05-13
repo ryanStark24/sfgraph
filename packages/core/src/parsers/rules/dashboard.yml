@@ -1,0 +1,20 @@
+type: Dashboard
+category: Dashboard
+input: xml-string
+root: Dashboard
+applies_when:
+  always: true
+
+nodes:
+  - label: Dashboard
+    qname: "Dashboard:${record.name}"
+    props:
+      name: "${record.name}"
+      title: "${record.title | raw}"
+
+edges:
+  - relType: DASHBOARD_USES_REPORT
+    iterate: "${record.components}"
+    when: "${item.report}"
+    src: "Dashboard:${record.name}"
+    dst: "Report:${item.report}"

@@ -1,0 +1,20 @@
+type: Layout
+category: Layout
+input: xml-string
+root: Layout
+applies_when:
+  always: true
+
+nodes:
+  - label: Layout
+    qname: "Layout:${record.name}"
+    props:
+      name: "${record.name}"
+      object: "${split(toString(record.name),'-')[0]}"
+
+edges:
+  - relType: RENDERS_FIELD
+    iterate: "${record.layoutSections.*.layoutColumns.*.layoutItems}"
+    when: "${item.field}"
+    src: "Layout:${record.name}"
+    dst: "CustomField:${split(toString(record.name),'-')[0]}.${item.field}"

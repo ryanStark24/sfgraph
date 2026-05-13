@@ -23,7 +23,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node --input-type=module -e \"import {cpSync, mkdirSync} from 'node:fs'; mkdirSync('dist/extractors/live-org/vlocity',{recursive:true}); cpSync('src/extractors/live-org/vlocity/query-definitions.yml','dist/extractors/live-org/vlocity/query-definitions.yml');\"",
+    "build": "tsc -p tsconfig.json && node --input-type=module -e \"import {cpSync, mkdirSync} from 'node:fs'; mkdirSync('dist/extractors/live-org/vlocity',{recursive:true}); cpSync('src/extractors/live-org/vlocity/query-definitions.yml','dist/extractors/live-org/vlocity/query-definitions.yml'); mkdirSync('dist/parsers/rules',{recursive:true}); cpSync('src/parsers/rules','dist/parsers/rules',{recursive:true});\"",
     "test": "vitest run",
     "lint": "biome check src",
     "lint:fix": "biome check --write src",

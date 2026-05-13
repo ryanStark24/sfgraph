@@ -1,0 +1,19 @@
+type: GenAiPlugin
+category: GenAiPlugin
+input: xml-string
+root: GenAiPlugin
+applies_when:
+  always: true
+
+nodes:
+  - label: GenAiPlugin
+    qname: "GenAiPlugin:${record.name}"
+    props:
+      name: "${record.name}"
+
+edges:
+  - relType: PLUGIN_INVOKES_FUNCTION
+    iterate: "${record.genAiFunctions}"
+    when: "${item.functionName || item.name}"
+    src: "GenAiPlugin:${record.name}"
+    dst: "GenAiFunction:${item.functionName || item.name}"

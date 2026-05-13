@@ -1,0 +1,25 @@
+type: Report
+category: Report
+input: xml-string
+root: Report
+applies_when:
+  always: true
+
+nodes:
+  - label: Report
+    qname: "Report:${record.name}"
+    props:
+      name: "${record.name}"
+      reportType: "${toString(record.reportType)}"
+
+edges:
+  - relType: REPORTS_ON
+    when: "${record.reportType}"
+    src: "Report:${record.name}"
+    dst: "CustomObject:${record.reportType}"
+
+  - relType: READS_FIELD
+    iterate: "${record.columns}"
+    when: "${item.field}"
+    src: "Report:${record.name}"
+    dst: "CustomField:${item.field}"

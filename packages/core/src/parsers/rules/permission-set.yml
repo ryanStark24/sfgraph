@@ -1,0 +1,40 @@
+type: PermissionSet
+category: PermissionSet
+input: xml-string
+root: PermissionSet
+applies_when:
+  always: true
+
+nodes:
+  - label: PermissionSet
+    qname: "PermissionSet:${record.name}"
+    props:
+      name: "${record.name}"
+      label: "${record.label | raw}"
+
+edges:
+  - relType: GRANTS_OBJECT_ACCESS
+    iterate: "${record.objectPermissions}"
+    src: "PermissionSet:${record.name}"
+    dst: "CustomObject:${item.object}"
+    props:
+      allowRead: "${bool(item.allowRead)}"
+      allowEdit: "${bool(item.allowEdit)}"
+      allowCreate: "${bool(item.allowCreate)}"
+      allowDelete: "${bool(item.allowDelete)}"
+
+  - relType: GRANTS_FIELD_ACCESS
+    iterate: "${record.fieldPermissions}"
+    when: "${item.field}"
+    src: "PermissionSet:${record.name}"
+    dst: "CustomField:${stripNs(split(toString(item.field),'.')[0])}.${split(toString(item.field),'.')[1]}"
+    props:
+      readable: "${bool(item.readable)}"
+      editable: "${bool(item.editable)}"
+
+  - relType: GRANTS_APEX_ACCESS
+    iterate: "${record.classAccesses}"
+    src: "PermissionSet:${record.name}"
+    dst: "ApexClass:${item.apexClass}"
+    props:
+      enabled: "${bool(item.enabled)}"

@@ -1,0 +1,32 @@
+type: ApexPage
+category: ApexPage
+input: xml-string
+root: ApexPage
+applies_when:
+  always: true
+
+nodes:
+  - label: ApexPage
+    qname: "ApexPage:${record.name}"
+    props:
+      name: "${record.name}"
+      apiVersion: "${record.apiVersion | raw}"
+      label: "${record.label | raw}"
+
+edges:
+  - relType: CONTROLLED_BY
+    when: "${match(toString(record.body),'controller\\s*=\\s*\"([^\"]+)\"','i')}"
+    src: "ApexPage:${record.name}"
+    dst: "ApexClass:${match(toString(record.body),'controller\\s*=\\s*\"([^\"]+)\"','i')}"
+
+  - relType: EXTENDS_CONTROLLER
+    iterate: "${splitCsv(match(toString(record.body),'extensions\\s*=\\s*\"([^\"]+)\"','i'))}"
+    when: "${item}"
+    src: "ApexPage:${record.name}"
+    dst: "ApexClass:${item}"
+
+  - relType: CONTROLLED_BY
+    iterate: "${record.controller}"
+    when: "${item}"
+    src: "ApexPage:${record.name}"
+    dst: "ApexClass:${item}"

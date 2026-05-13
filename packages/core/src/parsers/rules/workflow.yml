@@ -1,0 +1,37 @@
+type: Workflow
+category: Workflow
+input: xml-string
+root: Workflow
+applies_when:
+  always: true
+
+nodes:
+  - label: Workflow
+    qname: "Workflow:${record.object}"
+    props:
+      object: "${record.object}"
+
+  - label: WorkflowRule
+    iterate: "${record.rules}"
+    qname: "WorkflowRule:${record.object}.${item.fullName || item.name}"
+    props:
+      name: "${toString(item.fullName || item.name)}"
+      object: "${record.object}"
+      active: "${bool(item.active)}"
+
+edges:
+  - relType: WORKFLOW_TRIGGERS
+    iterate: "${record.rules}"
+    src: "Workflow:${record.object}"
+    dst: "WorkflowRule:${record.object}.${item.fullName || item.name}"
+
+  - relType: TRIGGER_FIRES_ON
+    iterate: "${record.rules}"
+    src: "WorkflowRule:${record.object}.${item.fullName || item.name}"
+    dst: "CustomObject:${record.object}"
+
+  - relType: WORKFLOW_UPDATES_FIELD
+    iterate: "${record.fieldUpdates}"
+    when: "${item.field}"
+    src: "Workflow:${record.object}"
+    dst: "CustomField:${record.object}.${item.field}"

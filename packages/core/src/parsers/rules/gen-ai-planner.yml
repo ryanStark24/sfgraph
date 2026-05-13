@@ -1,0 +1,19 @@
+type: GenAiPlanner
+category: GenAiPlanner
+input: xml-string
+root: GenAiPlanner
+applies_when:
+  always: true
+
+nodes:
+  - label: GenAiPlanner
+    qname: "GenAiPlanner:${record.name}"
+    props:
+      name: "${record.name}"
+
+edges:
+  - relType: PLANNER_USES_PLUGIN
+    iterate: "${record.genAiPlugins}"
+    when: "${item.genAiPluginName || item.name}"
+    src: "GenAiPlanner:${record.name}"
+    dst: "GenAiPlugin:${item.genAiPluginName || item.name}"

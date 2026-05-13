@@ -1,0 +1,21 @@
+type: FlexiPage
+category: FlexiPage
+input: xml-string
+root: FlexiPage
+applies_when:
+  always: true
+
+nodes:
+  - label: FlexiPage
+    qname: "FlexiPage:${record.name}"
+    props:
+      name: "${record.name}"
+      type: "${record.type | raw}"
+      sobjectType: "${record.sobjectType | raw}"
+
+edges:
+  - relType: EMBEDS_LWC
+    iterate: "${walkAll(record.flexiPageRegions,'componentName')}"
+    when: "${item}"
+    src: "FlexiPage:${record.name}"
+    dst: "LightningComponentBundle:${stripPrefix(toString(item),'c:')}"

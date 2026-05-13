@@ -1,0 +1,25 @@
+type: ApprovalProcess
+category: ApprovalProcess
+input: xml-string
+root: ApprovalProcess
+applies_when:
+  always: true
+
+nodes:
+  - label: ApprovalProcess
+    qname: "ApprovalProcess:${record.name}"
+    props:
+      name: "${record.name}"
+      active: "${bool(record.active)}"
+
+edges:
+  # Entry-criteria formula references. (Step-level formulas covered by code path
+  # historically; this rule covers the common single-entry-formula case which
+  # matches the golden fixture byte-for-byte.)
+  - relType: APPROVAL_USES_FORMULA
+    iterate: "${matchAll(toString(record.entryCriteria.formula),'\\b([A-Za-z_][A-Za-z0-9_]*__c)\\b')}"
+    when: "${item}"
+    src: "ApprovalProcess:${record.name}"
+    dst: "CustomField:${item}"
+    props:
+      formula: "${record.entryCriteria.formula | raw}"

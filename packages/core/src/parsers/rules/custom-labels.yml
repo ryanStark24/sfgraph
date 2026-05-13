@@ -1,0 +1,16 @@
+type: CustomLabels
+category: CustomLabel
+input: xml-string
+root: CustomLabels
+applies_when:
+  always: true
+
+nodes:
+  - label: CustomLabel
+    iterate: "${record.labels}"
+    when: "${item.fullName || item.name}"
+    qname: "CustomLabel:${item.fullName || item.name}"
+    props:
+      name: "${item.fullName || item.name}"
+      value: "${item.value | raw}"
+      language: "${item.language | raw}"

@@ -1,0 +1,55 @@
+type: Profile
+category: Profile
+input: xml-string
+root: Profile
+applies_when:
+  always: true
+
+nodes:
+  - label: Profile
+    qname: "Profile:${record.name}"
+    props:
+      name: "${record.name}"
+
+edges:
+  - relType: GRANTS_OBJECT_ACCESS
+    iterate: "${record.objectPermissions}"
+    src: "Profile:${record.name}"
+    dst: "CustomObject:${item.object}"
+    props:
+      allowRead: "${bool(item.allowRead)}"
+      allowEdit: "${bool(item.allowEdit)}"
+      allowCreate: "${bool(item.allowCreate)}"
+      allowDelete: "${bool(item.allowDelete)}"
+      modifyAllRecords: "${bool(item.modifyAllRecords)}"
+      viewAllRecords: "${bool(item.viewAllRecords)}"
+
+  - relType: GRANTS_FIELD_ACCESS
+    iterate: "${record.fieldPermissions}"
+    when: "${item.field}"
+    src: "Profile:${record.name}"
+    dst: "CustomField:${stripNs(split(toString(item.field),'.')[0])}.${split(toString(item.field),'.')[1]}"
+    props:
+      readable: "${bool(item.readable)}"
+      editable: "${bool(item.editable)}"
+
+  - relType: GRANTS_APEX_ACCESS
+    iterate: "${record.classAccesses}"
+    src: "Profile:${record.name}"
+    dst: "ApexClass:${item.apexClass}"
+    props:
+      enabled: "${bool(item.enabled)}"
+
+  - relType: GRANTS_PAGE_ACCESS
+    iterate: "${record.pageAccesses}"
+    src: "Profile:${record.name}"
+    dst: "ApexPage:${item.apexPage}"
+    props:
+      enabled: "${bool(item.enabled)}"
+
+  - relType: GRANTS_TAB_ACCESS
+    iterate: "${record.tabVisibilities}"
+    src: "Profile:${record.name}"
+    dst: "CustomTab:${item.tab}"
+    props:
+      visibility: "${item.visibility | raw}"

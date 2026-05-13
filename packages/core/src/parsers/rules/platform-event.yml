@@ -1,0 +1,15 @@
+type: PlatformEvent
+category: PlatformEventChannel
+input: xml-string
+root: CustomObject
+applies_when:
+  always: true
+
+nodes:
+  - label: PlatformEvent
+    qname: "PlatformEvent:${record.apiName}"
+    props:
+      apiName: "${record.apiName}"
+      label: "${record.label | raw}"
+      eventType: "${record.eventType | raw}"
+      publishBehavior: "${record.publishBehavior | raw}"

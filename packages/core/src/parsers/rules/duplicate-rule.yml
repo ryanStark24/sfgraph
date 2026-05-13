@@ -1,0 +1,20 @@
+type: DuplicateRule
+category: DuplicateRule
+input: xml-string
+root: DuplicateRule
+applies_when:
+  always: true
+
+nodes:
+  - label: DuplicateRule
+    qname: "DuplicateRule:${record.name}"
+    props:
+      name: "${record.name}"
+      isActive: "${bool(record.isActive)}"
+
+edges:
+  - relType: REFERENCES
+    iterate: "${record.duplicateRuleMatchRules}"
+    when: "${item.matchingRule}"
+    src: "DuplicateRule:${record.name}"
+    dst: "MatchingRule:${item.matchingRule}"

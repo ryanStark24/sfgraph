@@ -1,0 +1,26 @@
+type: Network
+category: Network
+input: xml-string
+root: Network
+applies_when:
+  always: true
+
+nodes:
+  - label: Network
+    qname: "Network:${record.name}"
+    props:
+      name: "${record.name}"
+      status: "${record.status | raw}"
+
+edges:
+  - relType: NETWORK_USES_BUNDLE
+    iterate: "${record.networkPageOverrides}"
+    when: "${item.lightningCommunityBundle}"
+    src: "Network:${record.name}"
+    dst: "LightningComponentBundle:${item.lightningCommunityBundle}"
+
+  - relType: NETWORK_USES_BUNDLE
+    iterate: "${record.communityBundles}"
+    when: "${item}"
+    src: "Network:${record.name}"
+    dst: "LightningComponentBundle:${item}"

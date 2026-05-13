@@ -5,11 +5,13 @@ import { parserRegistry } from "../parsers/registry.js";
 // Ensure all parsers are registered before we look them up.
 import "../parsers/index.js";
 import { populateAnalysisTables } from "../analyze/populate.js";
+import { EmbeddingQueue, type VectorSink } from "../embedding/index.js";
 import type { MemberRef, RawMember } from "../extractors/interfaces/metadata-source.js";
 import { type ResolveOrgDeps, type ResolvedOrg, resolveOrg } from "../extractors/live-org/auth.js";
 import { bulkRetrieve } from "../extractors/live-org/bulk-retrieve.js";
 import { type OrgCapabilities, probeCapabilities } from "../extractors/live-org/capabilities.js";
 import { iterChanges } from "../extractors/live-org/source-member.js";
+import { loadAllRules } from "../parsers/rules/_loader.js";
 import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
 import type { SnapshotStore } from "../storage/interfaces.js";
 
@@ -31,6 +33,8 @@ export interface LiveIngestOpts {
   preResolved?: ResolvedOrg;
   /** When provided, analysis tables are populated after merge. */
   analysisDb?: BetterSqlite3Database;
+  /** When provided, batched embedding vectors are pushed during ingest. */
+  vectorStore?: VectorSink;
 }
 
 export interface LiveIngestResult {
@@ -118,6 +122,12 @@ function adaptParserInput(
 
 export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult> {
   const logger = opts.logger ?? NOOP_LOG;
+  // Load declarative rule parsers (idempotent).
+  try {
+    await loadAllRules();
+  } catch (e) {
+    logger.warn("live-ingest: rule load failed", { err: (e as Error).message });
+  }
   const startedAt = Date.now();
   const resolved = opts.preResolved ?? (await resolveOrg(opts.alias, opts.resolveDeps));
   logger.info("live-ingest: resolved org", { alias: resolved.alias, orgId: resolved.orgId });
@@ -178,9 +188,28 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     logger,
   };
 
+  const embedQueue = opts.vectorStore
+    ? new EmbeddingQueue({
+        vectorStore: opts.vectorStore,
+        onError: (err) => logger.warn("live-ingest: embedding batch failed", { err: err.message }),
+      })
+    : null;
+
   const handleParsed = (parsed: ParseResult): void => {
     if (parsed.nodes.length) graph.mergeNodes(parsed.nodes);
     if (parsed.edges.length) graph.mergeEdges(parsed.edges);
+    if (embedQueue) {
+      for (const n of parsed.nodes) {
+        const desc = (n.attributes as Record<string, unknown>)?.description;
+        const text = `${n.label}: ${n.qualifiedName}\n${typeof desc === "string" ? desc : ""}`;
+        embedQueue.push({
+          qname: String(n.qualifiedName),
+          text,
+          orgId: String(n.orgId),
+          label: n.label,
+        });
+      }
+    }
   };
 
   const processOne = async (ref: MemberRef, content: string): Promise<void> => {
@@ -226,6 +255,14 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   } else {
     for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId)) {
       await processOne(member.ref, member.content);
+    }
+  }
+
+  if (embedQueue) {
+    try {
+      await embedQueue.drain();
+    } catch (e) {
+      logger.warn("live-ingest: embed drain failed", { err: (e as Error).message });
     }
   }
 

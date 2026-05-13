@@ -1,0 +1,20 @@
+type: PermissionSetGroup
+category: PermissionSetGroup
+input: xml-string
+root: PermissionSetGroup
+applies_when:
+  always: true
+
+nodes:
+  - label: PermissionSetGroup
+    qname: "PermissionSetGroup:${record.name}"
+    props:
+      name: "${record.name}"
+      label: "${record.label | raw}"
+
+edges:
+  - relType: GRANTS_USER_PERMISSION
+    iterate: "${record.permissionSets}"
+    when: "${item}"
+    src: "PermissionSetGroup:${record.name}"
+    dst: "PermissionSet:${item}"

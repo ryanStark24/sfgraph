@@ -1,4 +1,4 @@
-// Side-effect imports register each parser with the singleton registry.
+// Side-effect imports register each code parser with the singleton registry.
 import "./apex/index.js";
 import "./lwc/index.js";
 import "./flow/index.js";
@@ -19,3 +19,5 @@ export * from "./contract.js";
 export { parserRegistry, resetRegistryForTests } from "./registry.js";
 export { resolveCrossFlavor, normalizeKey } from "./cross-flavor-resolver.js";
 export { ParserWorkerPool } from "./worker-pool.js";
+export { loadAllRules } from "./rules/_loader.js";
+export { RuleBasedParser } from "./rules/_engine.js";
