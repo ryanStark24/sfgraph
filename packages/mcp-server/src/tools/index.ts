@@ -18,5 +18,8 @@ import "./governor_risk_check.js";
 import "./dead_code_audit.js";
 import "./security_audit.js";
 import "./deployment_manifest_gen.js";
+import "./wip_impact.js";
+import "./wip_diff.js";
+import "./wip_test_gap.js";
 
 export { defaultRegistry } from "../tool-registry.js";

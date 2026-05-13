@@ -10,3 +10,4 @@ export * from "./dead-code.js";
 export * from "./security.js";
 export * from "./populate.js";
 export * from "./deployment-manifest/generate.js";
+export * from "./wip-impact.js";

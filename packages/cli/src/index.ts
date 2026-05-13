@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { ingestCmd } from "./commands/ingest.js";
 import { installCmd } from "./commands/install.js";
+import { linkCmd } from "./commands/link.js";
 import {
   disableCmd,
   enableLocalCmd,
@@ -9,6 +10,7 @@ import {
   resetIdCmd,
   statusCmd,
 } from "./commands/telemetry.js";
+import { wipCmd } from "./commands/wip.js";
 import { getCliVersion } from "./version.js";
 
 export function buildProgram(): Command {
@@ -62,6 +64,43 @@ export function buildProgram(): Command {
     .action(async (opts: { org?: string; mode: "full" | "incremental" | "auto"; db?: string }) => {
       await ingestCmd({ org: opts.org, mode: opts.mode, db: opts.db });
     });
+
+  program
+    .command("link")
+    .description("link the current sfdx project to a Salesforce org alias")
+    .requiredOption("--org <alias>", "Salesforce alias/username to bind to this project")
+    .option("--project <path>", "override project root (defaults to CWD)")
+    .action(async (opts: { org: string; project?: string }) => {
+      await linkCmd({ org: opts.org, project: opts.project });
+    });
+
+  program
+    .command("wip")
+    .description("analyze local sfdx-source changes against the linked org's graph")
+    .option("--depth <n>", "traversal depth (1..5)", (v) => Number.parseInt(v, 10), 3)
+    .option(
+      "--mode <mode>",
+      "changed-only | full-folder",
+      (v) => v as "changed-only" | "full-folder",
+      "changed-only",
+    )
+    .option("--project <path>", "override project root (defaults to CWD)")
+    .option("--org <alias>", "override org alias (defaults to workspace binding)")
+    .action(
+      async (opts: {
+        depth: number;
+        mode: "changed-only" | "full-folder";
+        project?: string;
+        org?: string;
+      }) => {
+        await wipCmd({
+          depth: opts.depth,
+          mode: opts.mode,
+          project: opts.project,
+          org: opts.org,
+        });
+      },
+    );
 
   const telemetry = program.command("telemetry").description("manage local telemetry");
   telemetry.command("status").action(async () => {
