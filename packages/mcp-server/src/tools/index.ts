@@ -23,5 +23,6 @@ import "./wip_diff.js";
 import "./wip_test_gap.js";
 import "./list_orgs.js";
 import "./staleness_check.js";
+import "./explain_code.js";
 
 export { defaultRegistry } from "../tool-registry.js";
