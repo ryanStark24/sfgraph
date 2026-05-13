@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "Network:Customer Community",
+      "label": "Network",
+      "attributes": {
+        "name": "Customer Community",
+        "status": "Live"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "Network:Customer Community",
+      "dstQualifiedName": "LightningComponentBundle:MyExpBundle",
+      "relType": "NETWORK_USES_BUNDLE",
+      "attributes": {}
+    }
+  ]
+}

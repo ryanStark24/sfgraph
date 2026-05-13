@@ -1,3 +1,6 @@
+import { analyze } from "@sfgraph/core";
+import { asOrgId } from "@sfgraph/shared";
+import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 
 const inputSchema = z.object({
@@ -8,13 +11,27 @@ const inputSchema = z.object({
 
 defineTool({
   name: "deployment_manifest_gen",
-  description: "STUB — deployment manifest generation lands in Phase 6.",
+  description: "Generate package.xml + destructiveChanges.xml from cross-org diff.",
   inputSchema,
-  async execute() {
+  async execute(input) {
+    const ctx = await getToolContext({ orgId: input.from_org });
+    const orgA = ctx.orgId;
+    const orgB = asOrgId(input.to_org);
+    const manifest = analyze.generateManifest(ctx.graphStore, orgA, orgB, input.category ?? "all");
     return {
-      summary: "stub",
-      markdown: "> deployment manifest generation lands in Phase 6",
-      data: { files: {} },
+      summary: `${manifest.summary.addedOrChanged} added/changed, ${manifest.summary.removed} removed`,
+      markdown: [
+        "### package.xml",
+        "```xml",
+        manifest.packageXml.trimEnd(),
+        "```",
+        "",
+        "### destructiveChanges.xml",
+        "```xml",
+        manifest.destructiveXml.trimEnd(),
+        "```",
+      ].join("\n"),
+      data: manifest,
     };
   },
 });

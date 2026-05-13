@@ -1,353 +1,200 @@
-# MCP Tools
+# sfgraph 1.0 MCP Tools
 
-This document describes the MCP tools exposed by `sfgraph`.
+Nineteen MCP tools ship in `@sfgraph/mcp-server`. Every tool returns a
+`{ summary, markdown, data }` envelope; many include a `mermaid` field in
+`data` for IDE rendering. All tools require `--org` (alias or 15/18-char org id).
 
-For day-to-day ingestion, prefer the CLI (`sfgraph ingest` / `sfgraph refresh`) and use MCP tools for orchestration and query workflows in IDE clients.
+## Quick reference
 
-## Ingestion and Runtime
+| Tool                              | Purpose                                                  |
+| --------------------------------- | -------------------------------------------------------- |
+| `ping`                            | Smoke-test the server.                                   |
+| `start_ingest_job`                | Trigger live sync.                                       |
+| `get_ingest_job`                  | Poll ingestion progress.                                 |
+| `snapshot_create`                 | Take a labeled snapshot.                                 |
+| `snapshot_list`                   | List snapshots for an org.                               |
+| `point_in_time_diff`              | Diff two snapshots.                                      |
+| `freshness_report`                | Bucketed staleness across the org.                       |
+| `analyze_field`                   | Read/write fan-out for one field.                        |
+| `trace_upstream`                  | Walk dependents.                                         |
+| `trace_downstream`                | Walk dependencies.                                       |
+| `cross_layer_flow_map`            | LWC -> Apex -> SOQL -> Field path.                       |
+| `cross_org_diff`                  | Drift between two orgs.                                  |
+| `impact_from_git_diff`            | Map a code diff to graph blast-radius.                   |
+| `test_gap_intelligence_from_git_diff` | Suggest tests for changed code.                       |
+| `what_broke`                      | Recent changes correlated to a regression.               |
+| `governor_risk_check`             | SOQL/DML-in-loop, unbounded query.                       |
+| `dead_code_audit`                 | Low-freshness, orphan candidates with confidence.        |
+| `security_audit`                  | Sharing, FLS, security findings.                         |
+| `deployment_manifest_gen`         | package.xml + destructiveChanges.xml from cross-org diff.|
+
+## Schemas
+
+All tools take JSON via the MCP protocol. The shared envelope is:
+
+```ts
+{
+  summary: string;
+  markdown: string;
+  data: Record<string, unknown>;
+}
+```
 
 ### `ping`
 
-Purpose:
+```jsonc
+// input
+{}
+// output
+{ summary: "pong", markdown: "pong", data: { ts: 1715000000 } }
+```
 
-- basic health check
+### `start_ingest_job`
 
-Typical use:
+```jsonc
+// input
+{ "org": "my-prod", "mode": "full" | "incremental" | "auto" }
+// output.data
+{ "jobId": "ing_...", "mode": "full" }
+```
 
-- confirm the server is alive and the parser pool initialized
+### `get_ingest_job`
 
-### `start_ingest_job(export_dir, mode?, include_globs?, exclude_globs?, org_alias?, enrich_org?)`
+```jsonc
+{ "job_id": "ing_..." }
+// output.data
+{ "state": "running" | "done" | "error", "membersProcessed": 1234 }
+```
 
-Purpose:
+### `snapshot_create`
+
+```jsonc
+{ "org": "alias", "label": "pre-release" }
+// output.data: { snapshotId, createdAt }
+```
+
+### `snapshot_list`
 
-- start full ingest in the background and return immediately with a `job_id`
-- optional org metadata enrichment via Salesforce CLI when `enrich_org=true`
-
-Returns:
-
-- `job_id`
-- `state`
-- `created_at`
-
-### `start_refresh_job(export_dir, mode?, include_globs?, exclude_globs?, org_alias?, enrich_org?)`
-
-Purpose:
-
-- start incremental re-ingest in the background
-- optional org metadata enrichment via Salesforce CLI when `enrich_org=true`
-
-Returns:
-
-- `job_id`
-- `state`
-- `created_at`
-
-### `start_vectorize_job(export_dir)`
-
-Purpose:
-
-- rebuild vectors in the background
-
-Returns:
-
-- `job_id`
-- `state`
-- `created_at`
-
-### `get_ingest_job(job_id)`
-
-Purpose:
-
-- fetch status/result for one job
-
-### `list_ingest_jobs()`
-
-Purpose:
-
-- list jobs across known workspaces
-
-### `cancel_ingest_job(job_id)`
-
-Purpose:
-
-- request cancellation of a running job
-
-### `watch_refresh(export_dir, ...)`
-
-Purpose:
-
-- poll a workspace and trigger debounced refresh runs
-
-Use when:
-
-- testing iterative local updates
-
-### `get_ingestion_status()`
-
-Purpose:
-
-- summarize current graph state and freshness
-
-Key fields:
-
-- `indexed_commit`
-- `indexed_at`
-- `dirty_files_pending`
-- `partial_results`
-- `rules`
-- `active_run` when an ingest or refresh is currently in progress
-
-### `get_ingestion_progress()`
-
-Purpose:
-
-- return the latest persisted progress snapshot for a running or recently completed ingest/refresh
-
-Key fields:
-
-- `state` such as `idle`, `running`, or `completed`
-- `phase` such as `discovering`, `parsing`, `writing_nodes`, `writing_edges`, or `completed`
-- `total_files`
-- `processed_files`
-- `failed_files`
-- `current_file`
-- `completion_ratio`
-- `parser_stats`
-
-### `export_diagnostics_md(export_dir?, run_id?, job_id?, destination?)`
-
-Purpose:
-
-- write a compact markdown report for the latest ingest state
-- reduce follow-up tool calls during parser or workspace debugging
-
-Returns:
-
-- report path
-- summary payload including parser stats and latest state
-
-### `graph_subgraph(node_id?, question?, hops?, max_nodes?, format?, focus?)`
-
-Purpose:
-
-- render a compact graph neighborhood around a node or resolved question target
-- support `format=mermaid` for chat-native visualization and `format=json` for structured consumers
-
-## Query and Lineage
-
-Preferred entrypoint (use this first):
-
-- `analyze(question, ...)` one-call router for most Q&A
-
-Notes:
-
-- `analyze(...)` now tracks per-stage time budget and uses a short-lived in-process cache for repeated questions in the same daemon/session
-- vector-only fallback results are intentionally downgraded to `review_manually`
-
-Intent tools (use directly when your client can classify intent):
-
-- `analyze_field(...)` for "where is field populated/assigned/used"
-- `analyze_object_event(...)` for "what happens when Object is inserted/updated/deleted"
-- `analyze_component(...)` for "in class/flow/IP/DR where is token set or used"
-- `analyze_change(...)` for "what breaks if I change X"
-
-Use `query(...)` as a compatibility fallback only when you explicitly want broad node discovery.
-
-### `query(question, ...)`
-
-Purpose:
-
-- natural-language-ish entry point for common lineage/impact questions
-- compatibility fallback for ambiguous questions; `analyze(...)` should be preferred in new clients
-
-### `analyze(question, mode?, strict?, max_results?, max_hops?, time_budget_ms?, offset?, render?, include_mermaid?)`
-
-Purpose:
-
-- primary one-call Q&A endpoint for MCP clients
-- routes to exact-first analyzers for field/object-event/component/change questions
-- uses strict mode by default to reduce semantic-noise answers
-
-Typical use:
-
-- `analyze("where is Service_Id__c populated?")`
-- `analyze("what happens when QuoteLineItem is inserted?")`
-- `analyze("in class OSS_ServiceabilityTask, where is accessId populated?")`
-- `analyze("where is Service_Id__c populated?", render="markdown", include_mermaid=true)`
-
-Presentation options:
-
-- `render="markdown"` returns an inline markdown summary under `presentation.markdown`
-- `include_mermaid=true` adds `presentation.mermaid` when a graph center can be resolved from the routed answer
-
-## LLM Prompt Contract (Recommended)
-
-To reduce tool-call cost and round trips, use this request shape:
-
-1. Set workspace context once:
-- `set_active_export_dir(export_dir)`
-
-2. Ask one focused question at a time:
-- `analyze(question="...single question...", strict=true, mode="auto")`
-
-3. Only call deep tools if evidence is insufficient:
-- fallback order: `analyze_component` / `analyze_field` -> `trace_upstream` -> `query`
-- use `graph_subgraph(...)` when a relationship picture is more helpful than raw edges
-- use `export_diagnostics_md(...)` before manual ingest-debug exploration
-
-Prompting tips:
-- include concrete object/class/field/token names
-- ask for `method + source file + line` when you need exact evidence
-- avoid multi-question prompts ("and also ...") in one call
-
-Behavior:
-
-- routes to trace, cross-layer map, or node-search paths
-- includes evidence and confidence tiers
-
-### `get_node(node_id)`
-
-Purpose:
-
-- fetch a node and its incoming/outgoing edges
-
-Supports:
-
-- unscoped ids
-- scoped ids like `scope::qualifiedName`
-
-### `trace_upstream(node_id, ...)`
-
-Purpose:
-
-- find where a value or component originates from
-
-### `trace_downstream(node_id, ...)`
-
-Purpose:
-
-- find blast radius and dependents
-
-### `cross_layer_flow_map(node_id, ...)`
-
-Purpose:
-
-- show paths across UI, Flow, DataRaptor, Integration Procedure, Apex, and field/object usage
-
-### `explain_field(field_qualified_name)`
-
-Purpose:
-
-- summarize readers, writers, and dependents for a field
-- low-level helper; prefer `analyze_field` for production Q&A workflows
-
-### `analyze_field(field_name, focus?)`
-
-Purpose:
-
-- strict field-centric analysis for reads/writes
-- combines exact repo evidence with graph evidence
-
-Typical use:
-
-- `where is Service_Id__c populated`
-- `who reads Account.Clarity_Customer_ID__c`
-
-### `analyze_object_event(object_name, event)`
-
-Purpose:
-
-- object lifecycle map from trigger/event entrypoints
-
-Typical use:
-
-- `what happens when QuoteLineItem is inserted`
-
-### `analyze_component(component_name, token?, focus?)`
-
-Purpose:
-
-- component-focused lineage and exact token tracing
-
-Typical use:
-
-- `in class OSS_ServiceabilityTask, where is accessId populated`
-
-### `analyze_change(target?, changed_files?, ...)`
-
-Purpose:
-
-- change-impact analysis from component or file targets
-
-Typical use:
-
-- `what breaks if I change AccountService`
-- release impact checks from touched files
-
-### `list_unknown_dynamic_edges(limit?, offset?)`
-
-Purpose:
-
-- expose dynamic/unresolved edges instead of hiding them
-
-Use when:
-
-- validating confidence
-- reviewing dynamic SOQL or indirect references
-
-## Change-Aware Tools
-
-### `impact_from_git_diff(base_ref?, head_ref?, ...)`
-
-Purpose:
-
-- estimate impacted components from a git diff
-
-Returns:
-
-- changed files
-- impacted components
-- risk summary
-
-### `test_gap_intelligence_from_git_diff(base_ref?, head_ref?, ...)`
-
-Purpose:
-
-- summarize test coverage confidence for diff impact
-
-## Snapshots and Migration
-
-### `create_snapshot(name?)`
-
-Purpose:
-
-- save the current graph state to a JSON snapshot
-
-### `diff_snapshots(snapshot_a_path, snapshot_b_path, ...)`
-
-Purpose:
-
-- compare two graph snapshots
-
-### `migrate_project_scope(export_dir, dry_run?, prune_legacy?)`
-
-Purpose:
-
-- migrate older unscoped graph rows to scoped ids
-
-Recommended default:
-
-- run with `dry_run=true` first
-
-## Practical Testing Sequence
-
-For a new workspace, a good smoke test order is:
-
-1. `ping`
-2. `start_ingest_job(...)`
-3. `get_ingest_job(job_id)` while ingest is running
-4. `analyze(...)` for primary Q&A checks
-4. `get_ingestion_status()`
-5. `query("what writes to Account.Status__c?")`
-6. `list_unknown_dynamic_edges(limit=10)`
-7. `impact_from_git_diff(...)`
+```jsonc
+{ "org": "alias" }
+// output.data: { snapshots: [{ id, label, createdAt }] }
+```
+
+### `point_in_time_diff`
+
+```jsonc
+{ "org": "alias", "from": "snap-id", "to": "snap-id" }
+// output.data: { onlyInA, onlyInB, changed }
+```
+
+### `freshness_report`
+
+```jsonc
+{ "org": "alias" }
+// output.data: { buckets: { hot, current, stale, dead } }
+```
+
+### `analyze_field`
+
+```jsonc
+{ "org": "alias", "field": "Account.Industry" }
+// output.data: { readers: [...], writers: [...] }
+```
+
+### `trace_upstream` / `trace_downstream`
+
+```jsonc
+{ "org": "alias", "qname": "ApexClass:Foo", "hops": 3 }
+// output.data: { nodes, edges, mermaid }
+```
+
+### `cross_layer_flow_map`
+
+```jsonc
+{ "org": "alias", "from": "LightningComponentBundle:foo" }
+// output.data: { paths: [...] }
+```
+
+### `cross_org_diff`
+
+```jsonc
+{ "org_a": "prod", "org_b": "uat", "category": "ApexClass" }
+// output.data: { onlyInA, onlyInB, changed }
+```
+
+### `impact_from_git_diff`
+
+```jsonc
+{ "org": "alias", "base_ref": "main", "head_ref": "HEAD" }
+// output.data: { changed: [...], blastRadius: [...] }
+```
+
+### `test_gap_intelligence_from_git_diff`
+
+```jsonc
+{ "org": "alias", "base_ref": "main", "head_ref": "HEAD" }
+// output.data: { gaps: [...], suggestions: [...] }
+```
+
+### `what_broke`
+
+```jsonc
+{ "org": "alias", "since_iso": "2025-05-01T00:00:00Z" }
+// output.data: { suspects: [...] }
+```
+
+### `governor_risk_check`
+
+```jsonc
+{ "org": "alias" }
+// output.data
+{
+  "risks": [{ "qualifiedName": "ApexClass:Foo", "risk": "soql_in_loop", "evidence": "..." }],
+  "cached": true
+}
+```
+
+Reads `_sfgraph_governor_risks` when populated (cached path is < 50 ms);
+falls back to inline scan otherwise.
+
+### `dead_code_audit`
+
+```jsonc
+{ "org": "alias" }
+// output.data
+{
+  "dead": [
+    { "qualifiedName": "ApexClass:Lonely", "score": 0.08, "confidence": "high",
+      "reasons": ["no_incoming_edges", "stale_freshness"] }
+  ],
+  "cached": true
+}
+```
+
+### `security_audit`
+
+```jsonc
+{ "org": "alias" }
+// output.data
+{
+  "sharingFullAccess": ["SharingRule:Account.r1"],
+  "flsGaps": ["CustomField:Account.SSN__c"],
+  "fieldAccessMatrix": [...],
+  "cachedFindings": [{ "qname": "...", "rule": "sharing.full_access", "message": "..." }]
+}
+```
+
+### `deployment_manifest_gen`
+
+```jsonc
+{ "from_org": "uat", "to_org": "prod", "category": "all" | "ApexClass" | ... }
+// output.data
+{
+  "packageXml": "<?xml ... </Package>\n",
+  "destructiveXml": "<?xml ... </Package>\n",
+  "summary": { "apiVersion": "60.0", "addedOrChanged": 12, "removed": 1, "byType": { "ApexClass": 3 } }
+}
+```
+
+API version is read from the source org's stored `apiVersion`; defaults to
+`59.0` when unknown.

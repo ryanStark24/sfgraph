@@ -44,6 +44,15 @@ export const METADATA_CATEGORY = {
   OMNISTUDIO: "OmniStudio",
   SECURITY: "Security",
   INTEGRATION: "Integration",
+  // Phase 6 long-tail
+  LIGHTNING_PAGE: "FlexiPage",
+  GEN_AI_PLANNER: "GenAiPlanner",
+  GEN_AI_PLUGIN: "GenAiPlugin",
+  NETWORK: "Network",
+  DUPLICATE_RULE: "DuplicateRule",
+  MATCHING_RULE: "MatchingRule",
+  CUSTOM_METADATA_TYPE: "CustomMetadataType",
+  OPAQUE: "OpaqueMetadata",
 } as const;
 
 export type MetadataCategory = (typeof METADATA_CATEGORY)[keyof typeof METADATA_CATEGORY];

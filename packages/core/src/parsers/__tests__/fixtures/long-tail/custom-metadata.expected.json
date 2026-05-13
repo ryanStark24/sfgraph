@@ -1,0 +1,19 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "CustomMetadataRecord:Config__mdt.Default",
+      "label": "CustomMetadataRecord",
+      "attributes": {
+        "name": "Config__mdt.Default"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "CustomMetadataRecord:Config__mdt.Default",
+      "dstQualifiedName": "CustomMetadataType:Config__mdt",
+      "relType": "INSTANCE_OF",
+      "attributes": {}
+    }
+  ]
+}

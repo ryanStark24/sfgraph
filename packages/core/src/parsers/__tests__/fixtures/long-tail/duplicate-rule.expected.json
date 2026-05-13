@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "DuplicateRule:Account.NoDups",
+      "label": "DuplicateRule",
+      "attributes": {
+        "name": "Account.NoDups",
+        "isActive": true
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "DuplicateRule:Account.NoDups",
+      "dstQualifiedName": "MatchingRule:Account.Match1",
+      "relType": "REFERENCES",
+      "attributes": {}
+    }
+  ]
+}

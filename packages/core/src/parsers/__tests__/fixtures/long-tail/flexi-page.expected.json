@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "FlexiPage:Account_Record_Page",
+      "label": "FlexiPage",
+      "attributes": {
+        "name": "Account_Record_Page",
+        "type": "RecordPage",
+        "sobjectType": "Account"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "FlexiPage:Account_Record_Page",
+      "dstQualifiedName": "LightningComponentBundle:MyLwc",
+      "relType": "EMBEDS_LWC",
+      "attributes": {}
+    }
+  ]
+}

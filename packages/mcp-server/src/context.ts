@@ -6,6 +6,8 @@ export interface ToolContext {
   graphStore: GraphStore;
   snapshotStore: SnapshotStore;
   orgId: OrgId;
+  /** Raw SQLite handle for cached analysis-table reads (optional). */
+  db?: unknown;
 }
 
 export type ToolContextFactory = (opts: { orgId?: string }) => Promise<ToolContext>;
@@ -49,5 +51,6 @@ async function defaultFactory(opts: { orgId?: string }): Promise<ToolContext> {
       // table might not exist in some setups; ignore
     }
   }
-  return { graphStore, snapshotStore, orgId: asOrgId(resolvedOrgId) };
+  const db = (graphStore as unknown as { db: unknown }).db;
+  return { graphStore, snapshotStore, orgId: asOrgId(resolvedOrgId), db };
 }

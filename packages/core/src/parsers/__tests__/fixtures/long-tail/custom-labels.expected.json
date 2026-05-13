@@ -1,0 +1,14 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "CustomLabel:Hello",
+      "label": "CustomLabel",
+      "attributes": {
+        "name": "Hello",
+        "value": "World",
+        "language": "en_US"
+      }
+    }
+  ],
+  "edges": []
+}

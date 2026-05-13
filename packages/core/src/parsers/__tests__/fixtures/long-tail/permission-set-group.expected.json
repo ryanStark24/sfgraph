@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "PermissionSetGroup:SalesGroup",
+      "label": "PermissionSetGroup",
+      "attributes": {
+        "name": "SalesGroup",
+        "label": "Sales"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "PermissionSetGroup:SalesGroup",
+      "dstQualifiedName": "PermissionSet:Sales_User",
+      "relType": "GRANTS_USER_PERMISSION",
+      "attributes": {}
+    }
+  ]
+}

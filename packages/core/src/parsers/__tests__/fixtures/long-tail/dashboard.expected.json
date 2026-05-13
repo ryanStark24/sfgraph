@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "Dashboard:SalesDash",
+      "label": "Dashboard",
+      "attributes": {
+        "name": "SalesDash",
+        "title": "Sales"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "Dashboard:SalesDash",
+      "dstQualifiedName": "Report:Pipeline",
+      "relType": "DASHBOARD_USES_REPORT",
+      "attributes": {}
+    }
+  ]
+}

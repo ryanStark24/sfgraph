@@ -8,3 +8,5 @@ export * from "./cross-org.js";
 export * from "./governor.js";
 export * from "./dead-code.js";
 export * from "./security.js";
+export * from "./populate.js";
+export * from "./deployment-manifest/generate.js";

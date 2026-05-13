@@ -7,6 +7,13 @@ import "./security/index.js";
 import "./integration/index.js";
 import "./vlocity/index.js";
 import "./omnistudio/index.js";
+import "./vf/index.js";
+import "./presentation/index.js";
+import "./reporting/index.js";
+import "./genai/index.js";
+import "./experience/index.js";
+import "./sf-misc/index.js";
+import "./generic/index.js";
 
 export * from "./contract.js";
 export { parserRegistry, resetRegistryForTests } from "./registry.js";

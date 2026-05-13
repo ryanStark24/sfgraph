@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "ApprovalProcess:Account.Approval1",
+      "label": "ApprovalProcess",
+      "attributes": {
+        "name": "Account.Approval1",
+        "active": true
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "ApprovalProcess:Account.Approval1",
+      "dstQualifiedName": "CustomField:Amount__c",
+      "relType": "APPROVAL_USES_FORMULA",
+      "attributes": {
+        "formula": "Amount__c > 1000"
+      }
+    }
+  ]
+}

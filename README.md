@@ -1,28 +1,48 @@
 # sfgraph
 
-A local, privacy-first knowledge graph for Salesforce orgs.
+A local, privacy-first knowledge graph for Salesforce orgs. Live-syncs an org
+to a SQLite graph + vector store on your machine and exposes 19 MCP tools to
+Cursor / Claude / VS Code.
 
 ## Privacy pillars
 
-- **Local-only data.** All ingested metadata is stored on your machine in a per-org SQLite file. Nothing is uploaded.
-- **Read-only Salesforce APIs.** The jsforce connection is wrapped in a runtime Proxy that throws on any write operation (DML, metadata deploy, tooling writes, non-GET HTTP). Verified at the call site, not just by convention.
-- **Telemetry default off, sanitized when on.** Telemetry is opt-in. When enabled, every emitted event is run through an allowlist-based sanitizer that strips paths, emails, Salesforce hosts, bearer tokens, session ids, UUIDs, and Salesforce record ids before it touches a sink.
-- **Zero codebase egress.** Source code, metadata, and query results never leave the host.
+1. **No codebase egress.** Graph and vectors stay in `~/.sfgraph/`.
+2. **Read-only Salesforce access.** Every connection is wrapped in a Proxy
+   that rejects mutating methods.
+3. **Failure-only, sanitized telemetry**, default off, local sink only.
+
+See `docs/PRIVACY.md`.
+
+## Quickstart
+
+```bash
+pnpm install                       # 1. install workspace
+pnpm build                         # 2. build packages
+node apps/sfgraph/bin/sfgraph.mjs install   # 3. wire IDE
+sfgraph ingest --org my-prod       # 4. live sync
+# 5. open Cursor / Claude / VS Code — `sfgraph_*` tools are now available
+```
 
 ## Package layout
 
 ```
 packages/
-  shared/        @sfgraph/shared       cross-cutting: errors, logger, paths, types
-  core/          @sfgraph/core         domain, telemetry, extractors, parsers
-  models/        @sfgraph/models       vendored embedding model (Git LFS)
-  skills/        @sfgraph/skills       SKILL.md playbooks (Phase 5)
-  mcp-server/    @sfgraph/mcp-server   stdio MCP server, tool registry
-  cli/           @sfgraph/cli          sfgraph CLI commands
+  shared/      cross-cutting types, errors, logger, paths
+  core/        engine: storage, parsers, extractors, analyze, render
+  mcp-server/  stdio MCP, 19 tools, shutdown discipline
+  cli/         install / ingest / snapshot / telemetry CLI
+  skills/      10 SKILL.md playbooks
+  models/      vendored MiniLM ONNX
 apps/
-  sfgraph/                             unscoped binary npm package
+  sfgraph/     unscoped npm binary
+legacy/        Python prototype, retained through 1.0.x
 ```
 
-## Status
+## Further reading
 
-Phase 0 scaffold. See `docs/PLAN.md` for the full roadmap.
+- `docs/TOOLS.md` — full MCP tool catalog
+- `docs/SKILLS.md` — skill playbooks
+- `docs/PRIVACY.md` — read-only + sanitizer details
+- `docs/MIGRATING_FROM_PYTHON.md` — coming from the legacy prototype
+- `docs/ARCHITECTURE.md` — internals
+- `CHANGELOG.md` — per-phase release notes

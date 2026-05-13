@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "ApexPage:MyPage",
+      "label": "ApexPage",
+      "attributes": {
+        "name": "MyPage",
+        "apiVersion": 59,
+        "label": "My Page"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "ApexPage:MyPage",
+      "dstQualifiedName": "ApexClass:MyController",
+      "relType": "CONTROLLED_BY",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexPage:MyPage",
+      "dstQualifiedName": "ApexClass:ExtA",
+      "relType": "EXTENDS_CONTROLLER",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexPage:MyPage",
+      "dstQualifiedName": "ApexClass:ExtB",
+      "relType": "EXTENDS_CONTROLLER",
+      "attributes": {}
+    }
+  ]
+}

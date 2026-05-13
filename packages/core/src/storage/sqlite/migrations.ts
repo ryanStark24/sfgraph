@@ -90,6 +90,66 @@ export const MIGRATIONS: Migration[] = [
     },
   },
   {
+    version: 5,
+    description: "phase 6 analysis tables (findings, dead-code, governor, test coverage)",
+    up(db) {
+      // NOTE: Spec called for PK using IFNULL(line,0) but SQLite doesn't allow
+      // expressions in PRIMARY KEY declarations. Divergence: store -1 sentinel
+      // for "no specific line" findings and include `line` as a plain PK column.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS _sfgraph_findings (
+          org_id TEXT NOT NULL,
+          qualified_name TEXT NOT NULL,
+          rule_id TEXT NOT NULL,
+          line INTEGER NOT NULL DEFAULT -1,
+          severity TEXT NOT NULL,
+          message TEXT NOT NULL,
+          evidence TEXT,
+          computed_at INTEGER NOT NULL,
+          PRIMARY KEY(org_id, qualified_name, rule_id, line)
+        );
+        CREATE INDEX IF NOT EXISTS _sfgraph_findings_qname
+          ON _sfgraph_findings(org_id, qualified_name);
+        CREATE INDEX IF NOT EXISTS _sfgraph_findings_rule
+          ON _sfgraph_findings(org_id, rule_id, severity);
+
+        CREATE TABLE IF NOT EXISTS _sfgraph_dead_code_scores (
+          org_id TEXT NOT NULL,
+          qualified_name TEXT NOT NULL,
+          score REAL NOT NULL,
+          confidence TEXT NOT NULL,
+          reasons TEXT NOT NULL,
+          computed_at INTEGER NOT NULL,
+          PRIMARY KEY(org_id, qualified_name)
+        );
+        CREATE INDEX IF NOT EXISTS _sfgraph_dead_code_conf
+          ON _sfgraph_dead_code_scores(org_id, confidence, score);
+
+        CREATE TABLE IF NOT EXISTS _sfgraph_governor_risks (
+          org_id TEXT NOT NULL,
+          qualified_name TEXT NOT NULL,
+          risk_type TEXT NOT NULL,
+          evidence TEXT,
+          line INTEGER NOT NULL DEFAULT -1,
+          computed_at INTEGER NOT NULL,
+          PRIMARY KEY(org_id, qualified_name, risk_type, line)
+        );
+        CREATE INDEX IF NOT EXISTS _sfgraph_governor_type
+          ON _sfgraph_governor_risks(org_id, risk_type);
+
+        CREATE TABLE IF NOT EXISTS _sfgraph_test_coverage (
+          org_id TEXT NOT NULL,
+          qualified_name TEXT NOT NULL,
+          test_count INTEGER NOT NULL,
+          computed_at INTEGER NOT NULL,
+          PRIMARY KEY(org_id, qualified_name)
+        );
+        CREATE INDEX IF NOT EXISTS _sfgraph_test_coverage_low
+          ON _sfgraph_test_coverage(org_id, test_count);
+      `);
+    },
+  },
+  {
     version: 3,
     description: "vector tables (sqlite-vec)",
     up(db) {

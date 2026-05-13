@@ -1,0 +1,19 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "GenAiPlanner:TopicPlanner",
+      "label": "GenAiPlanner",
+      "attributes": {
+        "name": "TopicPlanner"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "GenAiPlanner:TopicPlanner",
+      "dstQualifiedName": "GenAiPlugin:MyPlugin",
+      "relType": "PLANNER_USES_PLUGIN",
+      "attributes": {}
+    }
+  ]
+}

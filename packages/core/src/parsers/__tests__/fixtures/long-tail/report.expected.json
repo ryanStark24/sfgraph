@@ -1,0 +1,32 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "Report:Pipeline",
+      "label": "Report",
+      "attributes": {
+        "name": "Pipeline",
+        "reportType": "Opportunity"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "Report:Pipeline",
+      "dstQualifiedName": "CustomField:Amount",
+      "relType": "READS_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "Report:Pipeline",
+      "dstQualifiedName": "CustomField:StageName",
+      "relType": "READS_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "Report:Pipeline",
+      "dstQualifiedName": "CustomObject:Opportunity",
+      "relType": "REPORTS_ON",
+      "attributes": {}
+    }
+  ]
+}

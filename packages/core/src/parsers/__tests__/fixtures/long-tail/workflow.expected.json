@@ -1,0 +1,40 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "Workflow:Account",
+      "label": "Workflow",
+      "attributes": {
+        "object": "Account"
+      }
+    },
+    {
+      "qualifiedName": "WorkflowRule:Account.Rule1",
+      "label": "WorkflowRule",
+      "attributes": {
+        "name": "Rule1",
+        "object": "Account",
+        "active": true
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "Workflow:Account",
+      "dstQualifiedName": "WorkflowRule:Account.Rule1",
+      "relType": "WORKFLOW_TRIGGERS",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "Workflow:Account",
+      "dstQualifiedName": "CustomField:Account.Name",
+      "relType": "WORKFLOW_UPDATES_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "WorkflowRule:Account.Rule1",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "TRIGGER_FIRES_ON",
+      "attributes": {}
+    }
+  ]
+}

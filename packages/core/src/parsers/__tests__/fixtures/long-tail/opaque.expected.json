@@ -1,0 +1,14 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "AssignmentRule:Lead.Auto",
+      "label": "AssignmentRule",
+      "attributes": {
+        "name": "Lead.Auto",
+        "metadataType": "AssignmentRule",
+        "rawSize": 17
+      }
+    }
+  ],
+  "edges": []
+}

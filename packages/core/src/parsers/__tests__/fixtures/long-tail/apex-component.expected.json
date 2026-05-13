@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "ApexComponent:MyComponent",
+      "label": "ApexComponent",
+      "attributes": {
+        "name": "MyComponent",
+        "apiVersion": 59,
+        "label": "Cmp"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "ApexComponent:MyComponent",
+      "dstQualifiedName": "ApexClass:CmpCtrl",
+      "relType": "CONTROLLED_BY",
+      "attributes": {}
+    }
+  ]
+}

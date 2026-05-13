@@ -1,0 +1,26 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "Layout:Account-Account Layout",
+      "label": "Layout",
+      "attributes": {
+        "name": "Account-Account Layout",
+        "object": "Account"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "Layout:Account-Account Layout",
+      "dstQualifiedName": "CustomField:Account.CustomField__c",
+      "relType": "RENDERS_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "Layout:Account-Account Layout",
+      "dstQualifiedName": "CustomField:Account.Name",
+      "relType": "RENDERS_FIELD",
+      "attributes": {}
+    }
+  ]
+}

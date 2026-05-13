@@ -1,0 +1,19 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "GenAiPlugin:MyPlugin",
+      "label": "GenAiPlugin",
+      "attributes": {
+        "name": "MyPlugin"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "GenAiPlugin:MyPlugin",
+      "dstQualifiedName": "GenAiFunction:DoX",
+      "relType": "PLUGIN_INVOKES_FUNCTION",
+      "attributes": {}
+    }
+  ]
+}

@@ -4,12 +4,13 @@ import type { ParseContext, ParseResult } from "../parsers/contract.js";
 import { parserRegistry } from "../parsers/registry.js";
 // Ensure all parsers are registered before we look them up.
 import "../parsers/index.js";
+import { populateAnalysisTables } from "../analyze/populate.js";
 import type { MemberRef, RawMember } from "../extractors/interfaces/metadata-source.js";
 import { type ResolveOrgDeps, type ResolvedOrg, resolveOrg } from "../extractors/live-org/auth.js";
 import { bulkRetrieve } from "../extractors/live-org/bulk-retrieve.js";
 import { type OrgCapabilities, probeCapabilities } from "../extractors/live-org/capabilities.js";
 import { iterChanges } from "../extractors/live-org/source-member.js";
-import type { GraphStore } from "../storage/interfaces.js";
+import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
 import type { SnapshotStore } from "../storage/interfaces.js";
 
 export type IngestMode = "full" | "incremental" | "auto";
@@ -28,6 +29,8 @@ export interface LiveIngestOpts {
   resolveDeps?: ResolveOrgDeps;
   /** Pre-resolved org (test/mock injection). When supplied, resolveOrg is skipped. */
   preResolved?: ResolvedOrg;
+  /** When provided, analysis tables are populated after merge. */
+  analysisDb?: BetterSqlite3Database;
 }
 
 export interface LiveIngestResult {
@@ -221,6 +224,16 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     graph.touchSync(resolved.orgId, completedIso);
   } catch (e) {
     logger.warn("live-ingest: touchSync failed", { err: (e as Error).message });
+  }
+
+  if (opts.analysisDb) {
+    try {
+      await populateAnalysisTables(graph, resolved.orgId, opts.analysisDb);
+    } catch (e) {
+      logger.warn("live-ingest: populate analysis tables failed", {
+        err: (e as Error).message,
+      });
+    }
   }
 
   if (opts.snapshotStore) {
