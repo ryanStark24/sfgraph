@@ -1,25 +1,13 @@
-# Python virtual environment (managed by uv)
-.venv/
-
-# Python cache
-__pycache__/
-*.py[cod]
-*.pyo
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.uv-cache/
-
-# Distribution / packaging
+# Build / packaging
 dist/
 build/
-*.egg-info/
-/data/
 node_modules/
 coverage/
 *.tsbuildinfo
+
+# OS
 .DS_Store
+Thumbs.db
 
 # IDE
 .idea/
@@ -28,15 +16,10 @@ coverage/
 *.swp
 *.swo
 
-# OS
-.DS_Store
-Thumbs.db
-
 # Environment variables
 .env
 .env.*
 !.env.example
 
-# OpenMemory - IDE/Assistant specific rules
-.cursor/rules/openmemory.mdc
-CODEX_HANDOFF.md
+# Local sfgraph data (per-org SQLite, vectors, logs)
+/data/

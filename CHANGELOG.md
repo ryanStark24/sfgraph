@@ -69,8 +69,6 @@ complete for the v1 charter.
 
 ### Notes
 
-- `legacy/` (Python prototype) is preserved through 1.0.x and will be removed
-  in 1.0.1 once the v1.0.0 npm publish is verified.
 - SQLite divergence: `_sfgraph_findings` PK uses `line` directly (sentinel
   `-1` for "no specific line") instead of `IFNULL(line,0)` because SQLite
   does not permit expressions in PRIMARY KEY declarations.

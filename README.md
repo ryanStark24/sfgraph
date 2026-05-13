@@ -35,7 +35,6 @@ packages/
   models/      vendored MiniLM ONNX
 apps/
   sfgraph/     unscoped npm binary
-legacy/        Python prototype, retained through 1.0.x
 ```
 
 ## Further reading
@@ -44,5 +43,4 @@ legacy/        Python prototype, retained through 1.0.x
 - `docs/SKILLS.md` — skill playbooks
 - `docs/PRIVACY.md` — read-only + sanitizer details
 - `docs/MIGRATING_FROM_PYTHON.md` — coming from the legacy prototype
-- `docs/ARCHITECTURE.md` — internals
 - `CHANGELOG.md` — per-phase release notes
