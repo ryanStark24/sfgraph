@@ -4,7 +4,18 @@ export { resolveOrg, resolveDefaultOrgAlias, safeOrgInfo } from "./auth.js";
 export type { ResolvedOrg, ResolveOrgDeps } from "./auth.js";
 export { probeCapabilities } from "./capabilities.js";
 export type { OrgCapabilities } from "./capabilities.js";
-export { queryLimit, limiter, scheduleQuery } from "./rate-limit.js";
+export {
+  queryLimit,
+  limiter,
+  scheduleQuery,
+  scheduleMetadata,
+  scheduleData,
+  toolingPool,
+  metadataPool,
+  dataPool,
+  createRateLimitPools,
+} from "./rate-limit.js";
+export type { RateLimitPools } from "./rate-limit.js";
 export { bulkRetrieve, mergeAsyncIterables } from "./bulk-retrieve.js";
 export { iterChanges } from "./source-member.js";
 export { iterApex, iterOne as iterOneApex } from "./extractors/apex.js";

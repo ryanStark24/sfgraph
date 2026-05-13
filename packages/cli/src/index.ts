@@ -59,6 +59,13 @@ export function buildProgram(): Command {
     .command("ingest")
     .description("sync a Salesforce org into the local graph (read-only)")
     .option("--org <alias>", "Salesforce alias/username (defaults to `sf config` target-org)")
+    .option("--orgs <list>", "comma-separated list of aliases to ingest in one run (ignores --org)")
+    .option("--all", "ingest every authenticated org from `sf` (ignores --org)", false)
+    .option(
+      "--parallel",
+      "with --orgs/--all, run all orgs concurrently (shares default rate-limit pools)",
+      false,
+    )
     .option("--mode <mode>", "full | incremental | auto", "auto")
     .option("--db <path>", "override SQLite database path")
     .option(
@@ -77,6 +84,9 @@ export function buildProgram(): Command {
     .action(
       async (opts: {
         org?: string;
+        orgs?: string;
+        all?: boolean;
+        parallel?: boolean;
         mode: "full" | "incremental" | "auto";
         db?: string;
         embedModel?: string;
@@ -85,6 +95,9 @@ export function buildProgram(): Command {
       }) => {
         await ingestCmd({
           org: opts.org,
+          orgs: opts.orgs,
+          all: opts.all,
+          parallel: opts.parallel,
           mode: opts.mode,
           db: opts.db,
           embedModel: opts.embedModel,
