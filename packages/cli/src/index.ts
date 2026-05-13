@@ -3,6 +3,13 @@ import { ingestCmd } from "./commands/ingest.js";
 import { installCmd } from "./commands/install.js";
 import { linkCmd } from "./commands/link.js";
 import {
+  snapshotCreateCmd,
+  snapshotDeleteCmd,
+  snapshotDiffCmd,
+  snapshotListCmd,
+  snapshotPruneCmd,
+} from "./commands/snapshot.js";
+import {
   disableCmd,
   enableLocalCmd,
   previewCmd,
@@ -160,6 +167,69 @@ export function buildProgram(): Command {
         });
       },
     );
+
+  const snapshot = program
+    .command("snapshot")
+    .description("manage graph snapshots (list, create, diff, prune, delete)");
+  snapshot
+    .command("list")
+    .description("list snapshots for an org")
+    .option("--org <alias>", "Salesforce alias (defaults to workspace binding or `sf` default)")
+    .option("--project <path>", "override project root (defaults to CWD)")
+    .action(async (opts: { org?: string; project?: string }) => {
+      await snapshotListCmd({ org: opts.org, project: opts.project });
+    });
+  snapshot
+    .command("create")
+    .description("create a labeled snapshot of the current graph")
+    .requiredOption("--label <name>", "human-readable label")
+    .option("--kind <kind>", "manual | scheduled", "manual")
+    .option("--org <alias>", "Salesforce alias")
+    .option("--project <path>", "override project root")
+    .action(
+      async (opts: {
+        label: string;
+        kind?: "manual" | "scheduled";
+        org?: string;
+        project?: string;
+      }) => {
+        await snapshotCreateCmd({
+          label: opts.label,
+          kind: opts.kind,
+          org: opts.org,
+          project: opts.project,
+        });
+      },
+    );
+  snapshot
+    .command("diff <fromId> <toId>")
+    .description("diff two snapshots (or a snapshot vs. 'current')")
+    .option("--org <alias>", "Salesforce alias")
+    .option("--project <path>", "override project root")
+    .action(async (fromId: string, toId: string, opts: { org?: string; project?: string }) => {
+      await snapshotDiffCmd({ fromId, toId, org: opts.org, project: opts.project });
+    });
+  snapshot
+    .command("prune")
+    .description("delete auto-snapshots older than --retain-days")
+    .requiredOption("--retain-days <n>", "retention window in days", (v) => Number.parseInt(v, 10))
+    .option("--org <alias>", "Salesforce alias")
+    .option("--project <path>", "override project root")
+    .action(async (opts: { retainDays: number; org?: string; project?: string }) => {
+      await snapshotPruneCmd({
+        retainDays: opts.retainDays,
+        org: opts.org,
+        project: opts.project,
+      });
+    });
+  snapshot
+    .command("delete <snapshotId>")
+    .description("delete a single snapshot by id")
+    .option("--org <alias>", "Salesforce alias")
+    .option("--project <path>", "override project root")
+    .action(async (snapshotId: string, opts: { org?: string; project?: string }) => {
+      await snapshotDeleteCmd({ snapshotId, org: opts.org, project: opts.project });
+    });
 
   const telemetry = program.command("telemetry").description("manage local telemetry");
   telemetry.command("status").action(async () => {
