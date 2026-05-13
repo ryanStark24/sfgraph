@@ -35,6 +35,14 @@ export interface LiveIngestOpts {
   analysisDb?: BetterSqlite3Database;
   /** When provided, batched embedding vectors are pushed during ingest. */
   vectorStore?: VectorSink;
+  /**
+   * When true and mode resolves to "full", compute the set of qnames that
+   * existed before the sync but were NOT touched during it, and delete them.
+   * Aborts (no deletions) if any parse errors occurred — preserves the graph
+   * against transient SF API hiccups. No-op in incremental mode (deletions
+   * already surface via SourceMember.IsNameObsolete).
+   */
+  detectDeletions?: boolean;
 }
 
 export interface LiveIngestResult {
@@ -180,6 +188,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   let membersProcessed = 0;
   let parseErrors = 0;
   let deletions = 0;
+  const touchedQnames = new Set<string>();
 
   const parseCtxBase: Omit<ParseContext, "sourceUri"> = {
     orgId: resolved.orgId,
@@ -196,7 +205,10 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     : null;
 
   const handleParsed = (parsed: ParseResult): void => {
-    if (parsed.nodes.length) graph.mergeNodes(parsed.nodes);
+    if (parsed.nodes.length) {
+      graph.mergeNodes(parsed.nodes);
+      for (const n of parsed.nodes) touchedQnames.add(String(n.qualifiedName));
+    }
     if (parsed.edges.length) graph.mergeEdges(parsed.edges);
     if (parsed.snippets?.length) {
       graph.transaction(() => {
@@ -270,6 +282,36 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       await embedQueue.drain();
     } catch (e) {
       logger.warn("live-ingest: embed drain failed", { err: (e as Error).message });
+    }
+  }
+
+  // Full-sync deletion detection: compute previously-known minus touched and
+  // delete the difference. Skipped on incremental (SourceMember handles it),
+  // skipped if any parse error occurred this run (avoid mass-wipe on
+  // transient SF errors).
+  if (opts.detectDeletions && mode === "full") {
+    if (parseErrors > 0) {
+      logger.warn("live-ingest: detect-deletions skipped due to parseErrors", { parseErrors });
+    } else {
+      try {
+        const persisted = graph.listAllQnames(resolved.orgId);
+        const stale: string[] = [];
+        for (const q of persisted) {
+          if (!touchedQnames.has(String(q))) stale.push(String(q));
+        }
+        for (const q of stale) {
+          graph.deleteEdgesFor(resolved.orgId, asQualifiedName(q));
+          graph.deleteNode(resolved.orgId, asQualifiedName(q));
+          deletions += 1;
+        }
+        if (stale.length > 0) {
+          logger.info("live-ingest: detect-deletions removed stale qnames", {
+            count: stale.length,
+          });
+        }
+      } catch (e) {
+        logger.warn("live-ingest: detect-deletions failed", { err: (e as Error).message });
+      }
     }
   }
 

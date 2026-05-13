@@ -50,6 +50,7 @@ export interface GraphStore {
   listNodesByLabel(orgId: OrgId, label: string, limit?: number): NodeFact[];
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[];
   listEdgesTo(orgId: OrgId, dst: QualifiedName, relType?: RelType): EdgeFact[];
+  listAllQnames(orgId: OrgId): QualifiedName[];
   countNodes(orgId: OrgId): number;
   countEdges(orgId: OrgId): number;
   transaction<T>(fn: () => T): T;

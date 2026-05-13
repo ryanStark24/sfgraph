@@ -19,6 +19,9 @@ export interface IngestOpts {
   embedModel?: string | undefined;
   embedModelId?: string | undefined;
   embedModelDim?: number | undefined;
+  rebuild?: boolean | undefined;
+  noBackup?: boolean | undefined;
+  detectDeletions?: boolean | undefined;
 }
 
 function formatRow(cols: string[], widths: number[]): string {
@@ -56,6 +59,10 @@ async function buildSingleIngestOpts(
   const resolved = await deps.resolveOrg(alias);
   const dbPath = opts.db ?? path.join(getSfgraphPaths().data, `${resolved.orgId}.sqlite`);
 
+  if (opts.rebuild) {
+    await applyRebuild(dbPath, String(resolved.orgId), Boolean(opts.noBackup), logger);
+  }
+
   const graphStore = new SqliteGraphStore({ dbPath });
   await graphStore.init();
   const snapshotStore = new SqliteSnapshotStore({
@@ -65,14 +72,42 @@ async function buildSingleIngestOpts(
   });
   await snapshotStore.init();
 
+  // --rebuild forces a full sync regardless of source-tracking state.
+  const mode: "full" | "incremental" | "auto" = opts.rebuild ? "full" : (opts.mode ?? "auto");
+
   return {
     alias,
-    mode: opts.mode ?? "auto",
+    mode,
     graphStore,
     snapshotStore,
     logger,
     preResolved: resolved,
+    detectDeletions: Boolean(opts.detectDeletions),
   };
+}
+
+async function applyRebuild(
+  dbPath: string,
+  orgId: string,
+  noBackup: boolean,
+  logger: ConsoleLogger,
+): Promise<void> {
+  const { existsSync, mkdirSync, renameSync, unlinkSync } = await import("node:fs");
+  if (!existsSync(dbPath)) {
+    logger.info(`rebuild: no existing graph at ${dbPath}; starting fresh`);
+    return;
+  }
+  if (noBackup) {
+    unlinkSync(dbPath);
+    console.warn(`REBUILD: existing graph for ${orgId} DELETED (no-backup); running full sync`);
+    return;
+  }
+  const backupDir = path.join(getSfgraphPaths().data, "backups");
+  mkdirSync(backupDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = path.join(backupDir, `${orgId}.rebuild-${stamp}.sqlite`);
+  renameSync(dbPath, backupPath);
+  console.warn(`REBUILD: existing graph for ${orgId} moved to ${backupPath}; running full sync`);
 }
 
 export async function ingestCmd(opts: IngestOpts): Promise<void> {

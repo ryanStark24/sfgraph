@@ -67,6 +67,17 @@ export function buildProgram(): Command {
       false,
     )
     .option("--mode <mode>", "full | incremental | auto", "auto")
+    .option(
+      "--rebuild",
+      "discard existing graph (move to backups/), open fresh DB, force full sync",
+      false,
+    )
+    .option("--no-backup", "with --rebuild, delete existing graph instead of backing it up")
+    .option(
+      "--detect-deletions",
+      "with full sync, delete qnames present in the graph but not touched this run (skipped on parse errors)",
+      false,
+    )
     .option("--db <path>", "override SQLite database path")
     .option(
       "--embed-model <path>",
@@ -92,6 +103,9 @@ export function buildProgram(): Command {
         embedModel?: string;
         embedModelId?: string;
         embedModelDim?: number;
+        rebuild?: boolean;
+        backup?: boolean; // commander inverts --no-backup → backup:false
+        detectDeletions?: boolean;
       }) => {
         await ingestCmd({
           org: opts.org,
@@ -103,6 +117,9 @@ export function buildProgram(): Command {
           embedModel: opts.embedModel,
           embedModelId: opts.embedModelId,
           embedModelDim: opts.embedModelDim,
+          rebuild: opts.rebuild,
+          noBackup: opts.backup === false,
+          detectDeletions: opts.detectDeletions,
         });
       },
     );

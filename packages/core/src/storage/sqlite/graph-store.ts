@@ -460,6 +460,22 @@ export class SqliteGraphStore implements GraphStore {
     return out;
   }
 
+  /**
+   * Return every qualified name persisted for `orgId` across all label tables.
+   * Used by full-sync deletion detection to compute the difference between
+   * what was previously known and what the current sync touched.
+   */
+  listAllQnames(orgId: OrgId): QualifiedName[] {
+    const out: QualifiedName[] = [];
+    for (const tbl of this.nodeLabelCache.values()) {
+      const rows = this.db
+        .prepare(`SELECT qualified_name FROM ${tbl} WHERE org_id = ?`)
+        .all(orgId) as Array<{ qualified_name: string }>;
+      for (const r of rows) out.push(r.qualified_name as QualifiedName);
+    }
+    return out;
+  }
+
   countNodes(orgId: OrgId): number {
     let total = 0;
     for (const tbl of this.nodeLabelCache.values()) {
