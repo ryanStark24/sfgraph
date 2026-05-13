@@ -6,10 +6,19 @@ export interface IngestOpts {
   org?: string | undefined;
   mode?: "full" | "incremental" | "auto" | undefined;
   db?: string | undefined;
+  embedModel?: string | undefined;
+  embedModelId?: string | undefined;
+  embedModelDim?: number | undefined;
 }
 
 export async function ingestCmd(opts: IngestOpts): Promise<void> {
   const logger = new ConsoleLogger("info");
+  // Allow CLI --embed-model* flags to feed the env vars the embedder reads.
+  if (opts.embedModel) process.env.SFGRAPH_EMBED_MODEL_PATH = opts.embedModel;
+  if (opts.embedModelId) process.env.SFGRAPH_EMBED_MODEL_ID = opts.embedModelId;
+  if (opts.embedModelDim !== undefined) {
+    process.env.SFGRAPH_EMBED_MODEL_DIM = String(opts.embedModelDim);
+  }
   try {
     const { resolveOrg, resolveDefaultOrgAlias } = await import("@ryanstark24/sfgraph-core");
 

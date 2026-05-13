@@ -89,7 +89,12 @@ export class EmbeddingQueue {
   }
 }
 
-/** Default embedder: lazy-imports @xenova/transformers, returns zero-vectors on failure. */
+/** Default embedder: lazy-imports @xenova/transformers, returns zero-vectors on failure.
+ *
+ * Honors SFGRAPH_EMBED_MODEL_PATH / SFGRAPH_EMBED_MODEL_ID / SFGRAPH_EMBED_MODEL_DIM
+ * env vars so users can BYO model without touching the package. When unset,
+ * falls back to the vendored MiniLM L6 v2 shipped by @ryanstark24/sfgraph-models.
+ */
 async function defaultEmbed(texts: string[]): Promise<Float32Array[]> {
   try {
     const mod = (await import("@xenova/transformers" as unknown as string)) as {
@@ -100,21 +105,32 @@ async function defaultEmbed(texts: string[]): Promise<Float32Array[]> {
     };
     const { pipeline, env } = mod;
     env.allowRemoteModels = false;
-    try {
-      const models = (await import("@ryanstark24/sfgraph-models" as unknown as string)) as {
-        MODEL_DATA_DIR?: string;
-      };
-      if (models?.MODEL_DATA_DIR) env.localModelPath = models.MODEL_DATA_DIR;
-    } catch {
-      /* models package optional */
+
+    const envPath = process.env.SFGRAPH_EMBED_MODEL_PATH;
+    const modelId = process.env.SFGRAPH_EMBED_MODEL_ID ?? "Xenova/all-MiniLM-L6-v2";
+    const dim = process.env.SFGRAPH_EMBED_MODEL_DIM
+      ? Number.parseInt(process.env.SFGRAPH_EMBED_MODEL_DIM, 10)
+      : 384;
+
+    if (envPath) {
+      env.localModelPath = envPath;
+    } else {
+      try {
+        const models = (await import("@ryanstark24/sfgraph-models" as unknown as string)) as {
+          MODEL_DATA_DIR?: string;
+        };
+        if (models?.MODEL_DATA_DIR) env.localModelPath = models.MODEL_DATA_DIR;
+      } catch {
+        /* models package optional */
+      }
     }
-    const pipe = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+
+    const pipe = await pipeline("feature-extraction", modelId, {
       quantized: true,
       local_files_only: true,
     });
     const out = await pipe(texts, { pooling: "mean", normalize: true });
     const results: Float32Array[] = [];
-    const dim = 384;
     for (let i = 0; i < texts.length; i++) {
       results.push(new Float32Array(out.data.slice(i * dim, (i + 1) * dim)));
     }

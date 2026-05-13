@@ -5,7 +5,7 @@ export {
   readChecksumManifest,
   verifyVendoredModel,
 } from "./checksum.js";
-export { type EmbedderHandle, load } from "./loader.js";
+export { type EmbedderHandle, type LoadOptions, load } from "./loader.js";
 export { MODEL_DATA_DIR, VENDORED_MODEL_DIM, VENDORED_MODEL_ID } from "./paths.js";
 
 // Back-compat alias from Phase 0.

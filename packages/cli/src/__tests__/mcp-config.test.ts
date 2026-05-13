@@ -15,14 +15,25 @@ afterEach(() => {
 
 describe("writeMcpConfig", () => {
   it("creates a fresh config file with the sfgraph entry", async () => {
-    const res = await writeMcpConfig("cursor", { homeOverride: home });
+    const res = await writeMcpConfig("cursor", { homeOverride: home, platformOverride: "darwin" });
     expect(res.action).toBe("created");
     const path = configPathFor("cursor", { homeOverride: home });
     expect(existsSync(path)).toBe(true);
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     expect(parsed.mcpServers.sfgraph).toEqual({
       command: "npx",
-      args: ["-y", "sfgraph"],
+      args: ["-y", "@ryanstark24/sfgraph-mcp"],
+    });
+  });
+
+  it("emits npx.cmd on Windows so spawned process doesn't ENOENT", async () => {
+    const res = await writeMcpConfig("cursor", { homeOverride: home, platformOverride: "win32" });
+    expect(res.action).toBe("created");
+    const path = configPathFor("cursor", { homeOverride: home });
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    expect(parsed.mcpServers.sfgraph).toEqual({
+      command: "npx.cmd",
+      args: ["-y", "@ryanstark24/sfgraph-mcp"],
     });
   });
 
@@ -37,7 +48,7 @@ describe("writeMcpConfig", () => {
       }),
       "utf8",
     );
-    const res = await writeMcpConfig("cursor", { homeOverride: home });
+    const res = await writeMcpConfig("cursor", { homeOverride: home, platformOverride: "darwin" });
     expect(res.action).toBe("updated");
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     expect(parsed.mcpServers.other).toEqual({ command: "node", args: ["other.js"] });
@@ -46,8 +57,11 @@ describe("writeMcpConfig", () => {
   });
 
   it("is idempotent — second write reports skipped", async () => {
-    await writeMcpConfig("cursor", { homeOverride: home });
-    const res2 = await writeMcpConfig("cursor", { homeOverride: home });
+    await writeMcpConfig("cursor", { homeOverride: home, platformOverride: "darwin" });
+    const res2 = await writeMcpConfig("cursor", {
+      homeOverride: home,
+      platformOverride: "darwin",
+    });
     expect(res2.action).toBe("skipped");
   });
 });

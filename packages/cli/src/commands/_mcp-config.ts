@@ -28,10 +28,16 @@ interface McpConfigShape {
   [key: string]: unknown;
 }
 
-const SFGRAPH_ENTRY: McpServerEntry = {
-  command: "npx",
-  args: ["-y", "sfgraph"],
-};
+/** MCP server invocation. On Windows, `npx` is `npx.cmd`; spawned tools that
+ *  receive `command: 'npx'` literally will ENOENT. We emit the platform-correct
+ *  binary so the same `sfgraph install` produces a working config on macOS,
+ *  Linux, and Windows. */
+function sfgraphEntryFor(plat: NodeJS.Platform): McpServerEntry {
+  if (plat === "win32") {
+    return { command: "npx.cmd", args: ["-y", "@ryanstark24/sfgraph-mcp"] };
+  }
+  return { command: "npx", args: ["-y", "@ryanstark24/sfgraph-mcp"] };
+}
 
 export function configPathFor(target: McpTarget, opts: McpWriteOptions = {}): string {
   const home = opts.homeOverride ?? homedir();
@@ -49,8 +55,16 @@ export function configPathFor(target: McpTarget, opts: McpWriteOptions = {}): st
       return join(home, ".config", "Claude", "claude_desktop_config.json");
     }
     case "cursor":
+      // Cursor uses ~/.cursor on every platform.
       return join(home, ".cursor", "mcp.json");
     case "vscode":
+      // VS Code's User settings dir is per-platform.
+      if (plat === "darwin") {
+        return join(home, "Library", "Application Support", "Code", "User", "mcp.json");
+      }
+      if (plat === "win32") {
+        return join(home, "AppData", "Roaming", "Code", "User", "mcp.json");
+      }
       return join(home, ".config", "Code", "User", "mcp.json");
   }
 }
@@ -60,6 +74,8 @@ export async function writeMcpConfig(
   opts: McpWriteOptions = {},
 ): Promise<McpWriteResult> {
   const path = configPathFor(target, opts);
+  const plat = opts.platformOverride ?? platform();
+  const sfgraphEntry = sfgraphEntryFor(plat);
   let existing: McpConfigShape = {};
   if (existsSync(path)) {
     try {
@@ -71,7 +87,7 @@ export async function writeMcpConfig(
   const merged: McpConfigShape = { ...existing };
   const servers: Record<string, McpServerEntry> = { ...(merged.mcpServers ?? {}) };
   const before = servers.sfgraph;
-  servers.sfgraph = SFGRAPH_ENTRY;
+  servers.sfgraph = sfgraphEntry;
   merged.mcpServers = servers;
 
   const nextJson = `${JSON.stringify(merged, null, 2)}\n`;
@@ -81,7 +97,7 @@ export async function writeMcpConfig(
     action = "would-write";
   } else if (existsSync(path)) {
     const prev = await readFile(path, "utf8");
-    if (prev === nextJson && before && before.command === SFGRAPH_ENTRY.command) {
+    if (prev === nextJson && before && before.command === sfgraphEntry.command) {
       action = "skipped";
     } else {
       await mkdir(dirname(path), { recursive: true });

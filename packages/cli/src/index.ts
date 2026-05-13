@@ -61,9 +61,38 @@ export function buildProgram(): Command {
     .option("--org <alias>", "Salesforce alias/username (defaults to `sf config` target-org)")
     .option("--mode <mode>", "full | incremental | auto", "auto")
     .option("--db <path>", "override SQLite database path")
-    .action(async (opts: { org?: string; mode: "full" | "incremental" | "auto"; db?: string }) => {
-      await ingestCmd({ org: opts.org, mode: opts.mode, db: opts.db });
-    });
+    .option(
+      "--embed-model <path>",
+      "absolute path to a custom embedding model dir (overrides the vendored MiniLM); also reads SFGRAPH_EMBED_MODEL_PATH",
+    )
+    .option(
+      "--embed-model-id <id>",
+      "model id (e.g. 'MyOrg/MyModel'); also reads SFGRAPH_EMBED_MODEL_ID",
+    )
+    .option(
+      "--embed-model-dim <n>",
+      "embedding dimension (default 384); also reads SFGRAPH_EMBED_MODEL_DIM",
+      (v) => Number.parseInt(v, 10),
+    )
+    .action(
+      async (opts: {
+        org?: string;
+        mode: "full" | "incremental" | "auto";
+        db?: string;
+        embedModel?: string;
+        embedModelId?: string;
+        embedModelDim?: number;
+      }) => {
+        await ingestCmd({
+          org: opts.org,
+          mode: opts.mode,
+          db: opts.db,
+          embedModel: opts.embedModel,
+          embedModelId: opts.embedModelId,
+          embedModelDim: opts.embedModelDim,
+        });
+      },
+    );
 
   program
     .command("link")

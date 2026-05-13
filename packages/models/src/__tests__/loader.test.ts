@@ -74,3 +74,40 @@ describe("EmbedderHandle shape", () => {
     expect(out[0]?.length).toBe(384);
   });
 });
+
+describe("load() custom model override", () => {
+  it("throws E_MODEL_NOT_VENDORED when --embed-model path is missing", async () => {
+    const { load } = await import("../loader.js");
+    const missing = join(dir, "does-not-exist");
+    await expect(load({ modelPath: missing, modelId: "Foo/Bar", dim: 256 })).rejects.toMatchObject({
+      code: ErrorCode.E_MODEL_NOT_VENDORED,
+    });
+  });
+
+  it("reads SFGRAPH_EMBED_MODEL_PATH / _ID / _DIM env vars", async () => {
+    const { load } = await import("../loader.js");
+    const old = {
+      p: process.env.SFGRAPH_EMBED_MODEL_PATH,
+      i: process.env.SFGRAPH_EMBED_MODEL_ID,
+      d: process.env.SFGRAPH_EMBED_MODEL_DIM,
+    };
+    process.env.SFGRAPH_EMBED_MODEL_PATH = join(dir, "missing-from-env");
+    process.env.SFGRAPH_EMBED_MODEL_ID = "Org/Model";
+    process.env.SFGRAPH_EMBED_MODEL_DIM = "512";
+    try {
+      await expect(load()).rejects.toMatchObject({
+        code: ErrorCode.E_MODEL_NOT_VENDORED,
+      });
+    } finally {
+      // biome-ignore lint/performance/noDelete: cleanup of test-scoped env vars
+      if (old.p === undefined) delete process.env.SFGRAPH_EMBED_MODEL_PATH;
+      else process.env.SFGRAPH_EMBED_MODEL_PATH = old.p;
+      // biome-ignore lint/performance/noDelete: cleanup of test-scoped env vars
+      if (old.i === undefined) delete process.env.SFGRAPH_EMBED_MODEL_ID;
+      else process.env.SFGRAPH_EMBED_MODEL_ID = old.i;
+      // biome-ignore lint/performance/noDelete: cleanup of test-scoped env vars
+      if (old.d === undefined) delete process.env.SFGRAPH_EMBED_MODEL_DIM;
+      else process.env.SFGRAPH_EMBED_MODEL_DIM = old.d;
+    }
+  });
+});
