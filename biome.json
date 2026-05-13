@@ -31,7 +31,6 @@
     "ignore": [
       "**/dist/**",
       "**/node_modules/**",
-      "legacy/**",
       "**/coverage/**",
       "**/*.tsbuildinfo",
       "**/__tests__/fixtures/**"

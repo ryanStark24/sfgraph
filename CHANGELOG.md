@@ -64,8 +64,7 @@ complete for the v1 charter.
   tables when present (< 50 ms hot path).
 - `deployment_manifest_gen` emits real package.xml + destructiveChanges.xml
   with API-version fallback and label-aware member formatting.
-- Documentation: `MIGRATING_FROM_PYTHON.md`, `TOOLS.md` rewrite, `SKILLS.md`,
-  `PRIVACY.md`, root `README.md`.
+- Documentation: `TOOLS.md`, `SKILLS.md`, `PRIVACY.md`, root `README.md`.
 
 ### Notes
 

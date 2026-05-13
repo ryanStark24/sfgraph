@@ -42,5 +42,4 @@ apps/
 - `docs/TOOLS.md` — full MCP tool catalog
 - `docs/SKILLS.md` — skill playbooks
 - `docs/PRIVACY.md` — read-only + sanitizer details
-- `docs/MIGRATING_FROM_PYTHON.md` — coming from the legacy prototype
 - `CHANGELOG.md` — per-phase release notes
