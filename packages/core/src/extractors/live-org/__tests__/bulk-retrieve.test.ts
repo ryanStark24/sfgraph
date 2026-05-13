@@ -7,6 +7,8 @@ import { buildJsforceMock } from "./_jsforce-mock.js";
 
 const baseCaps: OrgCapabilities = {
   detectedNamespaces: [],
+  vlocityNamespaces: [],
+  vlocityLegacy: false,
   vlocityCmt: false,
   omnistudioOncore: false,
   agentforce: false,
@@ -91,10 +93,16 @@ describe("bulkRetrieve", () => {
       }
       return { records: [], done: true };
     };
-    const caps: OrgCapabilities = { ...baseCaps, vlocityCmt: true, omnistudioOncore: true };
+    const caps: OrgCapabilities = {
+      ...baseCaps,
+      vlocityCmt: true,
+      vlocityLegacy: true,
+      vlocityNamespaces: ["vlocity_cmt"],
+      omnistudioOncore: true,
+    };
     const members = await collect(bulkRetrieve(conn, caps, asOrgId("org_1")));
     const types = members.map((m) => m.ref.memberType);
-    expect(types.some((t) => t.startsWith("Vlocity"))).toBe(true);
+    expect(members.some((m) => m.ref.namespace === "vlocity_cmt")).toBe(true);
     expect(types.some((t) => t.startsWith("Omni"))).toBe(true);
   });
 });

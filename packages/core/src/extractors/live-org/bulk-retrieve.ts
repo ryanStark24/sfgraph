@@ -20,7 +20,7 @@ export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>)
 export async function* bulkRetrieve(
   conn: any,
   caps: OrgCapabilities,
-  _orgId: OrgId,
+  orgId: OrgId,
 ): AsyncIterable<RawMember> {
   const sources: Array<AsyncIterable<RawMember>> = [
     iterApex(conn),
@@ -30,7 +30,7 @@ export async function* bulkRetrieve(
     iterSecurity(conn),
     iterIntegration(conn),
   ];
-  if (caps.vlocityCmt) sources.push(iterVlocity(conn));
+  if (caps.vlocityLegacy) sources.push(iterVlocity(conn, caps, String(orgId)));
   if (caps.omnistudioOncore) sources.push(iterOmnistudio(conn));
   yield* mergeAsyncIterables(...sources);
 }

@@ -29,6 +29,19 @@ describe("probeCapabilities", () => {
     expect(caps.experienceCloud).toBe(true);
   });
 
+  it("detects multiple vlocity namespaces and preserves vlocityCmt back-compat", async () => {
+    const conn = buildJsforceMock({
+      describeResults: {
+        vlocity_cmt__DRBundle__c: true,
+        vlocity_ins__DRBundle__c: true,
+      },
+    });
+    const caps = await probeCapabilities(conn);
+    expect(caps.vlocityNamespaces).toEqual(["vlocity_cmt", "vlocity_ins"]);
+    expect(caps.vlocityLegacy).toBe(true);
+    expect(caps.vlocityCmt).toBe(true);
+  });
+
   it("detects sourceTracking when SourceMember tooling-describes; surfaces namespaces", async () => {
     const conn = buildJsforceMock({
       toolingDescribeResults: { SourceMember: true },

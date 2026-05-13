@@ -1,5 +1,20 @@
+export const VLOCITY_NAMESPACE_CANDIDATES = [
+  "vlocity_cmt",
+  "vlocity_ins",
+  "vlocity_hc",
+  "vlocity_ps",
+  "vlocity_fs",
+] as const;
+
+export type VlocityNamespace = (typeof VLOCITY_NAMESPACE_CANDIDATES)[number];
+
 export interface OrgCapabilities {
   detectedNamespaces: string[];
+  /** Subset of VLOCITY_NAMESPACE_CANDIDATES whose `${ns}__DRBundle__c` exists. */
+  vlocityNamespaces: string[];
+  /** True if any Vlocity industry namespace was detected. */
+  vlocityLegacy: boolean;
+  /** Back-compat alias: equivalent to vlocityNamespaces.includes('vlocity_cmt'). */
   vlocityCmt: boolean;
   omnistudioOncore: boolean;
   agentforce: boolean;
@@ -47,18 +62,25 @@ export async function probeCapabilities(conn: any): Promise<OrgCapabilities> {
     }
   }
 
-  const [vlocityCmt, omnistudioOncore, agentforce, experienceCloud, sourceTracking] =
-    await Promise.all([
-      describeExists(conn, "vlocity_cmt__DRBundle__c"),
-      describeExists(conn, "OmniProcess"),
-      describeExists(conn, "GenAiPlanner", true),
-      describeExists(conn, "Network"),
-      describeExists(conn, "SourceMember", true),
-    ]);
+  const vlocityProbes = await Promise.all(
+    VLOCITY_NAMESPACE_CANDIDATES.map((ns) => describeExists(conn, `${ns}__DRBundle__c`)),
+  );
+  const vlocityNamespaces: string[] = VLOCITY_NAMESPACE_CANDIDATES.filter(
+    (_ns, i) => vlocityProbes[i],
+  );
+
+  const [omnistudioOncore, agentforce, experienceCloud, sourceTracking] = await Promise.all([
+    describeExists(conn, "OmniProcess"),
+    describeExists(conn, "GenAiPlanner", true),
+    describeExists(conn, "Network"),
+    describeExists(conn, "SourceMember", true),
+  ]);
 
   return {
     detectedNamespaces: namespaces,
-    vlocityCmt,
+    vlocityNamespaces,
+    vlocityLegacy: vlocityNamespaces.length > 0,
+    vlocityCmt: vlocityNamespaces.includes("vlocity_cmt"),
     omnistudioOncore,
     agentforce,
     experienceCloud,
