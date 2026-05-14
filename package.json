@@ -28,6 +28,9 @@
       "@biomejs/biome",
       "better-sqlite3",
       "esbuild"
-    ]
+    ],
+    "overrides": {
+      "protobufjs@<7.2.5": "^7.2.5"
+    }
   }
 }
