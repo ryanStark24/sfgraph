@@ -7,7 +7,12 @@ import {
   multiOrgIngest,
 } from "@ryanstark24/sfgraph-core";
 import type { LiveIngestOpts, MultiOrgIngestEntry } from "@ryanstark24/sfgraph-core";
-import { ConsoleLogger, SfgraphError, getSfgraphPaths, safeOrgDbPath } from "@ryanstark24/sfgraph-shared";
+import {
+  ConsoleLogger,
+  SfgraphError,
+  getSfgraphPaths,
+  safeOrgDbPath,
+} from "@ryanstark24/sfgraph-shared";
 
 export interface IngestOpts {
   org?: string | undefined;

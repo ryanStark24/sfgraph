@@ -206,7 +206,7 @@ function wrapBulk(target: any): any {
         if (typeof original !== "function") return original;
         return (...args: unknown[]) => {
           const job = (original as (...a: unknown[]) => unknown).call(t, ...args);
-          return wrapGenericSurface(job, `bulk.job(...)`);
+          return wrapGenericSurface(job, "bulk.job(...)");
         };
       }
       const val = Reflect.get(t, prop, receiver);

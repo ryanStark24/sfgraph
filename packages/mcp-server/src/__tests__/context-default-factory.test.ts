@@ -39,7 +39,9 @@ async function stubPaths(): Promise<void> {
   });
 }
 
-async function stubCore(resolveImpl?: (alias: string) => Promise<{ orgId: string }>): Promise<void> {
+async function stubCore(
+  resolveImpl?: (alias: string) => Promise<{ orgId: string }>,
+): Promise<void> {
   vi.doMock("@ryanstark24/sfgraph-core", async () => {
     const actual = await vi.importActual<typeof import("@ryanstark24/sfgraph-core")>(
       "@ryanstark24/sfgraph-core",

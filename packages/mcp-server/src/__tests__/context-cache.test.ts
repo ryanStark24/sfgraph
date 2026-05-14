@@ -5,8 +5,8 @@ import { SqliteGraphStore, SqliteSnapshotStore } from "@ryanstark24/sfgraph-core
 import { type OrgId, SfgraphError, asOrgId } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  _contextCacheSize,
   type ToolContext,
+  _contextCacheSize,
   closeAllContexts,
   getToolContext,
   setToolContextFactory,
