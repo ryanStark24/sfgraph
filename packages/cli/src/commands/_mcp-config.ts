@@ -26,11 +26,17 @@ export interface McpWriteOptions {
    *  end up with a different ABI than the better-sqlite3 binding was built
    *  against. */
   pinNode?: string;
+  /** Extra environment variables to set in the spawned MCP child. Critical
+   *  for sandboxed IDE runtimes (Cursor on macOS) where `env-paths` resolves
+   *  to a location the child can't read — pinning SFGRAPH_DATA_DIR here makes
+   *  the child use the same on-disk location the shell wrote to. */
+  env?: Record<string, string>;
 }
 
 interface McpServerEntry {
   command: string;
   args: string[];
+  env?: Record<string, string>;
 }
 
 interface McpConfigShape {
@@ -50,14 +56,18 @@ function sfgraphEntryFor(
   plat: NodeJS.Platform,
   localBinPath?: string,
   pinNode?: string,
+  env?: Record<string, string>,
 ): McpServerEntry {
+  let entry: McpServerEntry;
   if (localBinPath) {
-    return { command: pinNode ?? "node", args: [localBinPath, "mcp"] };
+    entry = { command: pinNode ?? "node", args: [localBinPath, "mcp"] };
+  } else if (plat === "win32") {
+    entry = { command: "npx.cmd", args: ["-y", "@ryanstark24/sfgraph-mcp"] };
+  } else {
+    entry = { command: "npx", args: ["-y", "@ryanstark24/sfgraph-mcp"] };
   }
-  if (plat === "win32") {
-    return { command: "npx.cmd", args: ["-y", "@ryanstark24/sfgraph-mcp"] };
-  }
-  return { command: "npx", args: ["-y", "@ryanstark24/sfgraph-mcp"] };
+  if (env && Object.keys(env).length > 0) entry.env = env;
+  return entry;
 }
 
 export function configPathFor(target: McpTarget, opts: McpWriteOptions = {}): string {
@@ -96,7 +106,7 @@ export async function writeMcpConfig(
 ): Promise<McpWriteResult> {
   const path = configPathFor(target, opts);
   const plat = opts.platformOverride ?? platform();
-  const sfgraphEntry = sfgraphEntryFor(plat, opts.localBinPath, opts.pinNode);
+  const sfgraphEntry = sfgraphEntryFor(plat, opts.localBinPath, opts.pinNode, opts.env);
   let existing: McpConfigShape = {};
   if (existsSync(path)) {
     try {

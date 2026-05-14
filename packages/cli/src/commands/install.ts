@@ -59,10 +59,24 @@ export async function installCmd(opts: InstallCmdOpts = {}): Promise<InstallSumm
     homeOverride?: string;
     localBinPath?: string;
     pinNode?: string;
+    env?: Record<string, string>;
   } = {
     ...sharedOpts,
   };
   if (localBinPath) mcpOpts.localBinPath = localBinPath;
+  // Always propagate the shell's resolved data/config/log dirs into the MCP
+  // entry's env. This is the only way sandboxed IDE child processes (Cursor
+  // on macOS, Claude Desktop) read from the same on-disk location the shell
+  // wrote to. Without this, the child's env-paths resolver lands in a
+  // different (often non-writable) location than the shell.
+  const { getSfgraphPaths } = await import("@ryanstark24/sfgraph-shared");
+  const shellPaths = getSfgraphPaths();
+  mcpOpts.env = {
+    SFGRAPH_DATA_DIR: shellPaths.data,
+    SFGRAPH_CONFIG_DIR: shellPaths.config,
+    SFGRAPH_CACHE_DIR: shellPaths.cache,
+    SFGRAPH_LOG_DIR: shellPaths.log,
+  };
   // Resolve pinNode: explicit flag wins; otherwise default to process.execPath
   // when --local is set so the IDE child uses the same Node that ran install.
   if (opts.pinNode) {

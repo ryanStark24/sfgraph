@@ -52,6 +52,24 @@ describe("writeMcpConfig", () => {
     });
   });
 
+  it("propagates SFGRAPH_* env vars into the MCP entry for sandboxed IDE children", async () => {
+    const res = await writeMcpConfig("cursor", {
+      homeOverride: home,
+      platformOverride: "darwin",
+      env: {
+        SFGRAPH_DATA_DIR: "/Users/x/Library/Application Support/sfgraph",
+        SFGRAPH_CONFIG_DIR: "/Users/x/Library/Preferences/sfgraph",
+      },
+    });
+    expect(res.action).toBe("created");
+    const path = configPathFor("cursor", { homeOverride: home });
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    expect(parsed.mcpServers.sfgraph.env).toEqual({
+      SFGRAPH_DATA_DIR: "/Users/x/Library/Application Support/sfgraph",
+      SFGRAPH_CONFIG_DIR: "/Users/x/Library/Preferences/sfgraph",
+    });
+  });
+
   it("with pinNode + localBinPath, pins the command to the absolute Node path", async () => {
     const res = await writeMcpConfig("cursor", {
       homeOverride: home,
