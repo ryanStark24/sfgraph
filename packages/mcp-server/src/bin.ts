@@ -1,3 +1,4 @@
+import { closeAllContexts } from "./context.js";
 import { SfgraphMcpServer } from "./server.js";
 import { installShutdownHandlers } from "./shutdown.js";
 
@@ -6,7 +7,7 @@ export async function runMcpServer(): Promise<void> {
   server.registerDefaults();
   installShutdownHandlers({
     onShutdown: async () => {
-      // Future: flush telemetry, close stores. Phase 0: nothing held open.
+      await closeAllContexts();
     },
   });
   await server.startStdio();

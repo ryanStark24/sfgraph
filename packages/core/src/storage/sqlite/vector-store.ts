@@ -1,6 +1,11 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { StorageError, asQualifiedName } from "@ryanstark24/sfgraph-shared";
+import {
+  ErrorCode,
+  SfgraphError,
+  StorageError,
+  asQualifiedName,
+} from "@ryanstark24/sfgraph-shared";
 import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
@@ -66,9 +71,16 @@ export class SqliteVectorStore implements VectorStore {
     try {
       sqliteVec.load(this.db);
     } catch (err) {
-      // Already loaded - ignore.
-      if (!(err instanceof Error) || !/already/i.test(err.message)) {
-        // not the "already loaded" case - rethrow only if it's a real failure
+      const msg = err instanceof Error ? err.message : String(err);
+      // Only swallow the benign "already loaded" case. Anything else means
+      // vec0 virtual tables won't work and the store would lie about being
+      // initialized — surface that as E_VECTOR_EXTENSION so callers know.
+      if (!/already/i.test(msg)) {
+        throw new SfgraphError(
+          ErrorCode.E_VECTOR_EXTENSION,
+          `failed to load sqlite-vec extension: ${msg}`,
+          { cause: err instanceof Error ? err : undefined },
+        );
       }
     }
     this.initialized = true;
