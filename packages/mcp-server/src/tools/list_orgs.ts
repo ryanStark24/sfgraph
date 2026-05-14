@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { getSfgraphPaths } from "@ryanstark24/sfgraph-shared";
+import { getSfgraphPaths, validateOrgIdentifier } from "@ryanstark24/sfgraph-shared";
 
 const nodeRequire = createRequire(import.meta.url);
 import { defineTool, z } from "./_define.js";
@@ -187,6 +187,12 @@ defineTool({
       for (const f of files) {
         const orgId = f.replace(/\.sqlite$/, "");
         if (!orgId || orgId.includes("/")) continue;
+        // Harden: skip any file whose stem isn't a valid org identifier.
+        try {
+          validateOrgIdentifier(orgId);
+        } catch {
+          continue;
+        }
         const dbPath = path.join(dataDir, f);
         const db = openDb(dbPath);
         if (!db) continue;

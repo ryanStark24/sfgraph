@@ -9,6 +9,8 @@ export const ErrorCode = {
   E_SF_INGEST: "E_SF_INGEST",
   E_MODEL_NOT_VENDORED: "E_MODEL_NOT_VENDORED",
   E_MODEL_CHECKSUM_MISMATCH: "E_MODEL_CHECKSUM_MISMATCH",
+  E_INVALID_ORG_IDENTIFIER: "E_INVALID_ORG_IDENTIFIER",
+  E_VECTOR_EXTENSION: "E_VECTOR_EXTENSION",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
