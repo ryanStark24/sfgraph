@@ -65,17 +65,21 @@ async function defaultResolveDefault(): Promise<string | null> {
   return null;
 }
 
+/** Diagnostic counter — captured into the summary so silent open failures
+ *  (missing native binding, wrong arch, etc.) don't hide behind '0 orgs'. */
+let lastOpenDbError: string | null = null;
+
 function defaultOpenDb(p: string): {
   prepare: (s: string) => { get: (a: string) => unknown };
   close: () => void;
 } | null {
   if (!existsSync(p)) return null;
   try {
-    // better-sqlite3 ships with @ryanstark24/sfgraph-core.
     const Database = nodeRequire("better-sqlite3");
     const db = new Database(p, { readonly: true, fileMustExist: true });
     return db as { prepare: (s: string) => { get: (a: string) => unknown }; close: () => void };
-  } catch {
+  } catch (e) {
+    lastOpenDbError = (e as Error).message;
     return null;
   }
 }
@@ -259,9 +263,12 @@ defineTool({
     const md = orgs.length === 0 ? "_no orgs_" : `${header}\n${rows}`;
     const authCount = auths.length;
     const ingestedCount = orgs.filter((o) => o.ingested).length;
+    const dbErrSuffix = lastOpenDbError ? ` [openDb error: ${lastOpenDbError}]` : "";
     const summary = loadError
-      ? `sf-cli auth unavailable in this process (${loadError}); discovered ${orgs.length} org${orgs.length === 1 ? "" : "s"} from local sfgraph data dir (${ingestedCount} ingested)`
-      : `${orgs.length} org${orgs.length === 1 ? "" : "s"} total — ${authCount} via sf CLI, ${ingestedCount} ingested locally`;
+      ? `sf-cli auth unavailable in this process (${loadError}); discovered ${orgs.length} org${orgs.length === 1 ? "" : "s"} from local sfgraph data dir (${ingestedCount} ingested)${dbErrSuffix}`
+      : `${orgs.length} org${orgs.length === 1 ? "" : "s"} total — ${authCount} via sf CLI, ${ingestedCount} ingested locally${dbErrSuffix}`;
+    // Reset for next invocation so a transient error doesn't stick.
+    lastOpenDbError = null;
     return {
       summary,
       markdown: md,
