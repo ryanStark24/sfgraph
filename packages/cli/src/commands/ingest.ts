@@ -137,6 +137,15 @@ async function buildSingleIngestOpts(
   };
 }
 
+/**
+ * SQLite uses WAL by default in this codebase, which means alongside
+ * `<file>.sqlite` you also get `<file>.sqlite-wal` and `<file>.sqlite-shm`.
+ * Plain rollback journals add `<file>.sqlite-journal`. Without handling
+ * these sidecars during --rebuild, the move/delete leaves orphans that
+ * SQLite later reads back into the new DB, corrupting state.
+ */
+const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"];
+
 async function applyRebuild(
   dbPath: string,
   orgId: string,
@@ -150,6 +159,16 @@ async function applyRebuild(
   }
   if (noBackup) {
     unlinkSync(dbPath);
+    for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
+      const sidecar = `${dbPath}${suffix}`;
+      if (existsSync(sidecar)) {
+        try {
+          unlinkSync(sidecar);
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
     console.warn(`REBUILD: existing graph for ${orgId} DELETED (no-backup); running full sync`);
     return;
   }
@@ -158,6 +177,22 @@ async function applyRebuild(
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(backupDir, `${orgId}.rebuild-${stamp}.sqlite`);
   renameSync(dbPath, backupPath);
+  for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
+    const sidecar = `${dbPath}${suffix}`;
+    if (existsSync(sidecar)) {
+      try {
+        renameSync(sidecar, `${backupPath}${suffix}`);
+      } catch {
+        /* best-effort: if we can't move the sidecar, delete it so it
+           doesn't get associated with the fresh DB */
+        try {
+          unlinkSync(sidecar);
+        } catch {
+          /* swallow */
+        }
+      }
+    }
+  }
   console.warn(`REBUILD: existing graph for ${orgId} moved to ${backupPath}; running full sync`);
 }
 

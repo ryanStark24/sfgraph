@@ -116,6 +116,63 @@ describe("ingest --rebuild file handling", () => {
     }
   });
 
+  it("moves WAL/SHM sidecars alongside the main DB to backups/", async () => {
+    const orgId = "00Dxxsidecar01";
+    const dbPath = join(tmpDbDir, `${orgId}.sqlite`);
+    writeFileSync(dbPath, "stub");
+    writeFileSync(`${dbPath}-wal`, "stubwal");
+    writeFileSync(`${dbPath}-shm`, "stubshm");
+
+    await stubModulesForRebuild(orgId);
+    const { ingestCmd } = await import("../commands/ingest.js");
+    await ingestCmd({ org: "fake", rebuild: true, db: dbPath });
+
+    const backupDir = join(tmpDataDir, "backups");
+    const files = readdirSync(backupDir);
+    const mainBackup = files.find(
+      (f) => f.startsWith(`${orgId}.rebuild-`) && f.endsWith(".sqlite"),
+    );
+    expect(mainBackup).toBeDefined();
+    // Sidecars must have moved alongside the main file.
+    const walBackup = files.find((f) => f === `${mainBackup}-wal`);
+    const shmBackup = files.find((f) => f === `${mainBackup}-shm`);
+    expect(walBackup).toBeDefined();
+    expect(shmBackup).toBeDefined();
+    expect(readFileSync(join(backupDir, walBackup ?? ""), "utf8")).toBe("stubwal");
+    expect(readFileSync(join(backupDir, shmBackup ?? ""), "utf8")).toBe("stubshm");
+    // No orphan sidecars left next to the (fresh) main DB.
+    expect(existsSync(`${dbPath}-wal`)).toBeDefined();
+    // The fresh sidecars from the reopened DB are SQLite's own; what
+    // matters is the stub contents are gone — assert by absence of "stubwal".
+    if (existsSync(`${dbPath}-wal`)) {
+      expect(readFileSync(`${dbPath}-wal`, "utf8")).not.toBe("stubwal");
+    }
+  });
+
+  it("--no-backup deletes sidecars too", async () => {
+    const orgId = "00Dxxsidecar02";
+    const dbPath = join(tmpDbDir, `${orgId}.sqlite`);
+    writeFileSync(dbPath, "stub");
+    writeFileSync(`${dbPath}-wal`, "stubwal");
+    writeFileSync(`${dbPath}-shm`, "stubshm");
+    writeFileSync(`${dbPath}-journal`, "stubjournal");
+
+    await stubModulesForRebuild(orgId);
+    const { ingestCmd } = await import("../commands/ingest.js");
+    await ingestCmd({ org: "fake", rebuild: true, noBackup: true, db: dbPath });
+
+    // After rebuild + no-backup, the stub sidecars must not exist (a fresh
+    // DB may have created new WAL/SHM with different content, which is fine).
+    if (existsSync(`${dbPath}-wal`)) {
+      expect(readFileSync(`${dbPath}-wal`, "utf8")).not.toBe("stubwal");
+    }
+    if (existsSync(`${dbPath}-shm`)) {
+      expect(readFileSync(`${dbPath}-shm`, "utf8")).not.toBe("stubshm");
+    }
+    // -journal isn't created in WAL mode, so it shouldn't reappear.
+    expect(existsSync(`${dbPath}-journal`)).toBe(false);
+  });
+
   it("is a no-op when no existing DB file is present", async () => {
     const orgId = "00Dxxnewbuild";
     const dbPath = join(tmpDbDir, `${orgId}.sqlite`);
