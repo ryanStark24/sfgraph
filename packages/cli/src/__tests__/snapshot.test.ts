@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 let tmpDataDir: string;
-const orgId = "00DTestSnap000";
+const orgId = "00DTestSnap0001";
 
 beforeEach(() => {
   tmpDataDir = mkdtempSync(join(tmpdir(), "sfgraph-snap-"));

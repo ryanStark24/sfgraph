@@ -7,7 +7,7 @@ import {
   multiOrgIngest,
 } from "@ryanstark24/sfgraph-core";
 import type { LiveIngestOpts, MultiOrgIngestEntry } from "@ryanstark24/sfgraph-core";
-import { ConsoleLogger, SfgraphError, getSfgraphPaths } from "@ryanstark24/sfgraph-shared";
+import { ConsoleLogger, SfgraphError, getSfgraphPaths, safeOrgDbPath } from "@ryanstark24/sfgraph-shared";
 
 export interface IngestOpts {
   org?: string | undefined;
@@ -64,7 +64,7 @@ async function buildSingleIngestOpts(
   deps: { resolveOrg: typeof import("@ryanstark24/sfgraph-core").resolveOrg },
 ): Promise<LiveIngestOpts> {
   const resolved = await deps.resolveOrg(alias);
-  const dbPath = opts.db ?? path.join(getSfgraphPaths().data, `${resolved.orgId}.sqlite`);
+  const dbPath = opts.db ?? safeOrgDbPath(getSfgraphPaths().data, String(resolved.orgId));
 
   if (opts.rebuild) {
     await applyRebuild(dbPath, String(resolved.orgId), Boolean(opts.noBackup), logger);

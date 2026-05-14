@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
+import { validateOrgIdentifier } from "./org-identifier.js";
 import { getSfgraphPaths } from "./paths.js";
 
 export interface Workspace {
@@ -46,21 +47,36 @@ export function findProjectRoot(start: string): string | null {
 
 export async function readWorkspace(projectRoot: string): Promise<Workspace | null> {
   const file = workspaceConfigPath(projectRoot);
+  let raw: string;
   try {
-    const raw = await fsp.readFile(file, "utf8");
-    const parsed = JSON.parse(raw) as Partial<Workspace>;
-    const ws: Workspace = {
-      projectRoot: parsed.projectRoot ?? path.resolve(projectRoot),
-      projectHash: parsed.projectHash ?? workspaceHashFor(projectRoot),
-      orgAlias: parsed.orgAlias ?? null,
-      orgId: parsed.orgId ?? null,
-      linkedAt: parsed.linkedAt ?? null,
-      lastAnalyzedAt: parsed.lastAnalyzedAt ?? null,
-    };
-    return ws;
+    raw = await fsp.readFile(file, "utf8");
   } catch {
     return null;
   }
+  let parsed: Partial<Workspace>;
+  try {
+    parsed = JSON.parse(raw) as Partial<Workspace>;
+  } catch {
+    return null;
+  }
+  // P1 audit: validate orgId / orgAlias read off disk. A malicious / corrupt
+  // workspace JSON (e.g. orgId: "../../etc/passwd") must not flow into a
+  // path.join'd DB path. Throw — the caller (CLI) surfaces the error rather
+  // than silently falling back to a fresh empty workspace.
+  if (typeof parsed.orgId === "string" && parsed.orgId.length > 0) {
+    validateOrgIdentifier(parsed.orgId);
+  }
+  if (typeof parsed.orgAlias === "string" && parsed.orgAlias.length > 0) {
+    validateOrgIdentifier(parsed.orgAlias);
+  }
+  return {
+    projectRoot: parsed.projectRoot ?? path.resolve(projectRoot),
+    projectHash: parsed.projectHash ?? workspaceHashFor(projectRoot),
+    orgAlias: parsed.orgAlias ?? null,
+    orgId: parsed.orgId ?? null,
+    linkedAt: parsed.linkedAt ?? null,
+    lastAnalyzedAt: parsed.lastAnalyzedAt ?? null,
+  };
 }
 
 export async function writeWorkspace(ws: Workspace): Promise<void> {

@@ -13,6 +13,7 @@ import {
   findProjectRoot,
   getSfgraphPaths,
   readWorkspace,
+  safeOrgDbPath,
 } from "@ryanstark24/sfgraph-shared";
 
 export interface WipOpts {
@@ -49,7 +50,7 @@ export async function wipCmd(opts: WipOpts): Promise<void> {
       }
     }
 
-    const dbPath = path.join(getSfgraphPaths().data, `${orgId}.sqlite`);
+    const dbPath = safeOrgDbPath(getSfgraphPaths().data, orgId);
     const graphStore = new SqliteGraphStore({ dbPath });
     await graphStore.init();
     try {

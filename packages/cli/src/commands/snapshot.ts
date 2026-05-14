@@ -13,6 +13,7 @@ import {
   findProjectRoot,
   getSfgraphPaths,
   readWorkspace,
+  safeOrgDbPath,
 } from "@ryanstark24/sfgraph-shared";
 
 export interface SnapshotCommonOpts {
@@ -60,7 +61,7 @@ async function resolveOrgId(opts: SnapshotCommonOpts): Promise<string> {
 async function openStores(
   orgId: string,
 ): Promise<{ graphStore: SqliteGraphStore; snapshotStore: SqliteSnapshotStore }> {
-  const dbPath = path.join(getSfgraphPaths().data, `${orgId}.sqlite`);
+  const dbPath = safeOrgDbPath(getSfgraphPaths().data, orgId);
   const graphStore = new SqliteGraphStore({ dbPath });
   await graphStore.init();
   const snapshotStore = new SqliteSnapshotStore({
