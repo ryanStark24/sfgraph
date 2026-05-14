@@ -10,7 +10,6 @@ interface EntityRow {
   QualifiedApiName: string;
   NamespacePrefix?: string | null;
   LastModifiedDate?: string | null;
-  IsCustom?: boolean | null;
 }
 
 /** Names we never try metadata.read('CustomObject') on. These are platform
@@ -54,7 +53,7 @@ function shouldRead(row: EntityRow): boolean {
 export async function* iterObject(conn: any): AsyncIterable<RawMember> {
   const res = (await scheduleQuery(() =>
     conn.tooling.query(
-      "SELECT QualifiedApiName, NamespacePrefix, LastModifiedDate, IsCustom FROM EntityDefinition WHERE IsCustomSetting=false AND IsCustomizable=true",
+      "SELECT QualifiedApiName, NamespacePrefix, LastModifiedDate FROM EntityDefinition WHERE IsCustomSetting=false AND IsCustomizable=true",
     ),
   )) as { records?: EntityRow[] } | null;
   const allRows = res?.records ?? [];
