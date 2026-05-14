@@ -22,6 +22,13 @@ export interface IngestOpts {
   rebuild?: boolean | undefined;
   noBackup?: boolean | undefined;
   detectDeletions?: boolean | undefined;
+  /** Comma-separated source labels to fetch (e.g. 'apex,generic:Profile').
+   *  Forces mode=full and merges into the existing graph without rebuild. */
+  only?: string | undefined;
+  /** Read the previously-persisted skip report and re-ingest only those
+   *  labels. Useful for rate-limit recovery and post-permission-grant
+   *  backfill. */
+  retrySkipped?: boolean | undefined;
 }
 
 function formatRow(cols: string[], widths: number[]): string {
@@ -72,8 +79,50 @@ async function buildSingleIngestOpts(
   });
   await snapshotStore.init();
 
-  // --rebuild forces a full sync regardless of source-tracking state.
-  const mode: "full" | "incremental" | "auto" = opts.rebuild ? "full" : (opts.mode ?? "auto");
+  // --rebuild and --only and --retry-skipped all force a full sync because
+  // incremental wouldn't pick up newly-permitted/unblocked types.
+  const forceFull = Boolean(opts.rebuild || opts.only || opts.retrySkipped);
+  const mode: "full" | "incremental" | "auto" = forceFull ? "full" : (opts.mode ?? "auto");
+
+  // Resolve onlyLabels from --only or --retry-skipped. The skip report lives
+  // at <dataDir>/<orgId>.skips.json (written at end of every ingest).
+  const skipReportPath = path.join(getSfgraphPaths().data, `${resolved.orgId}.skips.json`);
+  let onlyLabels: Set<string> | undefined;
+  if (opts.only) {
+    onlyLabels = new Set(
+      opts.only
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    );
+  } else if (opts.retrySkipped) {
+    const { existsSync, readFileSync } = await import("node:fs");
+    if (!existsSync(skipReportPath)) {
+      throw new Error(
+        `--retry-skipped: no skip report found at ${skipReportPath}. Run a full ingest first.`,
+      );
+    }
+    try {
+      const raw = JSON.parse(readFileSync(skipReportPath, "utf8")) as {
+        skips?: Array<{ label: string }>;
+      };
+      const labels = (raw.skips ?? []).map((s) => s.label).filter(Boolean);
+      if (labels.length === 0) {
+        console.log("--retry-skipped: previous run had zero skips. Nothing to retry.");
+        // Return a no-op opts; the live-ingest will exit cleanly with no work.
+        onlyLabels = new Set();
+      } else {
+        onlyLabels = new Set(labels);
+        console.log(
+          `--retry-skipped: retrying ${labels.length} previously-skipped source${labels.length === 1 ? "" : "s"} from ${skipReportPath}`,
+        );
+      }
+    } catch (e) {
+      throw new Error(
+        `--retry-skipped: failed to read skip report at ${skipReportPath}: ${(e as Error).message}`,
+      );
+    }
+  }
 
   return {
     alias,
@@ -83,6 +132,8 @@ async function buildSingleIngestOpts(
     logger,
     preResolved: resolved,
     detectDeletions: Boolean(opts.detectDeletions),
+    ...(onlyLabels ? { onlyLabels } : {}),
+    skipReportPath,
   };
 }
 

@@ -94,12 +94,29 @@ const OBJECT_TYPES = new Set(["CustomObject"]);
 const SECURITY_TYPES = new Set(["Profile", "PermissionSet", "SharingRules"]);
 const INTEGRATION_TYPES = new Set(["NamedCredential", "ExternalServiceRegistration"]);
 
+export interface BulkRetrieveOpts {
+  skipReport?: IngestSkipReport;
+  /** When set, only invoke source labels in this set. Labels are the same
+   *  source-keys used by the dispatch table: 'apex', 'lwc', 'flow', 'object',
+   *  'security', 'integration', 'vlocity', 'omnistudio', or
+   *  'generic:<MetadataType>' for the long tail. */
+  onlyLabels?: Set<string>;
+}
+
 export async function* bulkRetrieve(
   conn: any,
   caps: OrgCapabilities,
   orgId: OrgId,
-  skipReport?: IngestSkipReport,
+  opts: BulkRetrieveOpts | IngestSkipReport = {},
 ): AsyncIterable<RawMember> {
+  // Back-compat: callers used to pass IngestSkipReport directly as the 4th arg.
+  // Accept both shapes.
+  const normalized: BulkRetrieveOpts =
+    opts && typeof opts === "object" && "skips" in (opts as object)
+      ? { skipReport: opts as IngestSkipReport }
+      : (opts as BulkRetrieveOpts);
+  const skipReport = normalized.skipReport;
+  const onlyLabels = normalized.onlyLabels;
   // Discover the type list this org actually supports. If discovery fails or
   // returns nothing usable, fall back to invoking every known extractor —
   // preserves Commit-A behavior for mocks that don't implement describe.
@@ -123,6 +140,10 @@ export async function* bulkRetrieve(
   const invoke = (key: string, factory: () => AsyncIterable<RawMember>) => {
     if (invoked.has(key)) return;
     invoked.add(key);
+    // --only filter: when onlyLabels is set, skip any source not in the set.
+    // Filter applies to the exact source key ('apex', 'generic:Profile', etc.)
+    // for precise targeting of retry/partial-refresh flows.
+    if (onlyLabels && !onlyLabels.has(key)) return;
     // Each source is wrapped fail-soft so one failing type (e.g. a metadata
     // category the user's profile lacks access to) doesn't abort the whole
     // ingest. The wrapper records the source label + error into skipReport

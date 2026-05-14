@@ -94,6 +94,15 @@ export function buildProgram(): Command {
     )
     .option("--db <path>", "override SQLite database path")
     .option(
+      "--only <labels>",
+      "comma-separated source labels to fetch (e.g. 'apex,generic:Profile'); merges into existing graph without rebuild",
+    )
+    .option(
+      "--retry-skipped",
+      "re-fetch only sources that were skipped in the previous run (read from <dataDir>/<orgId>.skips.json)",
+      false,
+    )
+    .option(
       "--embed-model <path>",
       "absolute path to a custom embedding model dir (overrides the vendored MiniLM); also reads SFGRAPH_EMBED_MODEL_PATH",
     )
@@ -120,6 +129,8 @@ export function buildProgram(): Command {
         rebuild?: boolean;
         backup?: boolean; // commander inverts --no-backup → backup:false
         detectDeletions?: boolean;
+        only?: string;
+        retrySkipped?: boolean;
       }) => {
         await ingestCmd({
           org: opts.org,
@@ -134,6 +145,8 @@ export function buildProgram(): Command {
           rebuild: opts.rebuild,
           noBackup: opts.backup === false,
           detectDeletions: opts.detectDeletions,
+          only: opts.only,
+          retrySkipped: opts.retrySkipped,
         });
       },
     );

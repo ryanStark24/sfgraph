@@ -43,6 +43,17 @@ export interface LiveIngestOpts {
    * already surface via SourceMember.IsNameObsolete).
    */
   detectDeletions?: boolean;
+  /**
+   * Restrict the ingest to specific source labels (e.g. 'apex',
+   * 'generic:Profile', 'vlocity'). Used by --only and --retry-skipped to
+   * fetch a subset of types without rebuilding the whole graph.
+   */
+  onlyLabels?: Set<string>;
+  /**
+   * Where to persist the skip report at end of run. When set, the report is
+   * written as JSON so --retry-skipped can read it on the next run.
+   */
+  skipReportPath?: string;
 }
 
 export interface LiveIngestResult {
@@ -104,9 +115,10 @@ function printSkipSummary(report: IngestSkipReport, orgAlias: string): void {
     console.log("");
     console.log(`  Rate-limited (${list.length}):`);
     for (const s of list) console.log(`    • ${s.label}`);
-    console.log(
-      "    How to fix: wait a few minutes for the daily API quota to refresh, then re-run.",
-    );
+    console.log("    How to fix: wait for the API quota to refresh, then re-fetch ONLY these");
+    console.log("    sources (no full rebuild needed):");
+    console.log(`         sfgraph ingest --org ${orgAlias} --retry-skipped`);
+    console.log("    The previous skip report is persisted at <dataDir>/<orgId>.skips.json.");
   }
 
   if (byCategory.has("not_found")) {
@@ -356,8 +368,16 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     let lastTickAt = Date.now();
     const PROGRESS_TICK_MS = 5000; // emit a heartbeat at least every 5s
     const skipReport: IngestSkipReport = { skips: [] };
+    if (opts.onlyLabels && opts.onlyLabels.size > 0) {
+      console.log(
+        `ingest: --only filter active (${opts.onlyLabels.size} source${opts.onlyLabels.size === 1 ? "" : "s"}): ${[...opts.onlyLabels].join(", ")}`,
+      );
+    }
     try {
-      for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, skipReport)) {
+      for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, {
+        skipReport,
+        ...(opts.onlyLabels ? { onlyLabels: opts.onlyLabels } : {}),
+      })) {
         try {
           await processOne(member.ref, member.content);
         } catch (e) {
@@ -392,6 +412,24 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // targeted to the specific class of failure.
     if (skipReport.skips.length > 0) {
       printSkipSummary(skipReport, resolved.alias);
+    }
+
+    // Persist the skip report so --retry-skipped can read it next run.
+    // Always written (even when empty) so users can tell whether the last
+    // run had skips or just hasn't recorded any yet.
+    if (opts.skipReportPath) {
+      try {
+        const { writeFileSync, mkdirSync } = await import("node:fs");
+        const { dirname } = await import("node:path");
+        mkdirSync(dirname(opts.skipReportPath), { recursive: true });
+        writeFileSync(
+          opts.skipReportPath,
+          JSON.stringify({ recordedAt: Date.now(), orgId: resolved.orgId, ...skipReport }, null, 2),
+          "utf8",
+        );
+      } catch (e) {
+        logger.warn("live-ingest: skip report write failed", { err: (e as Error).message });
+      }
     }
   }
 
