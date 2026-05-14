@@ -2,7 +2,9 @@ import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import type { GraphStore, SnapshotStore } from "@ryanstark24/sfgraph-core";
 import {
+  ErrorCode,
   type OrgId,
+  SfgraphError,
   asOrgId,
   getSfgraphPaths,
   safeOrgDbPath,
@@ -21,8 +23,48 @@ export type ToolContextFactory = (opts: { orgId?: string }) => Promise<ToolConte
 
 let factory: ToolContextFactory | null = null;
 
-/** Per-orgId cache so we reuse stores across tool calls. */
+/**
+ * Per-orgId cache so we reuse stores across tool calls. Bounded to
+ * `CONTEXT_CACHE_MAX` entries — when full, the oldest entry is evicted
+ * and its store is closed. Prevents unbounded file-handle / memory growth
+ * when an agent rotates through many orgs.
+ */
+const CONTEXT_CACHE_MAX = 8;
 const contextCache = new Map<string, ToolContext>();
+
+/**
+ * Salesforce Organization IDs start with the `00D` key-prefix and are
+ * 15 or 18 chars total. We use this regex (rather than naked string length)
+ * to decide whether a user-supplied identifier is an orgId or an alias —
+ * a 15/18-char alias would otherwise be misclassified.
+ */
+const SF_ORG_ID_RE = /^00D[A-Za-z0-9]{12}([A-Za-z0-9]{3})?$/;
+
+function isSalesforceOrgId(s: string): boolean {
+  return SF_ORG_ID_RE.test(s);
+}
+
+async function closeStoreQuietly(ctx: ToolContext): Promise<void> {
+  try {
+    await (ctx.graphStore as unknown as { close?: () => Promise<void> | void }).close?.();
+  } catch {
+    // best-effort
+  }
+}
+
+function rememberInCache(key: string, ctx: ToolContext): void {
+  // Evict oldest if full. Map preserves insertion order so the first key is
+  // the oldest. fire-and-forget close — eviction must be synchronous w.r.t.
+  // the cache state.
+  while (contextCache.size >= CONTEXT_CACHE_MAX) {
+    const oldestKey = contextCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = contextCache.get(oldestKey);
+    contextCache.delete(oldestKey);
+    if (oldest) void closeStoreQuietly(oldest);
+  }
+  contextCache.set(key, ctx);
+}
 
 export function setToolContextFactory(fn: ToolContextFactory | null): void {
   factory = fn;
@@ -49,24 +91,25 @@ export async function getToolContext(opts: { orgId?: string } = {}): Promise<Too
   // Cache by the raw key so repeated calls with the same alias / id reuse
   // the same store. The factory's own canonical-orgId resolution is still
   // applied inside ctx.orgId.
-  contextCache.set(rawKey, ctx);
+  rememberInCache(rawKey, ctx);
   return ctx;
 }
 
 /**
  * Close every cached store and clear the cache. Wired into shutdown handlers
- * so file handles aren't leaked when the MCP server exits.
+ * so file handles aren't leaked when the MCP server exits. Idempotent.
  */
 export async function closeAllContexts(): Promise<void> {
   const entries = [...contextCache.values()];
   contextCache.clear();
   for (const ctx of entries) {
-    try {
-      await (ctx.graphStore as unknown as { close?: () => Promise<void> | void }).close?.();
-    } catch {
-      // best-effort
-    }
+    await closeStoreQuietly(ctx);
   }
+}
+
+/** Exposed for tests so they can assert the cache bound. */
+export function _contextCacheSize(): number {
+  return contextCache.size;
 }
 
 /**
@@ -100,10 +143,8 @@ async function resolveAliasToOrgId(dataDir: string, alias: string): Promise<stri
   };
   for (const f of files) {
     const candidate = f.replace(/\.sqlite$/, "");
-    try {
-      validateOrgIdentifier(candidate);
-    } catch {
-      continue; // skip files that aren't valid org ids
+    if (!isSalesforceOrgId(candidate)) {
+      continue; // skip files whose name isn't a real orgId
     }
     const dbPath = path.join(dataDir, f);
     try {
@@ -123,6 +164,25 @@ async function resolveAliasToOrgId(dataDir: string, alias: string): Promise<stri
   return null;
 }
 
+/**
+ * Try to resolve an alias to an orgId via the `sf` CLI's authenticated
+ * orgs. Used as a fallback so a freshly-authenticated alias that has never
+ * been ingested still works without silently creating an empty DB keyed by
+ * the alias string.
+ */
+async function resolveAliasViaSfCli(alias: string): Promise<string | null> {
+  try {
+    const core = await import("@ryanstark24/sfgraph-core");
+    const resolved = await core.resolveOrg(alias);
+    if (resolved?.orgId && isSalesforceOrgId(String(resolved.orgId))) {
+      return String(resolved.orgId);
+    }
+  } catch {
+    /* alias not known to sf CLI */
+  }
+  return null;
+}
+
 async function defaultFactory(opts: { orgId?: string }): Promise<ToolContext> {
   const orgIdOrAlias = opts.orgId ?? "default";
   // Hard-fail on malformed input BEFORE any path joinery.
@@ -132,12 +192,26 @@ async function defaultFactory(opts: { orgId?: string }): Promise<ToolContext> {
   // Resolve alias -> orgId up-front so the on-disk file is always
   // <dataDir>/<orgId>.sqlite, not <dataDir>/<alias>.sqlite.
   let resolvedOrgId = orgIdOrAlias;
-  const looksLikeId = orgIdOrAlias.length === 15 || orgIdOrAlias.length === 18;
-  if (!looksLikeId) {
-    const found = await resolveAliasToOrgId(paths.data, orgIdOrAlias);
-    if (found) {
-      validateOrgIdentifier(found);
-      resolvedOrgId = found;
+  if (isSalesforceOrgId(orgIdOrAlias)) {
+    resolvedOrgId = orgIdOrAlias;
+  } else {
+    const fromLocal = await resolveAliasToOrgId(paths.data, orgIdOrAlias);
+    if (fromLocal) {
+      validateOrgIdentifier(fromLocal);
+      resolvedOrgId = fromLocal;
+    } else {
+      const fromSf = await resolveAliasViaSfCli(orgIdOrAlias);
+      if (fromSf) {
+        validateOrgIdentifier(fromSf);
+        resolvedOrgId = fromSf;
+      } else {
+        // Unknown alias: no existing ingested DB and no sf-CLI binding. Reject
+        // rather than silently creating an empty `<alias>.sqlite`.
+        throw new SfgraphError(
+          ErrorCode.E_INVALID_ORG_IDENTIFIER,
+          `unknown org identifier '${orgIdOrAlias}': not a Salesforce 15/18-char orgId, no existing sfgraph DB has this alias, and the sf CLI does not recognise it. Run 'sf org login web --alias ${orgIdOrAlias}' and then 'sfgraph ingest --org ${orgIdOrAlias}' first.`,
+        );
+      }
     }
   }
 

@@ -5,6 +5,7 @@ import { SqliteGraphStore, SqliteSnapshotStore } from "@ryanstark24/sfgraph-core
 import { type OrgId, SfgraphError, asOrgId } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  _contextCacheSize,
   type ToolContext,
   closeAllContexts,
   getToolContext,
@@ -64,5 +65,26 @@ describe("getToolContext cache", () => {
     await expect(getToolContext({ orgId: "/abs/path" })).rejects.toBeInstanceOf(SfgraphError);
     await expect(getToolContext({ orgId: "foo\x00bar" })).rejects.toBeInstanceOf(SfgraphError);
     expect(factoryCallCount.n).toBe(0); // factory never reached
+  });
+
+  // P1 audit pass 2: cache eviction
+  it("evicts the oldest entry once the bounded cache fills (cap=8)", async () => {
+    // Insert 9 distinct contexts; the first must be evicted.
+    for (let i = 0; i < 9; i++) {
+      await getToolContext({ orgId: `org${i}` });
+    }
+    expect(_contextCacheSize()).toBeLessThanOrEqual(8);
+    expect(factoryCallCount.n).toBe(9);
+    // org0 should have been evicted; fetching again rebuilds.
+    await getToolContext({ orgId: "org0" });
+    expect(factoryCallCount.n).toBe(10);
+  });
+
+  it("idempotent close on the graph store does not throw on double-close", async () => {
+    const ctx = await getToolContext({ orgId: "doubleclose" });
+    const store = ctx.graphStore as unknown as { close: () => Promise<void> };
+    await store.close();
+    // second close must be a no-op
+    await store.close();
   });
 });

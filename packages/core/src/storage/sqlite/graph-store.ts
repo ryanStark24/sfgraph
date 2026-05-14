@@ -73,6 +73,7 @@ export class SqliteGraphStore implements GraphStore {
   private nodeLabelCache: Map<string, string> = new Map();
   private edgeRelCache: Map<string, string> = new Map();
   private initialized = false;
+  private closed = false;
 
   constructor(opts: SqliteGraphStoreOptions) {
     this.opts = opts;
@@ -112,7 +113,15 @@ export class SqliteGraphStore implements GraphStore {
   }
 
   async close(): Promise<void> {
-    if (this.ownsDb) this.db.close();
+    if (this.closed) return;
+    this.closed = true;
+    if (this.ownsDb) {
+      try {
+        this.db.close();
+      } catch {
+        // already closed by another path — idempotent
+      }
+    }
   }
 
   private loadCaches(): void {
