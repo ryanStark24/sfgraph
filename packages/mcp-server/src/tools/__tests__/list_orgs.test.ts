@@ -30,7 +30,9 @@ describe("list_orgs", () => {
     const d = r.data as { orgs: unknown[]; defaultAlias: string | null };
     expect(d.orgs).toEqual([]);
     expect(d.defaultAlias).toBe(null);
-    expect(r.summary).toContain("unable to enumerate");
+    // sf CLI lookup failed but the local data dir was also empty —
+    // summary explains both.
+    expect(r.summary).toMatch(/sf-cli auth unavailable|local sfgraph data dir/);
   });
 
   it("marks isDefault correctly for the alias matching the default", async () => {

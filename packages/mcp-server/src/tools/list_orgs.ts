@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { getSfgraphPaths } from "@ryanstark24/sfgraph-shared";
@@ -109,39 +109,57 @@ defineTool({
     }
 
     const now = Date.now();
-    const orgs = auths.map((a) => {
+    const byOrgId = new Map<
+      string,
+      {
+        alias: string | null;
+        username: string;
+        orgId: string;
+        instanceUrl: string;
+        isDefault: boolean;
+        ingested: boolean;
+        lastSyncedAt: number | null;
+        ageDays: number | null;
+        stale: boolean;
+      }
+    >();
+
+    // Pass 1 — orgs visible via @salesforce/core (the sf CLI auth dir).
+    // When the MCP server runs as a child process of Cursor / Claude with
+    // no shell env, this call sometimes returns empty even though the user
+    // is authenticated in their shell. Pass 2 below catches that case by
+    // scanning the local data dir for ingested orgs.
+    for (const a of auths) {
       const alias = (a.alias ?? null) || null;
       const username = a.username ?? "";
       const orgId = a.orgId ?? "";
       const instanceUrl = a.instanceUrl ?? "";
       const isDefault = !!defaultAlias && (defaultAlias === alias || defaultAlias === username);
+      if (!orgId) continue;
+      // Try to open this org's local DB to read last-synced timestamp.
       let lastSyncedAt: number | null = null;
       let ingested = false;
-      if (orgId) {
-        const dbPath = path.join(dataDir, `${orgId}.sqlite`);
-        const db = openDb(dbPath);
-        if (db) {
-          ingested = true;
-          try {
-            const row = db
-              .prepare("SELECT last_synced_at FROM _sfgraph_orgs WHERE id = ?")
-              .get(orgId) as { last_synced_at: number | null } | undefined;
-            if (row && row.last_synced_at != null) {
-              lastSyncedAt = Number(row.last_synced_at);
-            }
-          } catch {
-            // table missing
+      const dbPath = path.join(dataDir, `${orgId}.sqlite`);
+      const db = openDb(dbPath);
+      if (db) {
+        ingested = true;
+        try {
+          const row = db
+            .prepare("SELECT last_synced_at FROM _sfgraph_orgs WHERE id = ?")
+            .get(orgId) as { last_synced_at: number | null } | undefined;
+          if (row && row.last_synced_at != null) {
+            lastSyncedAt = Number(row.last_synced_at);
           }
-          try {
-            db.close();
-          } catch {
-            // ignore
-          }
+        } catch {
+          // table missing or schema older than v4
+        }
+        try {
+          db.close();
+        } catch {
+          // ignore
         }
       }
-      const ageDays = lastSyncedAt != null ? Math.floor((now - lastSyncedAt) / DAY_MS) : null;
-      const stale = ageDays == null ? true : ageDays >= STALE_THRESHOLD_DAYS;
-      return {
+      byOrgId.set(orgId, {
         alias,
         username,
         orgId,
@@ -149,9 +167,79 @@ defineTool({
         isDefault,
         ingested,
         lastSyncedAt,
-        ageDays,
-        stale,
-      };
+        ageDays: null,
+        stale: true,
+      });
+    }
+
+    // Pass 2 — orgs visible via the local data dir. ANY <orgId>.sqlite that
+    // contains an _sfgraph_orgs row is a valid usable graph regardless of
+    // whether the sf CLI auth is currently accessible to this process.
+    if (existsSync(dataDir)) {
+      let files: string[] = [];
+      try {
+        files = readdirSync(dataDir).filter(
+          (f) => f.endsWith(".sqlite") && !f.startsWith("backups"),
+        );
+      } catch {
+        files = [];
+      }
+      for (const f of files) {
+        const orgId = f.replace(/\.sqlite$/, "");
+        if (!orgId || orgId.includes("/")) continue;
+        const dbPath = path.join(dataDir, f);
+        const db = openDb(dbPath);
+        if (!db) continue;
+        let storedAlias: string | null = null;
+        let storedInstance: string | null = null;
+        let lastSyncedAt: number | null = null;
+        try {
+          const row = db
+            .prepare("SELECT alias, instance_url, last_synced_at FROM _sfgraph_orgs WHERE id = ?")
+            .get(orgId) as
+            | {
+                alias: string | null;
+                instance_url: string | null;
+                last_synced_at: number | null;
+              }
+            | undefined;
+          if (row) {
+            storedAlias = row.alias ?? null;
+            storedInstance = row.instance_url ?? null;
+            if (row.last_synced_at != null) lastSyncedAt = Number(row.last_synced_at);
+          }
+        } catch {
+          // table missing or schema older than v4
+        }
+        try {
+          db.close();
+        } catch {
+          // ignore
+        }
+        const existing = byOrgId.get(orgId);
+        if (existing) {
+          existing.ingested = true;
+          if (lastSyncedAt != null) existing.lastSyncedAt = lastSyncedAt;
+        } else {
+          byOrgId.set(orgId, {
+            alias: storedAlias,
+            username: "",
+            orgId,
+            instanceUrl: storedInstance ?? "",
+            isDefault: !!defaultAlias && !!storedAlias && defaultAlias === storedAlias,
+            ingested: true,
+            lastSyncedAt,
+            ageDays: null,
+            stale: true,
+          });
+        }
+      }
+    }
+
+    const orgs = [...byOrgId.values()].map((o) => {
+      const ageDays = o.lastSyncedAt != null ? Math.floor((now - o.lastSyncedAt) / DAY_MS) : null;
+      const stale = ageDays == null ? true : ageDays >= STALE_THRESHOLD_DAYS;
+      return { ...o, ageDays, stale };
     });
 
     const rows = orgs
@@ -163,9 +251,11 @@ defineTool({
     const header =
       "| Alias | Org Id | Default | Ingested | Last Synced | Stale |\n|---|---|---|---|---|---|";
     const md = orgs.length === 0 ? "_no orgs_" : `${header}\n${rows}`;
+    const authCount = auths.length;
+    const ingestedCount = orgs.filter((o) => o.ingested).length;
     const summary = loadError
-      ? `unable to enumerate sf orgs (${loadError}); returning empty list`
-      : `${orgs.length} org${orgs.length === 1 ? "" : "s"} authenticated`;
+      ? `sf-cli auth unavailable in this process (${loadError}); discovered ${orgs.length} org${orgs.length === 1 ? "" : "s"} from local sfgraph data dir (${ingestedCount} ingested)`
+      : `${orgs.length} org${orgs.length === 1 ? "" : "s"} total — ${authCount} via sf CLI, ${ingestedCount} ingested locally`;
     return {
       summary,
       markdown: md,
