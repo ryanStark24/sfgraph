@@ -112,8 +112,7 @@ export function wrapAbiError(err: unknown): SfgraphError | null {
  * with a copy-paste recovery message; on any other failure, rethrow.
  */
 export function loadBetterSqlite3<T = unknown>(requireFn?: Loader): T {
-  const req: Loader =
-    requireFn ?? (createRequire(import.meta.url) as unknown as Loader);
+  const req: Loader = requireFn ?? (createRequire(import.meta.url) as unknown as Loader);
   try {
     return req("better-sqlite3") as T;
   } catch (e) {

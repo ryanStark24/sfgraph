@@ -1,7 +1,7 @@
-import { accessSync, constants, existsSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { constants, accessSync, existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { isAbiMismatch } from "@ryanstark24/sfgraph-core";
 import { getSfgraphPaths } from "@ryanstark24/sfgraph-shared";
 import { configPathFor } from "./_mcp-config.js";
@@ -31,10 +31,7 @@ export interface DoctorReport {
   ok: boolean;
 }
 
-function check(
-  name: string,
-  fn: () => Omit<DoctorCheck, "name">,
-): DoctorCheck {
+function check(name: string, fn: () => Omit<DoctorCheck, "name">): DoctorCheck {
   try {
     return { name, ...fn() };
   } catch (e) {

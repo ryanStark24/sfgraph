@@ -10,6 +10,11 @@ export interface InstallCmdOpts {
    *  instead of `npx @ryanstark24/sfgraph-mcp`. Use this for local dev
    *  before the package is published. */
   local?: boolean;
+  /** Absolute path to a Node binary. With --local, the MCP entry's
+   *  `command` is pinned to this Node so IDE-spawned children always use a
+   *  Node ABI that matches the rebuilt better-sqlite3 binding. Defaults to
+   *  `process.execPath` when `--local` is set without `--pin-node`. */
+  pinNode?: string;
   homeOverride?: string;
   log?: (s: string) => void;
 }
@@ -49,10 +54,22 @@ export async function installCmd(opts: InstallCmdOpts = {}): Promise<InstallSumm
       localBinPath = resolve(candidate);
     }
   }
-  const mcpOpts: { dryRun: boolean; homeOverride?: string; localBinPath?: string } = {
+  const mcpOpts: {
+    dryRun: boolean;
+    homeOverride?: string;
+    localBinPath?: string;
+    pinNode?: string;
+  } = {
     ...sharedOpts,
   };
   if (localBinPath) mcpOpts.localBinPath = localBinPath;
+  // Resolve pinNode: explicit flag wins; otherwise default to process.execPath
+  // when --local is set so the IDE child uses the same Node that ran install.
+  if (opts.pinNode) {
+    mcpOpts.pinNode = opts.pinNode;
+  } else if (opts.local) {
+    mcpOpts.pinNode = process.execPath;
+  }
 
   if (!opts.mcpOnly) {
     const skillResults = await installSkills(target, sharedOpts);

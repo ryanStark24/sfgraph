@@ -20,6 +20,12 @@ export interface McpWriteOptions {
    *  absolute path instead of `npx @ryanstark24/sfgraph-mcp`. Used during
    *  local development before the package is published to npm. */
   localBinPath?: string;
+  /** Absolute path to a Node binary. When set together with `localBinPath`,
+   *  the MCP entry's `command` is this path instead of bare `"node"`. Use to
+   *  pin the MCP server to a specific Node ABI so IDE-spawned children don't
+   *  end up with a different ABI than the better-sqlite3 binding was built
+   *  against. */
+  pinNode?: string;
 }
 
 interface McpServerEntry {
@@ -40,9 +46,13 @@ interface McpConfigShape {
  *  When `localBinPath` is set (local-dev mode), invoke the local build via
  *  `node <absPath> mcp` — no PATH dependency, no published npm package
  *  required. */
-function sfgraphEntryFor(plat: NodeJS.Platform, localBinPath?: string): McpServerEntry {
+function sfgraphEntryFor(
+  plat: NodeJS.Platform,
+  localBinPath?: string,
+  pinNode?: string,
+): McpServerEntry {
   if (localBinPath) {
-    return { command: "node", args: [localBinPath, "mcp"] };
+    return { command: pinNode ?? "node", args: [localBinPath, "mcp"] };
   }
   if (plat === "win32") {
     return { command: "npx.cmd", args: ["-y", "@ryanstark24/sfgraph-mcp"] };
@@ -86,7 +96,7 @@ export async function writeMcpConfig(
 ): Promise<McpWriteResult> {
   const path = configPathFor(target, opts);
   const plat = opts.platformOverride ?? platform();
-  const sfgraphEntry = sfgraphEntryFor(plat, opts.localBinPath);
+  const sfgraphEntry = sfgraphEntryFor(plat, opts.localBinPath, opts.pinNode);
   let existing: McpConfigShape = {};
   if (existsSync(path)) {
     try {

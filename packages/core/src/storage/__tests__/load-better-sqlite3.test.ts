@@ -1,10 +1,6 @@
-import { describe, expect, it } from "vitest";
 import { ErrorCode, SfgraphError } from "@ryanstark24/sfgraph-shared";
-import {
-  isAbiMismatch,
-  loadBetterSqlite3,
-  wrapAbiError,
-} from "../sqlite/load-better-sqlite3.js";
+import { describe, expect, it } from "vitest";
+import { isAbiMismatch, loadBetterSqlite3, wrapAbiError } from "../sqlite/load-better-sqlite3.js";
 
 describe("isAbiMismatch", () => {
   it("matches NODE_MODULE_VERSION runtime errors", () => {

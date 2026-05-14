@@ -10,7 +10,6 @@ import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { validateLabel } from "../identifier.js";
-import { wrapAbiError } from "./load-better-sqlite3.js";
 import type {
   BetterSqlite3Database,
   BundleSearchHit,
@@ -18,6 +17,7 @@ import type {
   VectorStore,
   VectorUpsertResult,
 } from "../interfaces.js";
+import { wrapAbiError } from "./load-better-sqlite3.js";
 import { MIGRATIONS, MigrationRunner } from "./migrations.js";
 
 export interface SqliteVectorStoreOptions {

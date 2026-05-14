@@ -44,6 +44,10 @@ export function buildProgram(): Command {
       "point the MCP entry at this local binary instead of `npx @ryanstark24/sfgraph-mcp` (use when the npm package isn't published yet)",
       false,
     )
+    .option(
+      "--pin-node <path>",
+      "absolute path to a node binary to use as the MCP entry's `command` (defaults to process.execPath when --local is set). Pins the IDE child to a Node ABI matching the rebuilt better-sqlite3 binding.",
+    )
     .action(
       async (opts: {
         target: "claude" | "cursor" | "vscode" | "all";
@@ -51,14 +55,17 @@ export function buildProgram(): Command {
         skillsOnly: boolean;
         mcpOnly: boolean;
         local: boolean;
+        pinNode?: string;
       }) => {
-        await installCmd({
+        const args: Parameters<typeof installCmd>[0] = {
           target: opts.target,
           dryRun: opts.dryRun,
           skillsOnly: opts.skillsOnly,
           mcpOnly: opts.mcpOnly,
           local: opts.local,
-        });
+        };
+        if (opts.pinNode !== undefined) args.pinNode = opts.pinNode;
+        await installCmd(args);
       },
     );
 

@@ -36,7 +36,9 @@ describe("runDoctorChecks", () => {
   });
 
   it("reports all-green when the environment is healthy and no orgs are ingested yet", () => {
-    const requireFn = () => ({ /* mock Database ctor never used because no .sqlite files */ });
+    const requireFn = () => ({
+      /* mock Database ctor never used because no .sqlite files */
+    });
     const report = runDoctorChecks({
       dataDir,
       homeOverride: home,
