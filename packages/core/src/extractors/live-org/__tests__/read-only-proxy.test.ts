@@ -21,7 +21,33 @@ function makeMockConn(): any {
   });
   return {
     sobject: fn(sobjectImpl),
-    tooling: { sobject: fn(sobjectImpl), query: fn(() => ({ records: [] })) },
+    tooling: {
+      sobject: fn(sobjectImpl),
+      query: fn(() => ({ records: [] })),
+      // top-level tooling write methods (P0 audit fix)
+      create: fn(),
+      insert: fn(),
+      update: fn(),
+      upsert: fn(),
+      delete: fn(),
+      del: fn(),
+      destroy: fn(),
+      deploy: fn(),
+      rename: fn(),
+      executeAnonymous: fn(() => ({ success: true })),
+      runTests: fn(),
+      runTestsAsynchronous: fn(),
+      runTestsSynchronous: fn(),
+      createAsync: fn(),
+      updateAsync: fn(),
+      deleteAsync: fn(),
+      deployAsync: fn(),
+      requestPost: fn(),
+      requestPut: fn(),
+      requestPatch: fn(),
+      requestDelete: fn(),
+      request: fn(() => ({ ok: true })),
+    },
     metadata: {
       create: fn(),
       update: fn(),
@@ -114,6 +140,51 @@ describe("wrapConnectionReadOnly", () => {
   it("blocks tooling.sobject().delete", () => {
     const proxy = wrapConnectionReadOnly(makeMockConn());
     expect(() => proxy.tooling.sobject("ApexClass").delete("x")).toThrow(ReadOnlyViolationError);
+  });
+  // P0 audit fix: top-level tooling writes were silently allowed before.
+  it("blocks tooling.create", () => {
+    const proxy = wrapConnectionReadOnly(makeMockConn());
+    expect(() => proxy.tooling.create("ApexClass", {})).toThrow(ReadOnlyViolationError);
+  });
+  it("blocks tooling.update", () => {
+    const proxy = wrapConnectionReadOnly(makeMockConn());
+    expect(() => proxy.tooling.update("ApexClass", {})).toThrow(ReadOnlyViolationError);
+  });
+  it("blocks tooling.delete (top-level)", () => {
+    const proxy = wrapConnectionReadOnly(makeMockConn());
+    expect(() => proxy.tooling.delete("ApexClass", "x")).toThrow(ReadOnlyViolationError);
+  });
+  it("blocks tooling.executeAnonymous", () => {
+    const proxy = wrapConnectionReadOnly(makeMockConn());
+    expect(() => proxy.tooling.executeAnonymous("System.debug('x');")).toThrow(
+      ReadOnlyViolationError,
+    );
+  });
+  it("blocks tooling.runTests", () => {
+    const proxy = wrapConnectionReadOnly(makeMockConn());
+    expect(() => proxy.tooling.runTests({ classNames: ["Foo"] })).toThrow(ReadOnlyViolationError);
+  });
+  it("blocks tooling.deploy", () => {
+    const proxy = wrapConnectionReadOnly(makeMockConn());
+    expect(() => proxy.tooling.deploy("zip", {})).toThrow(ReadOnlyViolationError);
+  });
+  it("blocks tooling.requestPost / Put / Patch / Delete", () => {
+    const proxy = wrapConnectionReadOnly(makeMockConn());
+    expect(() => proxy.tooling.requestPost("/x", {})).toThrow(ReadOnlyViolationError);
+    expect(() => proxy.tooling.requestPut("/x", {})).toThrow(ReadOnlyViolationError);
+    expect(() => proxy.tooling.requestPatch("/x", {})).toThrow(ReadOnlyViolationError);
+    expect(() => proxy.tooling.requestDelete("/x")).toThrow(ReadOnlyViolationError);
+  });
+  it("blocks tooling.request with POST", () => {
+    const proxy = wrapConnectionReadOnly(makeMockConn());
+    expect(() => proxy.tooling.request({ method: "POST", url: "/x" })).toThrow(
+      ReadOnlyViolationError,
+    );
+    expect(() => proxy.tooling.request("/x", "DELETE")).toThrow(ReadOnlyViolationError);
+  });
+  it("allows tooling.request with GET", () => {
+    const proxy = wrapConnectionReadOnly(makeMockConn());
+    expect(() => proxy.tooling.request({ method: "GET", url: "/x" })).not.toThrow();
   });
   it("blocks metadata.create", () => {
     const proxy = wrapConnectionReadOnly(makeMockConn());

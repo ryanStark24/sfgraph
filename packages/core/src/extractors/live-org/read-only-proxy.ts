@@ -23,6 +23,36 @@ const METADATA_WRITE_METHODS = new Set([
   "rename",
 ]);
 
+/**
+ * Tooling API has its own top-level write methods in addition to
+ * tooling.sobject(...).create/update/etc. Block them all. Includes
+ * 'executeAnonymous' because anonymous Apex can mutate data even though
+ * the call itself is technically a "query".
+ */
+const TOOLING_TOP_LEVEL_WRITE_METHODS = new Set([
+  "create",
+  "insert",
+  "update",
+  "upsert",
+  "delete",
+  "del",
+  "destroy",
+  "deploy",
+  "rename",
+  "executeAnonymous",
+  "runTests",
+  "runTestsAsynchronous",
+  "runTestsSynchronous",
+  "createAsync",
+  "updateAsync",
+  "deleteAsync",
+  "deployAsync",
+  "requestPost",
+  "requestPut",
+  "requestPatch",
+  "requestDelete",
+]);
+
 const ROOT_WRITE_METHODS = new Set([
   "create",
   "update",
@@ -80,6 +110,32 @@ function wrapTooling(target: any): any {
         const original = Reflect.get(t, prop, receiver);
         if (typeof original !== "function") return original;
         return (name: string) => wrapSObject(original.call(t, name), `tooling.sobject(${name})`);
+      }
+      // P0 fix: previously only tooling.sobject was wrapped, so callers could
+      // hit conn.tooling.delete(...), conn.tooling.executeAnonymous(...),
+      // conn.tooling.requestPost(...) etc. directly. Block every top-level
+      // tooling write method.
+      if (typeof prop === "string" && TOOLING_TOP_LEVEL_WRITE_METHODS.has(prop)) {
+        return blockingFn(`tooling.${String(prop)}`);
+      }
+      // Block conn.tooling.request(...) when method is not GET/HEAD, mirroring
+      // the root-level request gate.
+      if (prop === "request") {
+        const original = Reflect.get(t, prop, receiver);
+        if (typeof original !== "function") return original;
+        return (...args: unknown[]) => {
+          const first = args[0] as unknown;
+          if (typeof first === "object" && first !== null) {
+            const methodVal = (first as { method?: unknown }).method;
+            const method = typeof methodVal === "string" ? methodVal.toUpperCase() : "GET";
+            if (!SAFE_HTTP_METHODS.has(method)) violation(`tooling.request(${method})`);
+          }
+          if (typeof first === "string") {
+            const method = typeof args[1] === "string" ? (args[1] as string).toUpperCase() : "GET";
+            if (!SAFE_HTTP_METHODS.has(method)) violation(`tooling.request(${method})`);
+          }
+          return (original as (...a: unknown[]) => unknown).call(t, ...args);
+        };
       }
       const val = Reflect.get(t, prop, receiver);
       return typeof val === "function" ? val.bind(t) : val;
