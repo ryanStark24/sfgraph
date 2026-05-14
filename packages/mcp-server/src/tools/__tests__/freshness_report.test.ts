@@ -33,6 +33,12 @@ describe("freshness_report", () => {
     expect(d.buckets.dead?.length ?? 0).toBeGreaterThanOrEqual(1);
   });
 
+  it("surfaces truncated=false on small fixtures (P2)", async () => {
+    fix.addNode({ qualifiedName: "ApexClass:X", label: "ApexClass" });
+    const r = await callTool("freshness_report", { org: fix.orgId });
+    expect((r.data as { truncated: boolean }).truncated).toBe(false);
+  });
+
   it("respects bucket filter", async () => {
     fix.addNode({ qualifiedName: "ApexClass:X", label: "ApexClass" });
     const r = await callTool("freshness_report", { org: fix.orgId, bucket: "hot" });

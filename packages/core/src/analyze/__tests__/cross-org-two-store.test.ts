@@ -2,7 +2,7 @@ import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared"
 import { beforeEach, describe, expect, it } from "vitest";
 import type { NodeFact } from "../../domain/index.js";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";
-import { diffOrgs } from "../cross-org.js";
+import { CROSS_ORG_PER_LABEL_CAP, diffOrgs } from "../cross-org.js";
 
 const A = asOrgId("orgA");
 const B = asOrgId("orgB");
@@ -41,6 +41,27 @@ describe("diffOrgs two-store form", () => {
     expect(onlyInA).toEqual(["ApexClass:Only_A"]);
     expect(onlyInB).toEqual(["ApexClass:Only_B"]);
     expect(changed).toEqual(["ApexClass:Both"]);
+  });
+
+  it("does not flag truncated for small result sets", () => {
+    storeA.mergeNodes([node(A, "ApexClass:A1", "h")]);
+    storeB.mergeNodes([node(B, "ApexClass:B1", "h")]);
+    const diff = diffOrgs({ storeA, orgA: A, storeB, orgB: B });
+    expect(diff.truncated).toBeFalsy();
+  });
+
+  it("sets truncated=true when a per-label scan saturates the cap (P2)", () => {
+    // Stub listNodesByLabel on storeA so it returns exactly CAP rows.
+    const fakeRows = Array.from({ length: CROSS_ORG_PER_LABEL_CAP }, (_, i) =>
+      node(A, `ApexClass:Sat${i}`, "h"),
+    );
+    const originalA = storeA.listNodesByLabel.bind(storeA);
+    storeA.listNodesByLabel = ((org: ReturnType<typeof asOrgId>, label: string, _cap: number) => {
+      if (label === "ApexClass") return fakeRows;
+      return originalA(org, label, _cap);
+    }) as typeof storeA.listNodesByLabel;
+    const diff = diffOrgs({ storeA, orgA: A, storeB, orgB: B, category: "ApexClass" });
+    expect(diff.truncated).toBe(true);
   });
 
   it("does not silently degrade when stores are independent (regression)", () => {

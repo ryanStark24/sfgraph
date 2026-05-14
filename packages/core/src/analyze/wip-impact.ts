@@ -27,7 +27,11 @@ export interface WipImpactResult {
   removedQnames: string[];
   dependents: WipDependent[];
   mermaid: string;
+  /** Set when removed-qname detection in full-folder mode hit the per-label cap. */
+  truncated?: boolean;
 }
+
+export const WIP_REMOVED_SCAN_CAP = 10000;
 
 export interface AnalyzeLocalImpactOpts {
   graphStore: GraphStore;
@@ -206,13 +210,19 @@ export async function analyzeLocalImpact(opts: AnalyzeLocalImpactOpts): Promise<
   // tight: only signal removed for qnames that share a memberType-prefix with
   // some local node OR are of a label we walked.
   const removedQnames: string[] = [];
+  let truncated = false;
   if (mode === "full-folder") {
     const walkedLabels = new Set<string>();
     for (const n of localNodes.values()) walkedLabels.add(n.label);
     // GraphStore has no global "listAll" — but we know the labels we touched.
     // For each walked label scan persisted nodes by label.
     for (const label of walkedLabels) {
-      const persistedNodes = opts.graphStore.listNodesByLabel(opts.orgId, label, 10000);
+      const persistedNodes = opts.graphStore.listNodesByLabel(
+        opts.orgId,
+        label,
+        WIP_REMOVED_SCAN_CAP,
+      );
+      if (persistedNodes.length >= WIP_REMOVED_SCAN_CAP) truncated = true;
       for (const pn of persistedNodes) {
         const qn = String(pn.qualifiedName);
         if (!localNodes.has(qn)) {
@@ -307,6 +317,7 @@ export async function analyzeLocalImpact(opts: AnalyzeLocalImpactOpts): Promise<
     removedQnames,
     dependents,
     mermaid,
+    truncated,
   };
 }
 

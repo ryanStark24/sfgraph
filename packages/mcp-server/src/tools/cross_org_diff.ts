@@ -42,13 +42,19 @@ defineTool({
       mermaid,
       "```",
     ].join("\n");
+    const truncationNote = diff.truncated
+      ? ` — results capped at ${analyze.CROSS_ORG_PER_LABEL_CAP}/label; narrow with category filter`
+      : "";
     return {
-      summary: `A-only:${diff.onlyInA.length} B-only:${diff.onlyInB.length} changed:${diff.changed.length}`,
-      markdown: md,
+      summary: `A-only:${diff.onlyInA.length} B-only:${diff.onlyInB.length} changed:${diff.changed.length}${truncationNote}`,
+      markdown: diff.truncated
+        ? `${md}\n\n> _Note: at least one label hit the ${analyze.CROSS_ORG_PER_LABEL_CAP}-row cap. Diff is incomplete — pass a narrower \`category\` to investigate._`
+        : md,
       data: {
         onlyInA: diff.onlyInA.map((n) => n.qualifiedName),
         onlyInB: diff.onlyInB.map((n) => n.qualifiedName),
         changed: diff.changed.map((c) => c.a.qualifiedName),
+        truncated: diff.truncated ?? false,
       },
     };
   },

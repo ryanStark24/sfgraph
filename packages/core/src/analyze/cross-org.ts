@@ -7,7 +7,19 @@ export interface CrossOrgDiff {
   onlyInA: NodeFact[];
   onlyInB: NodeFact[];
   changed: Array<{ a: NodeFact; b: NodeFact }>;
+  /**
+   * True when at least one label-scan hit the per-label result cap
+   * (`CROSS_ORG_PER_LABEL_CAP`). Callers should warn the user and
+   * narrow the scope or paginate before drawing conclusions.
+   */
+  truncated?: boolean;
 }
+
+/**
+ * Per-label cap on cross-org node scans. Exported so callers can surface it
+ * verbatim in user-facing summaries.
+ */
+export const CROSS_ORG_PER_LABEL_CAP = 10000;
 
 const ALL_LABELS = Object.values(METADATA_CATEGORY);
 
@@ -70,13 +82,14 @@ export function diffOrgs(
   const labels = category === "all" ? ALL_LABELS : [category];
   const aMap = new Map<string, NodeFact>();
   const bMap = new Map<string, NodeFact>();
+  let truncated = false;
   for (const lbl of labels) {
-    for (const n of storeA.listNodesByLabel(orgA, lbl, 10000)) {
-      aMap.set(n.qualifiedName, n);
-    }
-    for (const n of storeB.listNodesByLabel(orgB, lbl, 10000)) {
-      bMap.set(n.qualifiedName, n);
-    }
+    const aRows = storeA.listNodesByLabel(orgA, lbl, CROSS_ORG_PER_LABEL_CAP);
+    for (const n of aRows) aMap.set(n.qualifiedName, n);
+    if (aRows.length >= CROSS_ORG_PER_LABEL_CAP) truncated = true;
+    const bRows = storeB.listNodesByLabel(orgB, lbl, CROSS_ORG_PER_LABEL_CAP);
+    for (const n of bRows) bMap.set(n.qualifiedName, n);
+    if (bRows.length >= CROSS_ORG_PER_LABEL_CAP) truncated = true;
   }
   const onlyInA: NodeFact[] = [];
   const onlyInB: NodeFact[] = [];
@@ -89,5 +102,5 @@ export function diffOrgs(
   for (const [k, b] of bMap) {
     if (!aMap.has(k)) onlyInB.push(b);
   }
-  return { onlyInA, onlyInB, changed };
+  return { onlyInA, onlyInB, changed, truncated };
 }

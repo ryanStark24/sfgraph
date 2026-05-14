@@ -15,6 +15,8 @@ const SCAN_LABELS = [
   METADATA_CATEGORY.OBJECT,
 ];
 
+const FRESHNESS_PER_LABEL_CAP = 5000;
+
 defineTool({
   name: "freshness_report",
   description:
@@ -32,8 +34,11 @@ defineTool({
       stale: [],
       dead: [],
     };
+    let truncated = false;
     for (const lbl of SCAN_LABELS) {
-      for (const n of ctx.graphStore.listNodesByLabel(ctx.orgId, lbl, 5000)) {
+      const rows = ctx.graphStore.listNodesByLabel(ctx.orgId, lbl, FRESHNESS_PER_LABEL_CAP);
+      if (rows.length >= FRESHNESS_PER_LABEL_CAP) truncated = true;
+      for (const n of rows) {
         const s = analyze.freshnessScore(n, now);
         const b = analyze.freshnessBucket(s);
         (buckets[b] ?? []).push({ qualifiedName: n.qualifiedName, score: s, label: n.label });
@@ -53,10 +58,15 @@ defineTool({
         return `### ${b}\n\n| qname | label | score |\n|---|---|---|\n${rows || "_empty_"}`;
       })
       .join("\n\n");
+    const truncationNote = truncated
+      ? ` — results capped at ${FRESHNESS_PER_LABEL_CAP}/label; narrow scope or paginate`
+      : "";
     return {
-      summary: `freshness report ${filter ?? "all buckets"}`,
-      markdown: md,
-      data: { buckets },
+      summary: `freshness report ${filter ?? "all buckets"}${truncationNote}`,
+      markdown: truncated
+        ? `${md}\n\n> _Note: at least one label hit the ${FRESHNESS_PER_LABEL_CAP}-row cap. Results are incomplete._`
+        : md,
+      data: { buckets, truncated },
     };
   },
 });

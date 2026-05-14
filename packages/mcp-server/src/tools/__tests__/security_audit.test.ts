@@ -31,6 +31,12 @@ describe("security_audit", () => {
     );
   });
 
+  it("surfaces truncated=false on small fixtures (P2)", async () => {
+    fix.addNode({ qualifiedName: "CustomField:Account.Foo", label: "CustomField" });
+    const r = await callTool("security_audit", { org: fix.orgId });
+    expect((r.data as { truncated: boolean }).truncated).toBe(false);
+  });
+
   it("builds field access matrix from grants", async () => {
     fix.addNode({ qualifiedName: "CustomField:Account.X", label: "CustomField" });
     fix.addNode({ qualifiedName: "PermissionSet:P1", label: "PermissionSet" });

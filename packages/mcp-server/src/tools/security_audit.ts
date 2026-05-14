@@ -49,10 +49,15 @@ defineTool({
       `**FLS gaps (fields with no permission-set grant):** ${audit.flsGaps.length}`,
       ...audit.flsGaps.slice(0, 20).map((q) => `- \`${q}\``),
     ].join("\n");
+    const truncationNote = audit.truncated
+      ? ` — results capped at ${analyze.SECURITY_PER_LABEL_CAP}/label; narrow with object/field`
+      : "";
     return {
-      summary: `${audit.flsGaps.length} FLS gaps, ${audit.sharingFullAccess.length} full-access rules`,
-      markdown: md,
-      data: { ...audit, cachedFindings },
+      summary: `${audit.flsGaps.length} FLS gaps, ${audit.sharingFullAccess.length} full-access rules${truncationNote}`,
+      markdown: audit.truncated
+        ? `${md}\n\n> _Note: at least one label hit the ${analyze.SECURITY_PER_LABEL_CAP}-row cap. Results are incomplete — pass \`object\` or \`field\` to narrow._`
+        : md,
+      data: { ...audit, cachedFindings, truncated: audit.truncated ?? false },
     };
   },
 });
