@@ -24,6 +24,10 @@ interface ListOrgsDeps {
     AuthInfo: {
       listAllAuthorizations: () => Promise<AuthorizationRow[]>;
     };
+    /** Optional — when present, used to fill in `alias` for orgs whose
+     *  listAllAuthorizations entry has alias=null even though the user has
+     *  the alias bound in `sf` CLI. */
+    aliasByUsername?: Map<string, string>;
     ConfigAggregator?: unknown;
   }>;
   resolveDefaultOrgAlias?: () => Promise<string | null>;
@@ -44,12 +48,38 @@ async function defaultLoadSfCore(): Promise<{
   AuthInfo: {
     listAllAuthorizations: () => Promise<AuthorizationRow[]>;
   };
+  /** Username -> alias lookup. AuthInfo.listAllAuthorizations() returns
+   *  alias=null even when `sf org list` shows it because the two APIs read
+   *  from different places. StateAggregator's `aliases.getAll()` is the
+   *  authoritative source for alias→username bindings; we invert it. */
+  aliasByUsername: Map<string, string>;
 }> {
   const modName = "@salesforce/core";
   const sfCore = (await import(modName)) as unknown as {
     AuthInfo: { listAllAuthorizations: () => Promise<AuthorizationRow[]> };
+    StateAggregator?: {
+      create: () => Promise<{
+        aliases: {
+          getAll: () => Record<string, string>;
+        };
+      }>;
+    };
   };
-  return { AuthInfo: sfCore.AuthInfo };
+  const aliasByUsername = new Map<string, string>();
+  if (sfCore.StateAggregator?.create) {
+    try {
+      const agg = await sfCore.StateAggregator.create();
+      const all = agg.aliases.getAll();
+      for (const [alias, username] of Object.entries(all)) {
+        if (typeof username === "string" && username.length > 0) {
+          aliasByUsername.set(username, alias);
+        }
+      }
+    } catch {
+      // StateAggregator failed; alias enumeration just stays empty.
+    }
+  }
+  return { AuthInfo: sfCore.AuthInfo, aliasByUsername };
 }
 
 async function defaultResolveDefault(): Promise<string | null> {
@@ -98,10 +128,12 @@ defineTool({
     const openDb = deps.openDb ?? defaultOpenDb;
 
     let auths: AuthorizationRow[] = [];
+    let aliasByUsername: Map<string, string> = new Map();
     let loadError: string | null = null;
     try {
-      const { AuthInfo } = await loadSfCore();
-      auths = await AuthInfo.listAllAuthorizations();
+      const sfCore = await loadSfCore();
+      auths = await sfCore.AuthInfo.listAllAuthorizations();
+      if (sfCore.aliasByUsername) aliasByUsername = sfCore.aliasByUsername;
     } catch (e) {
       loadError = (e as Error).message;
     }
@@ -135,8 +167,12 @@ defineTool({
     // is authenticated in their shell. Pass 2 below catches that case by
     // scanning the local data dir for ingested orgs.
     for (const a of auths) {
-      const alias = (a.alias ?? null) || null;
       const username = a.username ?? "";
+      // Prefer the alias on the AuthorizationRow; if absent, fall back to
+      // the username -> alias map from StateAggregator. This is the actual
+      // fix for 'all aliases show _none_': AuthInfo.listAllAuthorizations
+      // routinely returns alias=null even when `sf org list` shows one.
+      const alias = (a.alias ?? null) || aliasByUsername.get(username) || null;
       const orgId = a.orgId ?? "";
       const instanceUrl = a.instanceUrl ?? "";
       const isDefault = !!defaultAlias && (defaultAlias === alias || defaultAlias === username);

@@ -117,4 +117,34 @@ describe("list_orgs", () => {
     expect((old?.ageDays ?? 0) >= 7).toBe(true);
     expect(fresh?.stale).toBe(false);
   });
+
+  it("fills in missing alias from StateAggregator username->alias map", async () => {
+    // The real-world reason this test exists: AuthInfo.listAllAuthorizations()
+    // returns alias=null even when `sf org list` shows the alias bound. We
+    // resolve the gap by cross-referencing StateAggregator.aliases.getAll().
+    __setListOrgsDeps({
+      loadSfCore: async () => ({
+        AuthInfo: {
+          listAllAuthorizations: async () => [
+            {
+              alias: null, // <-- the bug: AuthInfo returns null here
+              username: "user@example.com",
+              orgId: "00DdL00000gzWVpUAM",
+              instanceUrl: "https://x.my.salesforce.com",
+            },
+          ],
+        },
+        aliasByUsername: new Map([["user@example.com", "my-prod"]]),
+      }),
+      resolveDefaultOrgAlias: async () => "my-prod",
+      dataDir: workDir,
+      openDb: () => null,
+    });
+    const r = await callTool("list_orgs", {});
+    const d = r.data as {
+      orgs: Array<{ alias: string | null; isDefault: boolean; username: string }>;
+    };
+    expect(d.orgs[0]?.alias).toBe("my-prod");
+    expect(d.orgs[0]?.isDefault).toBe(true);
+  });
 });
