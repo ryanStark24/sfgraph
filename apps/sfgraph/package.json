@@ -6,9 +6,11 @@
     "sfgraph": "./bin/sfgraph.mjs"
   },
   "files": [
-    "bin"
+    "bin",
+    "scripts"
   ],
   "scripts": {
+    "postinstall": "node ./scripts/verify-native.mjs || true",
     "build": "echo no-op",
     "test": "vitest run --passWithNoTests",
     "lint": "biome check bin",
