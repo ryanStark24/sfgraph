@@ -37,6 +37,21 @@ describe("writeMcpConfig", () => {
     });
   });
 
+  it("with localBinPath, invokes the local build directly via node", async () => {
+    const res = await writeMcpConfig("cursor", {
+      homeOverride: home,
+      platformOverride: "darwin",
+      localBinPath: "/abs/path/to/sfgraph.mjs",
+    });
+    expect(res.action).toBe("created");
+    const path = configPathFor("cursor", { homeOverride: home });
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    expect(parsed.mcpServers.sfgraph).toEqual({
+      command: "node",
+      args: ["/abs/path/to/sfgraph.mjs", "mcp"],
+    });
+  });
+
   it("merges with an existing config preserving other servers", async () => {
     const path = configPathFor("cursor", { homeOverride: home });
     mkdirSync(dirname(path), { recursive: true });

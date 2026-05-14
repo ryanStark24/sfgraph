@@ -6,6 +6,10 @@ export interface InstallCmdOpts {
   dryRun?: boolean;
   skillsOnly?: boolean;
   mcpOnly?: boolean;
+  /** Write MCP entry that invokes the currently-running binary directly,
+   *  instead of `npx @ryanstark24/sfgraph-mcp`. Use this for local dev
+   *  before the package is published. */
+  local?: boolean;
   homeOverride?: string;
   log?: (s: string) => void;
 }
@@ -28,6 +32,28 @@ export async function installCmd(opts: InstallCmdOpts = {}): Promise<InstallSumm
   };
   if (opts.homeOverride !== undefined) sharedOpts.homeOverride = opts.homeOverride;
 
+  // Local-dev mode: derive the absolute path of THIS sfgraph binary so the
+  // MCP entry invokes it directly. process.argv[1] is the script path that
+  // Node received. Resolve to an absolute, normalized form.
+  let localBinPath: string | undefined;
+  if (opts.local) {
+    const { realpathSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const candidate = process.argv[1] ?? "";
+    if (!candidate) {
+      throw new Error("install --local: cannot detect this binary's path from process.argv");
+    }
+    try {
+      localBinPath = realpathSync(resolve(candidate));
+    } catch {
+      localBinPath = resolve(candidate);
+    }
+  }
+  const mcpOpts: { dryRun: boolean; homeOverride?: string; localBinPath?: string } = {
+    ...sharedOpts,
+  };
+  if (localBinPath) mcpOpts.localBinPath = localBinPath;
+
   if (!opts.mcpOnly) {
     const skillResults = await installSkills(target, sharedOpts);
     for (const r of skillResults) {
@@ -44,7 +70,7 @@ export async function installCmd(opts: InstallCmdOpts = {}): Promise<InstallSumm
   if (!opts.skillsOnly) {
     const mcpTargets: McpTarget[] = target === "all" ? ["claude", "cursor", "vscode"] : [target];
     for (const t of mcpTargets) {
-      const res = await writeMcpConfig(t, sharedOpts);
+      const res = await writeMcpConfig(t, mcpOpts);
       rows.push({
         target: res.target,
         kind: "mcp",

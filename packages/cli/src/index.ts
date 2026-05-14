@@ -38,18 +38,25 @@ export function buildProgram(): Command {
     .option("--dry-run", "show what would be written without writing", false)
     .option("--skills-only", "only install skills; skip MCP config", false)
     .option("--mcp-only", "only write MCP config; skip skills", false)
+    .option(
+      "--local",
+      "point the MCP entry at this local binary instead of `npx @ryanstark24/sfgraph-mcp` (use when the npm package isn't published yet)",
+      false,
+    )
     .action(
       async (opts: {
         target: "claude" | "cursor" | "vscode" | "all";
         dryRun: boolean;
         skillsOnly: boolean;
         mcpOnly: boolean;
+        local: boolean;
       }) => {
         await installCmd({
           target: opts.target,
           dryRun: opts.dryRun,
           skillsOnly: opts.skillsOnly,
           mcpOnly: opts.mcpOnly,
+          local: opts.local,
         });
       },
     );

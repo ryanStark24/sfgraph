@@ -16,6 +16,10 @@ export interface McpWriteOptions {
   homeOverride?: string;
   /** Override the OS platform for testing. Accepts node's platform() values. */
   platformOverride?: NodeJS.Platform;
+  /** When set, write an MCP entry that invokes the local binary at this
+   *  absolute path instead of `npx @ryanstark24/sfgraph-mcp`. Used during
+   *  local development before the package is published to npm. */
+  localBinPath?: string;
 }
 
 interface McpServerEntry {
@@ -31,8 +35,15 @@ interface McpConfigShape {
 /** MCP server invocation. On Windows, `npx` is `npx.cmd`; spawned tools that
  *  receive `command: 'npx'` literally will ENOENT. We emit the platform-correct
  *  binary so the same `sfgraph install` produces a working config on macOS,
- *  Linux, and Windows. */
-function sfgraphEntryFor(plat: NodeJS.Platform): McpServerEntry {
+ *  Linux, and Windows.
+ *
+ *  When `localBinPath` is set (local-dev mode), invoke the local build via
+ *  `node <absPath> mcp` — no PATH dependency, no published npm package
+ *  required. */
+function sfgraphEntryFor(plat: NodeJS.Platform, localBinPath?: string): McpServerEntry {
+  if (localBinPath) {
+    return { command: "node", args: [localBinPath, "mcp"] };
+  }
   if (plat === "win32") {
     return { command: "npx.cmd", args: ["-y", "@ryanstark24/sfgraph-mcp"] };
   }
@@ -75,7 +86,7 @@ export async function writeMcpConfig(
 ): Promise<McpWriteResult> {
   const path = configPathFor(target, opts);
   const plat = opts.platformOverride ?? platform();
-  const sfgraphEntry = sfgraphEntryFor(plat);
+  const sfgraphEntry = sfgraphEntryFor(plat, opts.localBinPath);
   let existing: McpConfigShape = {};
   if (existsSync(path)) {
     try {
