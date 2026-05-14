@@ -18,8 +18,11 @@ sfgraph is local-only and read-only by design.
    - strips Salesforce IDs, org URLs, usernames, emails, tokens, JWTs, file
      paths under `$HOME`, and stack-trace user-paths;
    - allowlists only the keys declared in `event-schema.ts`;
-   - hashes the machine ID once (SHA-256 of OS user + hostname) so the same
-     install can be correlated without revealing identity.
+   - includes a machine ID that is a random UUIDv4 generated only on opt-in
+     (no hash of OS user / hostname; just a UUID stored locally at
+     `~/.config/sfgraph/machine-id`) so the same install can be correlated
+     without revealing identity. Reset or delete it any time with
+     `sfgraph telemetry reset-id` / `sfgraph telemetry purge`.
 
 ## What the local sink stores
 
@@ -32,7 +35,7 @@ Failure events only. Each line is one JSON object with:
   "tool": "governor_risk_check",
   "code": "E_SF_QUERY",
   "durationMs": 412,
-  "machineId": "sha256:..."
+  "machineId": "<uuidv4>"
 }
 ```
 

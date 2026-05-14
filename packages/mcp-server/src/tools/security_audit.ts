@@ -2,16 +2,25 @@ import { analyze } from "@ryanstark24/sfgraph-core";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 
-const inputSchema = z.object({ org: z.string().min(1) });
+const inputSchema = z.object({
+  org: z.string().min(1),
+  /** Narrow the audit to a single SObject. Accepts `Account` or `CustomObject:Account`. */
+  object: z.string().min(1).optional(),
+  /** Narrow the audit to a single field. Accepts a full qname like `CustomField:Account.Tier__c`. */
+  field: z.string().min(1).optional(),
+});
 
 defineTool({
   name: "security_audit",
   description:
-    "USE THIS for any 'FLS' / 'who has access to X' / 'security audit' / 'sharing rules' / 'permission audit' question about a Salesforce org. Returns full-access sharing rules, FLS gaps on PII-shaped fields, and the Profile/PermSet -> Object/Field access matrix.",
+    "USE THIS for any 'FLS' / 'who has access to X' / 'security audit' / 'sharing rules' / 'permission audit' question about a Salesforce org. Returns full-access sharing rules, FLS gaps on PII-shaped fields, and the Profile/PermSet -> Object/Field access matrix. Optional `object` / `field` filters narrow the FLS-gap + access-matrix output to a single SObject or field.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
-    const audit = analyze.securityAudit(ctx.graphStore, ctx.orgId);
+    const filter: { object?: string; field?: string } = {};
+    if (input.object !== undefined) filter.object = input.object;
+    if (input.field !== undefined) filter.field = input.field;
+    const audit = analyze.securityAudit(ctx.graphStore, ctx.orgId, filter);
     // Augment with cached findings table if present
     let cachedFindings: Array<{ qname: string; rule: string; message: string }> = [];
     if (ctx.db) {

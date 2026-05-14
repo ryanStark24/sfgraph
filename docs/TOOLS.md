@@ -1,6 +1,6 @@
 # sfgraph 1.0 MCP Tools
 
-Nineteen MCP tools ship in `@ryanstark24/sfgraph-server`. Every tool returns a
+Twenty-five MCP tools ship in `@ryanstark24/sfgraph-server`. Every tool returns a
 `{ summary, markdown, data }` envelope; many include a `mermaid` field in
 `data` for IDE rendering. All tools require `--org` (alias or 15/18-char org id).
 

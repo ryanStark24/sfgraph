@@ -4,7 +4,7 @@
 [![license](https://img.shields.io/npm/l/@ryanstark24/sfgraph-mcp.svg)](LICENSE)
 [![node](https://img.shields.io/node/v/@ryanstark24/sfgraph-mcp.svg)](https://nodejs.org)
 
-A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-syncs your org to a SQLite + vector index on your machine and exposes 19 MCP tools to **Cursor, Claude Code/Desktop, and VS Code**, so the AI you already use can reason about Apex, LWC, Flow, Vlocity, OmniStudio, security, and integrations **without your code or schema ever leaving your laptop**.
+A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-syncs your org to a SQLite + vector index on your machine and exposes 25 MCP tools to **Cursor, Claude Code/Desktop, and VS Code**, so the AI you already use can reason about Apex, LWC, Flow, Vlocity, OmniStudio, security, and integrations **without your code or schema ever leaving your laptop**.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -314,7 +314,7 @@ sfgraph telemetry reset-id          # regenerate machine-id
 
 ---
 
-## The 19 MCP tools (summary)
+## The 25 MCP tools (summary)
 
 Every tool returns `{ summary, markdown, data, follow_up_tools? }`. The `markdown` includes a Mermaid block when a diagram aids comprehension.
 
@@ -536,7 +536,7 @@ packages/
     src/embedding/                      #   batched transformers.js queue
     src/analyze/                        #   dependents, freshness, governor, dead-code, ...
     src/render/mermaid/                 #   diagram generators
-  mcp-server/                           # stdio MCP, 19 tools, shutdown discipline
+  mcp-server/                           # stdio MCP, 25 tools, shutdown discipline
   cli/                                  # install, ingest, link, wip, mcp, telemetry, version
   skills/                               # 10 SKILL.md playbooks + installer
   models/                               # vendored MiniLM ONNX + loader

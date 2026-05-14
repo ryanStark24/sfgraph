@@ -19,12 +19,12 @@ Use when the user wants a `package.xml` that captures a set of changes plus ever
 
 ## Playbook
 
-1. Establish the change set. Sources: a git diff, a `cross_org_diff` result, or an explicit list. If unspecified, ask.
-2. Optionally call `cross_org_diff` between the source org and target org so the manifest excludes things already present in the target.
-3. Call `deployment_manifest_gen` with the change set. The tool walks `DEPENDS_ON` edges and includes every member required for the deploy to succeed (parent objects for fields, layouts for record types, etc.).
+1. Establish the source and target orgs. The tool's contract today is a strict cross-org diff: it inputs `from_org` (source) and `to_org` (target) and emits the metadata that exists in `from_org` but is missing or different in `to_org` (plus a `destructiveChanges.xml` for things present only in `to_org`).
+2. Optionally call `cross_org_diff` first to preview the set difference before generating the manifest XML.
+3. Call `deployment_manifest_gen` with `from_org` + `to_org` (+ optional `category` filter). The tool does NOT currently walk `DEPENDS_ON` edges — it returns the set difference as `package.xml` / `destructiveChanges.xml`. Dependency-closure walking is planned future work; for now the user is responsible for any additional parent metadata not surfaced by the diff.
 4. Inspect the result for ambiguous dependencies (managed-package types, namespace mismatches) and surface them as warnings.
-5. Emit the `package.xml` inside a fenced code block. Also emit `destructiveChanges.xml` if the change set includes removals.
-6. Render the Mermaid dependency graph the tool returns so the user can sanity-check the closure.
+5. Emit the `package.xml` inside a fenced code block. Also emit `destructiveChanges.xml` if the diff includes removals.
+6. If extra dependencies are needed beyond the raw diff, ask the user to extend the set manually — do not silently fabricate dependency edges the graph doesn't have.
 
 ## Visualization
 

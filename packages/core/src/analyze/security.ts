@@ -9,7 +9,33 @@ export interface SecurityAudit {
   flsGaps: string[];
 }
 
-export function securityAudit(store: GraphStore, orgId: OrgId): SecurityAudit {
+export interface SecurityAuditOptions {
+  /** Restrict the field-access matrix + FLS gaps to fields of this object (qualifiedName prefix, e.g. `CustomObject:Account`). */
+  object?: string;
+  /** Restrict to a single field qualifiedName (e.g. `CustomField:Account.Tier__c`). Implies `object`. */
+  field?: string;
+}
+
+function matchesFilter(qname: string, opts: SecurityAuditOptions | undefined): boolean {
+  if (!opts) return true;
+  if (opts.field) return qname === opts.field;
+  if (opts.object) {
+    // Match `<anything>:<object>.<field>` heuristically. Strip the label
+    // prefix before `:` so the caller can pass either the full qname
+    // (`CustomObject:Account`) or just the object name (`Account`).
+    const objName =
+      (opts.object.includes(":") ? opts.object.split(":")[1] : opts.object) ?? opts.object;
+    const tail = (qname.includes(":") ? qname.split(":")[1] : qname) ?? qname;
+    return tail.startsWith(`${objName}.`) || tail === objName;
+  }
+  return true;
+}
+
+export function securityAudit(
+  store: GraphStore,
+  orgId: OrgId,
+  opts?: SecurityAuditOptions,
+): SecurityAudit {
   const sharingFullAccess: string[] = [];
   // SharingRule attribute scan
   for (const n of store.listNodesByLabel(orgId, METADATA_CATEGORY.SHARING_RULE, 5000)) {
@@ -33,18 +59,21 @@ export function securityAudit(store: GraphStore, orgId: OrgId): SecurityAudit {
     }
   }
 
-  // FLS gaps: fields with no grants
+  // FLS gaps: fields with no grants. Honour the object/field filter.
   const flsGaps: string[] = [];
   for (const n of store.listNodesByLabel(orgId, METADATA_CATEGORY.FIELD, 5000)) {
+    if (!matchesFilter(n.qualifiedName, opts)) continue;
     if (!fieldAccessMatrix.has(n.qualifiedName)) flsGaps.push(n.qualifiedName);
   }
 
+  // Filter the matrix too so a narrowed audit returns a narrowed matrix.
+  const filteredMatrix = Array.from(fieldAccessMatrix.entries())
+    .filter(([field]) => matchesFilter(field, opts))
+    .map(([field, set]) => ({ field, grantedBy: Array.from(set) }));
+
   return {
     sharingFullAccess,
-    fieldAccessMatrix: Array.from(fieldAccessMatrix.entries()).map(([field, set]) => ({
-      field,
-      grantedBy: Array.from(set),
-    })),
+    fieldAccessMatrix: filteredMatrix,
     flsGaps,
   };
 }
