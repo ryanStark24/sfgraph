@@ -84,7 +84,7 @@ function printSkipSummary(report: IngestSkipReport, orgAlias: string): void {
     const list = byCategory.get("insufficient_access") ?? [];
     console.log("");
     console.log(`  Insufficient access (${list.length}):`);
-    for (const s of list) console.log(`    • ${s.label}`);
+    for (const s of list) console.log(`    • ${s.label}: ${s.reason}`);
     console.log("");
     console.log("  How to fix permanently:");
     console.log("    1. Have an admin assign your user a permission set with:");
@@ -92,6 +92,11 @@ function printSkipSummary(report: IngestSkipReport, orgAlias: string): void {
     console.log("         - 'View All Data' (or assign the System Administrator profile)");
     console.log("    2. Re-run with --rebuild to pick up the now-accessible types:");
     console.log(`         sfgraph ingest --org ${orgAlias} --rebuild`);
+    console.log("    Note: if you ARE already an admin and still see this, it usually means the");
+    console.log(
+      "    extractor is hitting a system entity that doesn't expose CustomObject metadata.",
+    );
+    console.log("    File an issue with the error text above so we can deny-list the entity.");
   }
 
   if (byCategory.has("rate_limit")) {
