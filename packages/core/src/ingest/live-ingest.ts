@@ -275,6 +275,13 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // The outer iteration is also wrapped: bulkRetrieve uses fail-soft per
     // source, but a top-level catch protects against any iterator-protocol
     // surprises (e.g. generator throws during `next()` before yielding).
+    console.log(
+      "ingest: starting full sync (Tooling pool 5 / Metadata pool 3 / Data pool 10 concurrent)",
+    );
+    const fanOutStart = Date.now();
+    let progressCount = 0;
+    let lastTickAt = Date.now();
+    const PROGRESS_TICK_MS = 5000; // emit a heartbeat at least every 5s
     try {
       for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId)) {
         try {
@@ -286,7 +293,20 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
             error: (e as Error).message,
           });
         }
+        progressCount += 1;
+        // Periodic heartbeat — every 5s OR every 200 members, whichever first.
+        // Keeps the user informed without spamming stdout per record.
+        if (progressCount % 200 === 0 || Date.now() - lastTickAt > PROGRESS_TICK_MS) {
+          const elapsedSec = Math.round((Date.now() - fanOutStart) / 1000);
+          console.log(
+            `ingest:   …${progressCount} members processed so far (${elapsedSec}s elapsed)`,
+          );
+          lastTickAt = Date.now();
+        }
       }
+      console.log(
+        `ingest: fan-out complete (${progressCount} members in ${Math.round((Date.now() - fanOutStart) / 1000)}s)`,
+      );
     } catch (e) {
       // Should not happen with fail-soft sources, but keep the safety net.
       logger.warn("live-ingest: bulkRetrieve stream aborted", {

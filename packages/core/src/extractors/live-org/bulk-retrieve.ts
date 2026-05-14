@@ -22,21 +22,37 @@ export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>)
 
 /** Wrap an iterable so a thrown error logs + ends the stream cleanly instead
  *  of aborting the whole ingest. Surfaces WHICH source failed (e.g. which
- *  metadata type) so the user can see exactly where INSUFFICIENT_ACCESS hit. */
+ *  metadata type) so the user can see exactly where INSUFFICIENT_ACCESS hit.
+ *
+ *  Also emits per-source progress: a 'starting' line when the source begins
+ *  yielding and a 'done' line with count + elapsed when it completes. */
 async function* failSoft<T>(
   label: string,
   factory: () => AsyncIterable<T>,
   onError?: (label: string, err: Error) => void,
 ): AsyncIterable<T> {
+  const startedAt = Date.now();
+  let count = 0;
+  let started = false;
   try {
-    for await (const v of factory()) yield v;
+    for await (const v of factory()) {
+      if (!started) {
+        started = true;
+        console.log(`ingest:   ${label} → starting…`);
+      }
+      count += 1;
+      yield v;
+    }
+    if (started) {
+      console.log(`ingest:   ${label} ✓ ${count} records (${Date.now() - startedAt}ms)`);
+    } else {
+      console.log(`ingest:   ${label} ✓ 0 records (${Date.now() - startedAt}ms)`);
+    }
   } catch (e) {
     const err = e as Error;
     const msg = err?.message ?? String(err);
     onError?.(label, err);
-    // Single line to stderr so the user sees which source failed without
-    // depending on a higher-level logger.
-    console.warn(`ingest: skipping ${label}: ${msg}`);
+    console.warn(`ingest:   ${label} ✗ skipping after ${count} records: ${msg}`);
   }
 }
 
