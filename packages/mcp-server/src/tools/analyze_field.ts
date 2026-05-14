@@ -12,7 +12,8 @@ const inputSchema = z.object({
 
 defineTool({
   name: "analyze_field",
-  description: "Show readers, writers, and security grants for a CustomField.",
+  description:
+    "USE THIS for any 'where is X.Y field used' / 'who reads or writes Account.Status__c' / 'who has access to this field' question about a Salesforce CustomField. Returns every Apex method, Flow, LWC, validation rule, and formula that reads/writes the field, plus FLS grants (which Profile/PermSet can see or edit it). Prefer this over grep / file search for any field-impact question.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

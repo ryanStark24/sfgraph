@@ -12,7 +12,7 @@ const inputSchema = z.object({
 defineTool({
   name: "wip_diff",
   description:
-    "Return added/changed/removed qualified-name sets for uncommitted sfdx-source changes vs. the persisted graph.",
+    "USE THIS for any 'show me what is different between my local source and the org' / 'list local-only / org-only metadata' question. Returns just the added/changed/removed sets — no dependent fan-out. Faster than wip_impact when you only need the diff.",
   inputSchema,
   async execute(input) {
     const projectRoot = input.project_root ?? process.cwd();

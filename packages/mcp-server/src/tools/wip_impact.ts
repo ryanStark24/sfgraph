@@ -13,7 +13,7 @@ const inputSchema = z.object({
 defineTool({
   name: "wip_impact",
   description:
-    "Local impact analysis: parse uncommitted sfdx-source changes and compute dependents against the persisted graph (read-only).",
+    "USE THIS for any 'what does this branch break' / 'dry-run my local changes' / 'what would happen if I deployed this' / 'impact of my uncommitted changes' question. Parses the local sfdx-source tree (force-app/) and overlays it on the org's persisted graph WITHOUT writing to it. Returns changed/added/removed qnames + N-hop dependent BFS + Mermaid. The local-equivalent of impact_from_git_diff for uncommitted work.",
   inputSchema,
   async execute(input) {
     const projectRoot = input.project_root ?? process.cwd();

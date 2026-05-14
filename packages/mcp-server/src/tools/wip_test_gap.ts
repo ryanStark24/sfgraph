@@ -12,7 +12,8 @@ const inputSchema = z.object({
 
 defineTool({
   name: "wip_test_gap",
-  description: "List dependents of uncommitted sfdx-source changes that lack Apex test coverage.",
+  description:
+    "USE THIS for any 'what tests am I missing for these local changes' / 'will my uncommitted changes have test coverage gaps' question. Runs wip_impact internally then filters dependents to those without IS_TEST_FOR coverage.",
   inputSchema,
   async execute(input) {
     const projectRoot = input.project_root ?? process.cwd();

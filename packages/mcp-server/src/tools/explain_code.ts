@@ -12,7 +12,7 @@ const inputSchema = z.object({
 defineTool({
   name: "explain_code",
   description:
-    "Read the stored source snippet for a qname (Apex method, etc.) so the agent can explain it; optionally cache a generated explanation back to the graph.",
+    "USE THIS for any 'explain this method' / 'walk me through X' / 'what does Apex method Y do' question about a stored Salesforce code snippet. Returns the source text + cached LLM explanation (if any). Pass annotation to cache the LLM's explanation back to the graph for future use.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

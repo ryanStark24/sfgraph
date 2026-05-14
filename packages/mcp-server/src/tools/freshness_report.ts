@@ -17,7 +17,8 @@ const SCAN_LABELS = [
 
 defineTool({
   name: "freshness_report",
-  description: "Bucket metadata by freshness score.",
+  description:
+    "USE THIS for any 'what is stale' / 'old metadata' / 'when was X last touched' question. Buckets every Salesforce node by freshness (dead / stale / current / hot). Cleanup prioritization.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

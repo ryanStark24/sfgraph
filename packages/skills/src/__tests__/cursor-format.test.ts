@@ -23,7 +23,9 @@ describe("format transforms", () => {
     const out = toCursorFormat(SAMPLE);
     // Cursor-shaped frontmatter (the only three keys it understands)
     expect(out).toMatch(/^description:.*bar/m);
-    expect(out).toMatch(/^globs:\s*$/m);
+    // globs now contains the SF file patterns so the rule auto-attaches
+    // whenever the user opens any Salesforce metadata file.
+    expect(out).toMatch(/^globs:.*sfdx-project\.json.*\*\*\/\*\.cls/m);
     expect(out).toMatch(/^alwaysApply:\s*false$/m);
     // Trigger phrases folded into the description so the agent matches them
     expect(out).toMatch(/Triggers:.*"?x"?/);

@@ -9,7 +9,7 @@ const STALE_THRESHOLD_DAYS = 7;
 defineTool({
   name: "staleness_check",
   description:
-    "Check how old the local sfgraph ingest is for an org. Returns stale=true when last sync is >=7 days old.",
+    "USE THIS for any 'is my graph fresh' / 'when was the last ingest' / 'should I re-ingest' question for a single Salesforce org. Returns days since last sync + stale flag (>=7 days) + the exact sfgraph ingest command to refresh. Call this FIRST in any workflow where staleness would change the answer.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

@@ -39,7 +39,8 @@ function readCachedRisks(db: unknown, orgId: string): CachedRisk[] | null {
 
 defineTool({
   name: "governor_risk_check",
-  description: "List Apex with detected governor-limit risks (SOQL/DML in loop).",
+  description:
+    "USE THIS for any 'SOQL in loop' / 'will this scale' / 'performance review' / 'governor limits' question about Salesforce Apex. Returns Apex methods/triggers with SOQL-in-loop, DML-in-loop, unbounded queries, missing trigger bulkification — with line + snippet.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

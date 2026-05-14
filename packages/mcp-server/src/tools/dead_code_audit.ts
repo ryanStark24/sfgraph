@@ -48,7 +48,8 @@ function readCachedDeadCode(db: unknown, orgId: string): CachedDead[] | null {
 
 defineTool({
   name: "dead_code_audit",
-  description: "Find low-freshness metadata with zero incoming edges.",
+  description:
+    "USE THIS for any 'what can I delete' / 'find unused Apex / LWC / Flow' / 'dead code' / 'orphan metadata' question about a Salesforce org. Returns nodes with low freshness AND zero incoming edges, bucketed by confidence with reasons.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

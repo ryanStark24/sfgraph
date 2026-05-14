@@ -11,7 +11,8 @@ const inputSchema = z.object({
 
 defineTool({
   name: "impact_from_git_diff",
-  description: "Compute impact (forward+reverse) of metadata changed in a unified git diff.",
+  description:
+    "USE THIS for any 'what does this PR break' / 'impact of these changes' / 'blast radius before merge' question about a Salesforce repo. Maps changed file paths to graph nodes via N-hop reverse BFS. Returns every Apex / LWC / Flow / field that depends on the changes.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

@@ -10,7 +10,8 @@ const inputSchema = z.object({
 
 defineTool({
   name: "what_broke",
-  description: "Find at-risk dependents of metadata changed since a snapshot.",
+  description:
+    "USE THIS for any 'what broke' / 'post-deploy regression' / 'what changed since the deploy' question about a Salesforce org. Compares current graph against latest pre-sync snapshot, identifies changed nodes, buckets dependents as at-risk (no tests) or covered.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

@@ -119,9 +119,35 @@ export function toCursorFormat(md: string): string {
   );
   const description = descriptionParts.filter(Boolean).join(" ");
 
+  // Salesforce file patterns that should auto-attach the rule when the user
+  // opens any of them. Once any of these are in scope, Cursor's agent gets
+  // the rule loaded into its context automatically — no need for the user
+  // to mention sfgraph or invoke the rule by name.
+  const globs = [
+    "**/sfdx-project.json",
+    "**/force-app/**",
+    "**/*.cls",
+    "**/*.cls-meta.xml",
+    "**/*.trigger",
+    "**/*.trigger-meta.xml",
+    "**/lwc/**",
+    "**/aura/**",
+    "**/*.flow-meta.xml",
+    "**/*.object-meta.xml",
+    "**/*.field-meta.xml",
+    "**/*.permissionset-meta.xml",
+    "**/*.permissionsetgroup-meta.xml",
+    "**/*.profile-meta.xml",
+    "**/*.sharingRules-meta.xml",
+    "**/*.layout-meta.xml",
+    "**/*.flexipage-meta.xml",
+    "**/*.namedCredential-meta.xml",
+    "**/*.workflow-meta.xml",
+  ].join(",");
+
   return `---
 description: ${description.replace(/\n/g, " ").replace(/"/g, "'")}
-globs:
+globs: ${globs}
 alwaysApply: false
 ---
 ${body}`;

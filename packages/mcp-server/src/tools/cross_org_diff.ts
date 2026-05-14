@@ -11,7 +11,8 @@ const inputSchema = z.object({
 
 defineTool({
   name: "cross_org_diff",
-  description: "Diff two orgs' graphs by metadata category.",
+  description:
+    "USE THIS for any 'what is different between prod and sandbox' / 'compare two orgs' / 'org drift' question. Set difference of metadata between two ingested Salesforce orgs by category. Returns onlyInA / onlyInB / changed lists.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org_a });

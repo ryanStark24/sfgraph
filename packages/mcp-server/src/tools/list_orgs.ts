@@ -83,7 +83,7 @@ function defaultOpenDb(p: string): {
 defineTool({
   name: "list_orgs",
   description:
-    "List all sf-authenticated orgs along with their local sfgraph ingest status (last synced timestamp, age, stale flag).",
+    "USE THIS as the FIRST step in any sfgraph workflow to enumerate the user's available Salesforce orgs and their ingest status. Shows aliases, orgIds, default-org marker, ingested-locally flag, last-synced timestamp, stale flag. Works even when the sf CLI auth isn't reachable from this process (falls back to scanning the local data dir).",
   inputSchema,
   async execute(_input) {
     const deps = depsOverride ?? {};

@@ -11,7 +11,8 @@ const inputSchema = z.object({
 
 defineTool({
   name: "trace_upstream",
-  description: "Reverse BFS to find what depends on this node.",
+  description:
+    "USE THIS for any 'what depends on X' / 'who uses this' / 'find callers of' / 'who references this method' question about a Salesforce metadata node. Returns every node that depends on the target, N hops back.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

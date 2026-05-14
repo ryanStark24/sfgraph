@@ -11,7 +11,8 @@ const inputSchema = z.object({
 
 defineTool({
   name: "trace_downstream",
-  description: "Forward BFS to find what this node depends on.",
+  description:
+    "USE THIS for any 'what does X depend on' / 'show dependencies' / 'what does this method call' question about a Salesforce metadata node (ApexClass, LWC, Flow, CustomField, etc.). Forward-edge graph N hops out.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

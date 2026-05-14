@@ -6,7 +6,8 @@ const inputSchema = z.object({ org: z.string().min(1) });
 
 defineTool({
   name: "security_audit",
-  description: "Security posture: full-access sharing rules, FLS gaps, field access matrix.",
+  description:
+    "USE THIS for any 'FLS' / 'who has access to X' / 'security audit' / 'sharing rules' / 'permission audit' question about a Salesforce org. Returns full-access sharing rules, FLS gaps on PII-shaped fields, and the Profile/PermSet -> Object/Field access matrix.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

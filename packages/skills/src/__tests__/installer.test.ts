@@ -38,7 +38,7 @@ describe("skills installer", () => {
     // Cursor-shaped frontmatter (the three keys Cursor's rule loader reads).
     const sample = readFileSync(join(cursorDir, files[0] ?? ""), "utf8");
     expect(sample).toMatch(/^description:/m);
-    expect(sample).toMatch(/^globs:\s*$/m);
+    expect(sample).toMatch(/^globs:.*\*\*\/\*\.cls/m);
     expect(sample).toMatch(/^alwaysApply:\s*false$/m);
     // Old frontmatter is rewritten away (would confuse Cursor's parser).
     expect(sample).not.toMatch(/^name:/m);

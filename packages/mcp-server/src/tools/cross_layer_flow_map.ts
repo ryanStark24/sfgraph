@@ -27,7 +27,8 @@ function layerFor(label: string): string {
 
 defineTool({
   name: "cross_layer_flow_map",
-  description: "Trace a request across LWC → Apex → SOQL → Field layers.",
+  description:
+    "USE THIS for any 'how does X flow from UI to DB' / 'trace this LWC end-to-end' / 'show the full path from accountTile to the database' question about a Salesforce entry point (LWC bundle, ApexPage, Flow). Returns the layered LWC -> Apex -> SOQL -> CustomField sequence + Mermaid sequenceDiagram.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
