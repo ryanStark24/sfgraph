@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { doctorCmd } from "./commands/doctor.js";
 import { ingestCmd } from "./commands/ingest.js";
 import { installCmd } from "./commands/install.js";
 import { linkCmd } from "./commands/link.js";
@@ -249,6 +250,15 @@ export function buildProgram(): Command {
     .option("--project <path>", "override project root")
     .action(async (snapshotId: string, opts: { org?: string; project?: string }) => {
       await snapshotDeleteCmd({ snapshotId, org: opts.org, project: opts.project });
+    });
+
+  program
+    .command("doctor")
+    .description(
+      "diagnose sfgraph install (Node ABI, better-sqlite3 binding, data dir, org DBs, sf CLI, IDE MCP config)",
+    )
+    .action(async () => {
+      await doctorCmd();
     });
 
   const telemetry = program.command("telemetry").description("manage local telemetry");
