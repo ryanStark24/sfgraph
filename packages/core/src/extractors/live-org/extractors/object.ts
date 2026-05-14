@@ -1,112 +1,134 @@
 import { XMLBuilder } from "fast-xml-parser";
 import { METADATA_CATEGORY } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleQuery } from "../rate-limit.js";
+import { scheduleData, scheduleQuery } from "../rate-limit.js";
 
-const BATCH = 10;
 const xml = new XMLBuilder({ ignoreAttributes: false, format: false, suppressEmptyNode: true });
 
-interface EntityRow {
-  QualifiedApiName: string;
-  NamespacePrefix?: string | null;
-  LastModifiedDate?: string | null;
+interface SObjectGlobal {
+  name: string;
+  label?: string;
+  custom?: boolean;
+  customSetting?: boolean;
+  createable?: boolean;
+  queryable?: boolean;
+  deprecatedAndHidden?: boolean;
+  keyPrefix?: string | null;
 }
 
-/** Names we never try metadata.read('CustomObject') on. These are platform
- *  entities that show up in EntityDefinition but the Metadata API doesn't
- *  expose them as CustomObjects — and trying causes INSUFFICIENT_ACCESS
- *  even for System Administrators. Curated from a real org scan. */
-const SYSTEM_ENTITY_DENYLIST = new Set([
-  "User",
-  "Group",
-  "Profile",
-  "PermissionSet",
-  "UserRole",
-  "Organization",
-  "Folder",
-  "QueueSobject",
-  "GroupMember",
-  "UserPermissionAccess",
-  "PermissionSetAssignment",
-  "SetupEntityAccess",
-  "AppMenuItem",
-  "ApexClass",
-  "ApexTrigger",
-  "ApexPage",
-  "ApexComponent",
-  "StaticResource",
-]);
+interface FieldDescribe {
+  name: string;
+  label?: string;
+  type?: string;
+  length?: number;
+  precision?: number;
+  scale?: number;
+  unique?: boolean;
+  externalId?: boolean;
+  nillable?: boolean;
+  custom?: boolean;
+  referenceTo?: string[];
+  relationshipName?: string | null;
+  picklistValues?: Array<{ value: string; label?: string; active?: boolean }>;
+  calculatedFormula?: string | null;
+  inlineHelpText?: string | null;
+}
 
-function shouldRead(row: EntityRow): boolean {
-  const name = row.QualifiedApiName;
-  if (!name) return false;
-  if (SYSTEM_ENTITY_DENYLIST.has(name)) return false;
-  // Skip platform entities that aren't first-class metadata. Heuristic:
-  // CustomObjects always end in __c, Big Objects in __b, External in __x.
-  // Standard non-__c objects that DO have CustomObject metadata (Account,
-  // Contact, Opportunity, Lead, Case, etc.) are allowed back in via the
-  // !IsCustom branch — we explicitly want their CustomObject XML for
-  // recordTypes, validationRules, custom fields, etc.
+/** Internal entities that describeGlobal returns but have no useful metadata
+ *  for our graph (system tables, audit tables, etc.). */
+const SKIP_PATTERNS = [
+  /__History$/, // history audit tables
+  /__Tag$/,
+  /__Feed$/,
+  /__Share$/, // sharing tables
+  /__ChangeEvent$/,
+  /__b$/, // big objects (separate handling)
+];
+
+function shouldIncludeSObject(s: SObjectGlobal): boolean {
+  if (!s.name) return false;
+  if (s.deprecatedAndHidden) return false;
+  if (!s.queryable) return false;
+  for (const re of SKIP_PATTERNS) {
+    if (re.test(s.name)) return false;
+  }
   return true;
 }
 
+/**
+ * Iterate every SObject visible to the current user. Uses `describeGlobal()`
+ * to enumerate + `sobject(name).describe()` per object to fetch the field
+ * map. Works universally for any user with record-read access — no Metadata
+ * API permissions, no EntityDefinition Tooling quirks.
+ *
+ * Each yielded RawMember has content = JSON-stringified envelope matching
+ * what the CustomObject parser expects (object-level props + fields list).
+ * The parser can derive CustomObject + CustomField nodes from this.
+ */
 export async function* iterObject(conn: any): AsyncIterable<RawMember> {
-  const res = (await scheduleQuery(() =>
-    conn.tooling.query(
-      "SELECT QualifiedApiName, NamespacePrefix, LastModifiedDate FROM EntityDefinition WHERE IsCustomSetting=false AND IsCustomizable=true",
-    ),
-  )) as { records?: EntityRow[] } | null;
-  const allRows = res?.records ?? [];
-  const rows = allRows.filter(shouldRead);
+  let global: { sobjects?: SObjectGlobal[] } | null = null;
+  try {
+    global = (await scheduleQuery(() => conn.describeGlobal())) as {
+      sobjects?: SObjectGlobal[];
+    };
+  } catch {
+    return; // describeGlobal failed; let fail-soft catch it
+  }
+  const all = global?.sobjects ?? [];
+  const included = all.filter(shouldIncludeSObject);
 
-  for (let i = 0; i < rows.length; i += BATCH) {
-    const slice = rows.slice(i, i + BATCH);
-    const names = slice.map((s) => s.QualifiedApiName);
-
-    // Try the whole batch in one metadata.read call. If it throws (e.g. one
-    // entity in the batch is unreadable for the current user), fall back to
-    // per-name reads so the bad apple doesn't take the rest down with it.
-    let arr: any[] = [];
+  for (const s of included) {
+    let desc: any;
     try {
-      const reads = (await scheduleQuery(() =>
-        conn.metadata.read("CustomObject", names),
-      )) as unknown;
-      arr = Array.isArray(reads) ? (reads as any[]) : [reads];
+      desc = await scheduleData(() => conn.sobject(s.name).describe());
     } catch {
-      arr = [];
-      for (const name of names) {
-        try {
-          const single = (await scheduleQuery(() =>
-            conn.metadata.read("CustomObject", [name]),
-          )) as unknown;
-          const unwrapped = Array.isArray(single) ? (single as any[])[0] : single;
-          arr.push(unwrapped);
-        } catch {
-          // One-off failure — push undefined so index alignment with `slice`
-          // is preserved and the row is yielded with empty content (parser
-          // will treat as not-present rather than crashing the run).
-          arr.push(undefined);
-        }
-      }
+      // Single object describe failed — skip just this one, keep iterating.
+      continue;
     }
 
-    for (let j = 0; j < slice.length; j += 1) {
-      const meta = slice[j];
-      if (!meta) continue;
-      const obj = arr[j];
-      if (obj === undefined) continue; // skip rows we couldn't read
-      const content = xml.build({ CustomObject: obj });
-      yield {
-        ref: {
-          category: METADATA_CATEGORY.OBJECT,
-          memberType: "CustomObject",
-          memberName: meta.QualifiedApiName,
-          lastModifiedAt: meta.LastModifiedDate ?? null,
-          sourceUri: `sf://metadata/CustomObject/${meta.QualifiedApiName}`,
-          namespace: meta.NamespacePrefix ?? null,
-        },
-        content: typeof content === "string" ? content : String(content),
-      };
-    }
+    const fields: FieldDescribe[] = Array.isArray(desc?.fields) ? desc.fields : [];
+
+    // Build the CustomObject-shaped envelope expected by the Phase-2 Object
+    // parser (which already knows how to walk this structure).
+    const objectXml = xml.build({
+      CustomObject: {
+        fullName: s.name,
+        label: desc?.label ?? s.label ?? s.name,
+        pluralLabel: desc?.labelPlural ?? null,
+        sharingModel: desc?.sharingModel ?? null,
+        customSettingsType: s.customSetting ? "List" : null,
+        enableHistory: Boolean(desc?.replicateable),
+        description: desc?.description ?? null,
+        fields: fields.map((f) => ({
+          fullName: f.name,
+          label: f.label ?? f.name,
+          type: f.type ?? "Text",
+          length: f.length,
+          precision: f.precision,
+          scale: f.scale,
+          unique: f.unique,
+          externalId: f.externalId,
+          required: f.nillable === false,
+          custom: f.custom,
+          referenceTo: f.referenceTo ?? [],
+          relationshipName: f.relationshipName ?? null,
+          formula: f.calculatedFormula ?? null,
+          description: f.inlineHelpText ?? null,
+          picklistValues: f.picklistValues ?? [],
+        })),
+      },
+    });
+
+    yield {
+      ref: {
+        category: METADATA_CATEGORY.OBJECT,
+        memberType: "CustomObject",
+        memberName: s.name,
+        lastModifiedAt: null,
+        sourceUri: `sf://describe/${s.name}`,
+        namespace: null,
+      },
+      content: typeof objectXml === "string" ? objectXml : String(objectXml),
+    };
   }
 }
