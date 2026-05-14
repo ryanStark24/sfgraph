@@ -268,6 +268,16 @@ export function buildProgram(): Command {
       await doctorCmd();
     });
 
+  program
+    .command("refresh-orgs")
+    .description(
+      "re-snapshot sf-CLI org state (aliases + default-org) so the MCP child sees the latest after a `sf org login` / alias change / `sf config set target-org`",
+    )
+    .action(async () => {
+      const { refreshOrgsCmd } = await import("./commands/refresh-orgs.js");
+      await refreshOrgsCmd();
+    });
+
   const telemetry = program.command("telemetry").description("manage local telemetry");
   telemetry.command("status").action(async () => {
     await statusCmd();

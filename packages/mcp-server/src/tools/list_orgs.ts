@@ -52,6 +52,7 @@ function readSnapshot(dataDir: string): {
   defaultAlias: string | null;
   aliasByUsername: Map<string, string>;
   authorizations: AuthorizationRow[];
+  recordedAt: number | null;
 } | null {
   try {
     const p = path.join(dataDir, "orgs-snapshot.json");
@@ -61,6 +62,7 @@ function readSnapshot(dataDir: string): {
       defaultAlias?: string | null;
       aliases?: Record<string, string>;
       authorizations?: Record<string, { orgId: string; instanceUrl: string }>;
+      recordedAt?: number;
     };
     const aliasByUsername = new Map<string, string>();
     for (const [alias, username] of Object.entries(raw.aliases ?? {})) {
@@ -78,6 +80,7 @@ function readSnapshot(dataDir: string): {
       defaultAlias: raw.defaultAlias ?? null,
       aliasByUsername,
       authorizations,
+      recordedAt: typeof raw.recordedAt === "number" ? raw.recordedAt : null,
     };
   } catch {
     return null;
@@ -354,9 +357,19 @@ defineTool({
     const authCount = auths.length;
     const ingestedCount = orgs.filter((o) => o.ingested).length;
     const dbErrSuffix = lastOpenDbError ? ` [openDb error: ${lastOpenDbError}]` : "";
+    // Surface snapshot age. If the install-time snapshot is older than 7
+    // days, the user has likely changed sf state (logged into a new org,
+    // re-aliased, flipped target-org) and the in-MCP list is stale.
+    let snapshotSuffix = "";
+    if (snap?.recordedAt) {
+      const ageDays = Math.floor((now - snap.recordedAt) / DAY_MS);
+      if (ageDays >= STALE_THRESHOLD_DAYS) {
+        snapshotSuffix = ` ⚠ org snapshot is ${ageDays} days old — run \`sfgraph refresh-orgs\` to pick up any sf-CLI changes`;
+      }
+    }
     const summary = loadError
-      ? `sf-cli auth unavailable in this process (${loadError}); discovered ${orgs.length} org${orgs.length === 1 ? "" : "s"} from local sfgraph data dir (${ingestedCount} ingested)${dbErrSuffix}`
-      : `${orgs.length} org${orgs.length === 1 ? "" : "s"} total — ${authCount} via sf CLI, ${ingestedCount} ingested locally${dbErrSuffix}`;
+      ? `sf-cli auth unavailable in this process (${loadError}); discovered ${orgs.length} org${orgs.length === 1 ? "" : "s"} from local sfgraph data dir (${ingestedCount} ingested)${dbErrSuffix}${snapshotSuffix}`
+      : `${orgs.length} org${orgs.length === 1 ? "" : "s"} total — ${authCount} via sf CLI, ${ingestedCount} ingested locally${dbErrSuffix}${snapshotSuffix}`;
     // Reset for next invocation so a transient error doesn't stick.
     lastOpenDbError = null;
     return {

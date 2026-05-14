@@ -17,12 +17,27 @@ export interface OrgSnapshot {
 
 export const ORG_SNAPSHOT_FILENAME = "orgs-snapshot.json";
 
-async function writeOrgSnapshot(dataDir: string): Promise<void> {
+/** Exported so `sfgraph refresh-orgs` can call it directly without going
+ *  through the rest of the install flow (MCP config writes, skill copies). */
+export async function writeOrgSnapshot(dataDir: string): Promise<void> {
   // Run @salesforce/core in this process (NOT the MCP child) so it can
   // actually read ~/.sf/. Capture everything we need; the sandboxed child
   // will read from the JSON instead of from ~/.sf/.
-  const sfCoreModName = "@salesforce/core";
-  const sfCore = (await import(sfCoreModName)) as unknown as {
+  // @salesforce/core isn't a direct dep of the CLI package — resolve it
+  // through a sibling (@ryanstark24/sfgraph-server) that lists it as a
+  // direct dependency. Same pattern doctor.ts uses for better-sqlite3.
+  const { createRequire } = await import("node:module");
+  const here = createRequire(import.meta.url);
+  let resolvedSfCorePath: string;
+  try {
+    const serverEntry = here.resolve("@ryanstark24/sfgraph-server");
+    const sibling = createRequire(serverEntry);
+    resolvedSfCorePath = sibling.resolve("@salesforce/core");
+  } catch {
+    // Fall back to direct resolve (might work in some hoisted layouts).
+    resolvedSfCorePath = "@salesforce/core";
+  }
+  const sfCore = (await import(resolvedSfCorePath)) as unknown as {
     AuthInfo: {
       listAllAuthorizations: () => Promise<
         Array<{
@@ -70,6 +85,33 @@ async function writeOrgSnapshot(dataDir: string): Promise<void> {
     }
   } catch {
     /* default stays null */
+  }
+  // Fallback: ConfigAggregator reads project-local config first which is
+  // usually empty when we run from outside the user's sfdx project. Read
+  // the GLOBAL config file directly so `sf config set target-org=foo`
+  // (run from any project dir) still resolves.
+  if (!defaultAlias) {
+    try {
+      const { readFileSync, existsSync } = await import("node:fs");
+      const { homedir } = await import("node:os");
+      const { join } = await import("node:path");
+      // Newer sf CLI: ~/.sf/config.json. Legacy sfdx: ~/.sfdx/sfdx-config.json.
+      const candidates = [
+        join(homedir(), ".sf", "config.json"),
+        join(homedir(), ".sfdx", "sfdx-config.json"),
+      ];
+      for (const cfgPath of candidates) {
+        if (!existsSync(cfgPath)) continue;
+        const parsed = JSON.parse(readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
+        const v = parsed["target-org"] ?? parsed.defaultusername;
+        if (typeof v === "string" && v.length > 0) {
+          defaultAlias = v;
+          break;
+        }
+      }
+    } catch {
+      /* fallback failed; defaultAlias stays null */
+    }
   }
 
   const snapshot: OrgSnapshot = {

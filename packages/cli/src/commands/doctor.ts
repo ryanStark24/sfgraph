@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { constants, accessSync, existsSync, readdirSync } from "node:fs";
+import { constants, accessSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { isAbiMismatch } from "@ryanstark24/sfgraph-core";
@@ -204,6 +204,52 @@ function checkMcpConfigs(homeOverride?: string): Omit<DoctorCheck, "name"> {
   return { status: "ok", detail };
 }
 
+function checkOrgSnapshot(dataDir: string): Omit<DoctorCheck, "name"> {
+  const p = path.join(dataDir, "orgs-snapshot.json");
+  if (!existsSync(p)) {
+    return {
+      status: "warn",
+      detail:
+        "missing — list_orgs in a sandboxed MCP child will show empty aliases / no default-org",
+      fix: "Run `sfgraph refresh-orgs` (or `sfgraph install`) to capture sf state",
+    };
+  }
+  try {
+    const raw = JSON.parse(readFileSync(p, "utf8")) as {
+      recordedAt?: number;
+      aliases?: Record<string, string>;
+      authorizations?: Record<string, unknown>;
+    };
+    const orgCount = Object.keys(raw.authorizations ?? {}).length;
+    if (orgCount === 0) {
+      return {
+        status: "warn",
+        detail: "snapshot has 0 orgs — sf was probably not authenticated when install ran",
+        fix: "Run `sf org login web --alias <X>` then `sfgraph refresh-orgs`",
+      };
+    }
+    const ageMs = Date.now() - (raw.recordedAt ?? statSync(p).mtimeMs);
+    const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
+    if (ageDays >= 7) {
+      return {
+        status: "warn",
+        detail: `${orgCount} org${orgCount === 1 ? "" : "s"} snapshot, ${ageDays}d old`,
+        fix: "Run `sfgraph refresh-orgs` to capture any sf-CLI changes",
+      };
+    }
+    return {
+      status: "ok",
+      detail: `${orgCount} org${orgCount === 1 ? "" : "s"} snapshot, ${ageDays}d old`,
+    };
+  } catch (e) {
+    return {
+      status: "fail",
+      detail: `unreadable: ${(e as Error).message}`,
+      fix: "Run `sfgraph refresh-orgs` to regenerate",
+    };
+  }
+}
+
 export function runDoctorChecks(opts: DoctorOpts = {}): DoctorReport {
   const dataDir = opts.dataDir ?? getSfgraphPaths().data;
   const checks: DoctorCheck[] = [
@@ -211,6 +257,7 @@ export function runDoctorChecks(opts: DoctorOpts = {}): DoctorReport {
     check("better-sqlite3 native binding", () => checkBetterSqlite3(opts.requireFn)),
     check("sfgraph data dir", () => checkDataDir(dataDir)),
     check("org databases", () => checkOrgDatabases(dataDir, opts.requireFn)),
+    check("org snapshot", () => checkOrgSnapshot(dataDir)),
     check("sf CLI", () => checkSfCli(opts.sfProbe)),
     check("IDE MCP configs", () => checkMcpConfigs(opts.homeOverride)),
   ];
