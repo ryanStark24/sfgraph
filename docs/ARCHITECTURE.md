@@ -94,6 +94,23 @@ Each retrieved member goes through `adaptParserInput()` which maps the SF metada
 2. **Declarative YAML rules** — Phase 7 introduced a `RuleBasedParser` that loads YAML rules from `packages/core/src/parsers/rules/`. 21 metadata types now run through this engine; adding a new declarative type is a YAML file, not code.
 3. **Generic opaque** — fallback that records the metadata blob as a single node so it appears in the graph even if no parser understands it.
 
+### CustomObject extractor — describeGlobal-based
+
+The object extractor lives at `packages/core/src/extractors/live-org/extractors/object.ts`. It originally used Tooling SOQL on `EntityDefinition` + `metadata.read('CustomObject', ...)`, which silently returned 0 records on Agentforce, scratch, and certain dev orgs even for admin users. Post-1.0.0 it was rewritten:
+
+1. `conn.describeGlobal()` enumerates every SObject visible to the user — universally available, no Metadata API permissions required.
+2. Skip patterns filter out audit/junk tables (`__History`, `__Tag`, `__Feed`, `__Share`, `__ChangeEvent`, `__b`).
+3. For each remaining SObject: `conn.sobject(name).describe()` returns the full field map (type, label, length, references, formula, picklists).
+4. The CustomObject parser receives a JSON envelope that matches what the metadata.read path used to return, so the rest of the pipeline is unchanged.
+
+Per-object describe is wrapped in try/catch so one entity failing doesn't kill the rest.
+
+### Fail-soft per source + end-of-run skip summary
+
+Every source iterable in `bulkRetrieve` is wrapped by `failSoft(label, factory, onError)`. If a source throws (INSUFFICIENT_ACCESS, REQUEST_LIMIT_EXCEEDED, network blip, anything), the error is captured into a shared `IngestSkipReport`, a compact `✗ skipped` line prints, and other sources continue.
+
+At end of ingest, `printSkipSummary` groups skips by category (`insufficient_access`, `not_found`, `rate_limit`, `network`, `unknown`) and prints a targeted remediation paragraph per category. The report is also persisted to `<dataDir>/<orgId>.skips.json` so `sfgraph ingest --retry-skipped` can replay only the failed sources without a full rebuild.
+
 ### Phase 6 — Merge with content-hash short-circuit
 
 `graphStore.mergeNodes()` is the hot path. For every incoming node:

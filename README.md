@@ -274,6 +274,24 @@ Commands:
 | `--dry-run` | `false` | Preview without writing |
 | `--skills-only` | `false` | Install skill playbooks; skip MCP config |
 | `--mcp-only` | `false` | Write MCP config; skip skill playbooks |
+| `--local` | `false` | Write MCP config that invokes the local binary directly (`node <absPath> mcp`) instead of `npx @ryanstark24/sfgraph-mcp`. Use during local dev before the package is published to npm. |
+
+### `sfgraph link` + `sfgraph wip` (WIP local-impact analysis)
+
+```bash
+# One-time per sfdx project: bind the folder to an org
+sfgraph link --org my-sandbox [--project <path>]
+
+# Then analyse uncommitted local changes against the org graph
+sfgraph wip [--depth N] [--mode changed-only|full-folder] [--project <path>] [--org <alias>]
+```
+
+`link` writes `~/.sfgraph/workspaces/<projectHash>.json` so the wip
+command knows which org's graph to overlay your local source against.
+`wip` parses the sfdx-source tree (`force-app/`), overlays transient
+nodes onto the org's graph in-memory (never persisted), and runs the
+same dependent-BFS as `impact_from_git_diff` — but for uncommitted
+changes. Read-only against the persisted graph.
 
 ### `sfgraph ingest`
 
@@ -287,9 +305,47 @@ Commands:
 | `--rebuild` | `false` | Move existing graph to `backups/`, open fresh DB, force full sync |
 | `--no-backup` | — | With `--rebuild`, delete existing graph instead of backing it up |
 | `--detect-deletions` | `false` | After full sync, delete qnames present in the graph but not touched this run |
+| `--only <labels>` | — | Comma-separated source labels to fetch (e.g. `apex,generic:Profile`). Merges into the existing graph; no rebuild. |
+| `--retry-skipped` | `false` | Re-fetch only sources skipped in the previous run (reads `<dataDir>/<orgId>.skips.json`). |
+| `--embed-model <path>` | — | Absolute path to a custom embedding model dir (overrides the vendored MiniLM). Also reads `SFGRAPH_EMBED_MODEL_PATH`. |
+| `--embed-model-id <id>` | `Xenova/all-MiniLM-L6-v2` | Model id under that dir. Also reads `SFGRAPH_EMBED_MODEL_ID`. |
+| `--embed-model-dim <n>` | `384` | Embedding dimension. Also reads `SFGRAPH_EMBED_MODEL_DIM`. |
 | `--db <path>` | `~/.sfgraph/<orgId>.sqlite` | Override SQLite database path |
 
 Auto-detects default org from `sf config`. Auto-snapshot taken before every sync.
+
+#### Recovering from rate-limit or permission skips
+
+Every ingest writes its skip report to `<dataDir>/<orgId>.skips.json`. If
+some types were rate-limited or permission-gated, wait for the quota to
+refresh (or get the perm), then:
+
+```bash
+# Re-fetch ONLY the previously-skipped sources, no full rebuild
+sfgraph ingest --org my-prod --retry-skipped
+
+# Or target specific sources by label
+sfgraph ingest --org my-prod --only generic:Profile,generic:Layout
+```
+
+#### BYO embedding model
+
+```bash
+# Point at any transformers.js-compatible model on disk
+sfgraph ingest --org my-prod \
+  --embed-model /path/to/models \
+  --embed-model-id MyOrg/MyModel \
+  --embed-model-dim 768
+
+# Or via env (set once, sticks across runs)
+export SFGRAPH_EMBED_MODEL_PATH=/path/to/models
+export SFGRAPH_EMBED_MODEL_ID=MyOrg/MyModel
+export SFGRAPH_EMBED_MODEL_DIM=768
+sfgraph ingest --org my-prod
+```
+
+Checksum verification is skipped for user-supplied models (it's your
+model, not ours to validate). The vendored MiniLM still verifies.
 
 ### `sfgraph snapshot`
 
