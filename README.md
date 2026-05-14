@@ -29,16 +29,41 @@ A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-s
 
 ## Quickstart for a brand-new install
 
-### Prerequisites
+### Prerequisites you install yourself (3 things)
 
-- Node.js **≥ 20**
-- The `sf` CLI installed and authenticated against at least one Salesforce org:
-  ```bash
-  npm install -g @salesforce/cli       # if you don't already have it
-  sf org login web --alias my-prod     # opens a browser; one-time
-  sf config set target-org=my-prod     # makes this the default org
-  ```
-  Verify with `sf org list` — you should see `my-prod` listed and marked as the default target.
+| | Why | How |
+|---|---|---|
+| **Node.js ≥ 20** | sfgraph is a Node CLI + MCP server | [nodejs.org](https://nodejs.org) or `brew install node` |
+| **`sf` CLI** (Salesforce CLI) | Read-only org auth — we never see your password; the token stays in `~/.sfdx/` | `npm install -g @salesforce/cli` |
+| **At least one `sf` login** | We need an org to read from | `sf org login web --alias my-prod && sf config set target-org=my-prod` |
+
+Verify both with:
+
+```bash
+node --version          # v20+ (v22+ recommended)
+sf --version            # @salesforce/cli/2.x
+sf org list             # should show at least one org marked as default
+```
+
+### Dependencies sfgraph brings in automatically
+
+`npm install -g @ryanstark24/sfgraph-mcp` pulls these transitively. You don't install them yourself — listed so you know what's running:
+
+| Package | Why sfgraph uses it |
+|---|---|
+| `@modelcontextprotocol/sdk` | MCP server protocol (stdio transport) |
+| `@salesforce/core` | Org auth + alias resolution from `~/.sfdx/` (token never touches our process) |
+| `jsforce` | Salesforce HTTP client — every connection wrapped in our read-only Proxy |
+| `better-sqlite3` ⚠ native | Per-org SQLite graph + vector store. Postinstall auto-rebuilds the binding for your Node version. |
+| `sqlite-vec` | `vec0` virtual tables for partition-pruned KNN |
+| `@xenova/transformers` + `onnxruntime` | Local embedding model (MiniLM L6 v2, vendored, runs offline) |
+| `bottleneck` + `p-limit` | Three rate-limit pools so we never exceed Salesforce API limits |
+| `fast-xml-parser`, `@babel/parser`, `parse5`, `apex-parser` | Metadata parsing (XML, LWC JS/HTML, Apex AST) |
+| `piscina` | Worker pool for parsing + embedding side-streams |
+| `commander` | CLI |
+| `zod` + `zod-to-json-schema` | MCP tool input validation |
+
+The two native modules (`better-sqlite3`, optional `onnxruntime`) trigger a compile-or-prebuilt step on install. We auto-handle the common ABI-mismatch case via a postinstall verifier (see [Troubleshooting](#troubleshooting)).
 
 **Windows note.** sfgraph runs on Windows 10/11 under Node ≥ 20. Install via `npm install -g @ryanstark24/sfgraph-mcp`; the `sfgraph install` command writes the MCP host config with `npx.cmd` (not `npx`) so Claude Code / Cursor on Windows invoke the right binary. Make sure Git LFS is installed before `npm install` so the vendored embedding model resolves on first ingest.
 
