@@ -13,6 +13,35 @@ import { iterOmnistudio } from "./extractors/omnistudio.js";
 import { iterSecurity } from "./extractors/security.js";
 import { iterVlocity } from "./extractors/vlocity.js";
 
+/** Aggregate of every source that errored during a bulkRetrieve run.
+ *  bulkRetrieve mutates this in-place via onError; live-ingest reads it at
+ *  end of run to print a consolidated summary instead of warning per-source
+ *  in the middle of progress output. */
+export interface IngestSkipReport {
+  skips: Array<{ label: string; reason: string; category: SkipCategory }>;
+}
+
+export type SkipCategory =
+  | "insufficient_access"
+  | "not_found"
+  | "rate_limit"
+  | "network"
+  | "unknown";
+
+/** Best-effort classification so the end-of-run recommendation is targeted. */
+function classifySkip(msg: string): SkipCategory {
+  const m = msg.toUpperCase();
+  if (m.includes("INSUFFICIENT_ACCESS") || m.includes("INSUFFICIENT") || m.includes("FORBIDDEN")) {
+    return "insufficient_access";
+  }
+  if (m.includes("NOT_FOUND") || m.includes("INVALID_TYPE")) return "not_found";
+  if (m.includes("REQUEST_LIMIT_EXCEEDED") || m.includes("RATE_LIMIT")) return "rate_limit";
+  if (m.includes("ECONNREFUSED") || m.includes("ENOTFOUND") || m.includes("ETIMEDOUT")) {
+    return "network";
+  }
+  return "unknown";
+}
+
 /** Naive sequential merge — predictable order, simpler back-pressure semantics. */
 export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>): AsyncIterable<T> {
   for (const it of iters) {
@@ -20,12 +49,11 @@ export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>)
   }
 }
 
-/** Wrap an iterable so a thrown error logs + ends the stream cleanly instead
- *  of aborting the whole ingest. Surfaces WHICH source failed (e.g. which
- *  metadata type) so the user can see exactly where INSUFFICIENT_ACCESS hit.
- *
- *  Also emits per-source progress: a 'starting' line when the source begins
- *  yielding and a 'done' line with count + elapsed when it completes. */
+/** Wrap an iterable so a thrown error is captured + the stream ends cleanly
+ *  instead of aborting the whole ingest. The error is recorded into a
+ *  shared skip report (consumed at end-of-run) and a compact ✗ line is
+ *  printed so the user sees something happened without the full error
+ *  message scrolling past during the run. */
 async function* failSoft<T>(
   label: string,
   factory: () => AsyncIterable<T>,
@@ -50,9 +78,11 @@ async function* failSoft<T>(
     }
   } catch (e) {
     const err = e as Error;
-    const msg = err?.message ?? String(err);
     onError?.(label, err);
-    console.warn(`ingest:   ${label} ✗ skipping after ${count} records: ${msg}`);
+    // Compact one-liner during the run — full details are aggregated and
+    // surfaced in the end-of-run skip summary so the user gets one clear
+    // remediation block instead of N scattered warnings.
+    console.log(`ingest:   ${label} ✗ skipped`);
   }
 }
 
@@ -68,6 +98,7 @@ export async function* bulkRetrieve(
   conn: any,
   caps: OrgCapabilities,
   orgId: OrgId,
+  skipReport?: IngestSkipReport,
 ): AsyncIterable<RawMember> {
   // Discover the type list this org actually supports. If discovery fails or
   // returns nothing usable, fall back to invoking every known extractor —
@@ -82,13 +113,22 @@ export async function* bulkRetrieve(
   const sources: Array<AsyncIterable<RawMember>> = [];
   const invoked = new Set<string>(); // source-key dedup
 
+  const onSkip = skipReport
+    ? (label: string, err: Error) => {
+        const reason = err?.message ?? String(err);
+        skipReport.skips.push({ label, reason, category: classifySkip(reason) });
+      }
+    : undefined;
+
   const invoke = (key: string, factory: () => AsyncIterable<RawMember>) => {
     if (invoked.has(key)) return;
     invoked.add(key);
     // Each source is wrapped fail-soft so one failing type (e.g. a metadata
     // category the user's profile lacks access to) doesn't abort the whole
-    // ingest. The wrapper logs the source label + error and ends the stream.
-    sources.push(failSoft(key, factory));
+    // ingest. The wrapper records the source label + error into skipReport
+    // (consumed at end of run for a consolidated summary) and ends the
+    // stream cleanly.
+    sources.push(failSoft(key, factory, onSkip));
   };
 
   if (types.length === 0) {

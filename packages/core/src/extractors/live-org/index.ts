@@ -17,6 +17,7 @@ export {
 } from "./rate-limit.js";
 export type { RateLimitPools } from "./rate-limit.js";
 export { bulkRetrieve, mergeAsyncIterables } from "./bulk-retrieve.js";
+export type { IngestSkipReport, SkipCategory } from "./bulk-retrieve.js";
 export { iterChanges } from "./source-member.js";
 export { iterApex, iterOne as iterOneApex } from "./extractors/apex.js";
 export { iterLwc } from "./extractors/lwc.js";

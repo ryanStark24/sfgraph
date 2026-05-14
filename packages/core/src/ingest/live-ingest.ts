@@ -8,7 +8,7 @@ import { populateAnalysisTables } from "../analyze/populate.js";
 import { EmbeddingQueue, type VectorSink } from "../embedding/index.js";
 import type { MemberRef, RawMember } from "../extractors/interfaces/metadata-source.js";
 import { type ResolveOrgDeps, type ResolvedOrg, resolveOrg } from "../extractors/live-org/auth.js";
-import { bulkRetrieve } from "../extractors/live-org/bulk-retrieve.js";
+import { type IngestSkipReport, bulkRetrieve } from "../extractors/live-org/bulk-retrieve.js";
 import { type OrgCapabilities, probeCapabilities } from "../extractors/live-org/capabilities.js";
 import { iterChanges } from "../extractors/live-org/source-member.js";
 import { loadAllRules } from "../parsers/rules/_loader.js";
@@ -61,6 +61,74 @@ const NOOP_LOG: Logger = {
   warn: () => {},
   error: () => {},
 };
+
+/** Print a consolidated end-of-run summary of metadata types that were
+ *  skipped during ingest, grouped by failure category, with a targeted
+ *  remediation block per category. */
+function printSkipSummary(report: IngestSkipReport, orgAlias: string): void {
+  const byCategory = new Map<string, Array<{ label: string; reason: string }>>();
+  for (const s of report.skips) {
+    const arr = byCategory.get(s.category) ?? [];
+    arr.push({ label: s.label, reason: s.reason });
+    byCategory.set(s.category, arr);
+  }
+
+  const total = report.skips.length;
+  console.log("");
+  console.log(
+    `⚠ ${total} metadata ${total === 1 ? "type was" : "types were"} skipped during this ingest.`,
+  );
+  console.log("  The rest of the graph completed successfully — these types are simply absent.");
+
+  if (byCategory.has("insufficient_access")) {
+    const list = byCategory.get("insufficient_access") ?? [];
+    console.log("");
+    console.log(`  Insufficient access (${list.length}):`);
+    for (const s of list) console.log(`    • ${s.label}`);
+    console.log("");
+    console.log("  How to fix permanently:");
+    console.log("    1. Have an admin assign your user a permission set with:");
+    console.log("         - 'Modify Metadata Through Metadata API Functions'");
+    console.log("         - 'View All Data' (or assign the System Administrator profile)");
+    console.log("    2. Re-run with --rebuild to pick up the now-accessible types:");
+    console.log(`         sfgraph ingest --org ${orgAlias} --rebuild`);
+  }
+
+  if (byCategory.has("rate_limit")) {
+    const list = byCategory.get("rate_limit") ?? [];
+    console.log("");
+    console.log(`  Rate-limited (${list.length}):`);
+    for (const s of list) console.log(`    • ${s.label}`);
+    console.log(
+      "    How to fix: wait a few minutes for the daily API quota to refresh, then re-run.",
+    );
+  }
+
+  if (byCategory.has("not_found")) {
+    const list = byCategory.get("not_found") ?? [];
+    console.log("");
+    console.log(`  Not retrievable in this org (${list.length}):`);
+    for (const s of list) console.log(`    • ${s.label}`);
+    console.log("    These types were advertised by describeMetadata() but the org refuses to");
+    console.log("    return data for them — usually deprecated or feature-gated. Safe to ignore.");
+  }
+
+  if (byCategory.has("network")) {
+    const list = byCategory.get("network") ?? [];
+    console.log("");
+    console.log(`  Network errors (${list.length}):`);
+    for (const s of list) console.log(`    • ${s.label}: ${s.reason}`);
+    console.log("    How to fix: check connectivity to your org and re-run.");
+  }
+
+  if (byCategory.has("unknown")) {
+    const list = byCategory.get("unknown") ?? [];
+    console.log("");
+    console.log(`  Other (${list.length}):`);
+    for (const s of list) console.log(`    • ${s.label}: ${s.reason}`);
+  }
+  console.log("");
+}
 
 function adaptParserInput(
   ref: MemberRef,
@@ -282,8 +350,9 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     let progressCount = 0;
     let lastTickAt = Date.now();
     const PROGRESS_TICK_MS = 5000; // emit a heartbeat at least every 5s
+    const skipReport: IngestSkipReport = { skips: [] };
     try {
-      for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId)) {
+      for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, skipReport)) {
         try {
           await processOne(member.ref, member.content);
         } catch (e) {
@@ -312,6 +381,12 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       logger.warn("live-ingest: bulkRetrieve stream aborted", {
         error: (e as Error).message,
       });
+    }
+
+    // End-of-run skip summary. Grouped by category so the remediation is
+    // targeted to the specific class of failure.
+    if (skipReport.skips.length > 0) {
+      printSkipSummary(skipReport, resolved.alias);
     }
   }
 
