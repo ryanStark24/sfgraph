@@ -8,3 +8,8 @@ export { SqliteVectorStore } from "./sqlite/vector-store.js";
 export type { SqliteVectorStoreOptions } from "./sqlite/vector-store.js";
 export { SqliteSnapshotStore } from "./sqlite/snapshot-store.js";
 export type { SqliteSnapshotStoreOptions } from "./sqlite/snapshot-store.js";
+export {
+  isAbiMismatch,
+  loadBetterSqlite3,
+  wrapAbiError,
+} from "./sqlite/load-better-sqlite3.js";

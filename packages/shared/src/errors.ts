@@ -11,6 +11,7 @@ export const ErrorCode = {
   E_MODEL_CHECKSUM_MISMATCH: "E_MODEL_CHECKSUM_MISMATCH",
   E_INVALID_ORG_IDENTIFIER: "E_INVALID_ORG_IDENTIFIER",
   E_VECTOR_EXTENSION: "E_VECTOR_EXTENSION",
+  E_NATIVE_ABI_MISMATCH: "E_NATIVE_ABI_MISMATCH",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

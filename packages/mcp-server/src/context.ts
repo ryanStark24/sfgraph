@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
-import type { GraphStore, SnapshotStore } from "@ryanstark24/sfgraph-core";
+import { type GraphStore, type SnapshotStore, loadBetterSqlite3 } from "@ryanstark24/sfgraph-core";
 import {
   ErrorCode,
   type OrgId,
@@ -130,7 +130,7 @@ async function resolveAliasToOrgId(dataDir: string, alias: string): Promise<stri
   const nodeRequire = createRequire(import.meta.url);
   let Database: unknown;
   try {
-    Database = nodeRequire("better-sqlite3");
+    Database = loadBetterSqlite3(nodeRequire);
   } catch {
     return null;
   }

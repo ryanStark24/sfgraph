@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { loadBetterSqlite3 } from "@ryanstark24/sfgraph-core";
 import { getSfgraphPaths, validateOrgIdentifier } from "@ryanstark24/sfgraph-shared";
 
 const nodeRequire = createRequire(import.meta.url);
@@ -75,7 +76,7 @@ function defaultOpenDb(p: string): {
 } | null {
   if (!existsSync(p)) return null;
   try {
-    const Database = nodeRequire("better-sqlite3");
+    const Database = loadBetterSqlite3<new (p: string, o?: unknown) => unknown>(nodeRequire);
     const db = new Database(p, { readonly: true, fileMustExist: true });
     return db as { prepare: (s: string) => { get: (a: string) => unknown }; close: () => void };
   } catch (e) {

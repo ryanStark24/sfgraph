@@ -5,6 +5,7 @@ import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, Org, RelType } from "../../domain/index.js";
 import { edgeTableName, nodeTableName, validateLabel, validateRelType } from "../identifier.js";
+import { wrapAbiError } from "./load-better-sqlite3.js";
 import type {
   BetterSqlite3Database,
   GraphStore,
@@ -85,7 +86,13 @@ export class SqliteGraphStore implements GraphStore {
         const dir = path.dirname(opts.dbPath);
         if (dir && dir !== ".") mkdirSync(dir, { recursive: true });
       }
-      this.db = new Database(opts.dbPath);
+      try {
+        this.db = new Database(opts.dbPath);
+      } catch (e) {
+        const wrapped = wrapAbiError(e);
+        if (wrapped) throw wrapped;
+        throw e;
+      }
       this.ownsDb = true;
     }
   }

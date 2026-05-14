@@ -6,6 +6,7 @@ import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, RelType, Snapshot } from "../../domain/index.js";
 import type { BetterSqlite3Database, EdgeDiff, NodeDiff, SnapshotStore } from "../interfaces.js";
+import { wrapAbiError } from "./load-better-sqlite3.js";
 import { MIGRATIONS, MigrationRunner } from "./migrations.js";
 
 export interface SqliteSnapshotStoreOptions {
@@ -96,7 +97,13 @@ export class SqliteSnapshotStore implements SnapshotStore {
         const dir = path.dirname(opts.dbPath);
         if (dir && dir !== ".") mkdirSync(dir, { recursive: true });
       }
-      this.db = new Database(opts.dbPath);
+      try {
+        this.db = new Database(opts.dbPath);
+      } catch (e) {
+        const wrapped = wrapAbiError(e);
+        if (wrapped) throw wrapped;
+        throw e;
+      }
       this.ownsDb = true;
     }
   }
