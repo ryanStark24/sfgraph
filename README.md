@@ -640,6 +640,70 @@ pnpm models:refresh
 
 ---
 
+## Troubleshooting
+
+### `NODE_MODULE_VERSION` / `Module did not self-register` on startup
+
+This is a `better-sqlite3` ABI mismatch — the prebuilt native binding was
+compiled against a different Node ABI than the one currently running. It
+commonly happens when an IDE (Cursor, VS Code, Claude Desktop) spawns the
+MCP server with its own bundled Node binary while you ran
+`pnpm install` / `pnpm rebuild` from a shell using a different Node.
+
+Diagnose:
+
+```bash
+sfgraph doctor
+```
+
+Fix:
+
+```bash
+npm rebuild better-sqlite3    # or: pnpm rebuild better-sqlite3
+```
+
+If the rebuild "works" but the IDE still errors, the IDE's Node ABI
+differs from your shell's. Re-run the rebuild from inside the IDE's
+integrated terminal, or pin an absolute Node path:
+
+```bash
+sfgraph install --local --pin-node "$(which node)"
+```
+
+### MCP server shows no tools / agent ignores sfgraph
+
+1. Fully restart the IDE — MCP clients cache the tool list until reconnect.
+2. Verify the config was written:
+   ```bash
+   sfgraph install --target cursor --dry-run
+   cat ~/.cursor/mcp.json
+   ```
+3. Run `sfgraph doctor` and confirm the `IDE MCP configs` row lists your IDE.
+
+### `sfgraph ingest` hangs or seems silent
+
+Ingest emits a heartbeat every ~5s. If you don't see any output for longer
+than that, check `sf org list` works first (auth issues are the most common
+cause). For a noisier run, drop `--mode auto` and use `--mode full` so the
+sync starts from scratch.
+
+### `list_orgs` returns empty / "0 orgs"
+
+Either the `sf` CLI can't auth from the MCP child process (Cursor often
+inherits a stripped `PATH`), or no orgs have been ingested yet. Confirm
+with:
+
+```bash
+sfgraph doctor      # check "sf CLI" and "org databases" rows
+sf org list         # from the same shell
+```
+
+If `sf org list` works but `list_orgs` from the MCP client returns empty,
+the data-dir fallback kicked in but found nothing — run
+`sfgraph ingest --org <alias>` once to populate it.
+
+---
+
 ## Further reading
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — storage model, ingestion pipeline, embedding strategy, snippet store, Windows support
