@@ -301,4 +301,85 @@ describe("wrapConnectionReadOnly", () => {
     const proxy = wrapConnectionReadOnly(makeMockConn());
     expect(proxy.bulk.load("Account", "query", "SELECT Id FROM Account")).toBe("loaded");
   });
+
+  // ---- P0 audit pass 2: unmodelled surfaces / internals ----
+  it("blocks conn.soap.create (unmodelled surface)", () => {
+    const m = makeMockConn();
+    m.soap = { create: vi.fn(), find: vi.fn(() => ({ records: [] })) };
+    const proxy = wrapConnectionReadOnly(m);
+    expect(() => (proxy as any).soap.create({})).toThrow(ReadOnlyViolationError);
+  });
+  it("allows conn.soap.find (read pass-through on unmodelled surface)", () => {
+    const m = makeMockConn();
+    m.soap = { create: vi.fn(), find: vi.fn(() => ({ records: [] })) };
+    const proxy = wrapConnectionReadOnly(m);
+    expect((proxy as any).soap.find()).toEqual({ records: [] });
+  });
+  it("blocks conn.bulk2.createJob with insert operation", () => {
+    const m = makeMockConn();
+    m.bulk2 = {
+      createJob: vi.fn((opts: { operation: string }) => ({ id: "job1", op: opts.operation })),
+      query: vi.fn(() => ({ records: [] })),
+    };
+    const proxy = wrapConnectionReadOnly(m);
+    expect(() => (proxy as any).bulk2.createJob({ operation: "insert" })).toThrow(
+      ReadOnlyViolationError,
+    );
+  });
+  it("allows conn.bulk2.createJob with query operation", () => {
+    const m = makeMockConn();
+    m.bulk2 = {
+      createJob: vi.fn((opts: { operation: string }) => ({ id: "job1", op: opts.operation })),
+      query: vi.fn(() => ({ records: [] })),
+    };
+    const proxy = wrapConnectionReadOnly(m);
+    expect((proxy as any).bulk2.createJob({ operation: "query" })).toEqual({
+      id: "job1",
+      op: "query",
+    });
+  });
+  it("allows conn.bulk2.query (read pass-through)", () => {
+    const m = makeMockConn();
+    m.bulk2 = { createJob: vi.fn(), query: vi.fn(() => ({ records: [] })) };
+    const proxy = wrapConnectionReadOnly(m);
+    expect((proxy as any).bulk2.query("SELECT Id FROM Account")).toEqual({ records: [] });
+  });
+  it("blocks conn.bulk.createJob with delete operation", () => {
+    const m = makeMockConn();
+    m.bulk.createJob = vi.fn((opts: { operation: string }) => ({ op: opts.operation }));
+    const proxy = wrapConnectionReadOnly(m);
+    expect(() => proxy.bulk.createJob({ operation: "delete" })).toThrow(ReadOnlyViolationError);
+  });
+  it("allows conn.bulk.createJob with query operation", () => {
+    const m = makeMockConn();
+    m.bulk.createJob = vi.fn((opts: { operation: string }) => ({ op: opts.operation }));
+    const proxy = wrapConnectionReadOnly(m);
+    expect(proxy.bulk.createJob({ operation: "query" })).toEqual({ op: "query" });
+  });
+  it("hides conn.tooling._conn back-reference", () => {
+    const m = makeMockConn();
+    (m.tooling as any)._conn = m;
+    const proxy = wrapConnectionReadOnly(m);
+    expect((proxy.tooling as any)._conn).toBeUndefined();
+  });
+  it("hides conn._conn / underscore internals", () => {
+    const m = makeMockConn();
+    (m as any)._conn = m;
+    (m as any)._logger = { debug: vi.fn() };
+    const proxy = wrapConnectionReadOnly(m);
+    expect((proxy as any)._conn).toBeUndefined();
+    expect((proxy as any)._logger).toBeUndefined();
+  });
+  it("blocks conn.apex.delete via generic default-deny", () => {
+    const m = makeMockConn();
+    m.apex = { get: vi.fn(() => ({})), delete: vi.fn() };
+    const proxy = wrapConnectionReadOnly(m);
+    expect(() => (proxy as any).apex.delete("/x")).toThrow(ReadOnlyViolationError);
+  });
+  it("blocks conn.chatter.create via generic default-deny", () => {
+    const m = makeMockConn();
+    m.chatter = { create: vi.fn(), resource: vi.fn(() => ({})) };
+    const proxy = wrapConnectionReadOnly(m);
+    expect(() => (proxy as any).chatter.create({})).toThrow(ReadOnlyViolationError);
+  });
 });
