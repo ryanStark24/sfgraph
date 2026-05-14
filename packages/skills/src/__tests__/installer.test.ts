@@ -28,18 +28,23 @@ describe("skills installer", () => {
     }
   });
 
-  it("installs to the cursor target as .mdc files with tools_used stripped", async () => {
+  it("installs to the cursor target as .mdc files in Cursor's frontmatter shape", async () => {
     const results = await install("cursor", { homeOverride: home });
     expect(results.length).toBe(15);
     const cursorDir = join(home, ".cursor", "rules");
     const files = readdirSync(cursorDir);
     expect(files.every((f) => f.endsWith(".mdc"))).toBe(true);
     expect(files.length).toBe(15);
-    // Spot-check: tools_used: block should not survive transform.
+    // Cursor-shaped frontmatter (the three keys Cursor's rule loader reads).
     const sample = readFileSync(join(cursorDir, files[0] ?? ""), "utf8");
+    expect(sample).toMatch(/^description:/m);
+    expect(sample).toMatch(/^globs:\s*$/m);
+    expect(sample).toMatch(/^alwaysApply:\s*false$/m);
+    // Old frontmatter is rewritten away (would confuse Cursor's parser).
+    expect(sample).not.toMatch(/^name:/m);
+    expect(sample).not.toMatch(/^triggers:/m);
     expect(sample).not.toMatch(/^tools_used:/m);
-    // But the body and other frontmatter survive:
-    expect(sample).toMatch(/^name:/m);
+    // Body content preserved.
     expect(sample).toMatch(/## Playbook/);
   });
 

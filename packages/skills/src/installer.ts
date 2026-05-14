@@ -67,12 +67,64 @@ export function toClaudeFormat(md: string): string {
 }
 
 /**
- * Cursor expects `.mdc` rule files. We strip the `tools_used:` block from
- * the frontmatter (Cursor doesn't model tool lists) and keep the rest.
+ * Cursor expects `.mdc` rule files with a specific frontmatter contract:
+ *   description: <short description the agent matches against>
+ *   globs: <file patterns; can be empty for non-file-scoped rules>
+ *   alwaysApply: <true = always loaded; false = agent-requested>
+ *
+ * Our skill files use a different frontmatter (name/description/triggers/
+ * tools_used). Rewrite the frontmatter into Cursor's shape so rules are
+ * actually picked up. We use 'agent-requested' mode (alwaysApply: false +
+ * rich description) which lets Cursor's agent pull the skill in when the
+ * user's prompt matches the description — without polluting every chat in
+ * unrelated projects.
+ *
+ * The body of the skill markdown (playbook, response shape, visualization,
+ * don't list) is preserved verbatim — that's the actual instructions the
+ * agent reads.
  */
 export function toCursorFormat(md: string): string {
-  // Strip the tools_used: line and its bulleted entries (until next top-level key or frontmatter end).
-  return md.replace(/^tools_used:\s*\n(?:[ \t]+-[^\n]*\n)*/m, "");
+  // Parse the leading YAML frontmatter.
+  const fmMatch = md.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (!fmMatch) return md; // no frontmatter — leave as-is
+
+  const frontmatter = fmMatch[1] ?? "";
+  const body = fmMatch[2] ?? "";
+
+  // Pull out the name, description, and triggers list.
+  const nameMatch = frontmatter.match(/^name:\s*(.+?)\s*$/m);
+  const descMatch = frontmatter.match(/^description:\s*(.+?)\s*$/m);
+  const triggersMatch = frontmatter.match(/^triggers:\s*\n((?:[ \t]+-[^\n]*\n?)+)/m);
+
+  const name = nameMatch?.[1] ?? "sfgraph-skill";
+  const baseDescription = descMatch?.[1] ?? "";
+  const triggerPhrases: string[] = [];
+  if (triggersMatch?.[1]) {
+    for (const line of triggersMatch[1].split("\n")) {
+      const m = line.match(/^\s*-\s*"?(.+?)"?\s*$/);
+      if (m?.[1]) triggerPhrases.push(m[1]);
+    }
+  }
+
+  // Compose a rich description: base + trigger phrases. Cursor's agent
+  // matches the conversation against this string to decide whether to
+  // pull the rule in. Mention sfgraph + Salesforce explicitly so the
+  // match fires on tool-relevant questions.
+  const descriptionParts = [baseDescription];
+  if (triggerPhrases.length > 0) {
+    descriptionParts.push(`Triggers: ${triggerPhrases.join("; ")}.`);
+  }
+  descriptionParts.push(
+    `Use this skill (${name}) for Salesforce questions via the sfgraph MCP tools.`,
+  );
+  const description = descriptionParts.filter(Boolean).join(" ");
+
+  return `---
+description: ${description.replace(/\n/g, " ").replace(/"/g, "'")}
+globs:
+alwaysApply: false
+---
+${body}`;
 }
 
 export async function install(

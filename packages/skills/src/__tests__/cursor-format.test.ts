@@ -19,14 +19,23 @@ Some content.
 `;
 
 describe("format transforms", () => {
-  it("toCursorFormat strips tools_used block but keeps body and other frontmatter", () => {
+  it("toCursorFormat rewrites frontmatter into Cursor's contract", () => {
     const out = toCursorFormat(SAMPLE);
-    expect(out).not.toMatch(/^tools_used:/m);
-    expect(out).not.toMatch(/^\s+- tool_a/m);
-    expect(out).toMatch(/name: foo/);
-    expect(out).toMatch(/triggers:/);
+    // Cursor-shaped frontmatter (the only three keys it understands)
+    expect(out).toMatch(/^description:.*bar/m);
+    expect(out).toMatch(/^globs:\s*$/m);
+    expect(out).toMatch(/^alwaysApply:\s*false$/m);
+    // Trigger phrases folded into the description so the agent matches them
+    expect(out).toMatch(/Triggers:.*"?x"?/);
+    // The agent-requested hint mentions the skill name + sfgraph routing
+    expect(out).toMatch(/sfgraph MCP tools/);
+    // Body preserved verbatim
     expect(out).toMatch(/^# Body/m);
     expect(out).toMatch(/^- bullet/m);
+    // Old frontmatter is gone (it would confuse Cursor's parser)
+    expect(out).not.toMatch(/^name: foo/m);
+    expect(out).not.toMatch(/^triggers:/m);
+    expect(out).not.toMatch(/^tools_used:/m);
   });
 
   it("toClaudeFormat is identity", () => {
