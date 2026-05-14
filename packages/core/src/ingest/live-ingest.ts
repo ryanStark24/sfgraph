@@ -272,8 +272,26 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       await processOne(ref, "");
     }
   } else {
-    for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId)) {
-      await processOne(member.ref, member.content);
+    // The outer iteration is also wrapped: bulkRetrieve uses fail-soft per
+    // source, but a top-level catch protects against any iterator-protocol
+    // surprises (e.g. generator throws during `next()` before yielding).
+    try {
+      for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId)) {
+        try {
+          await processOne(member.ref, member.content);
+        } catch (e) {
+          parseErrors += 1;
+          logger.warn("live-ingest: processOne failed", {
+            qname: `${member.ref.memberType}:${member.ref.memberName}`,
+            error: (e as Error).message,
+          });
+        }
+      }
+    } catch (e) {
+      // Should not happen with fail-soft sources, but keep the safety net.
+      logger.warn("live-ingest: bulkRetrieve stream aborted", {
+        error: (e as Error).message,
+      });
     }
   }
 

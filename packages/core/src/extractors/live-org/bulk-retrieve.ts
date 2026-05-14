@@ -20,6 +20,26 @@ export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>)
   }
 }
 
+/** Wrap an iterable so a thrown error logs + ends the stream cleanly instead
+ *  of aborting the whole ingest. Surfaces WHICH source failed (e.g. which
+ *  metadata type) so the user can see exactly where INSUFFICIENT_ACCESS hit. */
+async function* failSoft<T>(
+  label: string,
+  factory: () => AsyncIterable<T>,
+  onError?: (label: string, err: Error) => void,
+): AsyncIterable<T> {
+  try {
+    for await (const v of factory()) yield v;
+  } catch (e) {
+    const err = e as Error;
+    const msg = err?.message ?? String(err);
+    onError?.(label, err);
+    // Single line to stderr so the user sees which source failed without
+    // depending on a higher-level logger.
+    console.warn(`ingest: skipping ${label}: ${msg}`);
+  }
+}
+
 /** Typed-extractor ownership map: which XML type names a dedicated extractor covers. */
 const APEX_TYPES = new Set(["ApexClass", "ApexTrigger"]);
 const LWC_TYPES = new Set(["LightningComponentBundle"]);
@@ -49,7 +69,10 @@ export async function* bulkRetrieve(
   const invoke = (key: string, factory: () => AsyncIterable<RawMember>) => {
     if (invoked.has(key)) return;
     invoked.add(key);
-    sources.push(factory());
+    // Each source is wrapped fail-soft so one failing type (e.g. a metadata
+    // category the user's profile lacks access to) doesn't abort the whole
+    // ingest. The wrapper logs the source label + error and ends the stream.
+    sources.push(failSoft(key, factory));
   };
 
   if (types.length === 0) {
