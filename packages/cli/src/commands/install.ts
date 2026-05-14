@@ -1,5 +1,86 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { type SkillTarget, install as installSkills } from "@ryanstark24/sfgraph-skills";
 import { type McpTarget, writeMcpConfig } from "./_mcp-config.js";
+
+/** Snapshot of `sf` CLI org state at install time. Written to
+ *  `<dataDir>/orgs-snapshot.json`. list_orgs and other tools read this when
+ *  StateAggregator returns empty (the sandboxed-IDE-child case). */
+export interface OrgSnapshot {
+  recordedAt: number;
+  defaultAlias: string | null;
+  /** alias -> username */
+  aliases: Record<string, string>;
+  /** username -> { orgId, instanceUrl } */
+  authorizations: Record<string, { orgId: string; instanceUrl: string }>;
+}
+
+export const ORG_SNAPSHOT_FILENAME = "orgs-snapshot.json";
+
+async function writeOrgSnapshot(dataDir: string): Promise<void> {
+  // Run @salesforce/core in this process (NOT the MCP child) so it can
+  // actually read ~/.sf/. Capture everything we need; the sandboxed child
+  // will read from the JSON instead of from ~/.sf/.
+  const sfCoreModName = "@salesforce/core";
+  const sfCore = (await import(sfCoreModName)) as unknown as {
+    AuthInfo: {
+      listAllAuthorizations: () => Promise<
+        Array<{
+          alias?: string | null;
+          username?: string;
+          orgId?: string;
+          instanceUrl?: string;
+        }>
+      >;
+    };
+    StateAggregator?: {
+      create: () => Promise<{ aliases: { getAll: () => Record<string, string> } }>;
+    };
+    ConfigAggregator?: {
+      create: () => Promise<{ getInfo: (k: string) => { value?: unknown } | null }>;
+    };
+  };
+
+  const auths = await sfCore.AuthInfo.listAllAuthorizations();
+  const authorizations: Record<string, { orgId: string; instanceUrl: string }> = {};
+  for (const a of auths) {
+    if (!a.username) continue;
+    authorizations[a.username] = {
+      orgId: a.orgId ?? "",
+      instanceUrl: a.instanceUrl ?? "",
+    };
+  }
+
+  let aliases: Record<string, string> = {};
+  try {
+    if (sfCore.StateAggregator?.create) {
+      const agg = await sfCore.StateAggregator.create();
+      aliases = agg.aliases.getAll() ?? {};
+    }
+  } catch {
+    /* aliases stay empty */
+  }
+
+  let defaultAlias: string | null = null;
+  try {
+    if (sfCore.ConfigAggregator?.create) {
+      const cfg = await sfCore.ConfigAggregator.create();
+      const v = (cfg.getInfo("target-org") ?? cfg.getInfo("defaultusername"))?.value;
+      if (typeof v === "string" && v.length > 0) defaultAlias = v;
+    }
+  } catch {
+    /* default stays null */
+  }
+
+  const snapshot: OrgSnapshot = {
+    recordedAt: Date.now(),
+    defaultAlias,
+    aliases,
+    authorizations,
+  };
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(join(dataDir, ORG_SNAPSHOT_FILENAME), JSON.stringify(snapshot, null, 2), "utf8");
+}
 
 export interface InstallCmdOpts {
   target?: "claude" | "cursor" | "vscode" | "all";
@@ -77,6 +158,23 @@ export async function installCmd(opts: InstallCmdOpts = {}): Promise<InstallSumm
     SFGRAPH_CACHE_DIR: shellPaths.cache,
     SFGRAPH_LOG_DIR: shellPaths.log,
   };
+
+  // Snapshot the sf-CLI alias map + default-org at install time. The
+  // sandboxed MCP child on Cursor/Claude can't read ~/.sf/alias.json or
+  // ~/.sf/config.json (filesystem permission), so StateAggregator and
+  // ConfigAggregator return empty there. We capture both while running
+  // outside the sandbox and persist to a JSON file under the data dir
+  // (which is sandbox-readable thanks to SFGRAPH_DATA_DIR above).
+  if (!opts.dryRun) {
+    try {
+      await writeOrgSnapshot(shellPaths.data);
+    } catch (e) {
+      // Best-effort: install shouldn't fail if sf isn't authenticated yet.
+      log(
+        `note: could not snapshot sf orgs (${(e as Error).message}); list_orgs in IDE may show empty aliases`,
+      );
+    }
+  }
   // Resolve pinNode: explicit flag wins; otherwise default to process.execPath
   // when --local is set so the IDE child uses the same Node that ran install.
   if (opts.pinNode) {

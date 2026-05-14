@@ -44,6 +44,46 @@ export function __setListOrgsDeps(d: ListOrgsDeps | null): void {
   depsOverride = d;
 }
 
+/** Read the alias map + authorizations from the install-time snapshot if it
+ *  exists. The snapshot is written by `sfgraph install` running OUTSIDE the
+ *  sandbox, then read by the sandboxed MCP child here. This is the only
+ *  reliable alias source when Cursor's sandbox blocks ~/.sf/alias.json. */
+function readSnapshot(dataDir: string): {
+  defaultAlias: string | null;
+  aliasByUsername: Map<string, string>;
+  authorizations: AuthorizationRow[];
+} | null {
+  try {
+    const p = path.join(dataDir, "orgs-snapshot.json");
+    if (!existsSync(p)) return null;
+    const { readFileSync } = nodeRequire("node:fs") as typeof import("node:fs");
+    const raw = JSON.parse(readFileSync(p, "utf8")) as {
+      defaultAlias?: string | null;
+      aliases?: Record<string, string>;
+      authorizations?: Record<string, { orgId: string; instanceUrl: string }>;
+    };
+    const aliasByUsername = new Map<string, string>();
+    for (const [alias, username] of Object.entries(raw.aliases ?? {})) {
+      if (typeof username === "string") aliasByUsername.set(username, alias);
+    }
+    const authorizations: AuthorizationRow[] = Object.entries(raw.authorizations ?? {}).map(
+      ([username, info]) => ({
+        alias: aliasByUsername.get(username) ?? null,
+        username,
+        orgId: info.orgId,
+        instanceUrl: info.instanceUrl,
+      }),
+    );
+    return {
+      defaultAlias: raw.defaultAlias ?? null,
+      aliasByUsername,
+      authorizations,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function defaultLoadSfCore(): Promise<{
   AuthInfo: {
     listAllAuthorizations: () => Promise<AuthorizationRow[]>;
@@ -143,6 +183,19 @@ defineTool({
       defaultAlias = await resolveDefault();
     } catch {
       defaultAlias = null;
+    }
+
+    // Sandbox fallback: when the MCP child can't read ~/.sf/ directly
+    // (Cursor's macOS sandbox), AuthInfo/StateAggregator/ConfigAggregator
+    // all come back empty. `sfgraph install` runs OUTSIDE the sandbox and
+    // snapshots that state to <dataDir>/orgs-snapshot.json. Merge it in
+    // here as the authoritative source when the live calls returned
+    // nothing useful.
+    const snap = readSnapshot(dataDir);
+    if (snap) {
+      if (auths.length === 0) auths = snap.authorizations;
+      if (aliasByUsername.size === 0) aliasByUsername = snap.aliasByUsername;
+      if (!defaultAlias && snap.defaultAlias) defaultAlias = snap.defaultAlias;
     }
 
     const now = Date.now();
