@@ -42,14 +42,54 @@ function buildPackage(members: Map<string, Set<string>>, apiVersion: string): st
   return `${lines.join("\n")}\n`;
 }
 
+export interface GenerateManifestArgs {
+  storeA: GraphStore;
+  orgA: OrgId; // source (has new/changed members)
+  storeB: GraphStore;
+  orgB: OrgId; // target
+  category?: string;
+}
+
+export function generateManifest(args: GenerateManifestArgs): DeploymentManifest;
 export function generateManifest(
   store: GraphStore,
-  orgA: OrgId, // source (has new/changed members)
-  orgB: OrgId, // target
-  category = "all",
+  orgA: OrgId,
+  orgB: OrgId,
+  category?: string,
+): DeploymentManifest;
+export function generateManifest(
+  storeOrArgs: GraphStore | GenerateManifestArgs,
+  maybeOrgA?: OrgId,
+  maybeOrgB?: OrgId,
+  maybeCategory = "all",
 ): DeploymentManifest {
-  const diff = diffOrgs(store, orgA, orgB, category);
-  const apiVersion = store.getOrg(orgA)?.apiVersion ?? "59.0";
+  let storeA: GraphStore;
+  let storeB: GraphStore;
+  let orgA: OrgId;
+  let orgB: OrgId;
+  let category: string;
+  if (
+    typeof storeOrArgs === "object" &&
+    storeOrArgs !== null &&
+    "storeA" in storeOrArgs &&
+    "storeB" in storeOrArgs
+  ) {
+    const a = storeOrArgs as GenerateManifestArgs;
+    storeA = a.storeA;
+    storeB = a.storeB;
+    orgA = a.orgA;
+    orgB = a.orgB;
+    category = a.category ?? "all";
+  } else {
+    storeA = storeOrArgs as GraphStore;
+    storeB = storeOrArgs as GraphStore;
+    orgA = maybeOrgA as OrgId;
+    orgB = maybeOrgB as OrgId;
+    category = maybeCategory;
+  }
+
+  const diff = diffOrgs({ storeA, orgA, storeB, orgB, category });
+  const apiVersion = storeA.getOrg(orgA)?.apiVersion ?? "59.0";
 
   const pkgMembers = new Map<string, Set<string>>();
   const destMembers = new Map<string, Set<string>>();

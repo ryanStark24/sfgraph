@@ -1,5 +1,4 @@
 import { analyze } from "@ryanstark24/sfgraph-core";
-import { asOrgId } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 
@@ -14,10 +13,18 @@ defineTool({
   description: "Generate package.xml + destructiveChanges.xml from cross-org diff.",
   inputSchema,
   async execute(input) {
-    const ctx = await getToolContext({ orgId: input.from_org });
-    const orgA = ctx.orgId;
-    const orgB = asOrgId(input.to_org);
-    const manifest = analyze.generateManifest(ctx.graphStore, orgA, orgB, input.category ?? "all");
+    // Open BOTH org contexts so the manifest sees the target org's actual
+    // node set (each org has its own SQLite file). Aliases for both inputs
+    // are resolved by getToolContext.
+    const ctxA = await getToolContext({ orgId: input.from_org });
+    const ctxB = await getToolContext({ orgId: input.to_org });
+    const manifest = analyze.generateManifest({
+      storeA: ctxA.graphStore,
+      orgA: ctxA.orgId,
+      storeB: ctxB.graphStore,
+      orgB: ctxB.orgId,
+      category: input.category ?? "all",
+    });
     return {
       summary: `${manifest.summary.addedOrChanged} added/changed, ${manifest.summary.removed} removed`,
       markdown: [

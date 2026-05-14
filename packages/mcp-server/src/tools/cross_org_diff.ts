@@ -1,5 +1,4 @@
 import { analyze, render } from "@ryanstark24/sfgraph-core";
-import { asOrgId } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 
@@ -15,13 +14,18 @@ defineTool({
     "USE THIS for any 'what is different between prod and sandbox' / 'compare two orgs' / 'org drift' question. Set difference of metadata between two ingested Salesforce orgs by category. Returns onlyInA / onlyInB / changed lists.",
   inputSchema,
   async execute(input) {
-    const ctx = await getToolContext({ orgId: input.org_a });
-    const diff = analyze.diffOrgs(
-      ctx.graphStore,
-      asOrgId(input.org_a),
-      asOrgId(input.org_b),
-      input.category,
-    );
+    // Each org has its own SQLite file. Open BOTH contexts so onlyInA/onlyInB
+    // are computed against the right rows. getToolContext resolves aliases
+    // for both org_a and org_b.
+    const ctxA = await getToolContext({ orgId: input.org_a });
+    const ctxB = await getToolContext({ orgId: input.org_b });
+    const diff = analyze.diffOrgs({
+      storeA: ctxA.graphStore,
+      orgA: ctxA.orgId,
+      storeB: ctxB.graphStore,
+      orgB: ctxB.orgId,
+      category: input.category,
+    });
     const mermaid = render.renderDiff({
       added: diff.onlyInB.slice(0, 30).map((n) => ({ qualifiedName: n.qualifiedName })),
       removed: diff.onlyInA.slice(0, 30).map((n) => ({ qualifiedName: n.qualifiedName })),
