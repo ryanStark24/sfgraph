@@ -45,6 +45,65 @@ const SKIP_PATTERNS = [
   /__b$/, // big objects (separate handling)
 ];
 
+/**
+ * High-volume platform / telemetry / audit SObjects that never appear in
+ * user code as references and frequently crash `describe()` mid-run on
+ * macOS 26+ because of their enormous field maps (100+ fields, multi-MB
+ * response payloads). Skipped by default; opt back in via
+ * SFGRAPH_INCLUDE_SYSTEM_SOBJECTS=1.
+ */
+const SYSTEM_SKIP_NAMES = new Set([
+  // Apex telemetry / debug
+  "ApexLog",
+  "ApexTestResult",
+  "ApexTestQueueItem",
+  "ApexTestResultLimits",
+  "ApexTestRunResult",
+  "ApexClassMember",
+  "ApexComponentMember",
+  "ApexExecutionOverlayAction",
+  "ApexExecutionOverlayResult",
+  "ApexPageMember",
+  "ApexTriggerMember",
+  "AsyncApexJob",
+  "BackgroundOperation",
+  // Event monitoring / Lightning usage
+  "EventLogFile",
+  "LoginEvent",
+  "LightningUsageByPageMetrics",
+  "LightningUsageByBrowserMetrics",
+  "LightningUsageByFlexiPageMetrics",
+  "LightningUsageByAppTypeMetrics",
+  "LightningExitByPageMetrics",
+  "LightningToggleMetrics",
+  // Sessions / login
+  "LoginHistory",
+  "LoginGeo",
+  "LoginIp",
+  "AuthSession",
+  "UserLogin",
+  // Setup audit
+  "SetupAuditTrail",
+  "SecurityCustomBaseline",
+  // Job / async / queue plumbing
+  "CronTrigger",
+  "CronJobDetail",
+  "BatchApexErrorEvent",
+  // High-volume system tables that are queryable but have hundreds of
+  // fields; never useful as graph dependency targets.
+  "PlatformAction",
+  "ListView",
+]);
+
+/** Detect managed-package SObjects via namespace prefix. Standard SObjects
+ *  have no underscore (e.g. `Account`); user custom SObjects look like
+ *  `MyObj__c`; managed-package SObjects look like `<ns>__MyObj__c` /
+ *  `<ns>__MyObj__mdt` / etc., where `<ns>` is a lowercase namespace prefix.
+ *  We use the leading-lowercase-prefix pattern as the discriminator. */
+function isManagedPackageSObject(name: string): boolean {
+  return /^[a-z][a-z0-9_]*__[A-Za-z]/.test(name);
+}
+
 function shouldIncludeSObject(s: SObjectGlobal): boolean {
   if (!s.name) return false;
   if (s.deprecatedAndHidden) return false;
@@ -52,7 +111,43 @@ function shouldIncludeSObject(s: SObjectGlobal): boolean {
   for (const re of SKIP_PATTERNS) {
     if (re.test(s.name)) return false;
   }
+  // Default-skip Salesforce system / telemetry / audit tables. Opt back in
+  // for users who actually want every queryable surface in their graph.
+  const includeSystem = process.env.SFGRAPH_INCLUDE_SYSTEM_SOBJECTS === "1";
+  if (!includeSystem && SYSTEM_SKIP_NAMES.has(s.name)) return false;
+  // Default-skip managed-package SObjects. Their describe responses are
+  // the same risk surface as managed-package LWC resources (silent SIGKILL
+  // on some bundles), AND your own code never references managed objects
+  // by their managed names — so the graph loses nothing useful. Opt back
+  // in via either the global SFGRAPH_INCLUDE_MANAGED or the SObject-
+  // specific SFGRAPH_INCLUDE_MANAGED_SOBJECTS.
+  const includeManaged =
+    process.env.SFGRAPH_INCLUDE_MANAGED === "1" ||
+    process.env.SFGRAPH_INCLUDE_MANAGED_SOBJECTS === "1";
+  if (!includeManaged && isManagedPackageSObject(s.name)) return false;
   return true;
+}
+
+/** Wrap a promise with a hard timeout. Used to bound describe() calls so a
+ *  single hung / pathological SObject can't stall the whole ingest. The
+ *  underlying request keeps running until libuv decides to clean up — but
+ *  we move on. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`describe timeout (${ms}ms): ${label}`));
+    }, ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 }
 
 /**
@@ -114,11 +209,18 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
         `ingest: [debug] object chunk ← ${slice.map((s) => s.name).join(",")}`,
       );
     }
+    // 45-second hard timeout per describe — far above the typical 200-
+    // 500ms cost, so a normal call is never affected. But a pathological
+    // SObject whose describe never returns (or that triggers a hung
+    // jsforce response handler) doesn't get to wedge the whole pool.
+    const DESCRIBE_TIMEOUT_MS = 45_000;
     const descs: Array<{ s: SObjectGlobal; desc: any }> = await Promise.all(
       slice.map(async (s) => {
         try {
           if (debug) console.log(`ingest: [debug] object describe ← ${s.name}`);
-          const d = await scheduleData(() => conn.sobject(s.name).describe());
+          const d = await scheduleData(() =>
+            withTimeout(conn.sobject(s.name).describe(), DESCRIBE_TIMEOUT_MS, s.name),
+          );
           if (debug)
             console.log(
               `ingest: [debug] object describe ✓ ${s.name} fields=${(d as { fields?: unknown[] })?.fields?.length ?? 0}`,
