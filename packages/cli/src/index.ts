@@ -138,6 +138,11 @@ export function buildProgram(): Command {
       "max concurrent SObject/Bulk queries (default 10; also reads SFGRAPH_DATA_POOL)",
       (v) => Number.parseInt(v, 10),
     )
+    .option(
+      "--debug",
+      "verbose ingest tracing: heartbeat every 10s with heap/rss, last-source tag, signal stack traces. Also sets SFGRAPH_DEBUG_INGEST=1. Use when an ingest dies silently to identify which extractor was active when it stopped.",
+      false,
+    )
     .action(
       async (opts: {
         org?: string;
@@ -157,7 +162,9 @@ export function buildProgram(): Command {
         toolingPool?: number;
         metadataPool?: number;
         dataPool?: number;
+        debug?: boolean;
       }) => {
+        if (opts.debug) process.env.SFGRAPH_DEBUG_INGEST = "1";
         await ingestCmd({
           org: opts.org,
           orgs: opts.orgs,

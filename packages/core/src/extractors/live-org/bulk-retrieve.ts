@@ -117,10 +117,12 @@ async function* failSoft<T>(
   factory: () => AsyncIterable<T>,
   onError?: (label: string, err: Error) => void,
 ): AsyncIterable<T> {
+  const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
   const startedAt = Date.now();
   let count = 0;
   let started = false;
   try {
+    if (debug) console.log(`ingest: [debug] ${label} ← invoked at ${startedAt}`);
     for await (const v of factory()) {
       if (!started) {
         started = true;
@@ -139,8 +141,20 @@ async function* failSoft<T>(
     onError?.(label, err);
     // Compact one-liner during the run — full details are aggregated and
     // surfaced in the end-of-run skip summary so the user gets one clear
-    // remediation block instead of N scattered warnings.
+    // remediation block instead of N scattered warnings. In debug mode,
+    // also print the full error so the user can see exactly why a source
+    // failed without waiting for the end-of-run summary.
     console.log(`ingest:   ${label} ✗ skipped`);
+    if (debug) {
+      console.error(`ingest: [debug] ${label} failure detail: ${err?.message ?? String(err)}`);
+      if (err?.stack) console.error(err.stack);
+    }
+  } finally {
+    if (debug) {
+      console.log(
+        `ingest: [debug] ${label} → finalised (${count} records, ${Date.now() - startedAt}ms)`,
+      );
+    }
   }
 }
 

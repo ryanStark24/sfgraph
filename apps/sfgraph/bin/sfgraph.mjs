@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// To raise Node's heap ceiling (e.g. for very large orgs):
+//   NODE_OPTIONS='--max-old-space-size=8192' sfgraph ingest …
+// Default Node heap caps at ~4GB; not normally a problem but worth
+// trying first if an ingest dies silently mid-run.
 import { run } from "@ryanstark24/sfgraph-cli";
 
 // Bare invocation (e.g. `npx sfgraph` from an MCP client config) starts the

@@ -411,12 +411,54 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     const fanOutStart = Date.now();
     let progressCount = 0;
     let lastTickAt = Date.now();
+    let lastActivityAt = Date.now();
+    let lastMemberLabel = "(none)";
     const PROGRESS_TICK_MS = 5000; // emit a heartbeat at least every 5s
     const skipReport: IngestSkipReport = { skips: [] };
     if (opts.onlyLabels && opts.onlyLabels.size > 0) {
       console.log(
         `ingest: --only filter active (${opts.onlyLabels.size} source${opts.onlyLabels.size === 1 ? "" : "s"}): ${[...opts.onlyLabels].join(", ")}`,
       );
+    }
+    // Debug mode: SFGRAPH_DEBUG_INGEST=1 enables a heartbeat timer that
+    // prints heap usage + seconds-since-last-activity every 10s. Critical
+    // for diagnosing silent ingest deaths (OOM, native segfault, hung SF
+    // call) where the normal progress log just stops without an error.
+    const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
+    let heartbeatTimer: NodeJS.Timeout | null = null;
+    if (debug) {
+      console.log("ingest: [debug] SFGRAPH_DEBUG_INGEST=1 active — heartbeat every 10s");
+      heartbeatTimer = setInterval(() => {
+        const mem = process.memoryUsage();
+        const heapMb = Math.round(mem.heapUsed / 1024 / 1024);
+        const rssMb = Math.round(mem.rss / 1024 / 1024);
+        const externalMb = Math.round(mem.external / 1024 / 1024);
+        const idleSec = Math.round((Date.now() - lastActivityAt) / 1000);
+        console.log(
+          `ingest: [heartbeat] processed=${progressCount} lastSource=${lastMemberLabel} idle=${idleSec}s heap=${heapMb}MB rss=${rssMb}MB ext=${externalMb}MB`,
+        );
+      }, 10_000);
+      // Don't keep the event loop alive on its own.
+      heartbeatTimer.unref();
+      // Signal handlers — surface what was running when the user (or OS)
+      // sends a kill so silent terminations have at least one breadcrumb.
+      const signalHandler = (sig: string) => {
+        console.error(
+          `ingest: [debug] received ${sig} after ${Math.round((Date.now() - fanOutStart) / 1000)}s — processed=${progressCount} lastSource=${lastMemberLabel}`,
+        );
+        console.error(new Error(`signal:${sig}`).stack);
+        process.exitCode = 130;
+      };
+      process.on("SIGTERM", () => signalHandler("SIGTERM"));
+      process.on("SIGINT", () => signalHandler("SIGINT"));
+      // SIGUSR2 is what node uses internally for nodemon; we re-purpose
+      // for "dump heap snapshot on demand" if needed.
+      process.on("SIGUSR2", () => {
+        const mem = process.memoryUsage();
+        console.error(
+          `ingest: [debug] SIGUSR2 — heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB rss=${Math.round(mem.rss / 1024 / 1024)}MB lastSource=${lastMemberLabel}`,
+        );
+      });
     }
     try {
       for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, {
@@ -433,12 +475,17 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           });
         }
         progressCount += 1;
+        lastActivityAt = Date.now();
+        lastMemberLabel = `${member.ref.memberType}:${member.ref.memberName}`;
         // Periodic heartbeat — every 5s OR every 200 members, whichever first.
         // Keeps the user informed without spamming stdout per record.
         if (progressCount % 200 === 0 || Date.now() - lastTickAt > PROGRESS_TICK_MS) {
           const elapsedSec = Math.round((Date.now() - fanOutStart) / 1000);
+          const memSuffix = debug
+            ? ` heap=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+            : "";
           console.log(
-            `ingest:   …${progressCount} members processed so far (${elapsedSec}s elapsed)`,
+            `ingest:   …${progressCount} members processed so far (${elapsedSec}s elapsed)${memSuffix}`,
           );
           lastTickAt = Date.now();
         }
@@ -451,6 +498,8 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       logger.warn("live-ingest: bulkRetrieve stream aborted", {
         error: (e as Error).message,
       });
+    } finally {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
     }
 
     // End-of-run skip summary. Grouped by category so the remediation is
