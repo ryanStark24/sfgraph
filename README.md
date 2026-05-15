@@ -832,36 +832,35 @@ binary from a package's postinstall would be intrusive and irreversible
 without re-installing Node. The doctor surfaces the fix; you opt in by
 running the one-liner.
 
-### Managed-package SObjects + system telemetry tables skipped by default
+### System telemetry SObjects skipped by default (managed-package SObjects are NOT)
 
-`describeGlobal()` returns every queryable SObject in the org, including:
+`describeGlobal()` returns every queryable SObject in the org. We
+distinguish based on **what Salesforce actually returns** for each:
 
-- **High-volume system tables** — `ApexLog`, `EventLogFile`, `LoginHistory`,
-  `AsyncApexJob`, `CronTrigger`, etc. These have 100+ fields, produce
-  multi-MB describe responses, frequently crash `describe()` on macOS
+- **System telemetry tables** — `ApexLog`, `EventLogFile`, `LoginHistory`,
+  `AsyncApexJob`, `CronTrigger`, `LightningUsage*`, etc. Hundreds of
+  fields each, multi-MB describe responses, frequently crash on macOS
   26+, and **never appear in user code as references** (you don't write
-  Apex that walks `ApexLog.LogUser`).
-- **Managed-package SObjects** — `vlocity_cmt__Foo__c`,
-  `omnistudio__Bar__c`, etc. Same crash risk as managed-package LWC
-  resources (silent SIGKILL inside jsforce's response parser for some
-  bundles), AND your own code never references managed objects by their
-  managed names.
+  Apex that walks `ApexLog.LogUser`). → **skipped by default.**
+- **Managed-package custom SObjects** — `vlocity_cmt__Contract__c`,
+  `omnistudio__Foo__c`, etc. Unlike Apex `Body` and LWC `Source` (which
+  Salesforce *redacts* to `(hidden)` / `<hidden>` for managed packages),
+  **SObject `describe()` returns the full field map for managed
+  objects** — including lookups, formulas, and references. That's real
+  graph value: your code that touches a Vlocity custom object needs the
+  managed schema to resolve edges. → **included by default.**
+- **Audit tables** — `*__History`, `*__Feed`, `*__Share`,
+  `*__ChangeEvent`, `*__b`. Never useful. → **skipped (always was).**
 
-Both classes are skipped by default in 1.0.x. They're filtered before
-`describe()` is even attempted, so they can't crash the run. Cost: a
-graph that's slightly smaller and 5-10× faster to ingest. Loss: zero
-graph value for the typical "what touches `Account.Status__c`" question.
-
-**Override knobs** (all OFF by default):
+**Override knobs** (default OFF):
 
 ```bash
 SFGRAPH_INCLUDE_SYSTEM_SOBJECTS=1   # include ApexLog/EventLogFile/etc.
-SFGRAPH_INCLUDE_MANAGED_SOBJECTS=1  # include vlocity_cmt__*/etc. SObjects
-SFGRAPH_INCLUDE_MANAGED=1           # global: managed LWC + managed SObjects + managed Apex
 ```
 
 **Per-SObject escape hatch** (if a specific table crashes and isn't
-covered by the defaults):
+in the system-skip list, e.g. a managed-package custom object whose
+describe response is malformed):
 
 ```bash
 SFGRAPH_SKIP_SOBJECT=BadTable,OtherBadTable sfgraph ingest
@@ -869,10 +868,10 @@ SFGRAPH_SKIP_SOBJECT=BadTable,OtherBadTable sfgraph ingest
 
 **Per-describe timeout.** Each `describe()` is wrapped in a 45-second
 hard timeout. A single pathological SObject whose response never returns
-(or whose jsforce handler hangs) can no longer wedge the run; it gets
-caught as a timeout and skipped while everything else proceeds.
+(or whose jsforce handler hangs) no longer wedges the run; it's caught
+as a timeout and skipped while everything else proceeds.
 
-### Managed-package source is skipped by default
+### Managed-package *source content* is skipped by default
 
 Salesforce redacts managed-package source content for any user without
 *View All Source* on the package — which is almost always. You see:

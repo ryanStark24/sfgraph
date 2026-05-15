@@ -95,15 +95,6 @@ const SYSTEM_SKIP_NAMES = new Set([
   "ListView",
 ]);
 
-/** Detect managed-package SObjects via namespace prefix. Standard SObjects
- *  have no underscore (e.g. `Account`); user custom SObjects look like
- *  `MyObj__c`; managed-package SObjects look like `<ns>__MyObj__c` /
- *  `<ns>__MyObj__mdt` / etc., where `<ns>` is a lowercase namespace prefix.
- *  We use the leading-lowercase-prefix pattern as the discriminator. */
-function isManagedPackageSObject(name: string): boolean {
-  return /^[a-z][a-z0-9_]*__[A-Za-z]/.test(name);
-}
-
 function shouldIncludeSObject(s: SObjectGlobal): boolean {
   if (!s.name) return false;
   if (s.deprecatedAndHidden) return false;
@@ -113,18 +104,17 @@ function shouldIncludeSObject(s: SObjectGlobal): boolean {
   }
   // Default-skip Salesforce system / telemetry / audit tables. Opt back in
   // for users who actually want every queryable surface in their graph.
+  //
+  // Note: we intentionally do NOT blanket-skip managed-package SObjects
+  // (e.g. vlocity_cmt__*). Unlike Apex Body / LWC Source — both of which
+  // Salesforce redacts to `(hidden)` / `<hidden>` for managed packages —
+  // SObject describe() returns the FULL field map for managed objects,
+  // including their lookups, formulas, and references. That's real graph
+  // value: user code that touches a Vlocity custom object needs the
+  // managed schema to resolve edges. So managed-package SObjects are
+  // included by default.
   const includeSystem = process.env.SFGRAPH_INCLUDE_SYSTEM_SOBJECTS === "1";
   if (!includeSystem && SYSTEM_SKIP_NAMES.has(s.name)) return false;
-  // Default-skip managed-package SObjects. Their describe responses are
-  // the same risk surface as managed-package LWC resources (silent SIGKILL
-  // on some bundles), AND your own code never references managed objects
-  // by their managed names — so the graph loses nothing useful. Opt back
-  // in via either the global SFGRAPH_INCLUDE_MANAGED or the SObject-
-  // specific SFGRAPH_INCLUDE_MANAGED_SOBJECTS.
-  const includeManaged =
-    process.env.SFGRAPH_INCLUDE_MANAGED === "1" ||
-    process.env.SFGRAPH_INCLUDE_MANAGED_SOBJECTS === "1";
-  if (!includeManaged && isManagedPackageSObject(s.name)) return false;
   return true;
 }
 
