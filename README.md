@@ -765,6 +765,73 @@ automatically re-signs every `.node` file on macOS as part of
 `npm install`. If you installed an older version and only just hit this,
 re-install or run the manual `find … codesign` above once.
 
+#### If re-signing the binding didn't help — the AMFI / Hardened Runtime trap
+
+**Symptom.** You ran `codesign --force --sign -` on `better_sqlite3.node`,
+`sfgraph doctor` shows `macOS code-signing ✓`, but the ingest **still**
+dies silently mid-run. The kernel log shows:
+
+```
+AMFI: '/path/to/better_sqlite3.node' is adhoc signed.
+AMFI: code signature validation failed.
+```
+
+**Cause.** Your Node binary (typical for Node.js Foundation builds via
+nvm or the official `.pkg` installer) is signed with **Hardened Runtime
++ library validation enabled**. Library validation means: Node refuses
+to `dlopen()` any dylib not signed by the same team that signed Node.
+Apple Foundation ≠ ad-hoc, so AMFI kills the process. `codesign --verify`
+on the binding still passes — the rejection is policy-level, not
+signature-corruption-level. Two valid signatures, but the kernel won't
+bridge them.
+
+**Detection.** `sfgraph doctor` now flags this case proactively:
+
+```
+⚠ macOS code-signing: Node has Hardened Runtime with library validation;
+  AMFI will SIGKILL on ad-hoc-signed bindings mid-ingest (silent death,
+  no error). Re-sign Node with disable-library-validation entitlement.
+```
+
+You can also confirm by running:
+
+```bash
+log stream --predicate 'eventMessage CONTAINS "AMFI"' --info
+```
+
+in a second terminal while the ingest runs. If AMFI rejections print at
+the moment of death, that's your culprit.
+
+**Fix.** Add the `com.apple.security.cs.disable-library-validation`
+entitlement to your Node binary. This is a one-time operation per Node
+install:
+
+```bash
+cat > /tmp/node-libval.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+</dict>
+</plist>
+EOF
+
+codesign --force --sign - --entitlements /tmp/node-libval.plist "$(which node)"
+```
+
+After this, Node accepts ad-hoc-signed children. Re-run `sfgraph ingest`
+— it should now complete. The entitlement only loosens *library
+validation*; the rest of Hardened Runtime (W^X, no executable memory
+allocation without `allow-jit`, etc.) stays intact.
+
+**Why we don't do this in postinstall.** Modifying your global Node
+binary from a package's postinstall would be intrusive and irreversible
+without re-installing Node. The doctor surfaces the fix; you opt in by
+running the one-liner.
+
 For diagnosing **any other** silent ingest death, re-run with `--debug`:
 
 ```bash

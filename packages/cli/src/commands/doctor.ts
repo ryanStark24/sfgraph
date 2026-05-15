@@ -140,6 +140,44 @@ function checkMacosCodesign(requireFn?: (id: string) => unknown): Omit<DoctorChe
         fix: `codesign --force --sign - "${bindingPath}"`,
       };
     }
+    // Secondary check: AMFI library-validation rejection. If Node has
+    // Hardened Runtime + library validation enabled (the default for the
+    // Node.js Foundation builds + nvm), it refuses to load ad-hoc-signed
+    // bindings — even though `codesign --verify` says the binding itself
+    // is fine. The symptom is a silent SIGKILL mid-ingest. Detect by
+    // inspecting Node's own signing flags + entitlements (NOT the
+    // binding's — those are unrelated).
+    const nodeFlags = spawnSync("codesign", ["-dvv", process.execPath], { encoding: "utf8" });
+    const nodeFlagsOut = (nodeFlags.stderr || nodeFlags.stdout || "").toString();
+    const nodeEnts = spawnSync(
+      "codesign",
+      ["-d", "--entitlements", "-", "--xml", process.execPath],
+      { encoding: "utf8" },
+    );
+    const entsOut = (nodeEnts.stdout || nodeEnts.stderr || "").toString();
+    const hasLibValDisabled = /com\.apple\.security\.cs\.disable-library-validation/.test(entsOut);
+    // Node binary has Hardened Runtime if its codesign flags include
+    // `runtime` (the human-readable name) or 0x10000 (the bit). Foundation
+    // / nvm builds always do.
+    const isHardenedRuntime =
+      /flags=0x[0-9a-f]*\(.*\bruntime\b/.test(nodeFlagsOut) ||
+      /flags=0x10000\b/.test(nodeFlagsOut) ||
+      /\bruntime\b/.test(nodeFlagsOut);
+    if (isHardenedRuntime && !hasLibValDisabled) {
+      const entitlementsPath = "/tmp/sfgraph-node-libval.plist";
+      const plistBody = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+</dict></plist>`;
+      return {
+        status: "warn",
+        detail: `Node has Hardened Runtime with library validation; AMFI will SIGKILL on ad-hoc-signed bindings mid-ingest (silent death, no error). Re-sign Node with disable-library-validation entitlement.`,
+        fix: `cat > ${entitlementsPath} <<'EOF'\n${plistBody}\nEOF\ncodesign --force --sign - --entitlements ${entitlementsPath} ${process.execPath}`,
+      };
+    }
     return { status: "ok", detail: `code signature valid (${bindingPath})` };
   }
   return {
