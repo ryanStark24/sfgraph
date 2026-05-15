@@ -127,7 +127,10 @@ export async function rebuildBindingsCmd(opts: RebuildBindingsOpts = {}): Promis
     console.error(`sfgraph rebuild-bindings: failed — ${(e as Error).message}`);
     console.error("  Common cause: no C++ toolchain. Install one for your platform:");
     console.error("    macOS:   xcode-select --install");
-    console.error("    Linux:   apt install build-essential python3   # (or distro equivalent)");
+    console.error("    Linux:   apt install build-essential python3   # Debian/Ubuntu");
+    console.error("             dnf groupinstall 'Development Tools' && dnf install python3   # Fedora/RHEL");
+    console.error("             pacman -S base-devel python   # Arch");
+    console.error("             apk add build-base python3   # Alpine (musl always rebuilds from source)");
     console.error(
       "    Windows: install Visual Studio Build Tools with the 'Desktop development with C++' workload,",
     );

@@ -36,12 +36,28 @@ function pidsOnPort(port: number): number[] {
       }
       return [...pids];
     }
-    const r = spawnSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
-    if (r.status !== 0 || !r.stdout) return [];
-    return r.stdout
-      .split("\n")
-      .map((s) => Number.parseInt(s.trim(), 10))
-      .filter((n) => Number.isFinite(n) && n > 0);
+    const lsof = spawnSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
+    if (lsof.status === 0 && lsof.stdout) {
+      return lsof.stdout
+        .split("\n")
+        .map((s) => Number.parseInt(s.trim(), 10))
+        .filter((n) => Number.isFinite(n) && n > 0);
+    }
+    // Fallback for Linux distros that don't ship lsof by default (Alpine,
+    // minimal Docker base images, some embedded distros). `ss` from
+    // iproute2 is near-universally available on modern Linux and emits
+    // pid info in the form `users:(("node",pid=1234,fd=21))`.
+    const ss = spawnSync("ss", ["-tlnpH", `sport = :${port}`], { encoding: "utf8" });
+    if (ss.status !== 0 || !ss.stdout) return [];
+    const pids = new Set<number>();
+    const re = /pid=(\d+)/g;
+    let m: RegExpExecArray | null = re.exec(ss.stdout);
+    while (m !== null) {
+      const pid = Number.parseInt(m[1] ?? "", 10);
+      if (Number.isFinite(pid) && pid > 0) pids.add(pid);
+      m = re.exec(ss.stdout);
+    }
+    return [...pids];
   } catch {
     return [];
   }

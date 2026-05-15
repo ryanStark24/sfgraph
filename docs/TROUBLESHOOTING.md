@@ -27,7 +27,11 @@ sfgraph rebuild-bindings
 Auto-detects npm vs pnpm, rebuilds the binding against the current Node, verifies it loads. Requires a C++ toolchain:
 
 - **macOS**: `xcode-select --install`
-- **Linux**: `apt install build-essential python3` (Debian/Ubuntu) or distro equivalent
+- **Linux**:
+  - Debian / Ubuntu: `apt install build-essential python3`
+  - Fedora / RHEL / Rocky: `dnf groupinstall "Development Tools" && dnf install python3`
+  - Arch / Manjaro: `pacman -S base-devel python`
+  - Alpine: `apk add build-base python3` (also note: `better-sqlite3` prebuilts target glibc, so Alpine/musl users *always* hit the source compile — install once and you're set)
 - **Windows**: install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the **"Desktop development with C++"** workload, then restart your shell so `cl.exe` is on PATH. Alternatively, install Node via [`nvm-windows`](https://github.com/coreybutler/nvm-windows) and pick a Node major that already has a `better-sqlite3` prebuilt — skips the source-compile entirely.
 
 If the rebuild works but the **IDE** still errors, the IDE's Node ABI differs from your shell's. Pin the IDE child to your shell's Node:
