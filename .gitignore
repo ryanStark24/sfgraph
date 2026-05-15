@@ -29,3 +29,7 @@ Thumbs.db
 
 # Claude Code local state (per-user permissions, scheduled task locks)
 .claude/
+
+# Transient README copied by apps/sfgraph prepack — postpack cleans it up,
+# but ignore it in case a pack is interrupted between the two hooks.
+apps/sfgraph/README.md
