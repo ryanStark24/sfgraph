@@ -118,7 +118,7 @@ ingest: capabilities { vlocityNamespaces: ['vlocity_cmt'],
                        agentforce: false }
 ingest: discovered 187 metadata types via describeMetadata()
 ingest: creating pre-sync snapshot (this is what `what_broke` looks back to)
-ingest: fan-out — Tooling pool (5), Metadata pool (5), Data pool (10)
+ingest: fan-out — Tooling pool (5), Metadata pool (5), Data pool (10), parallel sources
 ingest:   Apex                                ✓ 1248 classes, 89 triggers
 ingest:   LWC bundles                         ✓ 234 bundles
 ingest:   Flow                                ✓ 412
@@ -258,7 +258,7 @@ Major architectural choices and why they were made. Each one was a deliberate de
 | **Live sync auth** | Delegated to `sf` CLI / `@salesforce/core` | We never see passwords. Token lives in `~/.sfdx/`. Re-using the user's existing login means zero new credentials to manage. |
 | **Read-only enforcement** | Runtime Proxy, not just convention | Every mutating method on `jsforce` throws synchronously. Verified by 41 adversarial tests against the full method surface. Belt and braces vs. "we promise we don't write." |
 | **Telemetry sink** | `LocalFileSink` only; no remote endpoint exists in the codebase | The pipeline has a slot for an HTTP sink reserved for v1.1, but it's not implemented. Local-only is a code-level guarantee, not a config flag. |
-| **Rate limiting** | Three independent Bottleneck pools (Tooling 5 / Metadata 5 / SObject 10) | Salesforce throttles per-API. Separate budgets let us hit ~18 concurrent calls without violating any single limit. |
+| **Rate limiting** | Three independent Bottleneck pools (Tooling 5 / Metadata 5 / SObject 10), drained in parallel | Salesforce throttles per-API. Separate budgets let us hit ~20 concurrent calls without violating any single limit. Source iterators are advanced concurrently so all three pools saturate at once — set `SFGRAPH_SEQUENTIAL_SOURCES=1` to revert to the legacy one-extractor-at-a-time drain. |
 | **MCP tool envelope** | `{ summary, markdown, data, follow_up_tools? }` | Agents read `summary`. Humans read `markdown`. Programmatic consumers read `data`. `follow_up_tools` lets skills compose. |
 | **Incremental sync** | `SourceMember` polling on Source-Tracking-enabled orgs | One Tooling SOQL, refetch only changed members. Sub-30s on sandboxes. Falls back to full sync on production orgs without source tracking. |
 

@@ -42,10 +42,68 @@ function classifySkip(msg: string): SkipCategory {
   return "unknown";
 }
 
-/** Naive sequential merge — predictable order, simpler back-pressure semantics. */
+/** Naive sequential merge — predictable order, simpler back-pressure semantics.
+ *  Kept for back-compat and tests; production ingest uses
+ *  {@link mergeAsyncIterablesParallel} so different pools (Tooling/Metadata/
+ *  Data) can saturate simultaneously instead of one extractor at a time. */
 export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>): AsyncIterable<T> {
   for (const it of iters) {
     for await (const v of it) yield v;
+  }
+}
+
+/**
+ * Parallel merge: every input iterable is advanced concurrently. Each call to
+ * `.next()` is fired in parallel; `Promise.race` returns whichever yields
+ * first. Back-pressure stays per-iter because each underlying extractor
+ * funnels through its own Bottleneck pool (Tooling/Metadata/Data) — so two
+ * extractors on the *same* pool queue against each other while extractors on
+ * *different* pools run truly in parallel.
+ *
+ * This is the dominant perf lever for ingest: serial drain (the original
+ * `mergeAsyncIterables`) left two of the three pools idle while a third was
+ * saturated, e.g. while Security/Profiles drained the Metadata pool, Apex
+ * (Tooling) and Vlocity (Data) sat at 0%.
+ *
+ * Output ordering is non-deterministic. `live-ingest`'s processOne is
+ * order-independent (idempotent per-record upserts), so this is safe.
+ */
+export async function* mergeAsyncIterablesParallel<T>(
+  ...iters: Array<AsyncIterable<T>>
+): AsyncIterable<T> {
+  const iterators = iters.map((it) => it[Symbol.asyncIterator]());
+  // For each live iterator, hold an in-flight `.next()` promise tagged with
+  // its index so we know which one to refill after a yield.
+  type Tagged = Promise<{ idx: number; result: IteratorResult<T> }>;
+  const pending = new Map<number, Tagged>();
+  const advance = (idx: number): void => {
+    const it = iterators[idx];
+    if (!it) return;
+    pending.set(
+      idx,
+      it.next().then(
+        (result) => ({ idx, result }),
+        // Swallow per-iter rejections at this layer — the failSoft() wrapper
+        // around each source already records the error and ends the stream
+        // gracefully. Anything that reaches here is unexpected; mark the
+        // iter done so the outer race makes forward progress.
+        (err) => ({
+          idx,
+          result: { value: undefined as unknown as T, done: true } as IteratorResult<T>,
+          err,
+        }),
+      ),
+    );
+  };
+  for (let i = 0; i < iterators.length; i++) advance(i);
+  while (pending.size > 0) {
+    const { idx, result } = await Promise.race(pending.values());
+    if (result.done) {
+      pending.delete(idx);
+      continue;
+    }
+    yield result.value;
+    advance(idx);
   }
 }
 
@@ -196,5 +254,10 @@ export async function* bulkRetrieve(
     invoke("omnistudio", () => iterOmnistudio(conn));
   }
 
-  yield* mergeAsyncIterables(...sources);
+  // Parallel by default: fan out across all source iterators so different
+  // pools (Tooling/Metadata/Data) saturate simultaneously. Escape hatch:
+  // SFGRAPH_SEQUENTIAL_SOURCES=1 falls back to the legacy serial merge for
+  // anyone who hits an ordering bug or wants the old log layout.
+  const sequential = process.env.SFGRAPH_SEQUENTIAL_SOURCES === "1";
+  yield* sequential ? mergeAsyncIterables(...sources) : mergeAsyncIterablesParallel(...sources);
 }

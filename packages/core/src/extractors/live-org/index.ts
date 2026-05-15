@@ -18,7 +18,11 @@ export {
   DEFAULT_POOL_CONCURRENCY,
 } from "./rate-limit.js";
 export type { RateLimitPools, PoolConcurrencyOverrides } from "./rate-limit.js";
-export { bulkRetrieve, mergeAsyncIterables } from "./bulk-retrieve.js";
+export {
+  bulkRetrieve,
+  mergeAsyncIterables,
+  mergeAsyncIterablesParallel,
+} from "./bulk-retrieve.js";
 export type { IngestSkipReport, SkipCategory } from "./bulk-retrieve.js";
 export { iterChanges } from "./source-member.js";
 export { iterApex, iterOne as iterOneApex } from "./extractors/apex.js";

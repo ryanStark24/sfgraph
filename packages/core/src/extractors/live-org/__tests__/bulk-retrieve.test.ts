@@ -1,7 +1,7 @@
 import { asOrgId } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it } from "vitest";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { bulkRetrieve } from "../bulk-retrieve.js";
+import { bulkRetrieve, mergeAsyncIterablesParallel } from "../bulk-retrieve.js";
 import type { OrgCapabilities } from "../capabilities.js";
 import { buildJsforceMock } from "./_jsforce-mock.js";
 
@@ -104,5 +104,60 @@ describe("bulkRetrieve", () => {
     const types = members.map((m) => m.ref.memberType);
     expect(members.some((m) => m.ref.namespace === "vlocity_cmt")).toBe(true);
     expect(types.some((t) => t.startsWith("Omni"))).toBe(true);
+  });
+});
+
+describe("mergeAsyncIterablesParallel", () => {
+  /** Helper async generator that yields `id` after `delayMs`, then `id+'-end'`
+   *  after another `delayMs`. Used to prove that two iterators progress in
+   *  parallel rather than one-at-a-time. */
+  async function* slowSource(id: string, delayMs: number): AsyncIterable<string> {
+    await new Promise((r) => setTimeout(r, delayMs));
+    yield `${id}-1`;
+    await new Promise((r) => setTimeout(r, delayMs));
+    yield `${id}-2`;
+  }
+
+  it("drains all iterables concurrently (wall-time ~ max, not sum)", async () => {
+    const start = Date.now();
+    const out: string[] = [];
+    for await (const v of mergeAsyncIterablesParallel(
+      slowSource("a", 50),
+      slowSource("b", 50),
+      slowSource("c", 50),
+    )) {
+      out.push(v);
+    }
+    const elapsed = Date.now() - start;
+    // Sequential would be ~6 * 50 = 300ms. Parallel is ~2 * 50 = 100ms.
+    // Allow a generous ceiling for slow CI; the assertion that matters is
+    // "well under the sequential floor of 300ms".
+    expect(elapsed).toBeLessThan(250);
+    expect(out.sort()).toEqual(["a-1", "a-2", "b-1", "b-2", "c-1", "c-2"]);
+  });
+
+  it("interleaves values from sources that finish at different rates", async () => {
+    // Fast source yields twice before slow source yields once.
+    async function* fast(): AsyncIterable<string> {
+      yield "f-1";
+      yield "f-2";
+    }
+    async function* slow(): AsyncIterable<string> {
+      await new Promise((r) => setTimeout(r, 30));
+      yield "s-1";
+    }
+    const out: string[] = [];
+    for await (const v of mergeAsyncIterablesParallel(fast(), slow())) out.push(v);
+    // Fast finishes first; slow shows up after.
+    expect(out).toContain("f-1");
+    expect(out).toContain("f-2");
+    expect(out).toContain("s-1");
+    expect(out.indexOf("f-2")).toBeLessThan(out.indexOf("s-1"));
+  });
+
+  it("handles empty input array", async () => {
+    const out: string[] = [];
+    for await (const v of mergeAsyncIterablesParallel<string>()) out.push(v);
+    expect(out).toEqual([]);
   });
 });
