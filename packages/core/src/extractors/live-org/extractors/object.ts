@@ -77,6 +77,24 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
   const all = global?.sobjects ?? [];
   const included = all.filter(shouldIncludeSObject);
 
+  const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
+  // SFGRAPH_SKIP_SOBJECT=name1,name2,... lets users work around a specific
+  // SObject whose describe crashes jsforce (same failure mode as managed-
+  // package LWC bundles — silent SIGKILL on macOS 26+, no error in any
+  // log). Skipped objects don't appear in the graph at all.
+  const skipSet = new Set(
+    (process.env.SFGRAPH_SKIP_SOBJECT ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
+  );
+
+  if (debug) {
+    console.log(
+      `ingest: [debug] object total=${included.length} (filtered from ${all.length}) skip=${skipSet.size}`,
+    );
+  }
+
   // Fan out describe() in parallel chunks. Bottleneck's data pool throttles
   // actual concurrency to maxConcurrent (default 10). Was strictly serial:
   // 200 SObjects * ~500ms each = ~100s. With 10-way parallel: ~10s.
@@ -84,12 +102,33 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
   // is the real bottleneck, not the chunk barrier.
   const CHUNK = 25;
   for (let i = 0; i < included.length; i += CHUNK) {
-    const slice = included.slice(i, i + CHUNK);
+    const slice = included.slice(i, i + CHUNK).filter((s) => {
+      if (skipSet.has(s.name)) {
+        if (debug) console.log(`ingest: [debug] object skip ${s.name} (in SFGRAPH_SKIP_SOBJECT)`);
+        return false;
+      }
+      return true;
+    });
+    if (debug) {
+      console.log(
+        `ingest: [debug] object chunk ← ${slice.map((s) => s.name).join(",")}`,
+      );
+    }
     const descs: Array<{ s: SObjectGlobal; desc: any }> = await Promise.all(
       slice.map(async (s) => {
         try {
-          return { s, desc: await scheduleData(() => conn.sobject(s.name).describe()) };
-        } catch {
+          if (debug) console.log(`ingest: [debug] object describe ← ${s.name}`);
+          const d = await scheduleData(() => conn.sobject(s.name).describe());
+          if (debug)
+            console.log(
+              `ingest: [debug] object describe ✓ ${s.name} fields=${(d as { fields?: unknown[] })?.fields?.length ?? 0}`,
+            );
+          return { s, desc: d };
+        } catch (e) {
+          if (debug)
+            console.log(
+              `ingest: [debug] object describe ✗ ${s.name}: ${(e as Error)?.message ?? "(unknown)"}`,
+            );
           return { s, desc: null };
         }
       }),
