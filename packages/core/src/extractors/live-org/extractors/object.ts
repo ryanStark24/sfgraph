@@ -77,16 +77,26 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
   const all = global?.sobjects ?? [];
   const included = all.filter(shouldIncludeSObject);
 
-  for (const s of included) {
-    let desc: any;
-    try {
-      desc = await scheduleData(() => conn.sobject(s.name).describe());
-    } catch {
-      // Single object describe failed — skip just this one, keep iterating.
-      continue;
-    }
-
-    const fields: FieldDescribe[] = Array.isArray(desc?.fields) ? desc.fields : [];
+  // Fan out describe() in parallel chunks. Bottleneck's data pool throttles
+  // actual concurrency to maxConcurrent (default 10). Was strictly serial:
+  // 200 SObjects * ~500ms each = ~100s. With 10-way parallel: ~10s.
+  // Chunk size matches a generous ceiling above the pool size so the pool
+  // is the real bottleneck, not the chunk barrier.
+  const CHUNK = 25;
+  for (let i = 0; i < included.length; i += CHUNK) {
+    const slice = included.slice(i, i + CHUNK);
+    const descs: Array<{ s: SObjectGlobal; desc: any }> = await Promise.all(
+      slice.map(async (s) => {
+        try {
+          return { s, desc: await scheduleData(() => conn.sobject(s.name).describe()) };
+        } catch {
+          return { s, desc: null };
+        }
+      }),
+    );
+    for (const { s, desc } of descs) {
+      if (!desc) continue;
+      const fields: FieldDescribe[] = Array.isArray(desc?.fields) ? desc.fields : [];
 
     // Build the CustomObject-shaped envelope expected by the Phase-2 Object
     // parser (which already knows how to walk this structure).
@@ -130,5 +140,6 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
       },
       content: typeof objectXml === "string" ? objectXml : String(objectXml),
     };
+    }
   }
 }

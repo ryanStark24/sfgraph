@@ -22,16 +22,27 @@ export async function* iterGenericMetadata(
     return;
   }
   const items = list.filter((l) => l?.fullName);
-  for (let i = 0; i < items.length; i += BATCH) {
-    const batch = items.slice(i, i + BATCH);
-    const names = batch.map((b) => String(b.fullName));
-    let records: any[] = [];
-    try {
-      const raw = await scheduleMetadata(() => conn.metadata.read(type, names));
-      records = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    } catch {
-      continue;
-    }
+  // Fan out batch reads in parallel; the Metadata pool throttles concurrency.
+  // Per-batch errors are swallowed (some metadata types are list-able but
+  // not read-able with the running user's permissions).
+  const batches: any[][] = [];
+  for (let i = 0; i < items.length; i += BATCH) batches.push(items.slice(i, i + BATCH));
+  const batchResults = await Promise.all(
+    batches.map(async (batch) => {
+      const names = batch.map((b) => String(b.fullName));
+      try {
+        const raw = await scheduleMetadata(() => conn.metadata.read(type, names));
+        return Array.isArray(raw) ? raw : raw ? [raw] : [];
+      } catch {
+        return null; // skip this batch entirely
+      }
+    }),
+  );
+  for (let b = 0; b < batches.length; b++) {
+    const batch = batches[b];
+    const records = batchResults[b];
+    if (!batch || !records) continue;
+    const names = batch.map((b2) => String(b2.fullName));
     for (let j = 0; j < records.length; j++) {
       const r = records[j];
       const meta = batch[j];

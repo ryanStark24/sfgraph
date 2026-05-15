@@ -1,10 +1,17 @@
 import { XMLBuilder } from "fast-xml-parser";
 import { METADATA_CATEGORY, type MetadataCategory } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleQuery } from "../rate-limit.js";
+import { mergeAsyncIterablesParallel } from "../bulk-retrieve.js";
+import { scheduleMetadata } from "../rate-limit.js";
 
 const BATCH = 10;
 const xml = new XMLBuilder({ ignoreAttributes: false, format: false, suppressEmptyNode: true });
+
+interface MdListItem {
+  fullName: string;
+  lastModifiedDate?: string;
+  namespacePrefix?: string;
+}
 
 const TYPE_TO_CATEGORY: Record<string, MetadataCategory> = {
   NamedCredential: METADATA_CATEGORY.NAMED_CREDENTIAL,
@@ -12,21 +19,27 @@ const TYPE_TO_CATEGORY: Record<string, MetadataCategory> = {
 };
 
 async function* iterType(conn: any, type: string): AsyncIterable<RawMember> {
-  const list = (await scheduleQuery(() => conn.metadata.list([{ type }]))) as Array<{
-    fullName: string;
-    lastModifiedDate?: string;
-    namespacePrefix?: string;
-  }> | null;
+  const list = (await scheduleMetadata(() =>
+    conn.metadata.list([{ type }]),
+  )) as MdListItem[] | null;
   const items = Array.isArray(list) ? list : [];
   const category = TYPE_TO_CATEGORY[type] ?? METADATA_CATEGORY.INTEGRATION;
-  for (let i = 0; i < items.length; i += BATCH) {
-    const slice = items.slice(i, i + BATCH);
-    const reads = (await scheduleQuery(() =>
-      conn.metadata.read(
-        type,
-        slice.map((s) => s.fullName),
+  const batches: MdListItem[][] = [];
+  for (let i = 0; i < items.length; i += BATCH) batches.push(items.slice(i, i + BATCH));
+  const batchResults = await Promise.all(
+    batches.map((slice) =>
+      scheduleMetadata(() =>
+        conn.metadata.read(
+          type,
+          slice.map((s) => s.fullName),
+        ),
       ),
-    )) as any;
+    ),
+  );
+  for (let b = 0; b < batches.length; b++) {
+    const slice = batches[b];
+    if (!slice) continue;
+    const reads = batchResults[b];
     const arr = Array.isArray(reads) ? reads : [reads];
     for (let j = 0; j < slice.length; j += 1) {
       const meta = slice[j];
@@ -49,7 +62,8 @@ async function* iterType(conn: any, type: string): AsyncIterable<RawMember> {
 }
 
 export async function* iterIntegration(conn: any): AsyncIterable<RawMember> {
-  for (const t of ["NamedCredential", "ExternalServiceRegistration"]) {
-    yield* iterType(conn, t);
-  }
+  yield* mergeAsyncIterablesParallel(
+    iterType(conn, "NamedCredential"),
+    iterType(conn, "ExternalServiceRegistration"),
+  );
 }

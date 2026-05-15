@@ -19,9 +19,17 @@ const APEX_TRIGGER_SOQL =
   "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, TableEnumOrId FROM ApexTrigger";
 
 export async function* iterApex(conn: any): AsyncIterable<RawMember> {
-  const classes = (await scheduleQuery(() => conn.tooling.query(APEX_CLASS_SOQL))) as {
-    records?: ToolingClassRow[];
-  } | null;
+  // Fire both Tooling queries in parallel — they're independent and the
+  // Tooling pool throttles concurrency. Was serial (2x latency for no
+  // reason).
+  const [classes, triggers] = await Promise.all([
+    scheduleQuery(() => conn.tooling.query(APEX_CLASS_SOQL)) as Promise<{
+      records?: ToolingClassRow[];
+    } | null>,
+    scheduleQuery(() => conn.tooling.query(APEX_TRIGGER_SOQL)) as Promise<{
+      records?: ToolingTriggerRow[];
+    } | null>,
+  ]);
   for (const r of classes?.records ?? []) {
     yield {
       ref: {
@@ -35,9 +43,6 @@ export async function* iterApex(conn: any): AsyncIterable<RawMember> {
       content: r.Body ?? "",
     };
   }
-  const triggers = (await scheduleQuery(() => conn.tooling.query(APEX_TRIGGER_SOQL))) as {
-    records?: ToolingTriggerRow[];
-  } | null;
   for (const r of triggers?.records ?? []) {
     yield {
       ref: {

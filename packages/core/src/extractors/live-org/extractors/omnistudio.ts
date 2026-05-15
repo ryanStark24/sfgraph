@@ -40,13 +40,24 @@ const QUERIES: OQuery[] = [
 ];
 
 export async function* iterOmnistudio(conn: any): AsyncIterable<RawMember> {
-  for (const q of QUERIES) {
-    let res: { records?: ORow[] } | null = null;
-    try {
-      res = (await scheduleQuery(() => conn.tooling.query(q.soql))) as { records?: ORow[] } | null;
-    } catch {
-      continue;
-    }
+  // Fire all 4 Tooling SOQL queries in parallel — they're independent and
+  // the Tooling pool throttles concurrency. Was serial (4x latency for no
+  // reason).
+  const results = await Promise.all(
+    QUERIES.map(async (q) => {
+      try {
+        return {
+          q,
+          res: (await scheduleQuery(() => conn.tooling.query(q.soql))) as {
+            records?: ORow[];
+          } | null,
+        };
+      } catch {
+        return { q, res: null };
+      }
+    }),
+  );
+  for (const { q, res } of results) {
     for (const r of res?.records ?? []) {
       const name = String(r.DeveloperName ?? r.Name ?? r.Id ?? "");
       yield {
