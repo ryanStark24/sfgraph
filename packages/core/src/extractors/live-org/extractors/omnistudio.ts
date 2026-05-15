@@ -1,6 +1,6 @@
 import { METADATA_CATEGORY, type MetadataCategory } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleQuery } from "../rate-limit.js";
+import { scheduleData } from "../rate-limit.js";
 
 interface ORow {
   Id?: string;
@@ -30,28 +30,27 @@ interface OQuery {
   fetchElements?: boolean;
 }
 
+// Minimal universal fields — Id, Name, LastModifiedDate exist on every
+// OmniStudio SObject across versions. Type discriminators (OmniProcessType,
+// OmniDataTransformType) were dropped because field-name drift across
+// versions silently broke the queries. The parser layer determines kind
+// from the payload separately.
 const QUERIES: OQuery[] = [
   {
     memberType: "OmniProcess",
     category: METADATA_CATEGORY.OMNI_PROCESS,
-    soql: "SELECT Id, Name, OmniProcessType, LastModifiedDate FROM OmniProcess",
+    soql: "SELECT Id, Name, LastModifiedDate FROM OmniProcess",
     fetchElements: true,
   },
   {
     memberType: "OmniDataTransform",
     category: METADATA_CATEGORY.OMNI_DATA_TRANSFORM,
-    soql: "SELECT Id, Name, OmniDataTransformType, LastModifiedDate FROM OmniDataTransform",
+    soql: "SELECT Id, Name, LastModifiedDate FROM OmniDataTransform",
   },
   {
     memberType: "OmniUiCard",
     category: METADATA_CATEGORY.OMNI_UI_CARD,
-    soql: "SELECT Id, DeveloperName, LastModifiedDate FROM OmniUiCard",
-  },
-  {
-    memberType: "OmniIntegrationProcedure",
-    category: METADATA_CATEGORY.OMNI_INTEGRATION_PROCEDURE,
-    soql: "SELECT Id, Name, LastModifiedDate FROM OmniProcess WHERE OmniProcessType = 'Integration Procedure'",
-    fetchElements: true,
+    soql: "SELECT Id, Name, LastModifiedDate FROM OmniUiCard",
   },
 ];
 
@@ -73,9 +72,11 @@ async function fetchElementsByProcess(
     const slice = processIds.slice(i, i + CHUNK);
     const idList = slice.map((id) => `'${id.replace(/'/g, "\\'")}'`).join(",");
     const soql = `SELECT Id, Name, Type, PropertySet, OmniProcessId, ParentElementId, ElementsLevel FROM OmniProcessElement WHERE OmniProcessId IN (${idList})`;
+    // OmniProcessElement is a standard SObject in OmniStudio-on-Core, not
+    // a Tooling object. Route via conn.query (regular SOQL) on the data pool.
     let res: { records?: OElementRow[] } | null = null;
     try {
-      res = (await scheduleQuery(() => conn.tooling.query(soql))) as {
+      res = (await scheduleData(() => conn.query(soql))) as {
         records?: OElementRow[];
       } | null;
     } catch {
@@ -109,23 +110,40 @@ export async function* iterOmnistudio(conn: any): AsyncIterable<RawMember> {
   // Each mapped task wraps scheduleQuery in try/catch so allSettled is
   // belt-and-braces here, but using it anyway for consistency with the
   // other extractors and to guarantee no orphan rejection ever escapes.
+  // OmniStudio-on-Core's OmniProcess / OmniDataTransform / OmniUiCard are
+  // standard SObjects (visible to `conn.sobject(...).describe()` — which is
+  // how capabilities.ts detects them). They are NOT Tooling objects, so
+  // routing through `conn.tooling.query` silently returned zero rows on
+  // orgs that actually had data. Use regular SOQL via the data pool.
   const settled = await Promise.allSettled(
     QUERIES.map(async (q) => {
       try {
-        return {
-          q,
-          res: (await scheduleQuery(() => conn.tooling.query(q.soql))) as {
-            records?: ORow[];
-          } | null,
-        };
-      } catch {
-        return { q, res: null };
+        const res = (await scheduleData(() => conn.query(q.soql))) as {
+          records?: ORow[];
+        } | null;
+        return { q, res, err: null as Error | null };
+      } catch (e) {
+        return { q, res: null, err: e as Error };
       }
     }),
   );
   const results = settled
     .map((s) => (s.status === "fulfilled" ? s.value : null))
-    .filter((v): v is { q: OQuery; res: { records?: ORow[] } | null } => v !== null);
+    .filter(
+      (v): v is { q: OQuery; res: { records?: ORow[] } | null; err: Error | null } => v !== null,
+    );
+
+  // Surface per-query failures so silent-zero stops looking the same as
+  // genuinely-empty. The most common cause is a renamed field on a newer
+  // org version (e.g. OmniProcessType -> Type) — without this line we
+  // returned `✓ 0 records` and the user had no breadcrumb.
+  for (const { q, err } of results) {
+    if (err) {
+      console.log(
+        `ingest:   omnistudio query failed for ${q.memberType}: ${err.message?.slice(0, 200) ?? String(err)}`,
+      );
+    }
+  }
 
   // Second pass: for every type with fetchElements:true, batch-query
   // OmniProcessElement for ALL parent Ids across types in a single grouped

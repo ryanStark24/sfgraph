@@ -10,10 +10,16 @@
  * binding loaded into the IDE child fails to dlopen.
  */
 
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import path from "node:path";
 import { ErrorCode, SfgraphError } from "@ryanstark24/sfgraph-shared";
 
-type Loader = (id: string) => unknown;
+type Loader = ((id: string) => unknown) & {
+  resolve?: (id: string) => string;
+  cache?: Record<string, unknown>;
+};
 
 /** ABI mismatch detection heuristic. Matches the V8 / Node-API messages
  *  produced when the loaded `.node` file was compiled against a different
@@ -107,25 +113,118 @@ export function wrapAbiError(err: unknown): SfgraphError | null {
 }
 
 /**
- * Load `better-sqlite3` via the provided `require` (or one we synthesize from
- * import.meta.url). On ABI mismatch, throw `SfgraphError(E_NATIVE_ABI_MISMATCH)`
- * with a copy-paste recovery message; on any other failure, rethrow.
+ * Locate the better-sqlite3 package directory (where package.json lives)
+ * by resolving the module entry and walking up. Returns null on failure —
+ * the auto-rebuild path then falls through to the manual error.
  */
-export function loadBetterSqlite3<T = unknown>(requireFn?: Loader): T {
+function locateBetterSqlite3Dir(req: Loader): string | null {
+  try {
+    if (typeof req.resolve !== "function") return null;
+    let dir = path.dirname(req.resolve("better-sqlite3"));
+    // Walk up until we find package.json with the right name. The require.resolve
+    // typically lands inside lib/, so 1-3 levels of ".." gets us there.
+    for (let i = 0; i < 6; i++) {
+      const pkg = path.join(dir, "package.json");
+      if (existsSync(pkg)) return dir;
+      const parent = path.dirname(dir);
+      if (parent === dir) return null;
+      dir = parent;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compile better-sqlite3 from source against the currently-running Node.
+ * Uses the package's own `build-release` npm script, which invokes node-gyp
+ * with the right target. process.execPath is inherited via env so node-gyp
+ * targets THIS node, not whatever is on PATH.
+ *
+ * Returns true on success. Prints progress to stderr so the user sees
+ * what's happening — a 20-30 second rebuild can otherwise look like a
+ * hang.
+ */
+function rebuildBetterSqlite3(pkgDir: string): boolean {
+  process.stderr.write(
+    `\nsfgraph: better-sqlite3 native binding doesn't match Node ${process.version} — rebuilding from source…\n`,
+  );
+  const result = spawnSync("npm", ["run", "build-release"], {
+    cwd: pkgDir,
+    stdio: ["ignore", "ignore", "inherit"],
+    env: {
+      ...process.env,
+      // Ensure node-gyp targets the running Node, not whatever default it
+      // would pick up from PATH.
+      npm_config_target: process.versions.node,
+      npm_config_runtime: "node",
+      npm_config_target_arch: process.arch,
+      npm_config_target_platform: process.platform,
+    },
+  });
+  if (result.status === 0) {
+    process.stderr.write("sfgraph: rebuild succeeded — retrying load.\n");
+    return true;
+  }
+  process.stderr.write("sfgraph: rebuild failed; falling back to manual remediation.\n");
+  return false;
+}
+
+export interface LoadOpts {
+  /** When true, on ABI mismatch attempt `npm run build-release` against the
+   *  currently-running Node, then retry once. Default false (preserves the
+   *  library-callable behaviour for test fixtures). */
+  autoRebuild?: boolean;
+}
+
+/**
+ * Load `better-sqlite3` via the provided `require` (or one we synthesize from
+ * import.meta.url). On ABI mismatch:
+ *   - if `autoRebuild` is true, attempt a from-source rebuild against the
+ *     currently-running Node and retry the load. This eliminates the
+ *     "two Nodes on PATH" foot-gun for nvm + Homebrew users.
+ *   - otherwise (or if the rebuild fails), throw
+ *     `SfgraphError(E_NATIVE_ABI_MISMATCH)` with copy-paste recovery.
+ * On any other failure, rethrow as-is.
+ */
+export function loadBetterSqlite3<T = unknown>(requireFn?: Loader, opts: LoadOpts = {}): T {
   const req: Loader = requireFn ?? (createRequire(import.meta.url) as unknown as Loader);
   try {
     return req("better-sqlite3") as T;
   } catch (e) {
     const err = e as Error;
-    if (isAbiMismatch(err.message)) {
-      const hint = detectPackageManager();
-      const bindingPath = resolveBindingPath(req);
-      throw new SfgraphError(
-        ErrorCode.E_NATIVE_ABI_MISMATCH,
-        formatAbiMismatchMessage(err, hint, bindingPath),
-        { cause: err },
-      );
+    if (!isAbiMismatch(err.message)) throw err;
+
+    if (opts.autoRebuild) {
+      const pkgDir = locateBetterSqlite3Dir(req);
+      if (pkgDir && rebuildBetterSqlite3(pkgDir)) {
+        // Bust the require cache so the next call re-dlopens the freshly
+        // compiled .node file instead of reusing the in-memory failed module.
+        try {
+          const r = req as { cache?: Record<string, unknown>; resolve?: (id: string) => string };
+          if (r.cache && r.resolve) {
+            const k = r.resolve("better-sqlite3");
+            delete r.cache[k];
+          }
+        } catch {
+          /* best effort */
+        }
+        try {
+          return req("better-sqlite3") as T;
+        } catch (retryErr) {
+          // Fall through to the formatted error below.
+          err.message = `${err.message}\n\nretry after rebuild also failed: ${(retryErr as Error).message}`;
+        }
+      }
     }
-    throw err;
+
+    const hint = detectPackageManager();
+    const bindingPath = resolveBindingPath(req);
+    throw new SfgraphError(
+      ErrorCode.E_NATIVE_ABI_MISMATCH,
+      formatAbiMismatchMessage(err, hint, bindingPath),
+      { cause: err },
+    );
   }
 }

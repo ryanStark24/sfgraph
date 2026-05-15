@@ -4,6 +4,12 @@ export const VLOCITY_NAMESPACE_CANDIDATES = [
   "vlocity_hc",
   "vlocity_ps",
   "vlocity_fs",
+  // OmniStudio managed package was forked from Vlocity-CMT and ships an
+  // identical SObject schema under the `omnistudio` namespace. Detecting
+  // it via the same DRBundle__c probe lets the vlocity extractor pull
+  // OmniScripts / Integration Procedures / DataRaptors from
+  // OmniStudio-managed orgs without writing a parallel extractor.
+  "omnistudio",
 ] as const;
 
 export type VlocityNamespace = (typeof VLOCITY_NAMESPACE_CANDIDATES)[number];

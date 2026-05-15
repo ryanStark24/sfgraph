@@ -11,6 +11,7 @@ import { type ResolveOrgDeps, type ResolvedOrg, resolveOrg } from "../extractors
 import { type IngestSkipReport, bulkRetrieve } from "../extractors/live-org/bulk-retrieve.js";
 import { type OrgCapabilities, probeCapabilities } from "../extractors/live-org/capabilities.js";
 import { iterChanges } from "../extractors/live-org/source-member.js";
+import { dataPool, metadataPool, toolingPool } from "../extractors/live-org/rate-limit.js";
 import { loadAllRules } from "../parsers/rules/_loader.js";
 import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
 import type { SnapshotStore } from "../storage/interfaces.js";
@@ -303,6 +304,10 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   let membersProcessed = 0;
   let parseErrors = 0;
   let deletions = 0;
+  // Set in the full-sync branch if the bulkRetrieve stream itself throws.
+  // Detect-deletions reads it post-fan-out to bail out instead of mass-
+  // wiping nodes that were never visited due to the abort.
+  let streamAborted = false;
   const touchedQnames = new Set<string>();
 
   const parseCtxBase: Omit<ParseContext, "sourceUri"> = {
@@ -442,93 +447,144 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // call) where the normal progress log just stops without an error.
     const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
     let heartbeatTimer: NodeJS.Timeout | null = null;
-    if (debug) {
-      console.log("ingest: [debug] SFGRAPH_DEBUG_INGEST=1 active — heartbeat every 10s");
-      heartbeatTimer = setInterval(() => {
-        const mem = process.memoryUsage();
-        const heapMb = Math.round(mem.heapUsed / 1024 / 1024);
-        const rssMb = Math.round(mem.rss / 1024 / 1024);
-        const externalMb = Math.round(mem.external / 1024 / 1024);
-        const idleSec = Math.round((Date.now() - lastActivityAt) / 1000);
-        console.log(
-          `ingest: [heartbeat] processed=${progressCount} lastSource=${lastMemberLabel} idle=${idleSec}s heap=${heapMb}MB rss=${rssMb}MB ext=${externalMb}MB`,
-        );
-      }, 10_000);
-      // Don't keep the event loop alive on its own.
-      heartbeatTimer.unref();
-      // Signal handlers — surface what was running when the user (or OS)
-      // sends a kill so silent terminations have at least one breadcrumb.
-      const signalHandler = (sig: string) => {
-        console.error(
-          `ingest: [debug] received ${sig} after ${Math.round((Date.now() - fanOutStart) / 1000)}s — processed=${progressCount} lastSource=${lastMemberLabel}`,
-        );
-        console.error(new Error(`signal:${sig}`).stack);
-        process.exitCode = 130;
-      };
-      process.on("SIGTERM", () => signalHandler("SIGTERM"));
-      process.on("SIGINT", () => signalHandler("SIGINT"));
-      // SIGUSR2 is what node uses internally for nodemon; we re-purpose
-      // for "dump heap snapshot on demand" if needed.
-      process.on("SIGUSR2", () => {
-        const mem = process.memoryUsage();
-        console.error(
-          `ingest: [debug] SIGUSR2 — heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB rss=${Math.round(mem.rss / 1024 / 1024)}MB lastSource=${lastMemberLabel}`,
-        );
-      });
-    }
+    let keepAlive: NodeJS.Timeout | null = null;
+    // Track signal handlers we register so we can remove them in finally.
+    // Without this, every invocation of liveIngest in debug mode leaked one
+    // listener per signal (SIGTERM/SIGINT/SIGUSR2), eventually triggering
+    // MaxListenersExceededWarning and N-fold handler firing on first ^C in
+    // multi-org / programmatic flows. (Audit finding C2.)
+    const installedSignalHandlers: Array<{ sig: NodeJS.Signals; fn: () => void }> = [];
+    // streamAborted (hoisted at function scope) gates the post-fan-out
+    // detect-deletions block. If the bulkRetrieve stream itself throws
+    // (vs individual sources fail-softing), we've only seen a fraction of
+    // the org and the `touchedQnames` set is not safe to use for stale-
+    // qname computation — without this guard a transient SF error would
+    // mass-delete the untouched 70% of the graph. (Audit finding C1.)
     try {
-      for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, {
-        skipReport,
-        ...(opts.onlyLabels ? { onlyLabels: opts.onlyLabels } : {}),
-      })) {
-        try {
-          await processOne(member.ref, member.content);
-        } catch (e) {
-          parseErrors += 1;
-          logger.warn("live-ingest: processOne failed", {
-            qname: `${member.ref.memberType}:${member.ref.memberName}`,
-            error: (e as Error).message,
-          });
-        }
-        progressCount += 1;
-        lastActivityAt = Date.now();
-        lastMemberLabel = `${member.ref.memberType}:${member.ref.memberName}`;
-        // Periodic heartbeat — every 5s OR every 200 members, whichever first.
-        // Keeps the user informed without spamming stdout per record.
-        if (progressCount % 200 === 0 || Date.now() - lastTickAt > PROGRESS_TICK_MS) {
-          const elapsedSec = Math.round((Date.now() - fanOutStart) / 1000);
-          const memSuffix = debug
-            ? ` heap=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
-            : "";
+      // Keep-alive sentinel: a ref'd timer that exists purely to prevent the
+      // event loop from draining while we're awaiting Bottleneck-scheduled
+      // work. Bottleneck's local-datastore reservoir-refresh timer is unref'd
+      // internally, jsforce's HTTP keep-alive sockets idle between requests,
+      // and Node will happily exit(0) on a perfectly healthy pending Promise
+      // if no ref'd handle is left.
+      keepAlive = setInterval(() => {}, 60_000);
+      // Wall-clock heartbeat — always on. Without this, silent phases (where
+      // all in-window sources are awaiting Bottleneck-queued metadata reads
+      // without yielding) look indistinguishable from a hung process. The
+      // per-record progress tick at the bottom of the fan-out loop only
+      // fires when a record arrives; this fires on a real timer regardless.
+      // Debug mode adds heap/rss; baseline shows processed/lastSource/idle.
+      const showPoolCounters = debug || process.env.SFGRAPH_DEBUG_POOLS === "1";
+      heartbeatTimer = setInterval(() => {
+        const idleSec = Math.round((Date.now() - lastActivityAt) / 1000);
+        if (idleSec < 10) return; // suppress chatter when records are flowing
+        if (debug) {
+          const mem = process.memoryUsage();
+          const heapMb = Math.round(mem.heapUsed / 1024 / 1024);
+          const rssMb = Math.round(mem.rss / 1024 / 1024);
+          const externalMb = Math.round(mem.external / 1024 / 1024);
           console.log(
-            `ingest:   …${progressCount} members processed so far (${elapsedSec}s elapsed)${memSuffix}`,
+            `ingest: [heartbeat] processed=${progressCount} lastSource=${lastMemberLabel} idle=${idleSec}s heap=${heapMb}MB rss=${rssMb}MB ext=${externalMb}MB`,
           );
-          lastTickAt = Date.now();
+        } else {
+          console.log(
+            `ingest:   …still working — processed=${progressCount} idle=${idleSec}s lastSource=${lastMemberLabel}`,
+          );
         }
-        // Periodic WAL checkpoint — every 500 records, flush WAL to main
-        // DB so it never accumulates more than a few hundred pages between
-        // auto-checkpoints. Cheap (PASSIVE, no locking) and prevents the
-        // big native-binding checkpoint that has been silently aborting
-        // the process around the object-phase boundary.
-        if (progressCount % 500 === 0) {
-          const gs = graph as unknown as { checkpoint?: () => boolean };
-          if (typeof gs.checkpoint === "function") gs.checkpoint();
+        // Pool diagnostics: snapshot Bottleneck state so a wedge can be
+        // attributed concretely to reservoir starvation vs. stuck-in-flight
+        // jobs vs. pre-yield iterator hangs. Counts are synchronous; the
+        // reservoir read is async but fire-and-forget — by the time it
+        // resolves we just log it.
+        if (showPoolCounters) {
+          const snapshot = [
+            ["tool", toolingPool],
+            ["meta", metadataPool],
+            ["data", dataPool],
+          ] as const;
+          for (const [name, p] of snapshot) {
+            const c = p.counts();
+            p.currentReservoir().then((reservoir) => {
+              console.log(
+                `ingest: [pool ${name}] running=${c.RUNNING} executing=${c.EXECUTING} queued=${c.QUEUED} received=${c.RECEIVED} reservoir=${reservoir}`,
+              );
+            }, () => {
+              /* swallow — never let a diag failure kill ingest */
+            });
+          }
         }
+      }, 10_000);
+      if (debug) {
+        console.log("ingest: [debug] SFGRAPH_DEBUG_INGEST=1 active — heartbeat every 10s");
+        // Signal handlers — surface what was running when the user (or OS)
+        // sends a kill so silent terminations have at least one breadcrumb.
+        const onSig = (sig: string) => () => {
+          console.error(
+            `ingest: [debug] received ${sig} after ${Math.round((Date.now() - fanOutStart) / 1000)}s — processed=${progressCount} lastSource=${lastMemberLabel}`,
+          );
+          console.error(new Error(`signal:${sig}`).stack);
+          process.exitCode = 130;
+        };
+        const onUsr2 = () => {
+          const mem = process.memoryUsage();
+          console.error(
+            `ingest: [debug] SIGUSR2 — heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB rss=${Math.round(mem.rss / 1024 / 1024)}MB lastSource=${lastMemberLabel}`,
+          );
+        };
+        installedSignalHandlers.push({ sig: "SIGTERM", fn: onSig("SIGTERM") });
+        installedSignalHandlers.push({ sig: "SIGINT", fn: onSig("SIGINT") });
+        installedSignalHandlers.push({ sig: "SIGUSR2", fn: onUsr2 });
+        for (const h of installedSignalHandlers) process.on(h.sig, h.fn);
       }
-      console.log(
-        `ingest: fan-out complete (${progressCount} members in ${Math.round((Date.now() - fanOutStart) / 1000)}s)`,
-      );
-      // Final checkpoint after fan-out so post-fan-out work (cross-flavor
-      // resolver, snapshot create, etc.) starts with a clean WAL.
-      const gs = graph as unknown as { checkpoint?: () => boolean };
-      if (typeof gs.checkpoint === "function") gs.checkpoint();
-    } catch (e) {
-      // Should not happen with fail-soft sources, but keep the safety net.
-      logger.warn("live-ingest: bulkRetrieve stream aborted", {
-        error: (e as Error).message,
-      });
+      try {
+        for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, {
+          skipReport,
+          ...(opts.onlyLabels ? { onlyLabels: opts.onlyLabels } : {}),
+        })) {
+          try {
+            await processOne(member.ref, member.content);
+          } catch (e) {
+            parseErrors += 1;
+            logger.warn("live-ingest: processOne failed", {
+              qname: `${member.ref.memberType}:${member.ref.memberName}`,
+              error: (e as Error).message,
+            });
+          }
+          progressCount += 1;
+          lastActivityAt = Date.now();
+          lastMemberLabel = `${member.ref.memberType}:${member.ref.memberName}`;
+          if (progressCount % 200 === 0 || Date.now() - lastTickAt > PROGRESS_TICK_MS) {
+            const elapsedSec = Math.round((Date.now() - fanOutStart) / 1000);
+            const memSuffix = debug
+              ? ` heap=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+              : "";
+            console.log(
+              `ingest:   …${progressCount} members processed so far (${elapsedSec}s elapsed)${memSuffix}`,
+            );
+            lastTickAt = Date.now();
+          }
+          if (progressCount % 500 === 0) {
+            const gs = graph as unknown as { checkpoint?: () => boolean };
+            if (typeof gs.checkpoint === "function") gs.checkpoint();
+          }
+        }
+        console.log(
+          `ingest: fan-out complete (${progressCount} members in ${Math.round((Date.now() - fanOutStart) / 1000)}s)`,
+        );
+        const gs = graph as unknown as { checkpoint?: () => boolean };
+        if (typeof gs.checkpoint === "function") gs.checkpoint();
+      } catch (e) {
+        // The stream itself threw (not an individual source — those are
+        // captured by failSoft). Mark so detect-deletions stays its hand.
+        streamAborted = true;
+        logger.warn("live-ingest: bulkRetrieve stream aborted", {
+          error: (e as Error).message,
+        });
+      }
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (keepAlive) clearInterval(keepAlive);
+      for (const h of installedSignalHandlers) process.off(h.sig, h.fn);
     }
 
     // End-of-run skip summary. Grouped by category so the remediation is
@@ -569,7 +625,11 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   // skipped if any parse error occurred this run (avoid mass-wipe on
   // transient SF errors).
   if (opts.detectDeletions && mode === "full") {
-    if (parseErrors > 0) {
+    if (streamAborted) {
+      logger.warn(
+        "live-ingest: detect-deletions skipped because bulkRetrieve stream aborted — touchedQnames is incomplete and a full deletion sweep would wrongly wipe untouched-but-still-present nodes",
+      );
+    } else if (parseErrors > 0) {
       logger.warn("live-ingest: detect-deletions skipped due to parseErrors", { parseErrors });
     } else {
       try {

@@ -53,23 +53,21 @@ export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>)
 }
 
 /**
- * Parallel merge over a BOUNDED number of concurrent iterators. Drains
- * `iters` in waves of at most `concurrency` at a time — within a wave the
- * iterators race via `Promise.race` for maximum throughput, but no more
- * than `concurrency` are ever live simultaneously.
+ * Sliding-window parallel merge. Keeps exactly `concurrency` iterators
+ * live at any moment — when one completes (done:true), the next queued
+ * iterator is started in its slot. Within the window, iterators race via
+ * `Promise.race` for max throughput.
  *
- * Bounding matters for ingest robustness: running all ~60 source iterators
- * concurrently caused silent native aborts at ~30s on macOS 26+, almost
- * certainly from cumulative jsforce/libuv state (HTTP agent pool, response
- * handlers in flight, etc.) exceeding some internal threshold. With a
- * bounded wave size, each wave completes and its state is GC'd before the
- * next wave starts — keeps total in-flight state flat at any moment.
+ * Replaces the previous wave-based merger, which had a synchronisation
+ * barrier at each wave boundary: all 6 iterators in a wave had to finish
+ * before any of wave 2 could start. One hung source (very common for
+ * `generic:Layout` on managed-package-heavy orgs) parked the whole wave
+ * indefinitely with zero observable progress.
  *
- * Default concurrency = 6: large enough for the three rate-limit pools
- * (Tooling 5 / Metadata 5 / Data 10) to all be saturated by some wave
- * member, small enough that cumulative HTTP/jsforce state stays bounded.
- * Override via `SFGRAPH_SOURCE_CONCURRENCY=<n>` (1 = strictly sequential,
- * 64 = original unbounded).
+ * Default concurrency = 8: enough to saturate the three rate-limit pools
+ * (Tooling 5 / Metadata 5 / Data 10) with headroom for one slot to be
+ * blocked on a slow source without starving the others. Override via
+ * `SFGRAPH_SOURCE_CONCURRENCY=<n>` (1 = strictly sequential).
  *
  * Output ordering is non-deterministic. `live-ingest`'s processOne is
  * order-independent (idempotent per-record upserts), so this is safe.
@@ -78,24 +76,18 @@ export async function* mergeAsyncIterablesParallel<T>(
   ...iters: Array<AsyncIterable<T>>
 ): AsyncIterable<T> {
   const envConcurrency = Number.parseInt(process.env.SFGRAPH_SOURCE_CONCURRENCY ?? "", 10);
+  // Raised 8 -> 12: a wider window lets Tooling-backed sources (apex, lwc)
+  // start immediately rather than wait behind the cohort of metadata-pool
+  // sources (security, flow, integration, generic:Layout/Workflow/etc.)
+  // which spend most of their time queued in Bottleneck. Per-pool concurrency
+  // still caps total HTTP fan-out, so this only opens up parallelism that
+  // was being throttled at the wrong layer.
   const concurrency =
-    Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 6;
-  // Process in waves: take up to `concurrency` iterators, drain them
-  // concurrently to completion, then move to the next batch.
-  for (let waveStart = 0; waveStart < iters.length; waveStart += concurrency) {
-    const wave = iters.slice(waveStart, waveStart + concurrency);
-    yield* drainWaveConcurrently(wave);
-  }
-}
-
-/** Concurrent drain of a single wave — exactly the original Promise.race
- *  pattern, now scoped to one bounded batch instead of all iterators. */
-async function* drainWaveConcurrently<T>(
-  iters: Array<AsyncIterable<T>>,
-): AsyncIterable<T> {
+    Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 12;
   const iterators = iters.map((it) => it[Symbol.asyncIterator]());
   type Tagged = Promise<{ idx: number; result: IteratorResult<T> }>;
   const pending = new Map<number, Tagged>();
+  let nextIterIdx = 0;
   const advance = (idx: number): void => {
     const it = iterators[idx];
     if (!it) return;
@@ -113,11 +105,17 @@ async function* drainWaveConcurrently<T>(
       ),
     );
   };
-  for (let i = 0; i < iterators.length; i++) advance(i);
+  // Prime the window with the first `concurrency` iterators.
+  while (pending.size < concurrency && nextIterIdx < iterators.length) {
+    advance(nextIterIdx++);
+  }
   while (pending.size > 0) {
     const { idx, result } = await Promise.race(pending.values());
     if (result.done) {
       pending.delete(idx);
+      // A slot opened — start the next queued iterator immediately. A slow
+      // / hung source still holds its slot, but its peers keep advancing.
+      if (nextIterIdx < iterators.length) advance(nextIterIdx++);
       continue;
     }
     yield result.value;
@@ -139,15 +137,60 @@ async function* failSoft<T>(
   const startedAt = Date.now();
   let count = 0;
   let started = false;
+  // Watchdog at 5 minutes. Per-call withTimeouts (120s) catch hung HTTP;
+  // this catches the case where every call ALSO times out and the source
+  // never yields a single record. 5 min = ~2.5× the per-call budget,
+  // generous for queued-but-healthy, tight enough that a genuinely
+  // wedged source surfaces fast and doesn't park its sliding-window slot
+  // for half an hour. With the no-retry-on-timeout fix in
+  // readMetadataBatchAdaptive, the inner loop also can't balloon, so 5
+  // minutes is a real ceiling now.
+  const inactivityMs = 5 * 60_000;
+  // Tighter deadline for the FIRST record. The 5-min inactivity watchdog
+  // is for healthy-but-slow sources that have already started yielding;
+  // a source that hasn't yielded a single record in 90s is almost
+  // certainly parked on a pre-yield setup call (metadata.list, describe,
+  // EntityDefinition pagination) and won't recover. Killing it fast frees
+  // the sliding-window slot for queued peers.
+  const firstYieldMs = 90_000;
+
   try {
     if (debug) console.log(`ingest: [debug] ${label} ← invoked at ${startedAt}`);
-    for await (const v of factory()) {
+    const it = factory()[Symbol.asyncIterator]();
+    while (true) {
+      const remainingFirstYield = started
+        ? Number.POSITIVE_INFINITY
+        : startedAt + firstYieldMs - Date.now();
+      const watchdogMs = Math.min(inactivityMs, remainingFirstYield);
+      if (watchdogMs <= 0) {
+        throw new Error(
+          `source watchdog (first-yield ${firstYieldMs / 1000}s): no record yielded — pre-yield setup wedged`,
+        );
+      }
+      const watchdogLabel = started
+        ? `${inactivityMs / 60_000}m inactivity`
+        : `first-yield ${firstYieldMs / 1000}s`;
+      const next = await Promise.race([
+        it.next(),
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `source watchdog (${watchdogLabel}): no record yielded — pool jammed or call wedged`,
+                ),
+              ),
+            watchdogMs,
+          );
+        }),
+      ]);
+      if (next.done) break;
       if (!started) {
         started = true;
         console.log(`ingest:   ${label} → starting…`);
       }
       count += 1;
-      yield v;
+      yield next.value;
     }
     if (started) {
       console.log(`ingest:   ${label} ✓ ${count} records (${Date.now() - startedAt}ms)`);
@@ -157,12 +200,7 @@ async function* failSoft<T>(
   } catch (e) {
     const err = e as Error;
     onError?.(label, err);
-    // Compact one-liner during the run — full details are aggregated and
-    // surfaced in the end-of-run skip summary so the user gets one clear
-    // remediation block instead of N scattered warnings. In debug mode,
-    // also print the full error so the user can see exactly why a source
-    // failed without waiting for the end-of-run summary.
-    console.log(`ingest:   ${label} ✗ skipped`);
+    console.log(`ingest:   ${label} ✗ skipped (${err?.message?.slice(0, 80) ?? "unknown"})`);
     if (debug) {
       console.error(`ingest: [debug] ${label} failure detail: ${err?.message ?? String(err)}`);
       if (err?.stack) console.error(err.stack);
@@ -245,16 +283,18 @@ const GENERIC_TYPE_WHITELIST = new Set([
   "ExperienceBundle",
   "DigitalExperienceBundle",
   // Identity / Access
+  // NOTE: Profile, PermissionSet, SharingRules intentionally NOT here —
+  // they route to iterSecurity (see SECURITY_TYPES + dispatch below).
+  // NamedCredential routes to iterIntegration. Listing them here would be
+  // dead today (the dispatch checks SECURITY/INTEGRATION_TYPES first) and
+  // a trap if dispatch ordering ever changes.
   "ConnectedApp",
-  "Profile",
-  "PermissionSet",
   "PermissionSetGroup",
   "MutingPermissionSet",
   "ProfilePasswordPolicy",
   "ProfileSessionSetting",
   "SamlSsoConfig",
   // Sharing
-  "SharingRules",
   "SharingSet",
   "GroupMember",
   // Platform Events / CDC
@@ -264,7 +304,7 @@ const GENERIC_TYPE_WHITELIST = new Set([
   // Integrations
   "RemoteSiteSetting",
   "CspTrustedSite",
-  "NamedCredential",
+  // NamedCredential routes to iterIntegration (see INTEGRATION_TYPES).
   "ExternalCredential",
   // Email
   "EmailTemplate",
@@ -281,6 +321,14 @@ const GENERIC_TYPE_WHITELIST = new Set([
   // Bot / Einstein
   "Bot",
   "GenAiPlannerBundle",
+  // OmniStudio on-Core — exposed via Metadata API, not SObject SOQL.
+  // The on-core SObject (OmniProcess) is the storage backing but real
+  // metadata access goes through metadata.list/read of these type names.
+  "OmniScript",
+  "OmniIntegrationProcedure",
+  "OmniDataTransform",
+  "OmniUiCard",
+  "OmniProcess",
 ]);
 
 function shouldRouteGeneric(type: string): boolean {

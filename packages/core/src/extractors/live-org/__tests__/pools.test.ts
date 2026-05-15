@@ -28,7 +28,7 @@ describe("rate-limit pools", () => {
     // @ts-expect-error
     const dataOpts = dataPool._store.storeOptions;
     expect(toolingOpts.maxConcurrent).toBe(5);
-    expect(metaOpts.maxConcurrent).toBe(5);
+    expect(metaOpts.maxConcurrent).toBe(10);
     expect(dataOpts.maxConcurrent).toBe(10);
   });
 

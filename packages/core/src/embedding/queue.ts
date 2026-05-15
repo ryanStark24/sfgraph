@@ -55,10 +55,22 @@ export class EmbeddingQueue {
   }
 
   async drain(): Promise<void> {
-    while (this.buffer.length > 0) {
-      await this.flushBatch();
+    // Cooperate with any in-flight flush from a prior push(): if `flushing`
+    // is set, await it before starting our own — otherwise we'd run two
+    // concurrent embedFn() calls into @xenova/transformers' WASM runtime
+    // (unsafe / slow). After it settles, check the buffer again and flush
+    // any remaining batches ourselves serially.
+    while (true) {
+      if (this.flushing) {
+        await this.flushing;
+        continue;
+      }
+      if (this.buffer.length === 0) return;
+      this.flushing = this.flushBatch().finally(() => {
+        this.flushing = null;
+      });
+      await this.flushing;
     }
-    if (this.flushing) await this.flushing;
   }
 
   /** Test introspection. */
@@ -97,7 +109,12 @@ export class EmbeddingQueue {
  */
 async function defaultEmbed(texts: string[]): Promise<Float32Array[]> {
   try {
-    const mod = (await import("@xenova/transformers" as unknown as string)) as {
+    // @xenova/transformers is declared as an optionalDependency on this
+    // package so consumers who don't need embeddings can skip the WASM
+    // runtime. Use a plain dynamic import (no string cast) — when the
+    // optional dep is missing, the import rejects and we fall through to
+    // the zero-vector fallback below.
+    const mod = (await import("@xenova/transformers")) as unknown as {
       pipeline: (
         ...args: unknown[]
       ) => Promise<(...args: unknown[]) => Promise<{ data: number[] }>>;

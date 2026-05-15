@@ -121,44 +121,41 @@ describe("apex extractor — apiVersion envelope", () => {
 describe("omnistudio extractor — element graph", () => {
   it("attaches OmniProcessElement rows (with parsed PropertySet) under metadata.elements", async () => {
     const conn = {
-      tooling: {
-        query: async (soql: string) => {
-          if (soql.startsWith("SELECT Id, Name, OmniProcessType")) {
-            return {
-              records: [
-                {
-                  Id: "0OP1",
-                  Name: "MyProcess",
-                  OmniProcessType: "OmniScript",
-                  LastModifiedDate: "2026-05-15T00:00:00Z",
-                },
-              ],
-              done: true,
-            };
-          }
-          if (soql.includes("FROM OmniProcessElement")) {
-            return {
-              records: [
-                {
-                  Id: "0OE1",
-                  Name: "DR_Step",
-                  Type: "DataRaptorExtractAction",
-                  PropertySet: JSON.stringify({ dataTransformName: "DR_CustomerInfo" }),
-                  OmniProcessId: "0OP1",
-                },
-                {
-                  Id: "0OE2",
-                  Name: "UI_Step",
-                  Type: "OmniUiCard",
-                  PropertySet: JSON.stringify({ cardName: "CustomerSummary" }),
-                  OmniProcessId: "0OP1",
-                },
-              ],
-              done: true,
-            };
-          }
-          return { records: [], done: true };
-        },
+      query: async (soql: string) => {
+        if (soql.includes("FROM OmniProcess") && !soql.includes("OmniProcessElement")) {
+          return {
+            records: [
+              {
+                Id: "0OP1",
+                Name: "MyProcess",
+                LastModifiedDate: "2026-05-15T00:00:00Z",
+              },
+            ],
+            done: true,
+          };
+        }
+        if (soql.includes("FROM OmniProcessElement")) {
+          return {
+            records: [
+              {
+                Id: "0OE1",
+                Name: "DR_Step",
+                Type: "DataRaptorExtractAction",
+                PropertySet: JSON.stringify({ dataTransformName: "DR_CustomerInfo" }),
+                OmniProcessId: "0OP1",
+              },
+              {
+                Id: "0OE2",
+                Name: "UI_Step",
+                Type: "OmniUiCard",
+                PropertySet: JSON.stringify({ cardName: "CustomerSummary" }),
+                OmniProcessId: "0OP1",
+              },
+            ],
+            done: true,
+          };
+        }
+        return { records: [], done: true };
       },
     };
     const members = await collect(iterOmnistudio(conn));
@@ -175,21 +172,19 @@ describe("omnistudio extractor — element graph", () => {
 
   it("emits parent-only payloads for types without fetchElements (OmniDataTransform / OmniUiCard)", async () => {
     const conn = {
-      tooling: {
-        query: async (soql: string) => {
-          if (soql.includes("FROM OmniDataTransform")) {
-            return {
-              records: [{ Id: "0DT1", Name: "Transform1" }],
-              done: true,
-            };
-          }
-          if (soql.includes("FROM OmniProcessElement")) {
-            // Even if elements were returned for a non-fetchElements type,
-            // they should not leak onto the wrong parent.
-            return { records: [], done: true };
-          }
+      query: async (soql: string) => {
+        if (soql.includes("FROM OmniDataTransform")) {
+          return {
+            records: [{ Id: "0DT1", Name: "Transform1" }],
+            done: true,
+          };
+        }
+        if (soql.includes("FROM OmniProcessElement")) {
+          // Even if elements were returned for a non-fetchElements type,
+          // they should not leak onto the wrong parent.
           return { records: [], done: true };
-        },
+        }
+        return { records: [], done: true };
       },
     };
     const members = await collect(iterOmnistudio(conn));

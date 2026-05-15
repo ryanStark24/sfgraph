@@ -408,11 +408,15 @@ async function fetchEntityDefinitionClassification(
   }
 }
 
-/** Per-iterObject state set by the EntityDefinition probe. When null, the
- *  static whitelist is used as fallback. */
-let entityDefRelevant: Set<string> | null = null;
-
-function shouldIncludeSObject(s: SObjectGlobal): boolean {
+/** Build a shouldIncludeSObject predicate closed over the EntityDefinition
+ *  probe result. Previously this state lived at module scope as a `let` —
+ *  worked for single-org ingest but broke subtly under multi-org parallel
+ *  ingest (org A's classification leaks into org B's filter). Closure-bound
+ *  state has no such hazard. */
+function makeShouldIncludeSObject(
+  entityDefRelevant: Set<string> | null,
+): (s: SObjectGlobal) => boolean {
+  return function shouldIncludeSObject(s: SObjectGlobal): boolean {
   if (!s.name) return false;
   if (s.deprecatedAndHidden) return false;
   if (!s.queryable) return false;
@@ -428,8 +432,20 @@ function shouldIncludeSObject(s: SObjectGlobal): boolean {
   // ApexLog is customizable, we still don't want it in the graph).
   const includeSystem = process.env.SFGRAPH_INCLUDE_SYSTEM_SOBJECTS === "1";
   if (!includeSystem && SYSTEM_SKIP_NAMES.has(s.name)) return false;
-  // Custom SObjects (user or managed-package) always included.
-  if (isCustomSObject(s.name)) return true;
+  // Custom SObjects (user or managed-package). describeGlobal lists every
+  // SObject the managed-package metadata declared, including objects that
+  // SOQL doesn't actually expose (`omnistudio__TestResult__c` etc.) and
+  // whose describe() can wedge for minutes server-side. EntityDefinition
+  // is the authoritative "actually exists + reachable" list — gate
+  // namespaced custom SObjects through it. User-namespace custom SObjects
+  // (no `__` namespace prefix) are always included.
+  if (isCustomSObject(s.name)) {
+    const isNamespaced = s.name.includes("__") && s.name.split("__").length >= 3;
+    if (isNamespaced && entityDefRelevant && !entityDefRelevant.has(s.name)) {
+      return false;
+    }
+    return true;
+  }
   // Full-surface override.
   if (process.env.SFGRAPH_INCLUDE_ALL_SOBJECTS === "1") return true;
   // Primary path: ask Salesforce. EntityDefinition's IsCustomizable +
@@ -445,6 +461,7 @@ function shouldIncludeSObject(s: SObjectGlobal): boolean {
   // Fallback path: EntityDefinition unavailable / empty (some scratch
   // orgs return 0 rows here). Use the curated whitelist.
   return STANDARD_SOBJECT_WHITELIST.has(s.name);
+  };
 }
 
 /** Wrap a promise with a hard timeout. Used to bound describe() calls so a
@@ -484,8 +501,23 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
   // Probe EntityDefinition first so shouldIncludeSObject can rely on
   // Salesforce's own classification rather than a hardcoded list. If
   // this fails / returns 0 rows (some scratch orgs), the fallback is the
-  // curated STANDARD_SOBJECT_WHITELIST.
-  entityDefRelevant = await fetchEntityDefinitionClassification(conn);
+  // curated STANDARD_SOBJECT_WHITELIST. Hard 60s ceiling — on managed-
+  // package-heavy orgs EntityDefinition pagination has been observed to
+  // span minutes; that previously blocked iterObject's first yield long
+  // enough to hold a sliding-window slot uselessly. Falling through to
+  // the static whitelist costs us some long-tail standard SObjects but
+  // unblocks the source promptly.
+  let entityDefRelevant: Set<string> | null;
+  try {
+    entityDefRelevant = await withTimeout(
+      fetchEntityDefinitionClassification(conn),
+      60_000,
+      "EntityDefinition probe",
+    );
+  } catch {
+    entityDefRelevant = null;
+  }
+  const shouldIncludeSObject = makeShouldIncludeSObject(entityDefRelevant);
   if (debug) {
     if (entityDefRelevant) {
       console.log(
@@ -525,57 +557,90 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
     );
   }
 
-  // Fan out describe() in parallel chunks. Bottleneck's data pool throttles
-  // actual concurrency to maxConcurrent (default 10). Was strictly serial:
-  // 200 SObjects * ~500ms each = ~100s. With 10-way parallel: ~10s.
-  // Chunk size matches the pool's maxConcurrent — going higher just queues
-  // jobs in Bottleneck without adding parallelism, AND it buffers more
-  // describe responses simultaneously in memory (some SObject describes are
-  // 1MB+ JSON; 25 in flight = 25MB+ of buffered response per chunk).
-  // Default 10 keeps memory pressure flat at any one moment.
-  const CHUNK = 10;
-  for (let i = 0; i < included.length; i += CHUNK) {
-    const slice = included.slice(i, i + CHUNK).filter((s) => {
-      if (skipSet.has(s.name)) {
-        if (debug) console.log(`ingest: [debug] object skip ${s.name} (in SFGRAPH_SKIP_SOBJECT)`);
-        return false;
+  // Pre-filter the queue once (the previous chunked loop did this per slice).
+  // Skipped SObjects are removed up-front so they don't consume queue slots.
+  const queue = included.filter((s) => {
+    if (skipSet.has(s.name)) {
+      if (debug) console.log(`ingest: [debug] object skip ${s.name} (in SFGRAPH_SKIP_SOBJECT)`);
+      return false;
+    }
+    return true;
+  });
+
+  // Sliding-window describe scheduler. Keeps exactly WINDOW describes in
+  // flight at all times; when any one completes we yield it and immediately
+  // launch the next queued SObject. Replaces a chunked Promise.all that
+  // synchronised on the slowest member of each chunk — on managed-package-
+  // heavy orgs (FinServ/Loyalty/Vlocity Insurance) where a handful of
+  // SObjects describe in 8–15s while most return in 200–500ms, the chunk
+  // barrier was leaving 9 slots idle waiting for the slow one. Sliding
+  // window keeps the data pool saturated end-to-end.
+  //
+  // 12-second per-describe ceiling — empirically, anything past ~5s on
+  // a healthy connection either is genuinely huge (and we want to give up
+  // and parse what we have) or is a stuck jsforce response handler. The
+  // parser handles `desc: null` fail-soft, so dropping a few stragglers
+  // costs us less than the multi-minute tail of the old 45s ceiling.
+  const WINDOW = 10;
+  const DESCRIBE_TIMEOUT_MS = 12_000;
+  const startedAt = Date.now();
+  let completed = 0;
+  let timedOut = 0;
+  let nextIdx = 0;
+  let lastProgressAt = Date.now();
+  type Settled = { idx: number; s: SObjectGlobal; desc: any; elapsedMs: number };
+  const inFlight = new Map<number, Promise<Settled>>();
+
+  const launch = (idx: number): void => {
+    const s = queue[idx];
+    if (!s) return;
+    const launchedAt = Date.now();
+    if (debug) console.log(`ingest: [debug] object describe ← ${s.name}`);
+    const p = (async (): Promise<Settled> => {
+      try {
+        const d = await scheduleData(() =>
+          withTimeout(conn.sobject(s.name).describe(), DESCRIBE_TIMEOUT_MS, s.name),
+        );
+        return { idx, s, desc: d, elapsedMs: Date.now() - launchedAt };
+      } catch (e) {
+        const msg = (e as Error)?.message ?? "(unknown)";
+        if (/describe timeout/.test(msg)) timedOut += 1;
+        if (debug) console.log(`ingest: [debug] object describe ✗ ${s.name}: ${msg}`);
+        return { idx, s, desc: null, elapsedMs: Date.now() - launchedAt };
       }
-      return true;
-    });
-    if (debug) {
+    })();
+    inFlight.set(idx, p);
+  };
+
+  // Prime the window.
+  while (inFlight.size < WINDOW && nextIdx < queue.length) {
+    launch(nextIdx++);
+  }
+
+  while (inFlight.size > 0) {
+    const settled = await Promise.race(inFlight.values());
+    inFlight.delete(settled.idx);
+    if (nextIdx < queue.length) launch(nextIdx++);
+    completed += 1;
+    // Progress one-liner every 25 completions OR every 5s, whichever
+    // comes first. Visible without --debug so a slow phase is diagnosable
+    // from normal output.
+    const now = Date.now();
+    if (completed % 25 === 0 || now - lastProgressAt > 5_000) {
+      const elapsedSec = Math.round((now - startedAt) / 1000);
       console.log(
-        `ingest: [debug] object chunk ← ${slice.map((s) => s.name).join(",")}`,
+        `ingest:   object ${completed}/${queue.length} (${elapsedSec}s elapsed, ${timedOut} timed out, ${inFlight.size} in flight)`,
+      );
+      lastProgressAt = now;
+    }
+    if (debug && settled.desc) {
+      console.log(
+        `ingest: [debug] object describe ✓ ${settled.s.name} fields=${(settled.desc as { fields?: unknown[] })?.fields?.length ?? 0} (${settled.elapsedMs}ms)`,
       );
     }
-    // 45-second hard timeout per describe — far above the typical 200-
-    // 500ms cost, so a normal call is never affected. But a pathological
-    // SObject whose describe never returns (or that triggers a hung
-    // jsforce response handler) doesn't get to wedge the whole pool.
-    const DESCRIBE_TIMEOUT_MS = 45_000;
-    const descs: Array<{ s: SObjectGlobal; desc: any }> = await Promise.all(
-      slice.map(async (s) => {
-        try {
-          if (debug) console.log(`ingest: [debug] object describe ← ${s.name}`);
-          const d = await scheduleData(() =>
-            withTimeout(conn.sobject(s.name).describe(), DESCRIBE_TIMEOUT_MS, s.name),
-          );
-          if (debug)
-            console.log(
-              `ingest: [debug] object describe ✓ ${s.name} fields=${(d as { fields?: unknown[] })?.fields?.length ?? 0}`,
-            );
-          return { s, desc: d };
-        } catch (e) {
-          if (debug)
-            console.log(
-              `ingest: [debug] object describe ✗ ${s.name}: ${(e as Error)?.message ?? "(unknown)"}`,
-            );
-          return { s, desc: null };
-        }
-      }),
-    );
-    for (const { s, desc } of descs) {
-      if (!desc) continue;
-      const fields: FieldDescribe[] = Array.isArray(desc?.fields) ? desc.fields : [];
+    const { s, desc } = settled;
+    if (!desc) continue;
+    const fields: FieldDescribe[] = Array.isArray(desc?.fields) ? desc.fields : [];
 
     // Build the CustomObject-shaped envelope expected by the Phase-2 Object
     // parser (which already knows how to walk this structure).
@@ -619,6 +684,5 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
       },
       content: typeof objectXml === "string" ? objectXml : String(objectXml),
     };
-    }
   }
 }

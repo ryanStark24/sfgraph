@@ -1,7 +1,12 @@
 import { XMLBuilder } from "fast-xml-parser";
 import { METADATA_CATEGORY } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleMetadata } from "../rate-limit.js";
+import {
+  METADATA_LIST_TIMEOUT_MS,
+  readMetadataBatchAdaptive,
+  scheduleMetadata,
+  withTimeout,
+} from "../rate-limit.js";
 
 const BATCH = 10;
 const xml = new XMLBuilder({
@@ -17,40 +22,42 @@ interface MdListItem {
 }
 
 /**
- * Was scheduleQuery (Tooling pool). conn.metadata.list/read are Metadata API,
- * not Tooling — so this had been routing Flow reads through the wrong budget
- * and competing with Apex SOQL. Now correctly on the Metadata pool, and all
- * batches fire in parallel (Bottleneck throttles to maxConcurrent).
+ * Streams Flow metadata reads through a sliding-window. Each batch yields
+ * records as soon as it returns instead of waiting for all batches — keeps
+ * failSoft's inactivity timer happy on orgs with many flows where the
+ * full-collect pattern was breaching the 180s no-yield ceiling.
  */
 export async function* iterFlow(conn: any): AsyncIterable<RawMember> {
   const list = (await scheduleMetadata(() =>
-    conn.metadata.list([{ type: "Flow" }]),
+    withTimeout(conn.metadata.list([{ type: "Flow" }]), METADATA_LIST_TIMEOUT_MS, "metadata.list Flow"),
   )) as MdListItem[] | null;
   const items = Array.isArray(list) ? list : [];
   const batches: MdListItem[][] = [];
   for (let i = 0; i < items.length; i += BATCH) batches.push(items.slice(i, i + BATCH));
-  // allSettled — see security.ts for rationale.
-  const batchResults = await Promise.allSettled(
-    batches.map((slice) =>
-      scheduleMetadata(() =>
-        conn.metadata.read(
-          "Flow",
-          slice.map((s) => s.fullName),
-        ),
-      ),
-    ),
-  );
-  for (let b = 0; b < batches.length; b++) {
-    const slice = batches[b];
-    if (!slice) continue;
-    const settled = batchResults[b];
-    if (!settled || settled.status === "rejected") continue;
-    const reads = settled.value;
-    const readArr = Array.isArray(reads) ? reads : [reads];
-    for (let j = 0; j < slice.length; j += 1) {
-      const meta = slice[j];
+  const BATCH_WINDOW = 4;
+  type Settled = { idx: number; batch: MdListItem[]; records: (unknown | null)[] };
+  const inFlight = new Map<number, Promise<Settled>>();
+  let nextBatch = 0;
+  const launch = (idx: number): void => {
+    const batch = batches[idx];
+    if (!batch) return;
+    const p = (async (): Promise<Settled> => ({
+      idx,
+      batch,
+      records: await readMetadataBatchAdaptive(conn, "Flow", batch),
+    }))();
+    inFlight.set(idx, p);
+  };
+  while (inFlight.size < BATCH_WINDOW && nextBatch < batches.length) launch(nextBatch++);
+  while (inFlight.size > 0) {
+    const { idx, batch, records } = await Promise.race(inFlight.values());
+    inFlight.delete(idx);
+    if (nextBatch < batches.length) launch(nextBatch++);
+    for (let j = 0; j < batch.length; j += 1) {
+      const meta = batch[j];
       if (!meta) continue;
-      const obj = readArr[j] ?? {};
+      const obj = records[j];
+      if (obj === null) continue;
       const content = xml.build({ Flow: obj });
       yield {
         ref: {
