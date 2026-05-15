@@ -8,15 +8,39 @@ interface ToolingClassRow {
   Body?: string | null;
   NamespacePrefix?: string | null;
   LastModifiedDate?: string | null;
+  ApiVersion?: number | string | null;
+  Status?: string | null;
 }
 
 interface ToolingTriggerRow extends ToolingClassRow {
   TableEnumOrId?: string | null;
 }
 
-const APEX_CLASS_SOQL = "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate FROM ApexClass";
+const APEX_CLASS_SOQL =
+  "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass";
 const APEX_TRIGGER_SOQL =
-  "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, TableEnumOrId FROM ApexTrigger";
+  "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger";
+
+/**
+ * Build the minimal `<*MetaXml>` envelope the parser would otherwise get
+ * from `force-app/.../<Name>.cls-meta.xml`. Keeps apiVersion + Status from
+ * the Tooling row available to the parser via the standard metaXml input
+ * channel — without this, live-ingested Apex nodes always had
+ * apiVersion: null, while filesystem-ingested ones had the real value.
+ */
+function buildApexMetaXml(
+  outerTag: "ApexClass" | "ApexTrigger",
+  row: ToolingClassRow,
+): string | undefined {
+  const av = row.ApiVersion;
+  const status = row.Status;
+  if (av == null && !status) return undefined;
+  const parts: string[] = [`<?xml version="1.0" encoding="UTF-8"?>`, `<${outerTag}>`];
+  if (av != null) parts.push(`  <apiVersion>${String(av)}</apiVersion>`);
+  if (status) parts.push(`  <status>${status}</status>`);
+  parts.push(`</${outerTag}>`);
+  return parts.join("\n");
+}
 
 export async function* iterApex(conn: any): AsyncIterable<RawMember> {
   // Fire both Tooling queries in parallel — they're independent and the
@@ -31,6 +55,7 @@ export async function* iterApex(conn: any): AsyncIterable<RawMember> {
     } | null>,
   ]);
   for (const r of classes?.records ?? []) {
+    const metaXml = buildApexMetaXml("ApexClass", r);
     yield {
       ref: {
         category: METADATA_CATEGORY.APEX_CLASS,
@@ -40,10 +65,15 @@ export async function* iterApex(conn: any): AsyncIterable<RawMember> {
         sourceUri: `sf://tooling/ApexClass/${r.Name}`,
         namespace: r.NamespacePrefix ?? null,
       },
-      content: r.Body ?? "",
+      // JSON envelope so adaptParserInput can forward metaXml (containing
+      // apiVersion + Status) alongside the body. Plain-body content from
+      // the filesystem path still parses correctly via the adapter's
+      // shape detection.
+      content: JSON.stringify({ body: r.Body ?? "", metaXml }),
     };
   }
   for (const r of triggers?.records ?? []) {
+    const metaXml = buildApexMetaXml("ApexTrigger", r);
     yield {
       ref: {
         category: METADATA_CATEGORY.APEX_TRIGGER,
@@ -53,7 +83,7 @@ export async function* iterApex(conn: any): AsyncIterable<RawMember> {
         sourceUri: `sf://tooling/ApexTrigger/${r.Name}`,
         namespace: r.NamespacePrefix ?? null,
       },
-      content: r.Body ?? "",
+      content: JSON.stringify({ body: r.Body ?? "", metaXml }),
     };
   }
 }

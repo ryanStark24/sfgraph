@@ -147,15 +147,45 @@ function printSkipSummary(report: IngestSkipReport, orgAlias: string): void {
   console.log("");
 }
 
+/** Live-org Apex extractor wraps body in a `{body, metaXml}` JSON envelope
+ *  so we can forward Tooling-row ApiVersion/Status to the parser. Filesystem
+ *  extractor still passes raw body. Detect by trying JSON.parse — if it
+ *  yields an object with `body`, unwrap; otherwise treat as raw body. */
+function unwrapApexEnvelope(content: string): { body: string; metaXml?: string } {
+  if (!content) return { body: "" };
+  if (content[0] !== "{") return { body: content };
+  try {
+    const parsed = JSON.parse(content) as { body?: unknown; metaXml?: unknown };
+    if (parsed && typeof parsed === "object" && typeof parsed.body === "string") {
+      const out: { body: string; metaXml?: string } = { body: parsed.body };
+      if (typeof parsed.metaXml === "string") out.metaXml = parsed.metaXml;
+      return out;
+    }
+  } catch {
+    /* fallthrough — raw body */
+  }
+  return { body: content };
+}
+
 function adaptParserInput(
   ref: MemberRef,
   content: string,
 ): { type: string; input: unknown } | null {
   switch (ref.memberType) {
-    case "ApexClass":
-      return { type: "ApexClass", input: { className: ref.memberName, body: content } };
-    case "ApexTrigger":
-      return { type: "ApexTrigger", input: { triggerName: ref.memberName, body: content } };
+    case "ApexClass": {
+      const { body, metaXml } = unwrapApexEnvelope(content);
+      return {
+        type: "ApexClass",
+        input: { className: ref.memberName, body, ...(metaXml ? { metaXml } : {}) },
+      };
+    }
+    case "ApexTrigger": {
+      const { body, metaXml } = unwrapApexEnvelope(content);
+      return {
+        type: "ApexTrigger",
+        input: { triggerName: ref.memberName, body, ...(metaXml ? { metaXml } : {}) },
+      };
+    }
     case "LightningComponentBundle": {
       try {
         const parsed = JSON.parse(content || "{}") as {

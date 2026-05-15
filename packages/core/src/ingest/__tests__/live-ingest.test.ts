@@ -22,7 +22,7 @@ describe("liveIngest", () => {
   it("ingests apex members from a mocked org and writes nodes", async () => {
     const conn = buildJsforceMock({
       toolingQueryResults: {
-        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate FROM ApexClass": {
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass": {
           records: [
             {
               Id: "01p1",
@@ -33,7 +33,7 @@ describe("liveIngest", () => {
           ],
           done: true,
         },
-        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, TableEnumOrId FROM ApexTrigger":
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger":
           {
             records: [],
             done: true,
@@ -75,11 +75,11 @@ describe("liveIngest", () => {
   it("creates a pre-sync auto snapshot when a snapshotStore is provided", async () => {
     const conn = buildJsforceMock({
       toolingQueryResults: {
-        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate FROM ApexClass": {
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass": {
           records: [],
           done: true,
         },
-        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, TableEnumOrId FROM ApexTrigger":
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger":
           {
             records: [],
             done: true,
@@ -128,7 +128,7 @@ describe("liveIngest", () => {
   it("upserts snippets from the apex parser", async () => {
     const conn = buildJsforceMock({
       toolingQueryResults: {
-        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate FROM ApexClass": {
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass": {
           records: [
             {
               Id: "01p1",
@@ -139,7 +139,7 @@ describe("liveIngest", () => {
           ],
           done: true,
         },
-        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, TableEnumOrId FROM ApexTrigger":
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger":
           { records: [], done: true },
         "SELECT Id, DeveloperName, NamespacePrefix, LastModifiedDate FROM LightningComponentBundle":
           { records: [], done: true },

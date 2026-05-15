@@ -19,7 +19,7 @@ const baseCaps: OrgCapabilities = {
 function mockConn() {
   return buildJsforceMock({
     toolingQueryResults: {
-      "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate FROM ApexClass": {
+      "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass": {
         records: [
           {
             Id: "01p000001",
@@ -30,7 +30,7 @@ function mockConn() {
         ],
         done: true,
       },
-      "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, TableEnumOrId FROM ApexTrigger": {
+      "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger": {
         records: [],
         done: true,
       },
