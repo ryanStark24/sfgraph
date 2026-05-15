@@ -79,12 +79,18 @@ The Metadata API's `describeMetadata()` returns the canonical list of metadata t
 ### Phase 4 — Three Bottleneck pools
 
 ```
-Tooling API pool   →  5 concurrent
-Metadata API pool  →  3 concurrent
-Data API pool      → 10 concurrent
+Tooling API pool   →  5 concurrent  (default; --tooling-pool / SFGRAPH_TOOLING_POOL)
+Metadata API pool  →  5 concurrent  (default; --metadata-pool / SFGRAPH_METADATA_POOL)
+Data API pool      → 10 concurrent  (default; --data-pool / SFGRAPH_DATA_POOL)
 ```
 
 These limits balance against Salesforce's per-org API limits (typically 100k/24h for production, lower for sandboxes). The pools are **per-process**: if you spawn two `sfgraph ingest` processes for two different orgs, each has its own pool and they don't fight over the same Bottleneck queue.
+
+**Pool routing fix (1.0.2).** `security.ts`, `flow.ts`, and `integration.ts` used to route `metadata.list` / `metadata.read` through `scheduleQuery` (the Tooling pool) — which made `--metadata-pool` a no-op for the three slowest extractors and put their calls on the wrong budget. All Metadata API calls now correctly use `scheduleMetadata`.
+
+**Two layers of parallelism.** Beyond per-pool concurrency, sfgraph drains source iterators in parallel via `mergeAsyncIterablesParallel` (so all three pools saturate simultaneously instead of one extractor at a time), and within each extractor every batch is fired through `Promise.allSettled` against the pool (so the pool's 5-wide budget is actually utilised instead of awaiting one batch at a time). Escape hatch for the inter-source parallelism: `SFGRAPH_SEQUENTIAL_SOURCES=1`. Inner-batch parallelism is unconditional.
+
+**Why `allSettled`, not `all`.** A rejecting batch under `Promise.all` produces orphan rejections from the still-in-flight peers — Node 24+ terminates the process on those by default, which manifested as silent ingest deaths between log lines. `allSettled` isolates each batch and continues regardless.
 
 ### Phase 5 — Parser routing
 
@@ -103,7 +109,9 @@ The object extractor lives at `packages/core/src/extractors/live-org/extractors/
 3. For each remaining SObject: `conn.sobject(name).describe()` returns the full field map (type, label, length, references, formula, picklists).
 4. The CustomObject parser receives a JSON envelope that matches what the metadata.read path used to return, so the rest of the pipeline is unchanged.
 
-Per-object describe is wrapped in try/catch so one entity failing doesn't kill the rest.
+Per-object describe is wrapped in try/catch so one entity failing doesn't kill the rest. Describes also fan out in chunks of 25 through the Data pool so the 200+ SObject case (~500ms latency each) finishes in ~10s instead of ~100s.
+
+**Inline-fields parser path (1.0.2).** The live extractor builds CustomObject XML with inline `<fields>` elements (one per field, sourced from describe). The parser used to iterate only `input.fields` — the `Record<string, string>` populated solely by the filesystem extractor — and silently dropped the inline array. That meant every standard SObject ingested from a live org became a single node with zero edges. The parser now also walks inline `<fields>` and emits `CustomField:<obj>.<field>` nodes, `DEFINES_FIELD` edges, and `REFERENCES_OBJECT` edges for each `referenceTo` target (lookups, master-detail, polymorphic owners). A dedup set prevents double-emission when source-tree projects ship both inline and separate-file fields.
 
 ### Fail-soft per source + end-of-run skip summary
 

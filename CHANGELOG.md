@@ -1,5 +1,101 @@
 # Changelog
 
+## 1.0.2 — graph completeness + ingest performance + macOS stability
+
+### Graph completeness (silent-data-loss fixes)
+
+- **`CustomObject` parser inline-fields path** — live-org ingest builds
+  CustomObject XML with **inline `<fields>` elements** sourced from
+  `conn.sobject(name).describe()`. The parser previously only handled
+  the source-tree layout (separate `*.field-meta.xml` files via
+  `input.fields`), so every SObject ingested from a live org produced a
+  parent node with **zero CustomField children and zero edges**. Parser
+  now walks the inline array and emits `CustomField:<obj>.<field>`
+  nodes, `DEFINES_FIELD` edges, and `REFERENCES_OBJECT` edges for every
+  `referenceTo` target on the field (lookups, master-detail, polymorphic
+  owners). `trace_downstream` on standard objects (Account, Contact,
+  Opportunity, …) now returns the full schema neighbourhood.
+- **OmniStudio element graph** — `omnistudio.ts` extractor previously
+  queried only `SELECT Id, Name, OmniProcessType FROM OmniProcess`, but
+  parsers walked `metadata.elements[].propertySet` looking for
+  `dataTransformName` / `integrationProcedureKey` / `cardName`. None
+  existed on the parent row. New second-pass batches
+  `OmniProcessElement` per parent and JSON-parses each row's
+  `PropertySet`. Parsers now emit `OMNI_CALLS_DATA_TRANSFORM` /
+  `OMNI_EMBEDS_UI_CARD` / `OMNI_CALLS_INTEGRATION_PROCEDURE` /
+  `OMNI_INVOKES_REMOTE` edges.
+- **Vlocity datapack content** — the vendored `vlocity_build`
+  `QueryDefinitions.yaml` selects only `Id, Name, GlobalKey`; never the
+  long-text blobs (`Content__c`, `PropertySet__c`, `Definition__c`)
+  where the datapack body lives. SOQL is now enriched per-type with
+  those columns, namespace-prefixed keys are normalised
+  (`vlocity_cmt__Type__c` → `Type`), blobs are JSON-parsed server-side,
+  and a second-pass child fetch runs against `Element__c` /
+  `DRMapItem__c` for OmniScript / IntegrationProcedure / DataRaptor.
+  Parser walks now emit `IP_CALLS_DR` / `OS_USES_DR` / `DR_READS_FIELD` /
+  `DR_WRITES_FIELD` / `VC_USES_DR` / `EMBEDS_VC` edges; the Vlocity
+  surface was previously a graph of disconnected nodes.
+- **Apex `apiVersion` from live ingest** — `ApexClass` / `ApexTrigger`
+  Tooling SOQL now selects `ApiVersion` + `Status`. Extractor wraps
+  body in a `{body, metaXml}` JSON envelope; adapter unwraps and
+  forwards a synthesised `<apiVersion>` meta XML to the parser. Live-
+  ingested Apex nodes used to have `apiVersion: null` while filesystem-
+  ingested ones had the real value.
+
+### Ingest performance (3–5× on metadata-heavy orgs)
+
+- **Default Metadata pool 3 → 5** — Salesforce Metadata API tolerates
+  5–10 concurrent read calls comfortably; 3 left perf on the table.
+- **Three new CLI flags / env vars** for pool sizing:
+  `--tooling-pool <n>` / `SFGRAPH_TOOLING_POOL`,
+  `--metadata-pool <n>` / `SFGRAPH_METADATA_POOL`,
+  `--data-pool <n>` / `SFGRAPH_DATA_POOL`. CLI flags win over env vars.
+  `configureDefaultPools()` live-mutates the Bottleneck singletons via
+  `updateSettings`.
+- **Parallel inter-extractor drain** — `mergeAsyncIterablesParallel`
+  advances every source iterator concurrently via `Promise.race`.
+  Previously serial: while Security ground through Profiles, Apex /
+  Vlocity / Data pools sat at 0%. Now all three pools saturate
+  simultaneously. Escape hatch: `SFGRAPH_SEQUENTIAL_SOURCES=1`.
+- **Parallel intra-extractor batches** — every extractor's
+  `metadata.read` calls now fire concurrently through
+  `Promise.allSettled` against the rate-limit pool, instead of awaiting
+  one batch at a time. Also fixes three pool-routing bugs in
+  `security.ts` / `flow.ts` / `integration.ts` (which were using
+  `scheduleQuery` / Tooling pool for what are clearly Metadata API
+  calls). `object.ts` chunks `describe()` 25-at-a-time through the Data
+  pool.
+- **`Promise.allSettled` not `Promise.all`** — a rejecting batch no
+  longer produces orphan rejections that crash the Node process under
+  the default unhandled-rejection policy.
+
+### macOS stability (silent-SIGKILL fix)
+
+- **Auto re-sign all `.node` addons** in postinstall on darwin.
+  macOS 26+ rejects "linker-signed adhoc" stamps on `dlopen()` and
+  SIGKILLs the process — at kernel level, bypassing every JS handler.
+  Postinstall now walks the install tree and re-signs every binding
+  with `codesign --force --sign -` (no developer cert needed). Both
+  on fresh install and after any rebuild.
+- **`sfgraph doctor` macOS code-signing check** — verifies the binding
+  signature via `codesign --verify --strict` and flags the brittle
+  linker-signed stamp before the next ingest hits it. Emits the exact
+  copy-paste `codesign` command in the fix hint.
+- **Unhandled rejection + uncaught exception handlers** on the CLI
+  entry print loudly instead of letting the process exit silently.
+
+### Diagnostics
+
+- **`sfgraph ingest --debug`** — heartbeat every 10s with heap/RSS/
+  last-active source label, per-record parse and graph-merge phase
+  logs, SIGTERM/SIGINT stack traces. Names the exact extractor and
+  record on any silent exit. Cheap to leave on.
+- **Per-record trace** in debug mode logs every `processOne` phase:
+  `[trace] parse ←`, `[trace] parse ✓`, `[trace] graph-merge ←`,
+  `[trace] graph-merge ✓`. The phase that completes vs. the one that
+  doesn't disambiguates JS parser failure from native better-sqlite3
+  crash.
+
 ## 1.0.1 — security + UX patches (post-v1.0.0)
 
 ### Security (audit findings)

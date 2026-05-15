@@ -93,6 +93,20 @@ Use `sfgraph install --dry-run` to see what would be written without writing. Us
 
 This is the part new users always ask about. The first ingest does a **full sync** of every metadata type the org exposes. On a 50K-node sandbox it takes about **2–6 minutes** depending on which packages are installed (Vlocity-CMT and OmniStudio-on-Core add records-heavy retrievals). Subsequent ingests on a Source-Tracking-enabled org are **incremental** and finish in under 30 seconds.
 
+> **Tuning for large orgs.** sfgraph runs three rate-limit pools (Tooling / Metadata / Data) in parallel, with parallel batching inside each extractor. For very large orgs (1000+ Profiles or 500+ SObjects), bump the metadata pool to amortize Metadata API round-trip latency:
+>
+> ```bash
+> sfgraph ingest --metadata-pool 8 --tooling-pool 6 --data-pool 12
+> ```
+>
+> See [Ingest options](#sfgraph-ingest) for the full flag list. The three pool caps also read from `SFGRAPH_TOOLING_POOL` / `SFGRAPH_METADATA_POOL` / `SFGRAPH_DATA_POOL` env vars if you prefer not to pass flags.
+
+> **If an ingest dies silently mid-run** (no completion message, no error), it's almost certainly the macOS code-signing kill — see [Troubleshooting → Silent ingest death on macOS](#silent-ingest-death-on-macos-sigkill-code-signature-invalid). Re-run with `--debug` to get heartbeat output, heap usage per tick, and signal stack traces:
+>
+> ```bash
+> sfgraph ingest --rebuild --debug
+> ```
+
 ```bash
 # Uses the default org from `sf config get target-org`
 sfgraph ingest
@@ -273,6 +287,17 @@ Major architectural choices and why they were made. Each one was a deliberate de
 - **Declarative rule engine** for parser authoring — adding support for a new type is a YAML file, not a Python module.
 - **Vendored embedding model** (transformers.js + MiniLM-L6 ONNX) — v0 hit Qdrant / FastEmbed which required a separate service. v1 is process-local.
 
+### What the 1.0.x patch series brings (post-launch fixes)
+
+- **Inline-field schema graph.** Standard SObjects (Account, Contact, Opportunity, …) now emit `CustomField:<obj>.<field>` nodes and `REFERENCES_OBJECT` edges for every `referenceTo` target on the field — lookups, master-detail, polymorphic owners. Previously these stopped at the parent `CustomObject` node, leaving `trace_downstream` and `analyze_field` empty for standard objects. Custom `__c` lookup fields were already covered; this closes the gap for the platform-shipped surface.
+- **OmniStudio element graph.** OmniProcess / OmniIntegrationProcedure ingestion now batch-queries `OmniProcessElement` per parent and JSON-parses each row's `PropertySet`, so parsers see the real step graph and emit `OMNI_CALLS_DATA_TRANSFORM` / `OMNI_EMBEDS_UI_CARD` / `OMNI_CALLS_INTEGRATION_PROCEDURE` / `OMNI_INVOKES_REMOTE` edges. Previously every OmniProcess produced 0 edges.
+- **Vlocity datapack content.** The vendored `vlocity_build` registry's SELECT clauses are now enriched with the long-text blob columns (`Content__c`, `PropertySet__c`, `Definition__c`) that hold each datapack's actual body, plus a second-pass query against `Element__c` / `DRMapItem__c` for OmniScript / IntegrationProcedure / DataRaptor children. Parser walks now find real configuration trees and emit `IP_CALLS_DR` / `OS_USES_DR` / `DR_READS_FIELD` etc. — the Vlocity surface was previously a node-only set with no relationships.
+- **Apex `apiVersion` from live ingest.** The Tooling extractor now selects `ApiVersion` + `Status` on `ApexClass` / `ApexTrigger` and forwards a synthesised `<apiVersion>` meta XML via a `{body, metaXml}` JSON envelope. Live-ingested Apex nodes used to have `apiVersion: null` while filesystem-ingested ones had the real value; that drift is fixed.
+- **Parallel extractor batching.** Every extractor's `metadata.read` / `metadata.list` calls now fire concurrently through `Promise.allSettled` against the rate-limit pool, instead of strictly serialising one-batch-at-a-time. Three pool-routing bugs in `security.ts` / `flow.ts` / `integration.ts` (which were using the wrong pool entirely) are also fixed. Combined with parallel inter-source drain (different pools saturating simultaneously) and the default Metadata pool bump from 3 → 5, expect 3–5× ingest speedups on metadata-heavy orgs.
+- **macOS code-signing fix in postinstall.** Every `.node` native addon is automatically re-signed with a fresh ad-hoc signature on `npm install`, preventing the silent SIGKILL ("Code Signature Invalid") that macOS 26+ imposes on linker-signed adhoc stamps. `sfgraph doctor` detects this proactively if it slips through.
+- **`sfgraph refresh-orgs`.** Re-snapshots `sf`-CLI alias + default-org state into `<dataDir>/orgs-snapshot.json` so sandboxed MCP child processes (Cursor on macOS, Claude Desktop) see fresh aliases after a `sf org login` / `sf alias set` / `sf config set target-org`. Doesn't touch the graph or MCP config.
+- **`--debug` for ingest.** Heartbeat every 10s with heap/RSS/last-active source, per-record parse and graph-merge phase logs, signal stack traces. Names the exact extractor and record on any silent exit.
+
 ---
 
 ## CLI reference
@@ -338,6 +363,7 @@ changes. Read-only against the persisted graph.
 | `--tooling-pool <n>` | `5` | Max concurrent Tooling-API calls. Also reads `SFGRAPH_TOOLING_POOL`. |
 | `--metadata-pool <n>` | `5` | Max concurrent Metadata-API calls. **Highest-leverage knob for slow ingests** — Profile/PermissionSet/Layout fans go through here. Bump to `8`–`10` on orgs with many of those. Also reads `SFGRAPH_METADATA_POOL`. |
 | `--data-pool <n>` | `10` | Max concurrent SObject/Bulk SOQL queries. Also reads `SFGRAPH_DATA_POOL`. |
+| `--debug` | `false` | Verbose tracing for diagnosing silent ingest deaths: heartbeat every 10s with heap/RSS/last-source label, per-record parse and graph-merge phase logs, SIGTERM/SIGINT stack traces, per-source enter/finalise markers. Also sets `SFGRAPH_DEBUG_INGEST=1`. Cheap to leave on; useful when investigating why an ingest stopped. |
 | `--db <path>` | `~/.sfgraph/<orgId>.sqlite` | Override SQLite database path |
 
 Auto-detects default org from `sf config`. Auto-snapshot taken before every sync.
@@ -383,6 +409,35 @@ sfgraph snapshot create --label <name> [--kind manual|scheduled] [--org <alias>]
 sfgraph snapshot diff <fromId> <toId|current> [--org <alias>]
 sfgraph snapshot prune --retain-days <n> [--org <alias>]
 sfgraph snapshot delete <snapshotId> [--org <alias>]
+```
+
+### `sfgraph refresh-orgs`
+
+Re-snapshot `sf`-CLI org state (aliases + default-org) into
+`<dataDir>/orgs-snapshot.json`. Run this after **any** change to your `sf`
+state — `sf org login web`, `sf alias set`, `sf config set target-org` —
+so that sandboxed MCP child processes (Cursor on macOS, Claude Desktop)
+see the new aliases. Sandboxes can't read `~/.sf/` directly, so without
+this snapshot `list_orgs` shows empty aliases / no default-org marker.
+
+```bash
+sfgraph refresh-orgs
+```
+
+Does NOT touch the graph or MCP config. It only refreshes the alias
+snapshot. Idempotent; safe to re-run any time.
+
+### `sfgraph doctor`
+
+End-to-end self-check. Verifies Node version + ABI, the better-sqlite3
+native binding, **macOS code-signing on the binding** (catches the silent-
+SIGKILL failure mode before your next ingest hits it), data dir
+permissions, every per-org SQLite, the org snapshot file, `sf` CLI
+availability, and which IDE MCP configs you currently have wired up.
+Every failed check prints a copy-paste fix command.
+
+```bash
+sfgraph doctor
 ```
 
 ### `sfgraph telemetry`
@@ -670,6 +725,57 @@ pnpm models:refresh
 
 ## Troubleshooting
 
+### Silent ingest death on macOS (SIGKILL / Code Signature Invalid)
+
+**Symptom.** `sfgraph ingest` runs for 30–60 seconds, prints progress
+normally, then the terminal returns to the prompt with no completion
+message, no error, and no entry in any application log. Heap usage was
+fine, no unhandled rejection, no signal handler fired.
+
+**Cause.** macOS 26+ enforces native code-signing strictly. Node addons
+(`.node` files like `better_sqlite3.node`) ship with a "linker-signed
+adhoc" placeholder signature from the build toolchain. dyld rejects
+those on `dlopen()` and the kernel SIGKILLs the process — at kernel
+level, bypassing every JS-side handler. The kill is silent because the
+process is *executed*, not *crashed*.
+
+**Detection.** `sfgraph doctor` includes a `macOS code-signing` check
+that flags the bad signature before your next ingest hits it. Look for:
+
+```
+⚠ macOS code-signing: binding has linker-signed adhoc stamp;
+  macOS 26+ may SIGKILL on dlopen. Re-sign with ad-hoc.
+  fix: codesign --force --sign - "/path/to/better_sqlite3.node"
+```
+
+**Fix.** Re-sign with a fresh ad-hoc signature (no Apple Developer cert
+needed, the `-` after `--sign` is literal):
+
+```bash
+# Single binding (doctor will show you the exact path):
+codesign --force --sign - "/path/to/better_sqlite3.node"
+
+# Or belt-and-braces — re-sign every native addon under your install:
+find $(npm root -g)/@ryanstark24/sfgraph-mcp -name '*.node' \
+  -exec codesign --force --sign - {} \;
+```
+
+**Prevention going forward.** Starting in v1.0.x, sfgraph's postinstall
+automatically re-signs every `.node` file on macOS as part of
+`npm install`. If you installed an older version and only just hit this,
+re-install or run the manual `find … codesign` above once.
+
+For diagnosing **any other** silent ingest death, re-run with `--debug`:
+
+```bash
+sfgraph ingest --rebuild --debug
+```
+
+That enables a 10-second heartbeat with heap/RSS/last-active source,
+per-record parse and graph-merge phase logs, and SIGTERM/SIGINT stack
+traces. The last log line before any silent exit will name the exact
+extractor and record where the process died.
+
 ### `NODE_MODULE_VERSION` / `Module did not self-register` on startup
 
 This is a `better-sqlite3` ABI mismatch — the prebuilt native binding was
@@ -689,6 +795,11 @@ Fix:
 ```bash
 npm rebuild better-sqlite3    # or: pnpm rebuild better-sqlite3
 ```
+
+On macOS, the postinstall automatically re-signs the rebuilt binary
+(see the silent-SIGKILL note above). If you rebuild manually outside
+the postinstall flow, also run
+`codesign --force --sign - $(npm root)/better-sqlite3/build/Release/better_sqlite3.node`.
 
 If the rebuild "works" but the IDE still errors, the IDE's Node ABI
 differs from your shell's. Re-run the rebuild from inside the IDE's
