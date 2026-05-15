@@ -346,12 +346,16 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     }
   };
 
+  const debugProcess = process.env.SFGRAPH_DEBUG_INGEST === "1";
   const processOne = async (ref: MemberRef, content: string): Promise<void> => {
+    const qnameForLog = `${ref.memberType}:${ref.memberName}`;
     if (ref.obsolete) {
       // Build the qualified name same way parsers would: best-effort by member name.
       const qname = asQualifiedName(`${ref.memberType}:${ref.memberName}`);
+      if (debugProcess) console.log(`ingest: [trace] delete ← ${qnameForLog}`);
       graph.deleteEdgesFor(resolved.orgId, qname);
       graph.deleteNode(resolved.orgId, qname);
+      if (debugProcess) console.log(`ingest: [trace] delete ✓ ${qnameForLog}`);
       deletions += 1;
       return;
     }
@@ -365,8 +369,15 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         sourceUri: ref.sourceUri,
         namespace: ref.namespace ?? null,
       };
+      if (debugProcess) console.log(`ingest: [trace] parse ← ${qnameForLog}`);
       const result = await parser.parse(adapted.input, ctx);
+      if (debugProcess)
+        console.log(
+          `ingest: [trace] parse ✓ ${qnameForLog} (nodes=${result.nodes.length} edges=${result.edges.length})`,
+        );
+      if (debugProcess) console.log(`ingest: [trace] graph-merge ← ${qnameForLog}`);
       handleParsed(result);
+      if (debugProcess) console.log(`ingest: [trace] graph-merge ✓ ${qnameForLog}`);
       membersProcessed += 1;
     } catch (e) {
       parseErrors += 1;
@@ -375,6 +386,11 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         name: ref.memberName,
         err: (e as Error).message,
       });
+      if (debugProcess) {
+        console.error(
+          `ingest: [trace] FAILURE ${qnameForLog}: ${(e as Error).message}\n${(e as Error).stack}`,
+        );
+      }
     }
   };
 
