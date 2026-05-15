@@ -58,7 +58,7 @@ Only the binary is what most users install. The engine and server libraries are 
 
 | Package | Purpose |
 |---|---|
-| [`@ryanstark24/sfgraph-mcp`](https://www.npmjs.com/package/@ryanstark24/sfgraph-mcp) | The CLI binary. What 99% of users install. |
+| [`@ryanstark24/sfgraph`](https://www.npmjs.com/package/@ryanstark24/sfgraph) | The CLI binary. What 99% of users install. |
 | `@ryanstark24/sfgraph-core` | Engine library. Use if you're embedding sfgraph in custom tooling. |
 | `@ryanstark24/sfgraph-server` | MCP server library. |
 | `@ryanstark24/sfgraph-cli` | CLI as a library. |

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Postinstall verification for @ryanstark24/sfgraph-mcp.
+ * Postinstall verification for @ryanstark24/sfgraph.
  *
  * Three responsibilities, in order:
  *
@@ -26,7 +26,7 @@
  *      issue. Failures print a clear, copy-paste-able recovery command.
  *
  * This file is intentionally self-contained: it runs before
- * @ryanstark24/sfgraph-mcp's own JS has been compiled/loaded, so it must not
+ * @ryanstark24/sfgraph's own JS has been compiled/loaded, so it must not
  * import any workspace package.
  */
 

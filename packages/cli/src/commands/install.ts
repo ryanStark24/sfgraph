@@ -130,7 +130,7 @@ export interface InstallCmdOpts {
   skillsOnly?: boolean;
   mcpOnly?: boolean;
   /** Write MCP entry that invokes the currently-running binary directly,
-   *  instead of `npx @ryanstark24/sfgraph-mcp`. Use this for local dev
+   *  instead of `npx @ryanstark24/sfgraph`. Use this for local dev
    *  before the package is published. */
   local?: boolean;
   /** Absolute path to a Node binary. With --local, the MCP entry's

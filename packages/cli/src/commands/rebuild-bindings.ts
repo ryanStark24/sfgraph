@@ -37,12 +37,12 @@ function detectPackageManager(installRoot: string): "npm" | "pnpm" {
 
 function findInstallRoot(): string | null {
   // better-sqlite3 isn't a direct dep of @ryanstark24/sfgraph-cli — it's
-  // owned by @ryanstark24/sfgraph-core and @ryanstark24/sfgraph-mcp-server.
+  // owned by @ryanstark24/sfgraph-core and @ryanstark24/sfgraph-server.
   // Walk through one of those to find the actual binding, matching the
   // resolution chain doctor.ts uses (so we rebuild the SAME copy that
   // would have been loaded at runtime, not a workspace-root duplicate).
   const here = createRequire(import.meta.url);
-  const chains = ["@ryanstark24/sfgraph-core", "@ryanstark24/sfgraph-mcp-server"];
+  const chains = ["@ryanstark24/sfgraph-core", "@ryanstark24/sfgraph-server"];
   for (const chain of chains) {
     try {
       const entry = here.resolve(chain);

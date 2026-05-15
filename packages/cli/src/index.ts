@@ -41,7 +41,7 @@ export function buildProgram(): Command {
     .option("--mcp-only", "only write MCP config; skip skills", false)
     .option(
       "--local",
-      "point the MCP entry at this local binary instead of `npx @ryanstark24/sfgraph-mcp` (use when the npm package isn't published yet)",
+      "point the MCP entry at this local binary instead of `npx @ryanstark24/sfgraph` (use when the npm package isn't published yet)",
       false,
     )
     .option(

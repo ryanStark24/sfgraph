@@ -22,7 +22,7 @@ describe("writeMcpConfig", () => {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     expect(parsed.mcpServers.sfgraph).toEqual({
       command: "npx",
-      args: ["-y", "@ryanstark24/sfgraph-mcp"],
+      args: ["-y", "@ryanstark24/sfgraph"],
     });
   });
 
@@ -33,7 +33,7 @@ describe("writeMcpConfig", () => {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     expect(parsed.mcpServers.sfgraph).toEqual({
       command: "npx.cmd",
-      args: ["-y", "@ryanstark24/sfgraph-mcp"],
+      args: ["-y", "@ryanstark24/sfgraph"],
     });
   });
 

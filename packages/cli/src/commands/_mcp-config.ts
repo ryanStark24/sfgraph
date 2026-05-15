@@ -17,7 +17,7 @@ export interface McpWriteOptions {
   /** Override the OS platform for testing. Accepts node's platform() values. */
   platformOverride?: NodeJS.Platform;
   /** When set, write an MCP entry that invokes the local binary at this
-   *  absolute path instead of `npx @ryanstark24/sfgraph-mcp`. Used during
+   *  absolute path instead of `npx @ryanstark24/sfgraph`. Used during
    *  local development before the package is published to npm. */
   localBinPath?: string;
   /** Absolute path to a Node binary. When set together with `localBinPath`,
@@ -62,9 +62,9 @@ function sfgraphEntryFor(
   if (localBinPath) {
     entry = { command: pinNode ?? "node", args: [localBinPath, "mcp"] };
   } else if (plat === "win32") {
-    entry = { command: "npx.cmd", args: ["-y", "@ryanstark24/sfgraph-mcp"] };
+    entry = { command: "npx.cmd", args: ["-y", "@ryanstark24/sfgraph"] };
   } else {
-    entry = { command: "npx", args: ["-y", "@ryanstark24/sfgraph-mcp"] };
+    entry = { command: "npx", args: ["-y", "@ryanstark24/sfgraph"] };
   }
   if (env && Object.keys(env).length > 0) entry.env = env;
   return entry;

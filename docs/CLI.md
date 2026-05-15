@@ -26,7 +26,7 @@ Commands:
 | `--dry-run` | `false` | Preview without writing |
 | `--skills-only` | `false` | Install skill playbooks; skip MCP config |
 | `--mcp-only` | `false` | Write MCP config; skip skill playbooks |
-| `--local` | `false` | Write MCP config that invokes the local binary directly (`node <absPath> mcp`) instead of `npx @ryanstark24/sfgraph-mcp`. Use during local dev before the package is published to npm. |
+| `--local` | `false` | Write MCP config that invokes the local binary directly (`node <absPath> mcp`) instead of `npx @ryanstark24/sfgraph`. Use during local dev before the package is published to npm. |
 | `--pin-node <path>` | — | Absolute path to a node binary to use as the MCP entry's `command`. Pins the IDE child to a Node ABI matching the rebuilt better-sqlite3 binding. |
 
 ## `sfgraph ingest`

@@ -54,7 +54,7 @@ sfgraph install --local --pin-node "$(which node)"
 codesign --force --sign - "/path/to/better_sqlite3.node"
 
 # Or re-sign every native addon under your install:
-find $(npm root -g)/@ryanstark24/sfgraph-mcp -name '*.node' \
+find $(npm root -g)/@ryanstark24/sfgraph -name '*.node' \
   -exec codesign --force --sign - {} \;
 ```
 
@@ -172,4 +172,4 @@ sfgraph ingest --org <alias>
 
 ## Windows install issues
 
-sfgraph runs on Windows 10/11 under Node ≥ 20. Install via `npm install -g @ryanstark24/sfgraph-mcp`; the `sfgraph install` command writes the MCP host config with `npx.cmd` (not `npx`) so Claude Code / Cursor on Windows invoke the right binary. Make sure Git LFS is installed before `npm install` so the vendored embedding model resolves on first ingest.
+sfgraph runs on Windows 10/11 under Node ≥ 20. Install via `npm install -g @ryanstark24/sfgraph`; the `sfgraph install` command writes the MCP host config with `npx.cmd` (not `npx`) so Claude Code / Cursor on Windows invoke the right binary. Make sure Git LFS is installed before `npm install` so the vendored embedding model resolves on first ingest.

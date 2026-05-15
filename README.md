@@ -1,8 +1,8 @@
-# @ryanstark24/sfgraph-mcp
+# @ryanstark24/sfgraph
 
-[![npm](https://img.shields.io/npm/v/@ryanstark24/sfgraph-mcp.svg)](https://www.npmjs.com/package/@ryanstark24/sfgraph-mcp)
-[![license](https://img.shields.io/npm/l/@ryanstark24/sfgraph-mcp.svg)](LICENSE)
-[![node](https://img.shields.io/node/v/@ryanstark24/sfgraph-mcp.svg)](https://nodejs.org)
+[![npm](https://img.shields.io/npm/v/@ryanstark24/sfgraph.svg)](https://www.npmjs.com/package/@ryanstark24/sfgraph)
+[![license](https://img.shields.io/npm/l/@ryanstark24/sfgraph.svg)](LICENSE)
+[![node](https://img.shields.io/node/v/@ryanstark24/sfgraph.svg)](https://nodejs.org)
 
 A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-syncs your org to a SQLite + vector index on your machine and exposes 25 MCP tools to **Cursor, Claude Code/Desktop, and VS Code**, so the AI you already use can reason about Apex, LWC, Flow, Vlocity, OmniStudio, security, and integrations **without your code or schema ever leaving your laptop**.
 
@@ -39,10 +39,10 @@ sf org list             # at least one org marked as default
 ### 2. Install sfgraph
 
 ```bash
-npm install -g @ryanstark24/sfgraph-mcp
+npm install -g @ryanstark24/sfgraph
 ```
 
-Or run on-demand via `npx @ryanstark24/sfgraph-mcp <command>` without installing.
+Or run on-demand via `npx @ryanstark24/sfgraph <command>` without installing.
 
 After install, `sfgraph` is on your PATH.
 
@@ -53,6 +53,55 @@ sfgraph install
 ```
 
 Idempotent. Copies 15 skill playbooks into `~/.claude/skills/` + `~/.cursor/rules/` and adds a `sfgraph` entry to your editor's MCP config. Existing MCP entries are preserved. Use `--target=claude|cursor|vscode` to wire only one, or `--dry-run` to preview.
+
+#### Using a different IDE or LLM client?
+
+`sfgraph install` writes config for Claude / Cursor / VS Code automatically. For **any other MCP-compatible client** (Windsurf, Zed, Continue, Cline, an OpenAI- or Gemini-based agent with MCP support, your own custom host, etc.), add this entry to the client's MCP config file manually:
+
+```json
+{
+  "mcpServers": {
+    "sfgraph": {
+      "command": "npx",
+      "args": ["-y", "@ryanstark24/sfgraph", "mcp"]
+    }
+  }
+}
+```
+
+On Windows, use `"npx.cmd"` instead of `"npx"`.
+
+**Pinning the Node binary.** Some hosts (sandboxed Electron apps, IDE extensions) ship with a bundled Node whose ABI differs from your shell's. If that bundled Node lacks a matching `better-sqlite3` prebuilt, the MCP child fails to load. Pin to your shell's Node:
+
+```json
+{
+  "mcpServers": {
+    "sfgraph": {
+      "command": "/Users/you/.nvm/versions/node/v22.21.1/bin/node",
+      "args": ["/usr/local/bin/sfgraph", "mcp"]
+    }
+  }
+}
+```
+
+Use `which node` and `which sfgraph` to fill in the paths. Same effect as `sfgraph install --local --pin-node "$(which node)"` but written by hand into a client we don't have a built-in target for.
+
+**Where each known client keeps its MCP config:**
+
+| Client | Config path |
+|---|---|
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) · `%APPDATA%\Claude\claude_desktop_config.json` (Win) |
+| Claude Code (CLI) | `~/.claude.json` (user) or `.mcp.json` (project) |
+| Cursor | `~/.cursor/mcp.json` |
+| VS Code | `~/Library/Application Support/Code/User/mcp.json` (macOS) · `%APPDATA%\Code\User\mcp.json` (Win) |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| Zed | `~/.config/zed/settings.json` (under `context_servers`) |
+| Continue (VS Code) | `~/.continue/config.json` (under `mcpServers`) |
+| Cline (VS Code) | `~/.cline/cline_mcp_settings.json` |
+
+After editing the file, fully restart the client so it re-reads the MCP server list. Then ask the agent something like *"list orgs from sfgraph"* to confirm the tools are visible.
+
+The skill playbooks (`sf-impact-from-diff`, `sf-security-audit`, etc.) are Claude/Cursor-specific. On other clients, the agent still has direct access to all 25 MCP tools — it just routes by tool name instead of by skill trigger.
 
 ### 4. Verify the install
 
