@@ -25,7 +25,7 @@
     "@ryanstark24/sfgraph-core": "workspace:*",
     "@ryanstark24/sfgraph-shared": "workspace:*",
     "@salesforce/core": "^8.8.2",
-    "better-sqlite3": "^11.3.0"
+    "better-sqlite3": "^12.10.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
