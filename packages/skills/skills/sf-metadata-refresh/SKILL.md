@@ -21,7 +21,12 @@ Use when the user asks whether their sfgraph data is current, how to refresh it,
 ## Playbook
 
 1. Call `staleness_check` for the target org. Report the exact age in days and whether it's stale.
-2. If stale, tell the user the exact CLI command to run:
+2. If stale, call `start_ingest_job` — it does NOT run the ingest. It returns
+   `{ executed: false, run_this_command: "sfgraph ingest --org <alias>" }`.
+   Surface that command verbatim to the user. Do not promise the MCP server
+   will run it. After the user has executed the ingest in a shell, MCP tools
+   will see the new data on their next invocation.
+3. Suggest the right shape of the command for their situation:
    - For their default org: `sfgraph ingest`
    - For a named alias: `sfgraph ingest --org <alias>`
    - For **multiple orgs** in one run: `sfgraph ingest --orgs prod,uat,qa` (sequential) or add `--parallel` to fan them out concurrently.
@@ -29,9 +34,9 @@ Use when the user asks whether their sfgraph data is current, how to refresh it,
    - For a **clean rebuild from scratch** (when the graph has drifted or parser logic changed): `sfgraph ingest --rebuild --org <alias>` (existing graph moves to `backups/`; pair with `--no-backup` to delete instead).
    - On **production orgs without Source Tracking**, add `--detect-deletions` so qnames that disappeared upstream get removed during the full sync.
    - If the user just changed `sf` CLI state (logged into a new org, renamed an alias, or ran `sf config set target-org=…`), tell them to run **`sfgraph refresh-orgs`** before any sfgraph workflow — that re-snapshots `~/.sf/` into `<dataDir>/orgs-snapshot.json` so the MCP child (running in a sandbox that can't read `~/.sf/` directly) sees the new aliases / default-org. This command does NOT touch the graph or MCP config; it only refreshes the alias snapshot.
-3. Optionally call `start_ingest_job` if the user explicitly wants to kick the ingest off from chat. Note that this only enqueues the job; the actual run happens out-of-band. Use `get_ingest_job` to poll progress if the user asks.
-4. Call `freshness_report` to surface dead/stale metadata in the org itself (not the graph) — Apex classes/Flows/LWCs/objects that haven't been touched in months. This explains _what content might be old_ even after the graph is refreshed.
-5. Bucket the `freshness_report` output into hot / current / stale / dead and call out the worst offenders.
+4. `get_ingest_job` only returns historical CLI runs the MCP process happened to observe in-memory; it has no relationship to `start_ingest_job` anymore. Use it only if the user asks about a prior run.
+5. Call `freshness_report` to surface dead/stale metadata in the org itself (not the graph) — Apex classes/Flows/LWCs/objects that haven't been touched in months. This explains _what content might be old_ even after the graph is refreshed.
+6. Bucket the `freshness_report` output into hot / current / stale / dead and call out the worst offenders.
 
 ## Visualization
 
@@ -60,7 +65,7 @@ Pair it with the bucketed freshness table from `freshness_report` for the org-si
 
 ## Don't
 
-- Do not run the ingest yourself via the shell. The user must execute `sfgraph ingest`; you only enqueue via `start_ingest_job` if they ask.
+- Do not run the ingest yourself via the shell. The user must execute `sfgraph ingest`; `start_ingest_job` returns the command, not a running job.
 - Do not conflate graph staleness (ingest timestamp) with org-side freshness (metadata last-modified) — they're independent signals.
 - Do not draw a Mermaid diagram for this skill. Timestamps + commands beat shapes.
 - Do not silently skip `freshness_report` even when the graph is fresh — org-side rot is still useful signal.

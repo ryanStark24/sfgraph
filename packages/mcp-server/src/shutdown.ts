@@ -30,6 +30,11 @@ export function installShutdownHandlers(opts: ShutdownOpts): Disposer {
       .catch(() => {})
       .finally(() => {
         if (watchdog) clearTimeout(watchdog);
+        // Force exit after a brief tick so the stdio MCP transport can flush
+        // any final response and pending console writes can drain. Without
+        // this, a lingering jsforce HTTP agent or sqlite handle could keep
+        // the loop alive — user has to ^C twice to actually quit.
+        setTimeout(() => exit(0), 50).unref();
       });
   };
 

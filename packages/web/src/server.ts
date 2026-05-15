@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   ALL_REL_TYPES,
   closeAllStores,
+  fullGraph,
   listOrgs,
   neighborhood,
   overview,
@@ -85,6 +86,9 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: string)
   const pathOnly = url.split("?")[0];
   try {
     if (pathOnly === "/api/orgs") {
+      // Returns { orgs, errors }. Errors are logged to stderr too; surface
+      // them in the response so the UI can show "why no orgs?" without the
+      // user having to check terminal logs. Empty errors[] = success.
       sendJson(res, 200, await listOrgs());
       return;
     }
@@ -124,6 +128,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: string)
       }
       const limit = Math.min(5000, Number.parseInt(qs.get("limit") ?? "1500", 10) || 1500);
       sendJson(res, 200, await overview(org, labels, limit));
+      return;
+    }
+    if (pathOnly === "/api/full") {
+      const org = requireOrgId(qs, res);
+      if (!org) return;
+      const limit = Math.min(15_000, Number.parseInt(qs.get("limit") ?? "5000", 10) || 5000);
+      sendJson(res, 200, await fullGraph(org, limit));
       return;
     }
     if (pathOnly === "/api/schema") {

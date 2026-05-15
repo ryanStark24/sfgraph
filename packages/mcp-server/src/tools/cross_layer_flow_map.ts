@@ -48,8 +48,18 @@ defineTool({
     } else {
       participants.set(entry, { id: entry, label: entry, layer: "Entry" });
     }
-    let steps = 0;
-    while (queue.length > 0 && steps < 50) {
+    // Per-node visit cap, not per-edge step cap. Previously `steps < 50`
+    // counted every edge traversed across the BFS, so any moderately-fanned
+    // LWC -> Apex chain (30 fields + 25 SOQL reads) would silently truncate
+    // mid-tree. Capping visited *nodes* gives predictable depth and lets us
+    // emit an explicit "_truncated_" marker the user can act on.
+    const NODE_CAP = 100;
+    let truncated = false;
+    bfs: while (queue.length > 0) {
+      if (visited.size >= NODE_CAP) {
+        truncated = true;
+        break;
+      }
       const cur = queue.shift();
       if (!cur) break;
       for (const rt of REL_PRIORITY) {
@@ -67,8 +77,11 @@ defineTool({
           if (!visited.has(e.dstQualifiedName)) {
             visited.add(e.dstQualifiedName);
             queue.push(e.dstQualifiedName);
+            if (visited.size >= NODE_CAP) {
+              truncated = true;
+              break bfs;
+            }
           }
-          steps++;
         }
       }
     }
@@ -76,11 +89,18 @@ defineTool({
       participants: Array.from(participants.values()) as never,
       messages,
     });
-    const md = ["```mermaid", mermaid, "```"].join("\n");
+    const mdLines = ["```mermaid", mermaid, "```"];
+    if (truncated) {
+      mdLines.push(
+        "",
+        `_truncated_ — BFS hit the ${NODE_CAP}-node ceiling; deeper paths from this entry were not explored.`,
+      );
+    }
+    const md = mdLines.join("\n");
     return {
-      summary: `${participants.size} participants across layers`,
+      summary: `${participants.size} participants across layers${truncated ? " (truncated)" : ""}`,
       markdown: md,
-      data: { participants: Array.from(participants.values()), messages },
+      data: { participants: Array.from(participants.values()), messages, truncated },
     };
   },
 });

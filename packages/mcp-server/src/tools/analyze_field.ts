@@ -4,10 +4,22 @@ import { asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 
+// Salesforce SObject and Field API names are letters/digits/underscore only
+// (custom suffix `__c` / `__r` / etc. is allowed). Reject anything else
+// up-front rather than silently returning "field not found" — agents that
+// pass `object: "Account.Tier__c"` should see the validation error.
+const SF_API_NAME_RE = /^[A-Za-z][A-Za-z0-9_]*(?:__[a-zA-Z])?$/;
+
 const inputSchema = z.object({
   org: z.string().min(1),
-  object: z.string().min(1),
-  field: z.string().min(1),
+  object: z
+    .string()
+    .min(1)
+    .regex(SF_API_NAME_RE, "object must be a Salesforce SObject API name (no dots or spaces)"),
+  field: z
+    .string()
+    .min(1)
+    .regex(SF_API_NAME_RE, "field must be a Salesforce field API name (no dots or spaces)"),
 });
 
 defineTool({

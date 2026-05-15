@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sfgraph · org explorer</title>
+    <link
+      rel="preconnect"
+      href="https://fonts.googleapis.com"
+    />
+    <link
+      rel="preconnect"
+      href="https://fonts.gstatic.com"
+      crossorigin
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- ambient backdrop: animated gradient blobs + grain -->
+    <div class="ambient" aria-hidden="true">
+      <div class="blob blob-a"></div>
+      <div class="blob blob-b"></div>
+      <div class="blob blob-c"></div>
+      <div class="grain"></div>
+    </div>
+
+    <!-- top bar -->
+    <header class="topbar glass">
+      <div class="brand">
+        <div class="logo-mark">
+          <span class="logo-glyph">sfg</span>
+          <span class="logo-pulse"></span>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">sfgraph</span>
+          <span class="brand-sub">explorer</span>
+        </div>
+      </div>
+
+      <nav class="tab-pill" role="tablist">
+        <button class="tab active" data-tab="trace">Trace</button>
+        <button class="tab" data-tab="overview">Overview</button>
+        <button class="tab" data-tab="schema">Schema</button>
+        <span class="tab-glow" id="tabGlow"></span>
+      </nav>
+
+      <div class="org-picker">
+        <label for="orgSel">ORG</label>
+        <div class="select-wrap">
+          <select id="orgSel">
+            <option value="">— pick an org —</option>
+          </select>
+          <svg class="chev" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M2.5 4.5l3.5 3.5 3.5-3.5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" />
+          </svg>
+        </div>
+        <span class="org-meta" id="orgMeta"></span>
+      </div>
+    </header>
+
+    <!-- drawer toggle — sibling of drawer so it stays visible when collapsed.
+         Position is animated to follow the drawer's right edge when open,
+         then snap to the viewport left edge when closed. -->
+    <button class="drawer-toggle" id="drawerToggle" aria-label="toggle controls">
+      <svg class="ic-collapse" viewBox="0 0 16 16">
+        <path d="M10 4l-4 4 4 4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <svg class="ic-expand" viewBox="0 0 16 16">
+        <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+
+    <!-- side drawer with controls -->
+    <aside class="drawer glass" id="drawer">
+      <!-- TRACE -->
+      <section class="ctrl-panel active" data-ctrl="trace">
+        <div class="ctrl-head">
+          <h3>Trace</h3>
+          <p>Search any node and explore its neighbourhood.</p>
+        </div>
+        <div class="field">
+          <label>Qualified name</label>
+          <div class="search-wrap">
+            <input id="searchBox" type="search" placeholder="e.g. ApexClass:Account…" autocomplete="off" spellcheck="false" />
+            <kbd>↵</kbd>
+          </div>
+          <ul id="autocomplete" class="autocomplete"></ul>
+        </div>
+        <div class="field">
+          <label>Depth</label>
+          <div class="pill-group" id="depthGroup">
+            <button data-depth="1">1</button>
+            <button class="active" data-depth="2">2</button>
+            <button data-depth="3">3</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Relations</label>
+          <details class="multi-select">
+            <summary><span id="relCount">all</span> selected</summary>
+            <div id="relList" class="checklist"></div>
+          </details>
+        </div>
+        <button class="cta" id="traceGo">
+          <span>Render</span>
+          <svg viewBox="0 0 14 14"><path d="M3 7h8M7 3l4 4-4 4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <p class="hint" id="traceHint"></p>
+      </section>
+
+      <!-- OVERVIEW -->
+      <section class="ctrl-panel" data-ctrl="overview">
+        <div class="ctrl-head">
+          <h3>Overview</h3>
+          <p>Render the entire org or filter by node type.</p>
+        </div>
+        <div class="field">
+          <label>Whole graph</label>
+          <button class="cta" id="fullGo">
+            <span>Render entire org</span>
+            <svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.4" fill="none"/><circle cx="7" cy="7" r="1.6" fill="currentColor"/></svg>
+          </button>
+          <p class="hint" id="fullHint"></p>
+        </div>
+        <div class="divider"></div>
+        <div class="field">
+          <label>Or filter by labels</label>
+          <div id="labelList" class="checklist labels"></div>
+        </div>
+        <div class="field">
+          <label>Node limit</label>
+          <input id="overviewLimit" type="number" min="100" max="15000" step="100" value="1500" />
+        </div>
+        <button class="cta secondary" id="overviewGo">
+          <span>Render filtered</span>
+          <svg viewBox="0 0 14 14"><path d="M3 7h8M7 3l4 4-4 4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <p class="hint" id="overviewHint"></p>
+      </section>
+
+      <!-- SCHEMA -->
+      <section class="ctrl-panel" data-ctrl="schema">
+        <div class="ctrl-head">
+          <h3>Schema</h3>
+          <p>SObjects and every layer that touches them.</p>
+        </div>
+        <div class="field">
+          <label>Node limit</label>
+          <input id="schemaLimit" type="number" min="100" max="5000" step="100" value="2500" />
+        </div>
+        <button class="cta" id="schemaGo">
+          <span>Render</span>
+          <svg viewBox="0 0 14 14"><path d="M3 7h8M7 3l4 4-4 4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <p class="hint" id="schemaHint"></p>
+      </section>
+
+      <!-- Legend (always visible) -->
+      <section class="legend">
+        <h4>Legend</h4>
+        <div id="legendList"></div>
+      </section>
+    </aside>
+
+    <!-- canvas -->
+    <main class="canvas-host">
+      <div id="graph"></div>
+      <div class="canvas-hint" id="canvasHint">
+        <div class="hint-inner">
+          <svg viewBox="0 0 48 48" aria-hidden="true">
+            <circle cx="24" cy="24" r="22" stroke="currentColor" stroke-width="1.2" fill="none" opacity="0.4"/>
+            <circle cx="24" cy="24" r="3" fill="currentColor"/>
+          </svg>
+          <div>
+            <strong>pick an org &amp; render</strong>
+            <span>drag to orbit · scroll to zoom · click any node</span>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- stats chip (bottom-left of canvas) -->
+    <div class="stats-chip glass" id="statsChip">
+      <span><b id="statNodes">0</b><em>nodes</em></span>
+      <span class="sep"></span>
+      <span><b id="statEdges">0</b><em>edges</em></span>
+      <span class="badge hidden" id="truncBadge">truncated</span>
+    </div>
+
+    <!-- inspector — has both collapse (chevron) and close (×). Collapse
+         shrinks to a slim rail showing just the label pill so context stays
+         visible without eating screen real estate; close fully hides. -->
+    <aside class="inspector glass hidden" id="inspector">
+      <div class="insp-controls">
+        <button class="icon-btn" id="inspectorCollapse" aria-label="collapse">
+          <svg viewBox="0 0 14 14" class="ic-coll">
+            <path d="M9 4l-4 3 4 3" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <svg viewBox="0 0 14 14" class="ic-exp">
+            <path d="M5 4l4 3-4 3" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button class="icon-btn close" id="inspectorClose" aria-label="close">
+          <svg viewBox="0 0 14 14"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="insp-head">
+        <span class="insp-pill" id="inspLabel">—</span>
+        <h2 id="inspName">—</h2>
+      </div>
+      <div class="insp-body" id="inspEdges"></div>
+      <button class="cta secondary" id="recenter">
+        <svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="3" stroke="currentColor" stroke-width="1.4" fill="none"/><circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.4" fill="none" opacity="0.4"/></svg>
+        <span>re-center trace here</span>
+      </button>
+    </aside>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
