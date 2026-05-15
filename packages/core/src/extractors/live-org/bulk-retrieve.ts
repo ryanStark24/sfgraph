@@ -166,6 +166,110 @@ const OBJECT_TYPES = new Set(["CustomObject"]);
 const SECURITY_TYPES = new Set(["Profile", "PermissionSet", "SharingRules"]);
 const INTEGRATION_TYPES = new Set(["NamedCredential", "ExternalServiceRegistration"]);
 
+/**
+ * High-value generic metadata types we'll route to `iterGenericMetadata` by
+ * default. Salesforce's `describeMetadata()` returns 400+ types on modern
+ * orgs — most of them platform internals, industry-cloud scaffolding,
+ * Setup-internal stuff that returns 0 records or has no graph value AND
+ * adds queued HTTP requests to Bottleneck (each one a closure + socket
+ * state). Scheduling all 400 at once was causing silent process exits
+ * post-object-phase on the user's cleanDemoOrg — too many pending
+ * metadata.list calls in the metadata pool's queue.
+ *
+ * This list is curated for "does user code typically reference this?" /
+ * "does it carry graph-relevant edges?". Add types to it as you discover
+ * value in them. Override via `SFGRAPH_INCLUDE_ALL_GENERIC=1` to invoke
+ * every discovered type (useful for industry-cloud-specific ingest).
+ */
+const GENERIC_TYPE_WHITELIST = new Set([
+  // UI / pages — typically referenced from FlexiPages / Lightning App Builder
+  "FlexiPage",
+  "Layout",
+  "QuickAction",
+  "CustomTab",
+  "CustomApplication",
+  "HomePageLayout",
+  "CustomPageWebLink",
+  "WebLink",
+  // Apex / VF surfaces routed here (not in core extractors)
+  "ApexPage",
+  "ApexComponent",
+  "AuraDefinitionBundle",
+  // Process automation
+  "Workflow",
+  "ApprovalProcess",
+  "AssignmentRules",
+  "AutoResponseRules",
+  "EscalationRules",
+  "FlowDefinition",
+  // Data quality
+  "DuplicateRule",
+  "MatchingRule",
+  // Custom Metadata + labels
+  "CustomMetadata",
+  "CustomLabels",
+  "CustomLabel",
+  "GlobalValueSet",
+  "StandardValueSet",
+  "CustomPermission",
+  // Custom Notification + Settings
+  "CustomNotificationType",
+  "CustomSite",
+  // Reports / Dashboards / Analytics
+  "Report",
+  "Dashboard",
+  "ReportType",
+  // Networks / Communities
+  "Network",
+  "NetworkBranding",
+  "NavigationMenu",
+  "Community",
+  "ExperienceBundle",
+  "DigitalExperienceBundle",
+  // Identity / Access
+  "ConnectedApp",
+  "Profile",
+  "PermissionSet",
+  "PermissionSetGroup",
+  "MutingPermissionSet",
+  "ProfilePasswordPolicy",
+  "ProfileSessionSetting",
+  "SamlSsoConfig",
+  // Sharing
+  "SharingRules",
+  "SharingSet",
+  "GroupMember",
+  // Platform Events / CDC
+  "PlatformEventChannel",
+  "PlatformEventChannelMember",
+  "PlatformEventSubscriberConfig",
+  // Integrations
+  "RemoteSiteSetting",
+  "CspTrustedSite",
+  "NamedCredential",
+  "ExternalCredential",
+  // Email
+  "EmailTemplate",
+  "EmailServicesFunction",
+  // Misc commonly-used
+  "StaticResource",
+  "LightningComponentBundle",
+  "LightningMessageChannel",
+  "RecordActionDeployment",
+  "PathAssistant",
+  "GenAiPromptTemplate",
+  "GenAiFunction",
+  "GenAiPlugin",
+  // Bot / Einstein
+  "Bot",
+  "GenAiPlannerBundle",
+]);
+
+function shouldRouteGeneric(type: string): boolean {
+  if (process.env.SFGRAPH_INCLUDE_ALL_GENERIC === "1") return true;
+  return GENERIC_TYPE_WHITELIST.has(type);
+}
+
 export interface BulkRetrieveOpts {
   skipReport?: IngestSkipReport;
   /** When set, only invoke source labels in this set. Labels are the same
@@ -234,19 +338,31 @@ export async function* bulkRetrieve(
     invoke("integration", () => iterIntegration(conn));
   } else {
     const dispatch = buildDispatchTable(types, caps);
+    let routedGeneric = 0;
+    let skippedGeneric = 0;
     for (const [type, route] of dispatch.entries()) {
       switch (route.strategy) {
         case "toolingSoql":
           if (APEX_TYPES.has(type)) invoke("apex", () => iterApex(conn));
           else if (LWC_TYPES.has(type)) invoke("lwc", () => iterLwc(conn));
-          else invoke(`generic:${type}`, () => iterGenericMetadata(conn, String(orgId), type));
+          else if (shouldRouteGeneric(type)) {
+            routedGeneric += 1;
+            invoke(`generic:${type}`, () => iterGenericMetadata(conn, String(orgId), type));
+          } else {
+            skippedGeneric += 1;
+          }
           break;
         case "metadataReadList":
           if (FLOW_TYPES.has(type)) invoke("flow", () => iterFlow(conn));
           else if (OBJECT_TYPES.has(type)) invoke("object", () => iterObject(conn));
           else if (SECURITY_TYPES.has(type)) invoke("security", () => iterSecurity(conn));
           else if (INTEGRATION_TYPES.has(type)) invoke("integration", () => iterIntegration(conn));
-          else invoke(`generic:${type}`, () => iterGenericMetadata(conn, String(orgId), type));
+          else if (shouldRouteGeneric(type)) {
+            routedGeneric += 1;
+            invoke(`generic:${type}`, () => iterGenericMetadata(conn, String(orgId), type));
+          } else {
+            skippedGeneric += 1;
+          }
           break;
         case "vlocityRunner":
           // Single invocation handled below.
@@ -266,6 +382,13 @@ export async function* bulkRetrieve(
   }
   if (caps.omnistudioOncore) {
     invoke("omnistudio", () => iterOmnistudio(conn));
+  }
+  // Log the generic-type filter summary once at fan-out start — makes the
+  // skip-vs-route decision visible without --debug.
+  if (types.length > 0) {
+    console.log(
+      `ingest: dispatch routed=${sources.length} sources (${types.length} discovered metadata types; generic-type whitelist active — set SFGRAPH_INCLUDE_ALL_GENERIC=1 to invoke all)`,
+    );
   }
 
   // Parallel by default: fan out across all source iterators so different
