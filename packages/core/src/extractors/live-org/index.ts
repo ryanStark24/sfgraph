@@ -14,8 +14,10 @@ export {
   metadataPool,
   dataPool,
   createRateLimitPools,
+  configureDefaultPools,
+  DEFAULT_POOL_CONCURRENCY,
 } from "./rate-limit.js";
-export type { RateLimitPools } from "./rate-limit.js";
+export type { RateLimitPools, PoolConcurrencyOverrides } from "./rate-limit.js";
 export { bulkRetrieve, mergeAsyncIterables } from "./bulk-retrieve.js";
 export type { IngestSkipReport, SkipCategory } from "./bulk-retrieve.js";
 export { iterChanges } from "./source-member.js";

@@ -118,7 +118,7 @@ ingest: capabilities { vlocityNamespaces: ['vlocity_cmt'],
                        agentforce: false }
 ingest: discovered 187 metadata types via describeMetadata()
 ingest: creating pre-sync snapshot (this is what `what_broke` looks back to)
-ingest: fan-out — Tooling pool (5), Metadata pool (3), Data pool (10)
+ingest: fan-out — Tooling pool (5), Metadata pool (5), Data pool (10)
 ingest:   Apex                                ✓ 1248 classes, 89 triggers
 ingest:   LWC bundles                         ✓ 234 bundles
 ingest:   Flow                                ✓ 412
@@ -167,7 +167,7 @@ sfgraph ingest --orgs prod,uat,qa --parallel
 sfgraph ingest --all --parallel
 ```
 
-Each run prints a per-org results table (Org | Mode | Members | Deletions | ParseErrors | Elapsed | Status). With `--parallel`, the rate-limit pools (Tooling 5 / Metadata 3 / Data 10) are shared across orgs in the same process — Bottleneck handles concurrent `schedule()` calls and the conservative budget stays well under per-token SF limits.
+Each run prints a per-org results table (Org | Mode | Members | Deletions | ParseErrors | Elapsed | Status). With `--parallel`, the rate-limit pools (Tooling 5 / Metadata 5 / Data 10) are shared across orgs in the same process — Bottleneck handles concurrent `schedule()` calls and the conservative budget stays well under per-token SF limits.
 
 #### Full rebuild from scratch
 
@@ -258,7 +258,7 @@ Major architectural choices and why they were made. Each one was a deliberate de
 | **Live sync auth** | Delegated to `sf` CLI / `@salesforce/core` | We never see passwords. Token lives in `~/.sfdx/`. Re-using the user's existing login means zero new credentials to manage. |
 | **Read-only enforcement** | Runtime Proxy, not just convention | Every mutating method on `jsforce` throws synchronously. Verified by 41 adversarial tests against the full method surface. Belt and braces vs. "we promise we don't write." |
 | **Telemetry sink** | `LocalFileSink` only; no remote endpoint exists in the codebase | The pipeline has a slot for an HTTP sink reserved for v1.1, but it's not implemented. Local-only is a code-level guarantee, not a config flag. |
-| **Rate limiting** | Three independent Bottleneck pools (Tooling 5 / Metadata 3 / SObject 10) | Salesforce throttles per-API. Separate budgets let us hit ~18 concurrent calls without violating any single limit. |
+| **Rate limiting** | Three independent Bottleneck pools (Tooling 5 / Metadata 5 / SObject 10) | Salesforce throttles per-API. Separate budgets let us hit ~18 concurrent calls without violating any single limit. |
 | **MCP tool envelope** | `{ summary, markdown, data, follow_up_tools? }` | Agents read `summary`. Humans read `markdown`. Programmatic consumers read `data`. `follow_up_tools` lets skills compose. |
 | **Incremental sync** | `SourceMember` polling on Source-Tracking-enabled orgs | One Tooling SOQL, refetch only changed members. Sub-30s on sandboxes. Falls back to full sync on production orgs without source tracking. |
 
@@ -335,6 +335,9 @@ changes. Read-only against the persisted graph.
 | `--embed-model <path>` | — | Absolute path to a custom embedding model dir (overrides the vendored MiniLM). Also reads `SFGRAPH_EMBED_MODEL_PATH`. |
 | `--embed-model-id <id>` | `Xenova/all-MiniLM-L6-v2` | Model id under that dir. Also reads `SFGRAPH_EMBED_MODEL_ID`. |
 | `--embed-model-dim <n>` | `384` | Embedding dimension. Also reads `SFGRAPH_EMBED_MODEL_DIM`. |
+| `--tooling-pool <n>` | `5` | Max concurrent Tooling-API calls. Also reads `SFGRAPH_TOOLING_POOL`. |
+| `--metadata-pool <n>` | `5` | Max concurrent Metadata-API calls. **Highest-leverage knob for slow ingests** — Profile/PermissionSet/Layout fans go through here. Bump to `8`–`10` on orgs with many of those. Also reads `SFGRAPH_METADATA_POOL`. |
+| `--data-pool <n>` | `10` | Max concurrent SObject/Bulk SOQL queries. Also reads `SFGRAPH_DATA_POOL`. |
 | `--db <path>` | `~/.sfgraph/<orgId>.sqlite` | Override SQLite database path |
 
 Auto-detects default org from `sf config`. Auto-snapshot taken before every sync.

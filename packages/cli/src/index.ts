@@ -123,6 +123,21 @@ export function buildProgram(): Command {
       "embedding dimension (default 384); also reads SFGRAPH_EMBED_MODEL_DIM",
       (v) => Number.parseInt(v, 10),
     )
+    .option(
+      "--tooling-pool <n>",
+      "max concurrent Tooling-API calls (default 5; also reads SFGRAPH_TOOLING_POOL)",
+      (v) => Number.parseInt(v, 10),
+    )
+    .option(
+      "--metadata-pool <n>",
+      "max concurrent Metadata-API calls (default 5; also reads SFGRAPH_METADATA_POOL). Bump this (e.g. 8-10) to speed up slow ingests dominated by Profile/PermissionSet/Layout fans.",
+      (v) => Number.parseInt(v, 10),
+    )
+    .option(
+      "--data-pool <n>",
+      "max concurrent SObject/Bulk queries (default 10; also reads SFGRAPH_DATA_POOL)",
+      (v) => Number.parseInt(v, 10),
+    )
     .action(
       async (opts: {
         org?: string;
@@ -139,6 +154,9 @@ export function buildProgram(): Command {
         detectDeletions?: boolean;
         only?: string;
         retrySkipped?: boolean;
+        toolingPool?: number;
+        metadataPool?: number;
+        dataPool?: number;
       }) => {
         await ingestCmd({
           org: opts.org,
@@ -155,6 +173,9 @@ export function buildProgram(): Command {
           detectDeletions: opts.detectDeletions,
           only: opts.only,
           retrySkipped: opts.retrySkipped,
+          toolingPool: opts.toolingPool,
+          metadataPool: opts.metadataPool,
+          dataPool: opts.dataPool,
         });
       },
     );

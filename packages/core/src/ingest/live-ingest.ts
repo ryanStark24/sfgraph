@@ -360,8 +360,23 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // The outer iteration is also wrapped: bulkRetrieve uses fail-soft per
     // source, but a top-level catch protects against any iterator-protocol
     // surprises (e.g. generator throws during `next()` before yielding).
+    // Read live pool caps so the log reflects --tooling-pool/--metadata-pool/
+    // --data-pool overrides or SFGRAPH_*_POOL env vars rather than hardcoded
+    // defaults.
+    const { toolingPool, metadataPool, dataPool } = await import(
+      "../extractors/live-org/rate-limit.js"
+    );
+    const tCap =
+      (toolingPool as unknown as { _store: { storeOptions: { maxConcurrent: number } } })._store
+        .storeOptions.maxConcurrent;
+    const mCap =
+      (metadataPool as unknown as { _store: { storeOptions: { maxConcurrent: number } } })._store
+        .storeOptions.maxConcurrent;
+    const dCap =
+      (dataPool as unknown as { _store: { storeOptions: { maxConcurrent: number } } })._store
+        .storeOptions.maxConcurrent;
     console.log(
-      "ingest: starting full sync (Tooling pool 5 / Metadata pool 3 / Data pool 10 concurrent)",
+      `ingest: starting full sync (Tooling pool ${tCap} / Metadata pool ${mCap} / Data pool ${dCap} concurrent)`,
     );
     const fanOutStart = Date.now();
     let progressCount = 0;

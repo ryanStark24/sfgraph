@@ -34,6 +34,14 @@ export interface IngestOpts {
    *  labels. Useful for rate-limit recovery and post-permission-grant
    *  backfill. */
   retrySkipped?: boolean | undefined;
+  /** Override Tooling-API pool maxConcurrent (default 5). */
+  toolingPool?: number | undefined;
+  /** Override Metadata-API pool maxConcurrent (default 5). Bumping this is
+   *  usually the highest-leverage knob for slow ingests because Profile /
+   *  PermissionSet / Layout fans go through here. */
+  metadataPool?: number | undefined;
+  /** Override Data (SObject/Bulk) pool maxConcurrent (default 10). */
+  dataPool?: number | undefined;
 }
 
 function formatRow(cols: string[], widths: number[]): string {
@@ -209,7 +217,20 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
     process.env.SFGRAPH_EMBED_MODEL_DIM = String(opts.embedModelDim);
   }
   try {
-    const { resolveOrg, resolveDefaultOrgAlias } = await import("@ryanstark24/sfgraph-core");
+    const { resolveOrg, resolveDefaultOrgAlias, configureDefaultPools } = await import(
+      "@ryanstark24/sfgraph-core"
+    );
+
+    // Apply pool-concurrency overrides. CLI flags win; SFGRAPH_*_POOL env
+    // vars are a secondary knob (handled inside configureDefaultPools).
+    const poolOverrides: { tooling?: number; metadata?: number; data?: number } = {};
+    if (opts.toolingPool !== undefined) poolOverrides.tooling = opts.toolingPool;
+    if (opts.metadataPool !== undefined) poolOverrides.metadata = opts.metadataPool;
+    if (opts.dataPool !== undefined) poolOverrides.data = opts.dataPool;
+    const applied = await configureDefaultPools(poolOverrides);
+    logger.info(
+      `ingest: pool concurrency tooling=${applied.tooling} metadata=${applied.metadata} data=${applied.data}`,
+    );
 
     // Determine the alias list (multi-org modes).
     let aliases: string[] | null = null;
