@@ -57,14 +57,29 @@ All tools take JSON via the MCP protocol. The shared envelope is:
 
 ### `start_ingest_job`
 
+The MCP server has **no in-process ingest worker**. This tool no longer enqueues a job — it refuses to run the ingest and returns the exact shell command the user (or their automation) should run.
+
 ```jsonc
 // input
-{ "org": "my-prod", "mode": "full" | "incremental" | "auto" }
+{
+  "source": { "type": "live-org", "alias": "my-prod" }
+  // — or —
+  // "source": { "type": "filesystem", "path": "/abs/path/to/sfdx-project" }
+  ,
+  "mode": "full" | "incremental" | "auto"
+}
 // output.data
-{ "jobId": "ing_...", "mode": "full" }
+{
+  "executed": false,
+  "run_this_command": "sfgraph ingest --org my-prod"
+}
 ```
 
+Surface `run_this_command` verbatim to the user. Do not claim the MCP server will execute it.
+
 ### `get_ingest_job`
+
+Looks up historical CLI ingest runs from an **in-memory job store** maintained by the MCP server process. Restarting the MCP server clears it. This tool has no relationship to `start_ingest_job` anymore — `start_ingest_job` never enqueues a job, so there is nothing for this tool to find that didn't come from a prior CLI run observed by the same MCP process.
 
 ```jsonc
 { "job_id": "ing_..." }
@@ -103,9 +118,12 @@ All tools take JSON via the MCP protocol. The shared envelope is:
 ### `analyze_field`
 
 ```jsonc
-{ "org": "alias", "field": "Account.Industry" }
+{ "org": "alias", "object": "Account", "field": "Industry" }
 // output.data: { readers: [...], writers: [...] }
 ```
+
+**Input validation.** Both `object` and `field` must match the Salesforce API-name pattern
+`/^[A-Za-z][A-Za-z0-9_]*(?:__[a-zA-Z])?$/` (alphabetic start, alphanumeric / underscore body, optional managed-package suffix). Malformed inputs are rejected with a 400-style error before any graph query runs.
 
 ### `trace_upstream` / `trace_downstream`
 
@@ -118,8 +136,10 @@ All tools take JSON via the MCP protocol. The shared envelope is:
 
 ```jsonc
 { "org": "alias", "from": "LightningComponentBundle:foo" }
-// output.data: { paths: [...] }
+// output.data: { paths: [...], truncated: false }
 ```
+
+The BFS is **capped at 100 visited nodes**. When the cap is hit, `data.truncated` is `true` and the rendered markdown includes a `_truncated_` marker line so downstream agents can detect the partial result.
 
 ### `cross_org_diff`
 

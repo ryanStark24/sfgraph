@@ -55,7 +55,7 @@ CREATE TABLE _sfgraph_snippets (
 
 ## 2. Ingestion strategy
 
-`sfgraph ingest --org <alias>` runs the pipeline in `packages/core/src/ingest/live-ingest.ts`. The pipeline is the same whether you invoke it from the CLI or via the `start_ingest_job` MCP tool.
+`sfgraph ingest --org <alias>` runs the pipeline in `packages/core/src/ingest/live-ingest.ts`. The pipeline runs from the CLI only; the MCP server is read-only and `start_ingest_job` returns the shell command to run rather than executing the pipeline in-process.
 
 ### Phase 1 — Auth and read-only proxy
 
@@ -135,7 +135,7 @@ Embeddings are side-streamed out of the ingest pipeline through an `EmbeddingQue
 
 1. Batches items in groups of **16** before invoking the model
 2. Runs **all-MiniLM-L6-v2** via `@xenova/transformers` in WASM — fully local, zero network
-3. Loads the vendored quantized ONNX model from `packages/models/models/` (vendored via Git LFS to keep the npm package small)
+3. Loads the vendored quantized ONNX model from `packages/models/data/<modelId>/onnx/model.onnx` (vendored via Git LFS to keep the npm package small)
 4. Pushes the resulting 384-dim Float32Array into `_sfgraph_node_vectors`
 5. Stores the content-hash in `_sfgraph_node_vector_meta` so subsequent ingests of unchanged nodes never re-embed
 

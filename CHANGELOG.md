@@ -1,5 +1,70 @@
 # Changelog
 
+## [Unreleased] — 1.1.0
+
+### Fixed
+
+- **Silent process exit during ingest** — the event loop could drain
+  mid-run on managed-package-heavy orgs, killing the process with no
+  error and no completion log. A keep-alive timer now anchors the loop
+  for the lifetime of the ingest.
+- **Mass data-wipe risk in `detect-deletions`** — when `bulkRetrieve`
+  aborted mid-stream, the deletion pass treated the partial result set
+  as authoritative and removed every qname not in it. Now bails out
+  unless every source completed cleanly.
+- **Signal-handler leak on multi-org ingest in debug mode** — each
+  org registered its own SIGINT/SIGTERM handler; running `--all` on a
+  large fleet hit Node's MaxListenersExceededWarning. Handlers are now
+  registered once per process.
+- **MCP server hang on SIGINT** — `shutdown.ts` now force-exits after
+  the watchdog timeout rather than waiting forever on stuck handles.
+- **EmbeddingQueue concurrent flush race** — two flushes could
+  overlap and double-emit vectors for the same node-hash; the flush
+  loop is now serialised.
+- **Stale `@sfgraph/*` package names in `.changeset/`** — refer to
+  current `@ryanstark24/sfgraph-*` names.
+- **better-sqlite3 binding auto-rebuilds on Node ABI mismatch** —
+  preflight in `apps/sfgraph/bin/sfgraph.mjs` compiles from source on
+  ABI mismatch (~20 s first run, instant after).
+- **Object-phase chunk barrier replaced with sliding window** — the
+  describe fan-out used to wave-bound at chunk boundaries (every
+  describe in the chunk had to finish before the next chunk started),
+  which serialised slow managed-package SObjects. Replaced with a
+  sliding window: 40–60 % faster on managed-package-heavy orgs.
+
+### Changed
+
+- **`start_ingest_job` no longer enqueues** — the MCP server has no
+  in-process ingest worker. The tool now returns
+  `{ executed: false, run_this_command: "sfgraph ingest --org <alias>" }`
+  for the user to run in a shell.
+- **`analyze_field` validates inputs** — `object` and `field` must
+  match `/^[A-Za-z][A-Za-z0-9_]*(?:__[a-zA-Z])?$/`. Malformed inputs
+  are rejected before any graph query.
+- **`cross_layer_flow_map` BFS uses a per-node cap (100)** — response
+  includes `data.truncated: boolean`; markdown gains a `_truncated_`
+  marker when the cap is hit.
+- **Source-iterator merge is sliding-window** — replaced wave-bounded
+  merger with a sliding window in `bulk-retrieve.ts` (default
+  concurrency 12, override `SFGRAPH_SOURCE_CONCURRENCY`).
+
+### Added
+
+- **`sfgraph serve` + `packages/web`** — local 3D web visualiser at
+  `http://localhost:7777`. Obsidian-style force-graph with Trace /
+  Overview / Schema tabs, `L` / `F` / `Esc` shortcuts, "Render entire
+  org" button against `/api/full`. Loopback only by default;
+  `--i-understand-public-bind` to expose. EADDRINUSE auto-recovers by
+  killing the stale process holding the port.
+- **Per-call timeouts on metadata.list / metadata.read** in
+  `security.ts`, `flow.ts`, `integration.ts`, and `generic-metadata.ts`
+  extractors. A single hung Metadata API call no longer wedges the
+  whole ingest.
+- **Source-level inactivity safety net in `failSoft`** — sources that
+  stop emitting without erroring are now caught and surfaced.
+- **WAL checkpoint hygiene during ingest** — periodic
+  `wal_checkpoint(TRUNCATE)` keeps the journal bounded on long runs.
+
 ## 1.0.2 — graph completeness + ingest performance + macOS stability
 
 ### Graph completeness (silent-data-loss fixes)

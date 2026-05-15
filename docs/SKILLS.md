@@ -14,13 +14,14 @@ intent description, decision rubric, and a chain of MCP tool calls. After
 | `sf-explain-code`              | Explain an Apex method or code unit and cache it back.     |
 | `sf-flow-impact`               | Map a Flow's runtime to dependents.                        |
 | `sf-governor-risk-fix`         | Find SOQL/DML in loops and propose remediation.            |
-| `sf-metadata-refresh`          | Orchestrate `start_ingest_job` and surface progress.       |
+| `sf-metadata-refresh`          | Detect graph staleness and tell the user which `sfgraph ingest` command to run. |
 | `sf-omnistudio-migration-audit`| Audit Vlocity -> OmniStudio migrations.                    |
 | `sf-schema-overview`           | Summarise an org's object/field topology.                  |
 | `sf-security-audit`            | Sharing rules, FLS gaps, shadow access.                    |
 | `sf-snapshot-compare`          | Walk an operator through two-snapshot diffs.               |
 | `sf-what-broke`                | Correlate a recent failure to the metadata that changed.   |
 | `sf-wip-impact`                | Blast-radius for uncommitted working-tree changes.         |
+| `sf-web-explorer`              | Launch the local web visualiser for visual graph exploration. |
 
 ## How a skill is wired
 
