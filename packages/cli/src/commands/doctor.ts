@@ -260,7 +260,12 @@ function checkOrgDatabases(
     return {
       status: "fail",
       detail: `${failures.length} of ${files.length} org DBs failed to open:\n      ${failures.join("\n      ")}`,
-      fix: "Re-ingest the failing org(s): sfgraph ingest --org <alias> --rebuild",
+      // The 'bindings file not found' / ABI mismatch failure mode is a
+      // native-binding issue (Node version doesn't match what better-sqlite3
+      // was built for), NOT a graph corruption issue. Re-ingest would just
+      // hit the same load failure. Point users at the binding rebuild
+      // instead; once that's green, `sfgraph doctor` reruns cleanly.
+      fix: "Rebuild the native binding for your Node runtime: sfgraph rebuild-bindings",
     };
   }
   return { status: "ok", detail: `${files.length} org DB(s) open with expected schema` };

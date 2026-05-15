@@ -288,6 +288,21 @@ export function buildProgram(): Command {
     });
 
   program
+    .command("rebuild-bindings")
+    .description(
+      "rebuild better-sqlite3's native binding for the current Node runtime (fixes 'bindings file not found' / ABI mismatch after Node upgrade or on a Node version without prebuilts)",
+    )
+    .option("--dry-run", "show what would be run without executing", false)
+    .option("--package-manager <pm>", "force npm | pnpm (auto-detected by default)")
+    .action(async (opts: { dryRun: boolean; packageManager?: "npm" | "pnpm" }) => {
+      const { rebuildBindingsCmd } = await import("./commands/rebuild-bindings.js");
+      await rebuildBindingsCmd({
+        dryRun: opts.dryRun,
+        ...(opts.packageManager ? { packageManager: opts.packageManager } : {}),
+      });
+    });
+
+  program
     .command("doctor")
     .description(
       "diagnose sfgraph install (Node ABI, better-sqlite3 binding, data dir, org DBs, sf CLI, IDE MCP config)",
