@@ -42,7 +42,18 @@ export interface IngestOpts {
   metadataPool?: number | undefined;
   /** Override Data (SObject/Bulk) pool maxConcurrent (default 10). */
   dataPool?: number | undefined;
+  /** Opt out of the post-ingest auto-retry. By default, if more than
+   *  SFGRAPH_AUTO_RETRY_THRESHOLD (default 10) sources were skipped with
+   *  transient errors (rate_limit / network / unknown), sfgraph waits a
+   *  brief grace period and re-runs ingest scoped to just those labels.
+   *  Set this flag (or SFGRAPH_NO_AUTO_RETRY=1) to disable. */
+  noAutoRetry?: boolean | undefined;
 }
+
+/** Skip categories that are worth retrying. `insufficient_access` and
+ *  `not_found` are stable conditions that won't fix themselves on a
+ *  second pass; retrying them just wastes time. */
+const RETRYABLE_SKIP_CATEGORIES = new Set(["rate_limit", "network", "unknown"]);
 
 function formatRow(cols: string[], widths: number[]): string {
   return cols.map((c, i) => c.padEnd(widths[i] ?? c.length)).join("  ");
@@ -329,6 +340,56 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
     logger.info(
       `ingest: complete mode=${result.mode} members=${result.membersProcessed} deletions=${result.deletions} parseErrors=${result.parseErrors} elapsed=${Date.now() - startedAt}ms`,
     );
+
+    // Post-ingest auto-retry. If a substantial number of sources skipped
+    // with transient failure modes (rate_limit / network / unknown), do
+    // ONE second pass scoped to those labels. Permanent skips
+    // (insufficient_access / not_found) are excluded because retrying
+    // them just incurs the round-trip again. Disabled when the run was
+    // already a targeted retry (--only / --retry-skipped) so we don't
+    // recursively retry. Capped at one pass — anything still skipping
+    // after that needs human attention, surface to the skip report.
+    const autoRetryDisabled =
+      Boolean(opts.noAutoRetry) || process.env.SFGRAPH_NO_AUTO_RETRY === "1";
+    const wasTargetedRun = Boolean(opts.only || opts.retrySkipped);
+    if (!autoRetryDisabled && !wasTargetedRun && built.skipReportPath) {
+      const threshold =
+        Number.parseInt(process.env.SFGRAPH_AUTO_RETRY_THRESHOLD ?? "10", 10) || 10;
+      const { existsSync, readFileSync } = await import("node:fs");
+      let retryable: Array<{ label: string; category: string }> = [];
+      if (existsSync(built.skipReportPath)) {
+        try {
+          const report = JSON.parse(readFileSync(built.skipReportPath, "utf8")) as {
+            skips?: Array<{ label: string; category: string }>;
+          };
+          retryable = (report.skips ?? []).filter((s) =>
+            RETRYABLE_SKIP_CATEGORIES.has(s.category),
+          );
+        } catch {
+          /* malformed skip report; skip auto-retry */
+        }
+      }
+      if (retryable.length > threshold) {
+        // Rate-limit skips need a quota window to refresh server-side;
+        // a brief network-only retry can fire immediately.
+        const hasRateLimit = retryable.some((s) => s.category === "rate_limit");
+        const delayMs = hasRateLimit ? 30_000 : 5_000;
+        const labels = new Set(retryable.map((s) => s.label));
+        console.log(
+          `ingest: auto-retry — ${retryable.length} transient skip${retryable.length === 1 ? "" : "s"} (rate_limit/network/unknown). Waiting ${delayMs / 1000}s for conditions to clear, then re-ingesting just those sources.`,
+        );
+        console.log(
+          "         Disable with --no-auto-retry-skipped or SFGRAPH_NO_AUTO_RETRY=1.",
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        const retryStartedAt = Date.now();
+        const retryResult = await liveIngest({ ...built, onlyLabels: labels });
+        logger.info(
+          `ingest: auto-retry complete members=${retryResult.membersProcessed} parseErrors=${retryResult.parseErrors} elapsed=${Date.now() - retryStartedAt}ms`,
+        );
+      }
+    }
+
     await (built.graphStore as SqliteGraphStore).close();
   } catch (e) {
     if (e instanceof SfgraphError) {

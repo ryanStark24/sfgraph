@@ -50,6 +50,7 @@ Commands:
 | `--metadata-pool <n>` | `10` | Max concurrent Metadata-API calls. **Highest-leverage knob for slow ingests** — Profile/PermissionSet/Layout fans go through here. Bump higher on orgs with many of those. Also reads `SFGRAPH_METADATA_POOL`. |
 | `--data-pool <n>` | `10` | Max concurrent SObject/Bulk SOQL queries. Also reads `SFGRAPH_DATA_POOL`. |
 | `--debug` | `false` | Verbose tracing for diagnosing silent ingest deaths: heartbeat every 10s with heap/RSS/last-source label, per-record parse and graph-merge phase logs, SIGTERM/SIGINT stack traces, per-source enter/finalise markers. Also sets `SFGRAPH_DEBUG_INGEST=1`. |
+| `--no-auto-retry-skipped` | (auto-retry on) | Disable the post-ingest auto-retry. By default, if more than 10 sources were skipped with transient errors (`rate_limit`, `network`, `unknown`), sfgraph waits briefly and re-ingests just those sources. Tune the threshold with `SFGRAPH_AUTO_RETRY_THRESHOLD=N`; disable entirely with this flag or `SFGRAPH_NO_AUTO_RETRY=1`. |
 | `--db <path>` | `~/.sfgraph/<orgId>.sqlite` | Override SQLite database path |
 
 Auto-detects default org from `sf config`. Auto-snapshot taken before every sync.
@@ -129,7 +130,22 @@ On Source-Tracking-enabled orgs, deletions surface automatically via `SourceMemb
 
 ### Recovering from rate-limit or permission skips
 
-Every ingest writes its skip report to `<dataDir>/<orgId>.skips.json`. If some types were rate-limited or permission-gated:
+Every ingest writes its skip report to `<dataDir>/<orgId>.skips.json`.
+
+**Automatic.** When more than 10 sources skipped with transient errors (`rate_limit`, `network`, `unknown`), the ingest waits a short grace period (30s if rate-limit was involved, 5s otherwise) and automatically re-ingests just those sources. Permanent skip categories (`insufficient_access`, `not_found`) are excluded — they wouldn't fix themselves. The auto-retry runs at most once per ingest; anything still skipping afterward surfaces in the final skip summary.
+
+Tune or disable:
+
+```bash
+# Lower or raise the trigger threshold (default 10)
+SFGRAPH_AUTO_RETRY_THRESHOLD=5 sfgraph ingest
+
+# Disable entirely
+sfgraph ingest --no-auto-retry-skipped
+SFGRAPH_NO_AUTO_RETRY=1 sfgraph ingest
+```
+
+**Manual.** When the auto-retry isn't enough — e.g. a permission grant landed after the run, or you specifically want a clean targeted re-fetch:
 
 ```bash
 # Re-fetch ONLY the previously-skipped sources, no full rebuild

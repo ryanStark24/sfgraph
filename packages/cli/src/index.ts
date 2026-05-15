@@ -143,6 +143,10 @@ export function buildProgram(): Command {
       "verbose ingest tracing: heartbeat every 10s with heap/rss, last-source tag, signal stack traces. Also sets SFGRAPH_DEBUG_INGEST=1. Use when an ingest dies silently to identify which extractor was active when it stopped.",
       false,
     )
+    .option(
+      "--no-auto-retry-skipped",
+      "disable the post-ingest auto-retry. By default, if more than SFGRAPH_AUTO_RETRY_THRESHOLD (10) sources were skipped with transient errors (rate_limit/network/unknown), sfgraph waits briefly and re-ingests just those sources. Pass this flag (or set SFGRAPH_NO_AUTO_RETRY=1) to skip it.",
+    )
     .action(
       async (opts: {
         org?: string;
@@ -163,6 +167,7 @@ export function buildProgram(): Command {
         metadataPool?: number;
         dataPool?: number;
         debug?: boolean;
+        autoRetrySkipped?: boolean; // commander inverts --no-auto-retry-skipped → autoRetrySkipped:false
       }) => {
         if (opts.debug) process.env.SFGRAPH_DEBUG_INGEST = "1";
         await ingestCmd({
@@ -183,6 +188,7 @@ export function buildProgram(): Command {
           toolingPool: opts.toolingPool,
           metadataPool: opts.metadataPool,
           dataPool: opts.dataPool,
+          noAutoRetry: opts.autoRetrySkipped === false,
         });
       },
     );
