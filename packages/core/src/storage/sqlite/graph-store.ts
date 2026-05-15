@@ -513,6 +513,71 @@ export class SqliteGraphStore implements GraphStore {
     return out;
   }
 
+  listEdgesByDstLike(
+    orgId: OrgId,
+    pattern: string,
+    relType?: RelType,
+    limit?: number,
+  ): EdgeFact[] {
+    const out: EdgeFact[] = [];
+    const types = relType ? [relType] : Array.from(this.edgeRelCache.keys());
+    const cap = limit && limit > 0 ? limit : Number.POSITIVE_INFINITY;
+    for (const t of types) {
+      if (out.length >= cap) break;
+      const tbl = this.edgeRelCache.get(t);
+      if (!tbl) continue;
+      const remaining = Number.isFinite(cap) ? cap - out.length : -1;
+      const sql = remaining > 0
+        ? `SELECT org_id, src_qname, dst_qname, attributes, first_seen_at, last_seen_at FROM ${tbl} WHERE org_id = ? AND dst_qname LIKE ? LIMIT ${remaining}`
+        : `SELECT org_id, src_qname, dst_qname, attributes, first_seen_at, last_seen_at FROM ${tbl} WHERE org_id = ? AND dst_qname LIKE ?`;
+      const rows = this.db.prepare(sql).all(orgId, pattern) as RawEdgeRow[];
+      for (const r of rows) out.push(rowToEdge(r, t as RelType));
+    }
+    return out;
+  }
+
+  deleteEdge(
+    orgId: OrgId,
+    src: QualifiedName,
+    dst: QualifiedName,
+    relType: RelType,
+  ): void {
+    const tbl = this.edgeRelCache.get(relType);
+    if (!tbl) return;
+    this.db
+      .prepare(`DELETE FROM ${tbl} WHERE org_id = ? AND src_qname = ? AND dst_qname = ?`)
+      .run(orgId, src, dst);
+  }
+
+  /**
+   * Edges whose `dst_qname` has no matching row in `_sfgraph_node_index`.
+   * Iterates every known edge table and LEFT JOINs against the node index;
+   * surfaces stranded edges left behind by extractors that emit speculative
+   * QName targets (e.g. `ApexMethod:Foo.bar(?)`, `Remote:unknown`, dotted
+   * field refs whose CustomObject wasn't ingested).
+   */
+  listDanglingEdges(orgId: OrgId, limit?: number): EdgeFact[] {
+    const out: EdgeFact[] = [];
+    const cap = limit && limit > 0 ? limit : Number.POSITIVE_INFINITY;
+    for (const [relType, tbl] of this.edgeRelCache) {
+      if (out.length >= cap) break;
+      const remaining = Number.isFinite(cap) ? cap - out.length : -1;
+      const limitClause = remaining > 0 ? `LIMIT ${remaining}` : "";
+      const rows = this.db
+        .prepare(
+          `SELECT e.org_id, e.src_qname, e.dst_qname, e.attributes, e.first_seen_at, e.last_seen_at
+           FROM ${tbl} e
+           LEFT JOIN _sfgraph_node_index n
+             ON n.org_id = e.org_id AND n.qualified_name = e.dst_qname
+           WHERE e.org_id = ? AND n.qualified_name IS NULL
+           ${limitClause}`,
+        )
+        .all(orgId) as RawEdgeRow[];
+      for (const r of rows) out.push(rowToEdge(r, relType as RelType));
+    }
+    return out;
+  }
+
   /**
    * Return every qualified name persisted for `orgId` across all label tables.
    * Used by full-sync deletion detection to compute the difference between

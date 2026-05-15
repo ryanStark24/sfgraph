@@ -3,7 +3,7 @@ import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../.
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
 import { extractHtmlEdges } from "./html-visitor.js";
-import { extractJsEdges } from "./js-visitor.js";
+import { type LwcBindings, extractJsEdges } from "./js-visitor.js";
 import { extractMetaXml } from "./xml-meta.js";
 
 export interface LwcBundleInput {
@@ -55,14 +55,27 @@ export class LwcBundleParser implements Parser<LwcBundleInput> {
     );
     edges.push(makeEdge(ctx, bundleQname, REL_TYPES.CONTAINS_COMPONENT, lwcQname));
 
-    // JS files
+    // Pass 1: walk the JS first so we know which template variables are
+    // wired to which sObjects before walking the HTML.
+    const mergedBindings: LwcBindings = {
+      wireToSObject: new Map(),
+      schemaFieldImports: new Map(),
+      schemaObjectImports: new Map(),
+    };
     for (const [fname, source] of Object.entries(input.files)) {
       if (fname.endsWith(".js")) {
-        const { extraEdges, extraNodes } = extractJsEdges(source, lwcQname, ctx);
+        const { extraEdges, extraNodes, bindings: b } = extractJsEdges(source, lwcQname, ctx);
         edges.push(...extraEdges);
         nodes.push(...extraNodes);
-      } else if (fname.endsWith(".html")) {
-        const { extraEdges, extraNodes } = extractHtmlEdges(source, lwcQname, ctx);
+        for (const [k, v] of b.wireToSObject) mergedBindings.wireToSObject.set(k, v);
+        for (const [k, v] of b.schemaFieldImports) mergedBindings.schemaFieldImports.set(k, v);
+        for (const [k, v] of b.schemaObjectImports) mergedBindings.schemaObjectImports.set(k, v);
+      }
+    }
+    // Pass 2: HTML, with the merged bindings available.
+    for (const [fname, source] of Object.entries(input.files)) {
+      if (fname.endsWith(".html")) {
+        const { extraEdges, extraNodes } = extractHtmlEdges(source, lwcQname, ctx, mergedBindings);
         edges.push(...extraEdges);
         nodes.push(...extraNodes);
       }

@@ -50,6 +50,25 @@ export interface GraphStore {
   listNodesByLabel(orgId: OrgId, label: string, limit?: number): NodeFact[];
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[];
   listEdgesTo(orgId: OrgId, dst: QualifiedName, relType?: RelType): EdgeFact[];
+  /** Find edges whose dst_qname matches a SQL LIKE pattern (e.g. `ApexMethod:%(?)`).
+   *  Optional relType narrows the search to a single edge table; otherwise every
+   *  known table is scanned. Used by post-merge resolvers (arity, dangling-edge audit). */
+  listEdgesByDstLike(
+    orgId: OrgId,
+    pattern: string,
+    relType?: RelType,
+    limit?: number,
+  ): EdgeFact[];
+  /** Delete a specific edge. No-op if it doesn't exist. */
+  deleteEdge(
+    orgId: OrgId,
+    src: QualifiedName,
+    dst: QualifiedName,
+    relType: RelType,
+  ): void;
+  /** Edges whose dst_qname has no row in `_sfgraph_node_index`. Used by the
+   *  dangling-edge audit and `sfgraph audit` CLI. */
+  listDanglingEdges(orgId: OrgId, limit?: number): EdgeFact[];
   listAllQnames(orgId: OrgId): QualifiedName[];
   countNodes(orgId: OrgId): number;
   countEdges(orgId: OrgId): number;

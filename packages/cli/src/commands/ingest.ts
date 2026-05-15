@@ -48,6 +48,17 @@ export interface IngestOpts {
    *  brief grace period and re-runs ingest scoped to just those labels.
    *  Set this flag (or SFGRAPH_NO_AUTO_RETRY=1) to disable. */
   noAutoRetry?: boolean | undefined;
+  /** Skip the post-merge Vlocity↔OmniStudio canonical-of resolver. */
+  noCrossFlavor?: boolean | undefined;
+  /** Skip the post-merge Apex method-arity resolver. */
+  noArityResolve?: boolean | undefined;
+  /** Skip the post-merge Flow→Apex invocable-method resolver. */
+  noFlowResolve?: boolean | undefined;
+  /** Skip the post-merge dangling-edge audit summary. */
+  noAudit?: boolean | undefined;
+  /** Exit non-zero when ≥N transient sources skipped in a single-org ingest.
+   *  Env: SFGRAPH_SKIP_THRESHOLD. Default 5. */
+  skipThreshold?: number | undefined;
 }
 
 /** Skip categories that are worth retrying. `insufficient_access` and
@@ -181,6 +192,10 @@ async function buildSingleIngestOpts(
     detectDeletions: Boolean(opts.detectDeletions),
     ...(onlyLabels ? { onlyLabels } : {}),
     skipReportPath,
+    disableCrossFlavor: Boolean(opts.noCrossFlavor),
+    disableArityResolve: Boolean(opts.noArityResolve),
+    disableFlowInvocableResolve: Boolean(opts.noFlowResolve),
+    disableAudit: Boolean(opts.noAudit),
   };
 }
 
@@ -387,6 +402,39 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
         logger.info(
           `ingest: auto-retry complete members=${retryResult.membersProcessed} parseErrors=${retryResult.parseErrors} elapsed=${Date.now() - retryStartedAt}ms`,
         );
+      }
+    }
+
+    // Exit-code policy: signal partial failure when ≥N transient sources
+    // skipped. Default threshold 5; env / flag override available. Use a
+    // very high value (e.g. 9999) to preserve the prior always-exit-0
+    // behavior for CI pipelines that rely on it.
+    if (built.skipReportPath) {
+      const threshold = (() => {
+        if (typeof opts.skipThreshold === "number" && Number.isFinite(opts.skipThreshold)) {
+          return opts.skipThreshold;
+        }
+        const env = Number.parseInt(process.env.SFGRAPH_SKIP_THRESHOLD ?? "", 10);
+        return Number.isFinite(env) ? env : 5;
+      })();
+      const { existsSync, readFileSync } = await import("node:fs");
+      if (existsSync(built.skipReportPath)) {
+        try {
+          const report = JSON.parse(readFileSync(built.skipReportPath, "utf8")) as {
+            skips?: Array<{ label: string; category: string }>;
+          };
+          const transient = (report.skips ?? []).filter((s) =>
+            RETRYABLE_SKIP_CATEGORIES.has(s.category),
+          );
+          if (transient.length >= threshold) {
+            console.error(
+              `ingest: ${transient.length} transient source${transient.length === 1 ? "" : "s"} skipped (threshold=${threshold}). Setting exit code 1. Use --skip-threshold 9999 or SFGRAPH_SKIP_THRESHOLD=9999 to preserve exit 0.`,
+            );
+            process.exitCode = 1;
+          }
+        } catch {
+          /* malformed skip report; leave exit code alone */
+        }
       }
     }
 

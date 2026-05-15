@@ -60,18 +60,28 @@ export function soqlWithTimeout<T>(p: Promise<T>, label: string, ms = SOQL_TIMEO
 
 /**
  * Resilient metadata.read for a batch of items, with adaptive splitting on
- * timeout. On a clean call, returns whatever Salesforce gave us (as an
- * array). On any error, if the batch has >1 item, splits in half and
- * retries each half in parallel — concatenating in original order so the
- * caller can still index records against the original slice. A single
- * item that times out is the genuine "this record cannot be ingested"
- * case; we return `null` for it so the caller can record the skip
- * without polluting the success path.
+ * BOTH timeout and non-timeout errors. On error we halve the batch and
+ * retry each half in parallel until either the half succeeds or we hit a
+ * single-item slice (in which case we record null for the genuine "this
+ * record cannot be ingested" case).
+ *
+ * Original behavior dropped the entire batch on timeout (the rationale was
+ * that smaller batches each at full timeout budget multiplies wall-clock).
+ * That was too coarse: a single slow record in a batch of 10 would
+ * silently drop the other 9 healthy records. We now bisect on timeouts
+ * too, bounded by `MAX_BISECT_DEPTH` so a systemic outage can't recurse
+ * indefinitely. At depth ceiling, return nulls without further attempts.
  */
+const MAX_BISECT_DEPTH = (() => {
+  const env = Number.parseInt(process.env.SFGRAPH_BISECT_MAX_DEPTH ?? "", 10);
+  return Number.isFinite(env) && env > 0 ? env : 6;
+})();
+
 export async function readMetadataBatchAdaptive<TItem extends { fullName: string }>(
   conn: { metadata: { read: (type: string, names: string[]) => Promise<unknown> } },
   type: string,
   items: TItem[],
+  depth = 0,
 ): Promise<(unknown | null)[]> {
   if (items.length === 0) return [];
   try {
@@ -89,22 +99,15 @@ export async function readMetadataBatchAdaptive<TItem extends { fullName: string
     const out: (unknown | null)[] = [];
     for (let i = 0; i < items.length; i += 1) out.push(arr[i] ?? null);
     return out;
-  } catch (e) {
-    // Split only on NON-timeout errors. A timeout means Salesforce is slow
-    // per item, not that one bad record poisoned the batch — retrying with
-    // smaller batches each at the full timeout budget multiplies wall-clock
-    // time (e.g. a 10-item managed-package timeout cascade can balloon to
-    // 10×120s = 20 minutes before failing). Take the cleanest exit: skip
-    // the batch, emit nulls so the caller's indexing stays aligned.
-    const msg = (e as Error)?.message ?? "";
-    const isTimeout = msg.includes("timeout (");
-    if (isTimeout || items.length === 1) {
-      return items.map(() => null);
-    }
+  } catch (_e) {
+    // Single-item slice → genuine skip.
+    if (items.length === 1) return [null];
+    // Bisect ceiling → drop the slice to bound wall-clock cost.
+    if (depth >= MAX_BISECT_DEPTH) return items.map(() => null);
     const mid = Math.ceil(items.length / 2);
     const [left, right] = await Promise.all([
-      readMetadataBatchAdaptive(conn, type, items.slice(0, mid)),
-      readMetadataBatchAdaptive(conn, type, items.slice(mid)),
+      readMetadataBatchAdaptive(conn, type, items.slice(0, mid), depth + 1),
+      readMetadataBatchAdaptive(conn, type, items.slice(mid), depth + 1),
     ]);
     return [...left, ...right];
   }

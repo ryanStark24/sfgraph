@@ -34,9 +34,16 @@ export const REL_TYPES = {
   EMBEDS_LWC: "EMBEDS_LWC",
   EMBEDS_AURA: "EMBEDS_AURA",
   CONTAINS_COMPONENT: "CONTAINS_COMPONENT",
+  /** Phase 5: LWC template binding `{var.field}` resolved to a CustomField. */
+  LWC_BINDS_FIELD: "LWC_BINDS_FIELD",
+  /** Phase 5: LWC template binding whose target couldn't be resolved to a field. */
+  LWC_BINDS_PROPERTY: "LWC_BINDS_PROPERTY",
 
   // Flow
   FLOW_INVOKES_APEX: "FLOW_INVOKES_APEX",
+  /** Resolved by Phase 6 invocable-resolver: edge from Flow to the specific
+   *  ApexMethod annotated @InvocableMethod on the action's class. */
+  FLOW_INVOKES_APEX_METHOD: "FLOW_INVOKES_APEX_METHOD",
   FLOW_INVOKES_SUBFLOW: "FLOW_INVOKES_SUBFLOW",
   FLOW_INVOKES_ACTION: "FLOW_INVOKES_ACTION",
   REFERENCES_OBJECT: "REFERENCES_OBJECT",

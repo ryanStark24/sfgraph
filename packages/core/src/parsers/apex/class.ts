@@ -187,7 +187,19 @@ export class ApexClassParser implements Parser<ApexClassInput> {
     const className = stripNs(input.className, ctx.namespace);
     const fileHash = sha256(input.body);
 
+    // Read parser mode once per parse — env var lets us flip between
+    // regex (the legacy path), ast (the new precise extractor), and both
+    // (regex authoritative; ast diff logged for shadow validation).
+    const parserMode = ((): "regex" | "ast" | "both" => {
+      const v = (process.env.SFGRAPH_APEX_PARSER ?? "regex").toLowerCase();
+      if (v === "ast" || v === "both") return v;
+      return "regex";
+    })();
+
     // Validate parse via apex-parser. On failure: emit ParseError only.
+    // When parserMode != "regex", retain the parsed compilationUnit tree
+    // so the AST extractor can walk it without parsing twice.
+    let parsedTree: unknown = null;
     try {
       // Lazy-load to avoid pulling apex-parser into other parsers' worker.
       const apex = await import("apex-parser");
@@ -206,7 +218,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       const parser = new ApexParser(tokens);
       parser.removeErrorListeners();
       parser.addErrorListener(new ThrowingErrorListener());
-      parser.compilationUnit();
+      parsedTree = parser.compilationUnit();
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       nodes.push(
@@ -331,8 +343,13 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       if (endLine != null) snippetRec.endLine = endLine;
       snippets.push(snippetRec);
 
-      // Body analysis
+      // Body analysis (regex path — gated when parserMode === "ast").
       const body = m.body;
+      if (parserMode === "ast") {
+        // AST mode handles per-method edges in a single tree walk after this loop;
+        // skip the regex extraction here to avoid duplicate / inconsistent edges.
+        continue;
+      }
 
       // SOQL
       const soqlRe = new RegExp(SOQL_RE.source, "gi");
@@ -420,6 +437,41 @@ export class ApexClassParser implements Parser<ApexClassInput> {
           );
         }
         sc = scRe.exec(body);
+      }
+    }
+
+    // AST-mode (and shadow mode): walk the parsed compilationUnit and emit
+    // edges that the regex pass cannot derive (real call arity, dotted field
+    // refs via type inference, multi-line SOQL, DML targets).
+    if ((parserMode === "ast" || parserMode === "both") && parsedTree) {
+      try {
+        const { extractFromAst } = await import("./ast-extractor.js");
+        const extraction = extractFromAst(parsedTree, {
+          ctx,
+          classQname,
+          effectiveName,
+          namespace: ctx.namespace,
+        });
+        if (parserMode === "both") {
+          // Tag AST edges so a shadow diff can distinguish overlap.
+          for (const e of extraction.edges) {
+            (e.attributes as Record<string, unknown>).resolvedBy = "ast-shadow";
+            edges.push(e);
+          }
+        } else {
+          for (const e of extraction.edges) edges.push(e);
+        }
+        if (process.env.SFGRAPH_DEBUG_INGEST === "1" && extraction.diagnostics.length > 0) {
+          ctx.logger?.debug?.("apex ast diagnostics", {
+            className,
+            diagnostics: extraction.diagnostics.slice(0, 5),
+          });
+        }
+      } catch (e) {
+        ctx.logger?.warn?.("apex ast extraction failed; falling back to regex output", {
+          className,
+          err: (e as Error).message,
+        });
       }
     }
 

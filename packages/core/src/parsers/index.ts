@@ -18,6 +18,15 @@ import "./generic/index.js";
 export * from "./contract.js";
 export { parserRegistry, resetRegistryForTests } from "./registry.js";
 export { resolveCrossFlavor, normalizeKey } from "./cross-flavor-resolver.js";
+export {
+  resolveApexMethodArity,
+  type ArityResolveOpts,
+  type ArityResolveResult,
+} from "./apex/arity-resolver.js";
+export {
+  resolveFlowApexMethods,
+  type FlowInvocableResolveResult,
+} from "./flow/invocable-resolver.js";
 export { ParserWorkerPool } from "./worker-pool.js";
 export { loadAllRules } from "./rules/_loader.js";
 export { RuleBasedParser } from "./rules/_engine.js";

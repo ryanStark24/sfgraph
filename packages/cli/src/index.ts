@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { auditCmd } from "./commands/audit.js";
 import { doctorCmd } from "./commands/doctor.js";
 import { ingestCmd } from "./commands/ingest.js";
 import { installCmd } from "./commands/install.js";
@@ -147,6 +148,27 @@ export function buildProgram(): Command {
       "--no-auto-retry-skipped",
       "disable the post-ingest auto-retry. By default, if more than SFGRAPH_AUTO_RETRY_THRESHOLD (10) sources were skipped with transient errors (rate_limit/network/unknown), sfgraph waits briefly and re-ingests just those sources. Pass this flag (or set SFGRAPH_NO_AUTO_RETRY=1) to skip it.",
     )
+    .option(
+      "--no-cross-flavor",
+      "skip the post-merge Vlocity↔OmniStudio canonical-of resolver.",
+    )
+    .option(
+      "--no-arity-resolve",
+      "skip the post-merge Apex method-arity resolver (leaves CALLS→ApexMethod:X.y(?) edges dangling).",
+    )
+    .option(
+      "--no-flow-resolve",
+      "skip the post-merge Flow→Apex invocable-method resolver.",
+    )
+    .option(
+      "--no-audit",
+      "skip the post-merge dangling-edge audit summary printed at end of run.",
+    )
+    .option(
+      "--skip-threshold <n>",
+      "exit non-zero when ≥N transient sources skipped in a single-org ingest. Env: SFGRAPH_SKIP_THRESHOLD. Default 5. Use a large value (e.g. 9999) to preserve the prior exit-0 behavior.",
+      (v) => Number.parseInt(v, 10),
+    )
     .action(
       async (opts: {
         org?: string;
@@ -168,6 +190,11 @@ export function buildProgram(): Command {
         dataPool?: number;
         debug?: boolean;
         autoRetrySkipped?: boolean; // commander inverts --no-auto-retry-skipped → autoRetrySkipped:false
+        crossFlavor?: boolean; // commander inverts --no-cross-flavor
+        arityResolve?: boolean; // commander inverts --no-arity-resolve
+        flowResolve?: boolean; // commander inverts --no-flow-resolve
+        audit?: boolean; // commander inverts --no-audit
+        skipThreshold?: number;
       }) => {
         if (opts.debug) process.env.SFGRAPH_DEBUG_INGEST = "1";
         await ingestCmd({
@@ -189,6 +216,11 @@ export function buildProgram(): Command {
           metadataPool: opts.metadataPool,
           dataPool: opts.dataPool,
           noAutoRetry: opts.autoRetrySkipped === false,
+          noCrossFlavor: opts.crossFlavor === false,
+          noArityResolve: opts.arityResolve === false,
+          noFlowResolve: opts.flowResolve === false,
+          noAudit: opts.audit === false,
+          skipThreshold: opts.skipThreshold,
         });
       },
     );
@@ -292,6 +324,45 @@ export function buildProgram(): Command {
     .action(async (snapshotId: string, opts: { org?: string; project?: string }) => {
       await snapshotDeleteCmd({ snapshotId, org: opts.org, project: opts.project });
     });
+
+  program
+    .command("audit")
+    .description(
+      "audit the graph for dangling edges — references emitted by parsers whose target node was never materialized (managed-package methods, third-party imports, unparsed metadata).",
+    )
+    .option("--org <alias>", "Salesforce alias (defaults to workspace binding or `sf` default)")
+    .option("--project <path>", "override project root (defaults to CWD)")
+    .option("--format <fmt>", "table | json", "table")
+    .option(
+      "--sample <n>",
+      "how many dangling edges to include in the sample list (default 25)",
+      (v) => Number.parseInt(v, 10),
+    )
+    .option(
+      "--delete-dangling",
+      "DESTRUCTIVE: delete every dangling edge. Requires --yes. Use only after reviewing the audit; deleted edges are gone until next ingest.",
+      false,
+    )
+    .option("--yes", "confirmation flag required by --delete-dangling", false)
+    .action(
+      async (opts: {
+        org?: string;
+        project?: string;
+        format?: "table" | "json";
+        sample?: number;
+        deleteDangling?: boolean;
+        yes?: boolean;
+      }) => {
+        await auditCmd({
+          org: opts.org,
+          project: opts.project,
+          format: opts.format,
+          sample: opts.sample,
+          deleteDangling: opts.deleteDangling,
+          yes: opts.yes,
+        });
+      },
+    );
 
   program
     .command("rebuild-bindings")

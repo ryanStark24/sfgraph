@@ -12,6 +12,10 @@ function fakeResult(alias: string, durationMs = 0): LiveIngestResult {
     parseErrors: 0,
     deletions: 0,
     durationMs,
+    crossFlavorEdges: 0,
+    arityResolved: 0,
+    flowMethodsResolved: 0,
+    danglingEdges: 0,
   };
 }
 
