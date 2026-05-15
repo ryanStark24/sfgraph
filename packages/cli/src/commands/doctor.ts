@@ -210,7 +210,12 @@ function checkOrgDatabases(
         db.close();
       }
     } catch (e) {
-      failures.push(`${f}: ${(e as Error).message.split("\n")[0]}`);
+      // Surface the full multi-line error message — better-sqlite3 ABI
+      // mismatch errors put the salient detail on lines 2-4, and the
+      // single-line truncation made every failure look identical even
+      // when the root cause varied.
+      const fullMsg = (e as Error).message.replace(/\n/g, "\n        ");
+      failures.push(`${f}:\n        ${fullMsg}`);
     }
   }
   if (failures.length > 0) {
