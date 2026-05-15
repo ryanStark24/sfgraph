@@ -53,17 +53,23 @@ export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>)
 }
 
 /**
- * Parallel merge: every input iterable is advanced concurrently. Each call to
- * `.next()` is fired in parallel; `Promise.race` returns whichever yields
- * first. Back-pressure stays per-iter because each underlying extractor
- * funnels through its own Bottleneck pool (Tooling/Metadata/Data) — so two
- * extractors on the *same* pool queue against each other while extractors on
- * *different* pools run truly in parallel.
+ * Parallel merge over a BOUNDED number of concurrent iterators. Drains
+ * `iters` in waves of at most `concurrency` at a time — within a wave the
+ * iterators race via `Promise.race` for maximum throughput, but no more
+ * than `concurrency` are ever live simultaneously.
  *
- * This is the dominant perf lever for ingest: serial drain (the original
- * `mergeAsyncIterables`) left two of the three pools idle while a third was
- * saturated, e.g. while Security/Profiles drained the Metadata pool, Apex
- * (Tooling) and Vlocity (Data) sat at 0%.
+ * Bounding matters for ingest robustness: running all ~60 source iterators
+ * concurrently caused silent native aborts at ~30s on macOS 26+, almost
+ * certainly from cumulative jsforce/libuv state (HTTP agent pool, response
+ * handlers in flight, etc.) exceeding some internal threshold. With a
+ * bounded wave size, each wave completes and its state is GC'd before the
+ * next wave starts — keeps total in-flight state flat at any moment.
+ *
+ * Default concurrency = 6: large enough for the three rate-limit pools
+ * (Tooling 5 / Metadata 5 / Data 10) to all be saturated by some wave
+ * member, small enough that cumulative HTTP/jsforce state stays bounded.
+ * Override via `SFGRAPH_SOURCE_CONCURRENCY=<n>` (1 = strictly sequential,
+ * 64 = original unbounded).
  *
  * Output ordering is non-deterministic. `live-ingest`'s processOne is
  * order-independent (idempotent per-record upserts), so this is safe.
@@ -71,9 +77,23 @@ export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>)
 export async function* mergeAsyncIterablesParallel<T>(
   ...iters: Array<AsyncIterable<T>>
 ): AsyncIterable<T> {
+  const envConcurrency = Number.parseInt(process.env.SFGRAPH_SOURCE_CONCURRENCY ?? "", 10);
+  const concurrency =
+    Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 6;
+  // Process in waves: take up to `concurrency` iterators, drain them
+  // concurrently to completion, then move to the next batch.
+  for (let waveStart = 0; waveStart < iters.length; waveStart += concurrency) {
+    const wave = iters.slice(waveStart, waveStart + concurrency);
+    yield* drainWaveConcurrently(wave);
+  }
+}
+
+/** Concurrent drain of a single wave — exactly the original Promise.race
+ *  pattern, now scoped to one bounded batch instead of all iterators. */
+async function* drainWaveConcurrently<T>(
+  iters: Array<AsyncIterable<T>>,
+): AsyncIterable<T> {
   const iterators = iters.map((it) => it[Symbol.asyncIterator]());
-  // For each live iterator, hold an in-flight `.next()` promise tagged with
-  // its index so we know which one to refill after a yield.
   type Tagged = Promise<{ idx: number; result: IteratorResult<T> }>;
   const pending = new Map<number, Tagged>();
   const advance = (idx: number): void => {
@@ -83,14 +103,12 @@ export async function* mergeAsyncIterablesParallel<T>(
       idx,
       it.next().then(
         (result) => ({ idx, result }),
-        // Swallow per-iter rejections at this layer — the failSoft() wrapper
-        // around each source already records the error and ends the stream
-        // gracefully. Anything that reaches here is unexpected; mark the
+        // Per-iter rejections are handled by the failSoft() wrapper one
+        // level up. Anything that reaches here is unexpected; mark the
         // iter done so the outer race makes forward progress.
-        (err) => ({
+        () => ({
           idx,
           result: { value: undefined as unknown as T, done: true } as IteratorResult<T>,
-          err,
         }),
       ),
     );
