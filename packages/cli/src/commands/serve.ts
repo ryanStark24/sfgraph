@@ -9,14 +9,33 @@ export interface ServeOpts {
 }
 
 /**
- * Find PIDs holding the given TCP port on loopback. macOS / Linux only —
- * Windows uses a different toolchain (`netstat -ano` + tasklist) and we
- * skip the auto-kill there. Returns an empty list on Windows or if the
- * probe fails, which triggers the normal EADDRINUSE error path.
+ * Find PIDs holding the given TCP port in LISTEN state.
+ *   macOS / Linux: `lsof -ti tcp:<port> -sTCP:LISTEN`
+ *   Windows:      `netstat -ano` filtered to LISTENING lines on `:<port>`
+ * Returns an empty list if the probe fails, which triggers the normal
+ * EADDRINUSE error path (sane fallback — we never want this helper to
+ * raise into the user's error stream).
  */
 function pidsOnPort(port: number): number[] {
-  if (platform() === "win32") return [];
   try {
+    if (platform() === "win32") {
+      const r = spawnSync("netstat", ["-ano"], { encoding: "utf8" });
+      if (r.status !== 0 || !r.stdout) return [];
+      const pids = new Set<number>();
+      // Lines look like:  TCP    127.0.0.1:7777    0.0.0.0:0    LISTENING    1234
+      // Match the trailing PID column on rows whose local address ends in
+      // `:<port>` and whose state is LISTENING. The `:port` suffix anchor
+      // matters — without it, a remote-side port match would false-positive.
+      const re = new RegExp(`\\s+TCP\\s+\\S+:${port}\\s+\\S+\\s+LISTENING\\s+(\\d+)`);
+      for (const line of r.stdout.split(/\r?\n/)) {
+        const m = re.exec(line);
+        if (m?.[1]) {
+          const pid = Number.parseInt(m[1], 10);
+          if (Number.isFinite(pid) && pid > 0) pids.add(pid);
+        }
+      }
+      return [...pids];
+    }
     const r = spawnSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
     if (r.status !== 0 || !r.stdout) return [];
     return r.stdout
@@ -29,14 +48,31 @@ function pidsOnPort(port: number): number[] {
 }
 
 /**
- * Send SIGTERM to each pid, wait briefly, then SIGKILL any that survived.
- * We only do this for PIDs we identified as listening on OUR port — never a
- * blind kill. Self-PID is filtered out as a safety belt.
+ * Terminate each pid.
+ *   Unix:    SIGTERM, brief grace period, then SIGKILL any survivors.
+ *   Windows: `taskkill /F /PID <pid>` — Windows has no SIGTERM/SIGKILL
+ *            distinction; TerminateProcess is the only primitive. /F
+ *            forces termination; without it, the call only delivers a
+ *            WM_CLOSE that GUI-less processes ignore.
+ * We only kill PIDs we identified as listening on OUR port — never a blind
+ * kill. Self-PID is filtered out as a safety belt.
  */
 async function killPids(pids: number[]): Promise<void> {
   const self = process.pid;
   const targets = pids.filter((p) => p !== self);
   if (targets.length === 0) return;
+  if (platform() === "win32") {
+    for (const p of targets) {
+      try {
+        spawnSync("taskkill", ["/F", "/PID", String(p)], { stdio: "ignore" });
+      } catch {
+        /* already gone or insufficient permissions */
+      }
+    }
+    // One tick so Windows releases the TCP bind before we retry listen.
+    await new Promise((r) => setTimeout(r, 250));
+    return;
+  }
   for (const p of targets) {
     try {
       process.kill(p, "SIGTERM");

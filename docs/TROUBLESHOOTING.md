@@ -24,7 +24,11 @@ Every failed check prints a copy-paste fix command. The sections below explain t
 sfgraph rebuild-bindings
 ```
 
-Auto-detects npm vs pnpm, rebuilds the binding against the current Node, verifies it loads. Requires a C++ toolchain (macOS: `xcode-select --install`; linux: `build-essential` + `python3`).
+Auto-detects npm vs pnpm, rebuilds the binding against the current Node, verifies it loads. Requires a C++ toolchain:
+
+- **macOS**: `xcode-select --install`
+- **Linux**: `apt install build-essential python3` (Debian/Ubuntu) or distro equivalent
+- **Windows**: install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the **"Desktop development with C++"** workload, then restart your shell so `cl.exe` is on PATH. Alternatively, install Node via [`nvm-windows`](https://github.com/coreybutler/nvm-windows) and pick a Node major that already has a `better-sqlite3` prebuilt — skips the source-compile entirely.
 
 If the rebuild works but the **IDE** still errors, the IDE's Node ABI differs from your shell's. Pin the IDE child to your shell's Node:
 

@@ -8,12 +8,22 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Cross-platform matrix: ubuntu (the dev box default), macOS (binding
+    # code-signing is darwin-only and the postinstall verifier exercises
+    # that path), Windows (npx.cmd / sf.cmd / taskkill toolchain paths).
+    # If any of these break in a PR, we want to know before publish.
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node: [20, 22]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Pull LFS objects so the vendored MiniLM ONNX weights resolve
+          # for model-loader tests on all three platforms.
+          lfs: true
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.3
