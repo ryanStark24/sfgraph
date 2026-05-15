@@ -61,6 +61,7 @@ export class SqliteVectorStore implements VectorStore {
     if (this.ownsDb) {
       this.db.pragma("journal_mode = WAL");
       this.db.pragma("synchronous = NORMAL");
+      this.db.pragma("wal_autocheckpoint = 256");
     }
     if (!this.opts.skipMigrations) {
       const backupDir =

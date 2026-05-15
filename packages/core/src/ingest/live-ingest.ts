@@ -505,10 +505,23 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           );
           lastTickAt = Date.now();
         }
+        // Periodic WAL checkpoint — every 500 records, flush WAL to main
+        // DB so it never accumulates more than a few hundred pages between
+        // auto-checkpoints. Cheap (PASSIVE, no locking) and prevents the
+        // big native-binding checkpoint that has been silently aborting
+        // the process around the object-phase boundary.
+        if (progressCount % 500 === 0) {
+          const gs = graph as unknown as { checkpoint?: () => boolean };
+          if (typeof gs.checkpoint === "function") gs.checkpoint();
+        }
       }
       console.log(
         `ingest: fan-out complete (${progressCount} members in ${Math.round((Date.now() - fanOutStart) / 1000)}s)`,
       );
+      // Final checkpoint after fan-out so post-fan-out work (cross-flavor
+      // resolver, snapshot create, etc.) starts with a clean WAL.
+      const gs = graph as unknown as { checkpoint?: () => boolean };
+      if (typeof gs.checkpoint === "function") gs.checkpoint();
     } catch (e) {
       // Should not happen with fail-soft sources, but keep the safety net.
       logger.warn("live-ingest: bulkRetrieve stream aborted", {

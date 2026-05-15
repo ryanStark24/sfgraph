@@ -105,6 +105,16 @@ export class SqliteGraphStore implements GraphStore {
     this.db.pragma("temp_store = MEMORY");
     this.db.pragma("mmap_size = 268435456");
     this.db.pragma("cache_size = -200000");
+    // Smaller WAL auto-checkpoint threshold (default 1000 pages = ~4MB).
+    // With large ingests producing 10-20K inserts during the object phase,
+    // the WAL hits the default threshold right around the 30-second mark
+    // and triggers one big checkpoint inside the native binding. Under
+    // sustained write pressure that checkpoint has been observed to
+    // silently abort the process on macOS 26+ (no JS handler can intercept
+    // — the binding terminates natively). 256 pages = ~1MB per checkpoint:
+    // each checkpoint completes in <50ms, runs more frequently, and never
+    // accumulates the page-lock pressure of a single multi-MB flush.
+    this.db.pragma("wal_autocheckpoint = 256");
     const backupDir =
       this.opts.backupDir ??
       (this.opts.dbPath === ":memory:"
@@ -119,11 +129,38 @@ export class SqliteGraphStore implements GraphStore {
     this.initialized = true;
   }
 
+  /**
+   * Flush WAL to the main DB file with a PASSIVE checkpoint. Cheap (no
+   * locking against readers) and lets the auto-checkpoint mechanism stay
+   * ahead of write pressure. Callers should invoke this at major phase
+   * boundaries (between extractors, before long-running parses) so the
+   * WAL never grows beyond a few hundred pages.
+   *
+   * Returns true if checkpoint succeeded, false on any error (best-effort).
+   */
+  checkpoint(): boolean {
+    if (this.closed) return false;
+    try {
+      this.db.pragma("wal_checkpoint(PASSIVE)");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     if (this.ownsDb) {
       try {
+        // Final TRUNCATE checkpoint on close: flushes WAL fully and
+        // truncates the WAL file to zero. Without this the .sqlite-wal
+        // sidecar can persist between runs at multi-MB size.
+        try {
+          this.db.pragma("wal_checkpoint(TRUNCATE)");
+        } catch {
+          /* ignore — close still proceeds */
+        }
         this.db.close();
       } catch {
         // already closed by another path — idempotent
