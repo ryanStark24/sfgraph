@@ -8,6 +8,18 @@ const BATCH = 10;
  * Generic metadata.list + metadata.read iterator for any type that doesn't
  * have a dedicated extractor. Failures are silent (type may simply not be
  * retrievable in this org).
+ *
+ * **Managed-package handling**. metadata.list returns items with a
+ * `namespacePrefix` field. For managed-package items, Salesforce returns
+ * `<hidden>` / `(hidden)` content on metadata.read — but the read call
+ * itself often takes 5-15 seconds per call (Salesforce has to process and
+ * redact the response for every file). For an org with hundreds of
+ * managed metadata items, that adds tens of minutes to ingest for content
+ * that's unusable anyway. We split items into user-namespace (read
+ * normally) and managed (emit metadata-only stub, skip read) — same
+ * pattern as the LWC extractor's managed-package handling.
+ *
+ * Override: SFGRAPH_INCLUDE_MANAGED=1 (global) reads managed items too.
  */
 export async function* iterGenericMetadata(
   conn: any,
@@ -21,7 +33,34 @@ export async function* iterGenericMetadata(
   } catch {
     return;
   }
-  const items = list.filter((l) => l?.fullName);
+  const allItems = list.filter((l) => l?.fullName);
+  const includeManaged = process.env.SFGRAPH_INCLUDE_MANAGED === "1";
+  // Split into managed (skip read, emit stub) vs user-namespace (read normally).
+  const managed: any[] = [];
+  const items: any[] = [];
+  for (const item of allItems) {
+    if (item?.namespacePrefix && !includeManaged) {
+      managed.push(item);
+    } else {
+      items.push(item);
+    }
+  }
+  // Emit metadata-only stubs for managed-package items first — preserves
+  // inventory signal (these still appear in list_orgs / cross_org_diff)
+  // without the multi-second-per-call metadata.read on redacted content.
+  for (const item of managed) {
+    yield {
+      ref: {
+        category: METADATA_CATEGORY.OPAQUE,
+        memberType: type,
+        memberName: String(item.fullName),
+        lastModifiedAt: item.lastModifiedDate ? String(item.lastModifiedDate) : null,
+        sourceUri: `sf://${orgId}/${type}/${item.fullName}`,
+        namespace: item.namespacePrefix ?? null,
+      },
+      content: JSON.stringify({ fullName: item.fullName, managed: true }),
+    };
+  }
   // Fan out batch reads in parallel; the Metadata pool throttles concurrency.
   // Per-batch errors are swallowed (some metadata types are list-able but
   // not read-able with the running user's permissions).
