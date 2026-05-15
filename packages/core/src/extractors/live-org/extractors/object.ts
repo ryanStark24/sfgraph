@@ -115,10 +115,44 @@ const SYSTEM_SKIP_NAMES = new Set([
   "CronTrigger",
   "CronJobDetail",
   "BatchApexErrorEvent",
+  // Auth / SSO config (internal platform tables, not referenced in user
+  // code by SObject name)
+  "AuditTrailFileExport",
+  "AuthConfig",
+  "AuthConfigProviders",
+  "AuthFormRequestRecord",
+  "AuthProvParamFwdAllowlist",
+  "AuthProviderScope",
+  "TwoFactorMethodsInfo",
+  "TwoFactorTempCode",
+  "SamlSsoConfig",
+  "ConnectedAppPlugin",
+  "OauthCustomScope",
+  "OauthToken",
+  // Async / events plumbing
+  "AsyncOperationLog",
+  "AsyncOperationStatus",
+  "AsyncOperationEvent",
+  "AsyncOperationResult",
+  // Aura framework internals (the Aura *bundle* metadata is captured via
+  // the generic-metadata path; these SObjects are platform internals)
+  "AuraDefinitionInfo",
+  "AuraDefinitionBundleInfo",
   // High-volume system tables that are queryable but have hundreds of
   // fields; never useful as graph dependency targets.
   "PlatformAction",
   "ListView",
+  "PicklistValueInfo",
+  "RecentlyViewed",
+  "UserRecordAccess",
+  "TenantUsageEntitlement",
+  "EntityParticle",
+  "FieldDefinition",
+  "RelationshipDomain",
+  "RelationshipInfo",
+  "Organization",
+  "ColorDefinition",
+  "IconDefinition",
 ]);
 
 function shouldIncludeSObject(s: SObjectGlobal): boolean {
