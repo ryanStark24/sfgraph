@@ -1,6 +1,6 @@
 import { METADATA_CATEGORY, type MetadataCategory } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleData } from "../rate-limit.js";
+import { scheduleData, soqlWithTimeout } from "../rate-limit.js";
 
 interface ORow {
   Id?: string;
@@ -76,7 +76,9 @@ async function fetchElementsByProcess(
     // a Tooling object. Route via conn.query (regular SOQL) on the data pool.
     let res: { records?: OElementRow[] } | null = null;
     try {
-      res = (await scheduleData(() => conn.query(soql))) as {
+      res = (await scheduleData(() =>
+        soqlWithTimeout(conn.query(soql), "data OmniProcessElement"),
+      )) as {
         records?: OElementRow[];
       } | null;
     } catch {
@@ -118,7 +120,9 @@ export async function* iterOmnistudio(conn: any): AsyncIterable<RawMember> {
   const settled = await Promise.allSettled(
     QUERIES.map(async (q) => {
       try {
-        const res = (await scheduleData(() => conn.query(q.soql))) as {
+        const res = (await scheduleData(() =>
+          soqlWithTimeout(conn.query(q.soql), `data ${q.memberType}`),
+        )) as {
           records?: ORow[];
         } | null;
         return { q, res, err: null as Error | null };

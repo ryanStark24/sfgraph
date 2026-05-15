@@ -1,7 +1,7 @@
 import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import { METADATA_CATEGORY, type MetadataCategory } from "../../domain/index.js";
 import type { MemberRef } from "../interfaces/metadata-source.js";
-import { scheduleQuery } from "./rate-limit.js";
+import { scheduleQuery, soqlWithTimeout } from "./rate-limit.js";
 
 interface SourceMemberRow {
   Id: string;
@@ -40,7 +40,9 @@ export async function* iterChanges(
   const since = sinceIso.replace(/'/g, "");
   const baseSoql = `SELECT Id, MemberType, MemberName, RevisionCounter, IsNameObsolete, LastModifiedDate FROM SourceMember WHERE LastModifiedDate > ${since} ORDER BY LastModifiedDate ASC`;
 
-  let result: any = await scheduleQuery(() => conn.tooling.query(baseSoql));
+  let result: any = await scheduleQuery(() =>
+    soqlWithTimeout(conn.tooling.query(baseSoql), "tooling SourceMember"),
+  );
   while (result) {
     const records = (result.records ?? []) as SourceMemberRow[];
     for (const r of records) {
@@ -58,6 +60,8 @@ export async function* iterChanges(
     if (result.done || !result.nextRecordsUrl || typeof conn.tooling.queryMore !== "function") {
       break;
     }
-    result = await scheduleQuery(() => conn.tooling.queryMore(result.nextRecordsUrl));
+    result = await scheduleQuery(() =>
+      soqlWithTimeout(conn.tooling.queryMore(result.nextRecordsUrl), "tooling SourceMember more"),
+    );
   }
 }

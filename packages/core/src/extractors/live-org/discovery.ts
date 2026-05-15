@@ -1,4 +1,4 @@
-import { scheduleMetadata } from "./rate-limit.js";
+import { METADATA_DESCRIBE_TIMEOUT_MS, scheduleMetadata, withTimeout } from "./rate-limit.js";
 
 export interface DescribedType {
   xmlName: string; // 'ApexClass', 'Profile', 'OmniProcess', ...
@@ -17,9 +17,13 @@ export async function discoverMetadataTypes(
   conn: any,
   apiVersion?: string,
 ): Promise<DescribedType[]> {
-  const result = await scheduleMetadata(async () => {
-    return await conn.metadata.describe(apiVersion);
-  });
+  const result = (await scheduleMetadata(() =>
+    withTimeout<{ metadataObjects?: unknown[] }>(
+      conn.metadata.describe(apiVersion),
+      METADATA_DESCRIBE_TIMEOUT_MS,
+      "metadata.describe",
+    ),
+  )) as { metadataObjects?: unknown[] } | null | undefined;
   const arr: any[] = Array.isArray(result?.metadataObjects) ? result.metadataObjects : [];
   return arr
     .map((o) => ({

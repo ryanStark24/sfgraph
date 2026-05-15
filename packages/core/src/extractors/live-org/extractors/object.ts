@@ -1,7 +1,12 @@
 import { XMLBuilder } from "fast-xml-parser";
 import { METADATA_CATEGORY } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleData, scheduleQuery } from "../rate-limit.js";
+import {
+  DESCRIBE_GLOBAL_TIMEOUT_MS,
+  scheduleData,
+  scheduleQuery,
+  soqlWithTimeout,
+} from "../rate-limit.js";
 
 const xml = new XMLBuilder({ ignoreAttributes: false, format: false, suppressEmptyNode: true });
 
@@ -368,7 +373,9 @@ async function fetchEntityDefinitionClassification(
   const SOQL =
     "SELECT QualifiedApiName, IsCustomizable, IsApexTriggerable, IsDeprecatedAndHidden, IsCustomSetting FROM EntityDefinition";
   try {
-    let res = (await scheduleQuery(() => conn.tooling.query(SOQL))) as {
+    let res = (await scheduleQuery(() =>
+      soqlWithTimeout(conn.tooling.query(SOQL), "tooling EntityDefinition page1"),
+    )) as {
       records?: EntityDefRow[];
       done?: boolean;
       nextRecordsUrl?: string;
@@ -392,7 +399,9 @@ async function fetchEntityDefinitionClassification(
     while (res && res.done === false && res.nextRecordsUrl) {
       const url = res.nextRecordsUrl;
       try {
-        res = (await scheduleQuery(() => conn.tooling.queryMore(url))) as {
+        res = (await scheduleQuery(() =>
+          soqlWithTimeout(conn.tooling.queryMore(url), "tooling EntityDefinition queryMore"),
+        )) as {
           records?: EntityDefRow[];
           done?: boolean;
           nextRecordsUrl?: string;
@@ -532,7 +541,9 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
 
   let global: { sobjects?: SObjectGlobal[] } | null = null;
   try {
-    global = (await scheduleQuery(() => conn.describeGlobal())) as {
+    global = (await scheduleQuery(() =>
+      soqlWithTimeout(conn.describeGlobal(), "describeGlobal", DESCRIBE_GLOBAL_TIMEOUT_MS),
+    )) as {
       sobjects?: SObjectGlobal[];
     };
   } catch {

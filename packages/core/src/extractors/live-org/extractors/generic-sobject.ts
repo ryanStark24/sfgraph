@@ -1,6 +1,6 @@
 import { METADATA_CATEGORY } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleData } from "../rate-limit.js";
+import { scheduleData, soqlWithTimeout } from "../rate-limit.js";
 
 /**
  * Generic SOQL iterator for SObject-backed types (CMDT records, etc.).
@@ -15,7 +15,9 @@ export async function* iterGenericSObject(
   const soql = `SELECT ${fields.join(", ")} FROM ${sobject}`;
   let result: { records?: any[] } | null = null;
   try {
-    result = (await scheduleData(() => conn.query(soql))) as { records?: any[] } | null;
+    result = (await scheduleData(() =>
+      soqlWithTimeout(conn.query(soql), `data ${sobject}`),
+    )) as { records?: any[] } | null;
   } catch {
     return;
   }

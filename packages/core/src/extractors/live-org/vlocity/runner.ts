@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 import { METADATA_CATEGORY } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
 import type { OrgCapabilities } from "../capabilities.js";
-import { scheduleQuery } from "../rate-limit.js";
+import { scheduleQuery, soqlWithTimeout } from "../rate-limit.js";
 
 export interface VlocityTypeDef {
   vlocityDataPackType: string;
@@ -182,7 +182,9 @@ async function fetchChildrenByParent(
     const soql = spec.soql(namespace, idList);
     let res: { records?: VElementRow[] } | null = null;
     try {
-      res = (await scheduleQuery(() => conn.query(soql))) as { records?: VElementRow[] } | null;
+      res = (await scheduleQuery(() =>
+        soqlWithTimeout(conn.query(soql), `vlocity ${vdpType} children (${namespace})`),
+      )) as { records?: VElementRow[] } | null;
     } catch {
       continue;
     }
@@ -218,48 +220,91 @@ export async function* iterVlocityRecords(
   const registry = loadVlocityRegistry();
   const entries = Object.values(registry);
 
+  // Flatten (namespace, typeDef) into one task list. Each task does its
+  // own SOQL (with per-call timeout, no longer can hang forever on a
+  // dead socket) + optional child fetch. Yields are NOT order-preserving
+  // across tasks — that's fine, downstream merge is order-independent.
+  type Task = { namespace: string; typeDef: (typeof entries)[number] };
+  const tasks: Task[] = [];
   for (const namespace of namespaces) {
-    for (const typeDef of entries) {
-      const baseSoql = typeDef.query.split("%vlocity_namespace%").join(namespace);
-      const soql = enrichSoql(baseSoql, typeDef.vlocityDataPackType, namespace);
-      let res: { records?: VRow[] } | null = null;
-      try {
-        res = (await scheduleQuery(() => conn.query(soql))) as { records?: VRow[] } | null;
-      } catch {
-        continue;
-      }
-      const records = res?.records ?? [];
-      // Two-pass for types with element children: collect parent Ids,
-      // batch-fetch children, then yield enriched parents.
-      const childSpec = CHILD_FETCHES[typeDef.vlocityDataPackType];
-      const childrenByParent = childSpec
-        ? await fetchChildrenByParent(
-            conn,
-            typeDef.vlocityDataPackType,
-            namespace,
-            records.map((r) => String(r.Id ?? "")).filter((id) => id.length > 0),
-          )
-        : new Map<string, Array<Record<string, unknown>>>();
+    for (const typeDef of entries) tasks.push({ namespace, typeDef });
+  }
 
-      for (const r of records) {
-        const name = String(r.Name ?? r.Id ?? "");
-        const normalised = normaliseRow(r as Record<string, unknown>, namespace);
-        if (childSpec && r.Id) {
-          const kids = childrenByParent.get(String(r.Id));
-          if (kids && kids.length > 0) normalised[childSpec.attachAs] = kids;
-        }
-        yield {
-          ref: {
-            category: METADATA_CATEGORY.VLOCITY,
-            memberType: typeDef.vlocityDataPackType,
-            memberName: name,
-            lastModifiedAt: r.LastModifiedDate ?? "",
-            sourceUri: `sf://${orgId}/${typeDef.vlocityDataPackType}/${name}`,
-            namespace,
-          },
-          content: JSON.stringify(normalised),
-        };
+  type Settled = { idx: number; t: Task; records: VRow[]; childrenByParent: Map<string, Array<Record<string, unknown>>> };
+
+  const runTask = async (idx: number, t: Task): Promise<Settled> => {
+    const baseSoql = t.typeDef.query.split("%vlocity_namespace%").join(t.namespace);
+    const soql = enrichSoql(baseSoql, t.typeDef.vlocityDataPackType, t.namespace);
+    let res: { records?: VRow[] } | null = null;
+    try {
+      res = (await scheduleQuery(() =>
+        soqlWithTimeout(
+          conn.query(soql),
+          `vlocity ${t.typeDef.vlocityDataPackType} (${t.namespace})`,
+        ),
+      )) as { records?: VRow[] } | null;
+    } catch {
+      // Per-type errors are silent — the type may not exist in this org
+      // (different Vlocity industry namespaces install different DataPack
+      // types), or the call timed out on a dead socket. Either way, skip
+      // this type and let peers continue.
+      return { idx, t, records: [], childrenByParent: new Map() };
+    }
+    const records = res?.records ?? [];
+    const childSpec = CHILD_FETCHES[t.typeDef.vlocityDataPackType];
+    const childrenByParent = childSpec
+      ? await fetchChildrenByParent(
+          conn,
+          t.typeDef.vlocityDataPackType,
+          t.namespace,
+          records.map((r) => String(r.Id ?? "")).filter((id) => id.length > 0),
+        )
+      : new Map<string, Array<Record<string, unknown>>>();
+    return { idx, t, records, childrenByParent };
+  };
+
+  // Sliding window of 4 in-flight tasks. Matches the BATCH_WINDOW pattern
+  // used by security/flow/integration/generic-metadata extractors. Yields
+  // are streamed as each task returns — empty types (~1s response, 0
+  // records) don't park the slot for slow types; slow types fail their
+  // own per-query timeout (60s) without dragging peers down.
+  const WINDOW = 4;
+  const inFlight = new Map<number, Promise<Settled>>();
+  let nextIdx = 0;
+  while (inFlight.size < WINDOW && nextIdx < tasks.length) {
+    const idx = nextIdx++;
+    const taskRef = tasks[idx];
+    if (!taskRef) continue;
+    inFlight.set(idx, runTask(idx, taskRef));
+  }
+  while (inFlight.size > 0) {
+    const settled = await Promise.race(inFlight.values());
+    inFlight.delete(settled.idx);
+    if (nextIdx < tasks.length) {
+      const idx = nextIdx++;
+      const taskRef = tasks[idx];
+      if (taskRef) inFlight.set(idx, runTask(idx, taskRef));
+    }
+    const { t, records, childrenByParent } = settled;
+    const childSpec = CHILD_FETCHES[t.typeDef.vlocityDataPackType];
+    for (const r of records) {
+      const name = String(r.Name ?? r.Id ?? "");
+      const normalised = normaliseRow(r as Record<string, unknown>, t.namespace);
+      if (childSpec && r.Id) {
+        const kids = childrenByParent.get(String(r.Id));
+        if (kids && kids.length > 0) normalised[childSpec.attachAs] = kids;
       }
+      yield {
+        ref: {
+          category: METADATA_CATEGORY.VLOCITY,
+          memberType: t.typeDef.vlocityDataPackType,
+          memberName: name,
+          lastModifiedAt: r.LastModifiedDate ?? "",
+          sourceUri: `sf://${orgId}/${t.typeDef.vlocityDataPackType}/${name}`,
+          namespace: t.namespace,
+        },
+        content: JSON.stringify(normalised),
+      };
     }
   }
 }

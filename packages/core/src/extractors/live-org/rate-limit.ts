@@ -37,6 +37,26 @@ export function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promis
  *  dropping the whole batch. */
 export const METADATA_LIST_TIMEOUT_MS = 30_000;
 export const METADATA_READ_TIMEOUT_MS = 120_000;
+/** Per-SOQL-call ceiling. 60s covers legitimate slow queries (large
+ *  SObject describes via Tooling, OmniProcessElement paged fetches on
+ *  Vlocity-heavy orgs) while still catching dead-socket hangs fast.
+ *  Used by `soqlWithTimeout` below — every raw conn.query / conn.tooling.query
+ *  call should be wrapped, or the call hangs forever when the underlying
+ *  jsforce HTTP socket is half-open (a real failure mode on corporate
+ *  VPNs / NATs with idle eviction). */
+export const SOQL_TIMEOUT_MS = 60_000;
+/** Initial describe* probes are tiny but on a wedged connection they
+ *  still need to fail fast or the whole ingest never starts. */
+export const DESCRIBE_GLOBAL_TIMEOUT_MS = 60_000;
+export const METADATA_DESCRIBE_TIMEOUT_MS = 60_000;
+
+/** Helper: wrap any `conn.query(...)` / `conn.tooling.query(...)` call
+ *  with a SOQL-flavoured withTimeout. Centralizes the timeout value so
+ *  callers don't drift; centralizes the label format so failures are
+ *  greppable. */
+export function soqlWithTimeout<T>(p: Promise<T>, label: string, ms = SOQL_TIMEOUT_MS): Promise<T> {
+  return withTimeout(p, ms, `soql ${label}`);
+}
 
 /**
  * Resilient metadata.read for a batch of items, with adaptive splitting on

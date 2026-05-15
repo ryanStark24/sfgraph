@@ -1,6 +1,6 @@
 import { METADATA_CATEGORY } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleQuery } from "../rate-limit.js";
+import { scheduleQuery, soqlWithTimeout } from "../rate-limit.js";
 
 interface ToolingClassRow {
   Id: string;
@@ -47,10 +47,14 @@ export async function* iterApex(conn: any): AsyncIterable<RawMember> {
   // doesn't poison the other's promise into an unhandled rejection (which
   // crashes node 24+).
   const [classesS, triggersS] = await Promise.allSettled([
-    scheduleQuery(() => conn.tooling.query(APEX_CLASS_SOQL)) as Promise<{
+    scheduleQuery(() =>
+      soqlWithTimeout(conn.tooling.query(APEX_CLASS_SOQL), "tooling ApexClass"),
+    ) as Promise<{
       records?: ToolingClassRow[];
     } | null>,
-    scheduleQuery(() => conn.tooling.query(APEX_TRIGGER_SOQL)) as Promise<{
+    scheduleQuery(() =>
+      soqlWithTimeout(conn.tooling.query(APEX_TRIGGER_SOQL), "tooling ApexTrigger"),
+    ) as Promise<{
       records?: ToolingTriggerRow[];
     } | null>,
   ]);
@@ -109,7 +113,9 @@ export async function* iterApex(conn: any): AsyncIterable<RawMember> {
 export async function iterOne(conn: any, name: string): Promise<RawMember | null> {
   const escaped = name.replace(/'/g, "\\'");
   const tryQuery = async (soql: string, type: "ApexClass" | "ApexTrigger") => {
-    const res = (await scheduleQuery(() => conn.tooling.query(soql))) as {
+    const res = (await scheduleQuery(() =>
+      soqlWithTimeout(conn.tooling.query(soql), `tooling ${type} ${name}`),
+    )) as {
       records?: ToolingClassRow[];
     } | null;
     const r = res?.records?.[0];

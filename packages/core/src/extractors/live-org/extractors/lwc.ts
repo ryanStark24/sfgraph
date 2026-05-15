@@ -1,6 +1,6 @@
 import { METADATA_CATEGORY } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleQuery } from "../rate-limit.js";
+import { scheduleQuery, soqlWithTimeout } from "../rate-limit.js";
 
 interface BundleRow {
   Id: string;
@@ -17,8 +17,11 @@ interface ResourceRow {
 export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
   const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
   const bundles = (await scheduleQuery(() =>
-    conn.tooling.query(
-      "SELECT Id, DeveloperName, NamespacePrefix, LastModifiedDate FROM LightningComponentBundle",
+    soqlWithTimeout(
+      conn.tooling.query(
+        "SELECT Id, DeveloperName, NamespacePrefix, LastModifiedDate FROM LightningComponentBundle",
+      ),
+      "tooling LightningComponentBundle list",
     ),
   )) as { records?: BundleRow[] } | null;
   const allBundles = bundles?.records ?? [];
@@ -86,8 +89,11 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
     try {
       const escapedId = b.Id.replace(/'/g, "\\'");
       const resources = (await scheduleQuery(() =>
-        conn.tooling.query(
-          `SELECT FilePath, Source FROM LightningComponentResource WHERE LightningComponentBundleId = '${escapedId}'`,
+        soqlWithTimeout(
+          conn.tooling.query(
+            `SELECT FilePath, Source FROM LightningComponentResource WHERE LightningComponentBundleId = '${escapedId}'`,
+          ),
+          `tooling LightningComponentResource ${b.DeveloperName}`,
         ),
       )) as { records?: ResourceRow[] } | null;
       let totalSourceBytes = 0;

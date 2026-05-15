@@ -28,9 +28,36 @@ export interface OrgCapabilities {
   sourceTracking: boolean;
 }
 
+// All capability probes use a SHORT 15s timeout — they're tiny single-row
+// queries against well-known SObjects, and probeCapabilities is the very
+// first thing every ingest does. If the connection's dead at this stage,
+// we want to surface that within seconds, not hang the whole startup
+// hoping for a response that's never coming.
+const CAPS_PROBE_TIMEOUT_MS = 15_000;
+async function withCapsTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`capabilities probe ${label} timeout (${CAPS_PROBE_TIMEOUT_MS}ms)`)),
+      CAPS_PROBE_TIMEOUT_MS,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
 async function safeQuery(conn: any, soql: string): Promise<{ records?: unknown[] } | null> {
   try {
-    return (await conn.query(soql)) as { records?: unknown[] };
+    return (await withCapsTimeout(conn.query(soql), `query ${soql.slice(0, 40)}`)) as {
+      records?: unknown[];
+    };
   } catch {
     return null;
   }
@@ -38,7 +65,10 @@ async function safeQuery(conn: any, soql: string): Promise<{ records?: unknown[]
 
 async function safeToolingQuery(conn: any, soql: string): Promise<{ records?: unknown[] } | null> {
   try {
-    return (await conn.tooling.query(soql)) as { records?: unknown[] };
+    return (await withCapsTimeout(
+      conn.tooling.query(soql),
+      `tooling ${soql.slice(0, 40)}`,
+    )) as { records?: unknown[] };
   } catch {
     return null;
   }
@@ -47,7 +77,7 @@ async function safeToolingQuery(conn: any, soql: string): Promise<{ records?: un
 async function describeExists(conn: any, name: string, useTooling = false): Promise<boolean> {
   try {
     const root = useTooling ? conn.tooling : conn;
-    await root.sobject(name).describe();
+    await withCapsTimeout(root.sobject(name).describe(), `describe ${name}`);
     return true;
   } catch {
     return false;
