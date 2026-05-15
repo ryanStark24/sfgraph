@@ -70,10 +70,106 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
       );
     }
 
+    // Track which field qnames we've already emitted so the separate-file
+    // loop below doesn't duplicate the inline ones.
+    const emittedFieldQnames = new Set<string>();
+
+    // Inline fields (live-org describe path). The live extractor builds a
+    // CustomObject XML with <fields> elements containing fullName/type/
+    // referenceTo/relationshipName/formula etc. The filesystem path passes
+    // fields separately via input.fields — that loop runs after this one.
+    //
+    // Without this block, every SObject ingested from a live org becomes
+    // a node with zero outgoing edges and zero CustomField children, which
+    // breaks trace_downstream / analyze_field for standard objects like
+    // Account / Contact / Opportunity.
+    const inlineFields = obj.fields
+      ? Array.isArray(obj.fields)
+        ? obj.fields
+        : [obj.fields]
+      : [];
+    for (const f of inlineFields) {
+      if (!f || typeof f !== "object") continue;
+      const fieldApi = String(f.fullName ?? f.name ?? "");
+      if (!fieldApi) continue;
+      const fieldQname = `CustomField:${apiName}.${fieldApi}`;
+      if (emittedFieldQnames.has(fieldQname)) continue;
+      emittedFieldQnames.add(fieldQname);
+      const fieldType = f.type ? String(f.type) : null;
+      const formula = f.formula ? String(f.formula) : null;
+      const required = f.required === true || f.required === "true";
+      // fast-xml-parser collapses array-of-strings differently depending on
+      // count: 0 -> undefined, 1 -> string, 2+ -> string[]. Normalise.
+      const refRaw = f.referenceTo;
+      const referenceTo: string[] = Array.isArray(refRaw)
+        ? refRaw.map((x: unknown) => String(x))
+        : refRaw
+          ? [String(refRaw)]
+          : [];
+      const relationshipName = f.relationshipName ? String(f.relationshipName) : null;
+      nodes.push(
+        makeNode(
+          ctx,
+          "CustomField",
+          fieldQname,
+          {
+            apiName: fieldApi,
+            type: fieldType,
+            formula,
+            required,
+            object: apiName,
+            referenceTo,
+            relationshipName,
+          },
+          sha256(`${fieldQname}|${fieldType ?? ""}|${formula ?? ""}|${referenceTo.join(",")}`),
+        ),
+      );
+      edges.push(makeEdge(ctx, objQname, REL_TYPES.DEFINES_FIELD, fieldQname));
+      // Lookup / Master-Detail relationships: emit one REFERENCES_OBJECT
+      // edge per target in the referenceTo array.
+      for (const target of referenceTo) {
+        if (!target) continue;
+        edges.push(
+          makeEdge(ctx, fieldQname, REL_TYPES.REFERENCES_OBJECT, `CustomObject:${target}`, {
+            ...(relationshipName ? { relationshipName } : {}),
+            ...(fieldType ? { fieldType } : {}),
+          }),
+        );
+      }
+      // Formula refs on inline-fields path too (same regex pattern the
+      // separate-file branch uses).
+      if (formula) {
+        const re = new RegExp(FORMULA_RE.source, "g");
+        let m: RegExpExecArray | null = re.exec(formula);
+        const seen = new Set<string>();
+        while (m !== null) {
+          const refObj = (m[1] ?? "").replace(/__r$/, "");
+          const refField = m[2] ?? "";
+          const key = `${refObj}.${refField}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            edges.push(
+              makeEdge(
+                ctx,
+                fieldQname,
+                REL_TYPES.READS_FIELD,
+                `CustomField:${refObj}.${refField}`,
+                { via: "formula" },
+              ),
+            );
+          }
+          m = re.exec(formula);
+        }
+      }
+    }
+
     // Fields (separate XML files in source-dir layout)
     for (const [fieldApi, fxml] of Object.entries(input.fields ?? {})) {
       const f = parseField(fieldApi, fxml);
       const fieldQname = `CustomField:${apiName}.${f.apiName}`;
+      // Skip if already emitted via the inline-fields path above.
+      if (emittedFieldQnames.has(fieldQname)) continue;
+      emittedFieldQnames.add(fieldQname);
       nodes.push(
         makeNode(
           ctx,
