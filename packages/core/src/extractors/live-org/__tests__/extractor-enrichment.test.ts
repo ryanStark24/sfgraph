@@ -31,6 +31,37 @@ async function collect(iter: AsyncIterable<RawMember>): Promise<RawMember[]> {
   return out;
 }
 
+describe("apex extractor — robustness", () => {
+  it("does NOT leak unhandled rejections when one of the two parallel queries fails", async () => {
+    // Track unhandled rejections during this test run.
+    const orphans: unknown[] = [];
+    const handler = (reason: unknown) => orphans.push(reason);
+    process.on("unhandledRejection", handler);
+    try {
+      const conn = {
+        tooling: {
+          query: async (soql: string) => {
+            if (soql.includes("FROM ApexTrigger"))
+              throw new Error("INVALID_SESSION: simulated trigger query failure");
+            return {
+              records: [{ Id: "01p9", Name: "Survivor", Body: "class Survivor {}" }],
+              done: true,
+            };
+          },
+        },
+      };
+      const members = await collect(iterApex(conn));
+      // Class results still come back even though trigger query rejected.
+      expect(members.some((m) => m.ref.memberType === "ApexClass")).toBe(true);
+      // Give microtasks a chance to flush any orphan rejections.
+      await new Promise((r) => setImmediate(r));
+    } finally {
+      process.off("unhandledRejection", handler);
+    }
+    expect(orphans).toEqual([]);
+  });
+});
+
 describe("apex extractor — apiVersion envelope", () => {
   it("emits content as a {body, metaXml} JSON envelope with apiVersion + status when present", async () => {
     const conn = {

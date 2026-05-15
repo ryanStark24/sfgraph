@@ -41,7 +41,11 @@ async function* iterType(conn: any, type: string): AsyncIterable<RawMember> {
   // hold one batch's worth of XML per inflight job (typically <2 MB total).
   const batches: MdListItem[][] = [];
   for (let i = 0; i < items.length; i += BATCH) batches.push(items.slice(i, i + BATCH));
-  const batchResults = await Promise.all(
+  // allSettled, not all: if one batch's metadata.read rejects (perm error,
+  // transient SF hiccup), the other in-flight batches must still resolve
+  // cleanly — otherwise their rejections become unhandled and crash the
+  // node process under Node 24's default rejection policy.
+  const batchResults = await Promise.allSettled(
     batches.map((slice) =>
       scheduleMetadata(() =>
         conn.metadata.read(
@@ -54,7 +58,9 @@ async function* iterType(conn: any, type: string): AsyncIterable<RawMember> {
   for (let b = 0; b < batches.length; b++) {
     const slice = batches[b];
     if (!slice) continue;
-    const reads = batchResults[b];
+    const settled = batchResults[b];
+    if (!settled || settled.status === "rejected") continue;
+    const reads = settled.value;
     const arr = Array.isArray(reads) ? reads : [reads];
     for (let j = 0; j < slice.length; j += 1) {
       const meta = slice[j];

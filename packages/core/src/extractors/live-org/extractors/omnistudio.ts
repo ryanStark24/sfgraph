@@ -106,7 +106,10 @@ async function fetchElementsByProcess(
 export async function* iterOmnistudio(conn: any): AsyncIterable<RawMember> {
   // Fire all 4 Tooling SOQL queries in parallel — they're independent and
   // the Tooling pool throttles concurrency.
-  const results = await Promise.all(
+  // Each mapped task wraps scheduleQuery in try/catch so allSettled is
+  // belt-and-braces here, but using it anyway for consistency with the
+  // other extractors and to guarantee no orphan rejection ever escapes.
+  const settled = await Promise.allSettled(
     QUERIES.map(async (q) => {
       try {
         return {
@@ -120,6 +123,9 @@ export async function* iterOmnistudio(conn: any): AsyncIterable<RawMember> {
       }
     }),
   );
+  const results = settled
+    .map((s) => (s.status === "fulfilled" ? s.value : null))
+    .filter((v): v is { q: OQuery; res: { records?: ORow[] } | null } => v !== null);
 
   // Second pass: for every type with fetchElements:true, batch-query
   // OmniProcessElement for ALL parent Ids across types in a single grouped

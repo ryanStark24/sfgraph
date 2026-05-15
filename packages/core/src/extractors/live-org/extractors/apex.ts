@@ -43,10 +43,10 @@ function buildApexMetaXml(
 }
 
 export async function* iterApex(conn: any): AsyncIterable<RawMember> {
-  // Fire both Tooling queries in parallel — they're independent and the
-  // Tooling pool throttles concurrency. Was serial (2x latency for no
-  // reason).
-  const [classes, triggers] = await Promise.all([
+  // Fire both Tooling queries in parallel — allSettled so one rejection
+  // doesn't poison the other's promise into an unhandled rejection (which
+  // crashes node 24+).
+  const [classesS, triggersS] = await Promise.allSettled([
     scheduleQuery(() => conn.tooling.query(APEX_CLASS_SOQL)) as Promise<{
       records?: ToolingClassRow[];
     } | null>,
@@ -54,6 +54,8 @@ export async function* iterApex(conn: any): AsyncIterable<RawMember> {
       records?: ToolingTriggerRow[];
     } | null>,
   ]);
+  const classes = classesS.status === "fulfilled" ? classesS.value : null;
+  const triggers = triggersS.status === "fulfilled" ? triggersS.value : null;
   for (const r of classes?.records ?? []) {
     const metaXml = buildApexMetaXml("ApexClass", r);
     yield {

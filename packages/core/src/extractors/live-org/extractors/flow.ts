@@ -29,7 +29,8 @@ export async function* iterFlow(conn: any): AsyncIterable<RawMember> {
   const items = Array.isArray(list) ? list : [];
   const batches: MdListItem[][] = [];
   for (let i = 0; i < items.length; i += BATCH) batches.push(items.slice(i, i + BATCH));
-  const batchResults = await Promise.all(
+  // allSettled — see security.ts for rationale.
+  const batchResults = await Promise.allSettled(
     batches.map((slice) =>
       scheduleMetadata(() =>
         conn.metadata.read(
@@ -42,7 +43,9 @@ export async function* iterFlow(conn: any): AsyncIterable<RawMember> {
   for (let b = 0; b < batches.length; b++) {
     const slice = batches[b];
     if (!slice) continue;
-    const reads = batchResults[b];
+    const settled = batchResults[b];
+    if (!settled || settled.status === "rejected") continue;
+    const reads = settled.value;
     const readArr = Array.isArray(reads) ? reads : [reads];
     for (let j = 0; j < slice.length; j += 1) {
       const meta = slice[j];
