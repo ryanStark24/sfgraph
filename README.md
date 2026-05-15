@@ -832,47 +832,63 @@ binary from a package's postinstall would be intrusive and irreversible
 without re-installing Node. The doctor surfaces the fix; you opt in by
 running the one-liner.
 
-### SObject ingestion is whitelisted by default
+### SObject ingestion uses Salesforce's own classification
 
-Salesforce's `describeGlobal()` returns every queryable SObject — often
-800–1500 of them on a demo / industry-cloud org. The vast majority are:
+`describeGlobal()` returns every queryable SObject — often 800–1500 of
+them on a demo / industry-cloud org. The vast majority are platform
+internals (audit, telemetry, SSO config, introspection metadata) that
+user code never references. Describing all of them takes minutes,
+bloats the graph, and on macOS 26+ historically crashed jsforce
+mid-run for some pathological tables.
 
-- Industry-cloud platform tables (`AuthorizationFormConsent`,
-  `AuthorizedInsuranceLine`, `BatchCalcJobDefinition`, etc. — Health /
-  FinServ / Loyalty / EPCM scaffolding) that **user code never
-  references**.
-- Platform internals (`EntityParticle`, `FieldDefinition`,
-  `RelationshipInfo`, …) that exist for Tooling API introspection.
-- Auto-generated companion tables (`AccountFeed`, `AccountHistory`,
-  `AccountShare`, every `*OwnerSharingRule`).
+Starting in 1.0.x, sfgraph **asks Salesforce which SObjects are
+user-relevant** via the Tooling API's `EntityDefinition` table:
 
-Describing all of them takes minutes, bloats the graph, and on macOS
-26+ historically crashed jsforce mid-run for some unlucky tables.
-Starting in 1.0.x, sfgraph **whitelists** what gets described:
+```sql
+SELECT QualifiedApiName, IsCustomizable, IsApexTriggerable,
+       IsDeprecatedAndHidden, IsCustomSetting
+FROM EntityDefinition
+```
 
-- **All custom SObjects** (`__c`, `__e`, `__b`, `__mdt`, `__x`, `__ka`,
-  `__kav`, `__chn`) — always included. Covers your own custom objects
-  *and* every managed-package custom object (Vlocity-CMT, OmniStudio,
-  etc.) — because user code that references them does so by their
-  custom name.
-- **A curated list of common standard SObjects** (Account, Contact,
-  Opportunity, User, Group, Profile, PermissionSet, RecordType, Case,
-  Task, Event, ContentDocument, Knowledge__kav, OmniProcess, and
-  ~90 others). The full list is in `packages/core/src/extractors/
-  live-org/extractors/object.ts` under `STANDARD_SOBJECT_WHITELIST`.
-- **Companion tables, audit tables, and a hard-coded list of
-  worthless platform internals** (`ApexLog`, `EventLogFile`,
-  `AuthConfig`, `EntityParticle`, etc.) — always skipped.
+If `IsCustomizable=true`, `IsApexTriggerable=true`, or `IsCustomSetting=true`
+(and not `IsDeprecatedAndHidden`), the SObject is in scope. Otherwise
+it's a platform internal and gets skipped.
 
-Override to bring back the full queryable surface:
+This works perfectly across Salesforce editions and industry clouds:
+`AuthorizationFormConsent` (Health Cloud) returns `IsCustomizable=true`
+→ included automatically. `AuthConfig` (SSO internal) returns false
+→ skipped. No hardcoded list to maintain — Salesforce's own metadata
+tells us what's real.
+
+**Layered filters** (applied in this order):
+
+1. Companion tables (`*Feed`, `*History`, `*Share`, etc.) — always skipped.
+2. `SYSTEM_SKIP_NAMES` hard blacklist (ApexLog, EventLogFile, etc.) — always
+   skipped (acts as a ceiling even if EntityDefinition says otherwise).
+3. Custom SObjects (`__c`, `__e`, `__b`, `__mdt`, `__x`, `__ka`, `__kav`,
+   `__chn`) — always **included**. Covers user-owned and every managed-
+   package custom object.
+4. `EntityDefinition.IsCustomizable` filter — primary signal for non-
+   custom SObjects.
+5. Static `STANDARD_SOBJECT_WHITELIST` — fallback only if EntityDefinition
+   query fails or returns 0 records (some scratch / dev orgs).
+
+**Override** — bring back the full queryable surface (useful for
+diagnostic ingests):
 
 ```bash
 SFGRAPH_INCLUDE_ALL_SOBJECTS=1 sfgraph ingest
 ```
 
-If your code legitimately references a standard SObject we missed,
-either add it to the whitelist in `object.ts` (PR welcome) or use the
-override.
+`--debug` mode prints the EntityDefinition probe outcome on every run:
+
+```
+ingest: [debug] object EntityDefinition probe → 487 user-relevant SObjects classified
+```
+
+If you see `EntityDefinition unavailable — falling back to static whitelist`,
+your org's edition restricts that Tooling table and we use the curated
+list as a safe default.
 
 Per-SObject escape hatch (skip a specific table that crashes describe):
 

@@ -331,36 +331,120 @@ const STANDARD_SOBJECT_WHITELIST = new Set([
   "OmniDataTransform",
 ]);
 
+interface EntityDefRow {
+  QualifiedApiName?: string;
+  IsCustomizable?: boolean;
+  IsApexTriggerable?: boolean;
+  IsDeprecatedAndHidden?: boolean;
+  IsCustomSetting?: boolean;
+}
+
+/**
+ * Fetch the `EntityDefinition` Tooling table to learn Salesforce's own
+ * classification of each SObject. The two flags that matter:
+ *
+ *   IsCustomizable   — user can add custom fields / validation rules.
+ *                      Strong signal that user code references it.
+ *   IsApexTriggerable — user can write a trigger on it. Strong signal
+ *                      that user code touches it from Apex.
+ *
+ * Either being true → keep. Both false → it's a platform-internal table
+ * (audit log, auth config, schema introspection table, etc.) that user
+ * code never references and never benefits from being in the graph.
+ *
+ * EntityDefinition pagination: a single Tooling query returns up to 2000
+ * rows. Larger orgs need queryMore. We call conn.tooling.query repeatedly
+ * via the nextRecordsUrl pattern.
+ *
+ * Returns null if EntityDefinition is unavailable (some scratch orgs and
+ * specific Salesforce editions return empty here, which is the reason we
+ * originally moved off this code path). Caller falls back to the static
+ * whitelist when null.
+ */
+async function fetchEntityDefinitionClassification(
+  conn: any,
+): Promise<Set<string> | null> {
+  const userRelevant = new Set<string>();
+  const SOQL =
+    "SELECT QualifiedApiName, IsCustomizable, IsApexTriggerable, IsDeprecatedAndHidden, IsCustomSetting FROM EntityDefinition";
+  try {
+    let res = (await scheduleQuery(() => conn.tooling.query(SOQL))) as {
+      records?: EntityDefRow[];
+      done?: boolean;
+      nextRecordsUrl?: string;
+    } | null;
+    if (!res || !Array.isArray(res.records) || res.records.length === 0) {
+      return null;
+    }
+    const collect = (recs: EntityDefRow[]): void => {
+      for (const r of recs) {
+        if (!r.QualifiedApiName) continue;
+        if (r.IsDeprecatedAndHidden) continue;
+        // Either flag → keep. Custom settings are usually user-facing
+        // (people query them) even though IsApexTriggerable is false.
+        if (r.IsCustomizable || r.IsApexTriggerable || r.IsCustomSetting) {
+          userRelevant.add(r.QualifiedApiName);
+        }
+      }
+    };
+    collect(res.records);
+    // Walk pagination — Tooling API returns nextRecordsUrl for large sets.
+    while (res && res.done === false && res.nextRecordsUrl) {
+      const url = res.nextRecordsUrl;
+      try {
+        res = (await scheduleQuery(() => conn.tooling.queryMore(url))) as {
+          records?: EntityDefRow[];
+          done?: boolean;
+          nextRecordsUrl?: string;
+        };
+      } catch {
+        break;
+      }
+      if (res?.records) collect(res.records);
+    }
+    return userRelevant.size > 0 ? userRelevant : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Per-iterObject state set by the EntityDefinition probe. When null, the
+ *  static whitelist is used as fallback. */
+let entityDefRelevant: Set<string> | null = null;
+
 function shouldIncludeSObject(s: SObjectGlobal): boolean {
   if (!s.name) return false;
   if (s.deprecatedAndHidden) return false;
   if (!s.queryable) return false;
   // Filter out auto-generated companion tables — works for BOTH the custom
   // form (`MyObj__c` → `MyObj__Feed`) AND the standard form (`Account` →
-  // `AccountFeed`). The previous skip-patterns only caught the custom form
-  // and let through ~70% of unnecessary describes.
+  // `AccountFeed`).
   if (isCompanionTable(s.name)) return false;
   for (const re of LEGACY_SKIP_PATTERNS) {
     if (re.test(s.name)) return false;
   }
   // Hardcoded skip list for known-useless / known-pathological system
-  // tables (ApexLog, EventLogFile, AuthConfig, etc.).
+  // tables (kept as a hard ceiling — even if EntityDefinition says
+  // ApexLog is customizable, we still don't want it in the graph).
   const includeSystem = process.env.SFGRAPH_INCLUDE_SYSTEM_SOBJECTS === "1";
   if (!includeSystem && SYSTEM_SKIP_NAMES.has(s.name)) return false;
-  // Whitelist gating: by default, only describe custom SObjects (always
-  // user-relevant) + a curated list of common standards. Skip the long
-  // tail of industry-cloud / platform-internal SObjects that bloats the
-  // graph and historically crashes jsforce mid-run for the unlucky ones.
-  // Set SFGRAPH_INCLUDE_ALL_SOBJECTS=1 to opt into the full queryable
-  // surface (useful for industry-cloud-heavy orgs that reference tables
-  // outside the standard whitelist).
-  const includeAll = process.env.SFGRAPH_INCLUDE_ALL_SOBJECTS === "1";
-  if (!includeAll) {
-    if (isCustomSObject(s.name)) return true; // custom always included
-    if (STANDARD_SOBJECT_WHITELIST.has(s.name)) return true;
-    return false; // not custom, not on whitelist → skip
+  // Custom SObjects (user or managed-package) always included.
+  if (isCustomSObject(s.name)) return true;
+  // Full-surface override.
+  if (process.env.SFGRAPH_INCLUDE_ALL_SOBJECTS === "1") return true;
+  // Primary path: ask Salesforce. EntityDefinition's IsCustomizable +
+  // IsApexTriggerable flags tell us which standard SObjects are
+  // user-relevant vs platform-internal. Industry-cloud SObjects
+  // (AuthorizationFormConsent, AuthorizedInsuranceLine, etc.) come back
+  // as customizable=true and get included; platform internals
+  // (AuthConfig, ApexLog, EntityParticle, etc.) come back as false and
+  // get skipped — exactly the right behavior, no hardcoded list needed.
+  if (entityDefRelevant) {
+    return entityDefRelevant.has(s.name);
   }
-  return true;
+  // Fallback path: EntityDefinition unavailable / empty (some scratch
+  // orgs return 0 rows here). Use the curated whitelist.
+  return STANDARD_SOBJECT_WHITELIST.has(s.name);
 }
 
 /** Wrap a promise with a hard timeout. Used to bound describe() calls so a
@@ -396,6 +480,24 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  * The parser can derive CustomObject + CustomField nodes from this.
  */
 export async function* iterObject(conn: any): AsyncIterable<RawMember> {
+  const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
+  // Probe EntityDefinition first so shouldIncludeSObject can rely on
+  // Salesforce's own classification rather than a hardcoded list. If
+  // this fails / returns 0 rows (some scratch orgs), the fallback is the
+  // curated STANDARD_SOBJECT_WHITELIST.
+  entityDefRelevant = await fetchEntityDefinitionClassification(conn);
+  if (debug) {
+    if (entityDefRelevant) {
+      console.log(
+        `ingest: [debug] object EntityDefinition probe → ${entityDefRelevant.size} user-relevant SObjects classified`,
+      );
+    } else {
+      console.log(
+        "ingest: [debug] object EntityDefinition unavailable — falling back to static whitelist",
+      );
+    }
+  }
+
   let global: { sobjects?: SObjectGlobal[] } | null = null;
   try {
     global = (await scheduleQuery(() => conn.describeGlobal())) as {
@@ -406,8 +508,6 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
   }
   const all = global?.sobjects ?? [];
   const included = all.filter(shouldIncludeSObject);
-
-  const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
   // SFGRAPH_SKIP_SOBJECT=name1,name2,... lets users work around a specific
   // SObject whose describe crashes jsforce (same failure mode as managed-
   // package LWC bundles — silent SIGKILL on macOS 26+, no error in any
