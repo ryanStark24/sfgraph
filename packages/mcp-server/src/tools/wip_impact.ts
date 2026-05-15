@@ -2,6 +2,7 @@ import { analyze } from "@ryanstark24/sfgraph-core";
 import { ConfigError, readWorkspace } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
+import { resolveWipProjectRoot } from "./_project-root.js";
 
 const inputSchema = z.object({
   project_root: z.string().min(1).optional(),
@@ -16,7 +17,7 @@ defineTool({
     "USE THIS for any 'what does this branch break' / 'dry-run my local changes' / 'what would happen if I deployed this' / 'impact of my uncommitted changes' question. Parses the local sfdx-source tree (force-app/) and overlays it on the org's persisted graph WITHOUT writing to it. Returns changed/added/removed qnames + N-hop dependent BFS + Mermaid. The local-equivalent of impact_from_git_diff for uncommitted work.",
   inputSchema,
   async execute(input) {
-    const projectRoot = input.project_root ?? process.cwd();
+    const projectRoot = resolveWipProjectRoot(input.project_root ?? process.cwd());
     let orgArg = input.org;
     if (!orgArg) {
       const ws = await readWorkspace(projectRoot);

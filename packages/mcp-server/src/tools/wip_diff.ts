@@ -2,6 +2,7 @@ import { analyze } from "@ryanstark24/sfgraph-core";
 import { ConfigError, readWorkspace } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
+import { resolveWipProjectRoot } from "./_project-root.js";
 
 const inputSchema = z.object({
   project_root: z.string().min(1).optional(),
@@ -15,7 +16,7 @@ defineTool({
     "USE THIS for any 'show me what is different between my local source and the org' / 'list local-only / org-only metadata' question. Returns just the added/changed/removed sets — no dependent fan-out. Faster than wip_impact when you only need the diff.",
   inputSchema,
   async execute(input) {
-    const projectRoot = input.project_root ?? process.cwd();
+    const projectRoot = resolveWipProjectRoot(input.project_root ?? process.cwd());
     let orgArg = input.org;
     if (!orgArg) {
       const ws = await readWorkspace(projectRoot);

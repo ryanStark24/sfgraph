@@ -25,12 +25,14 @@ defineTool({
     const nodeMap = new Map<string, { qualifiedName: string; label: string }>();
     const edges: Array<{ srcQualifiedName: string; dstQualifiedName: string; relType?: string }> =
       [];
+    let truncated = false;
     for (const qn of seedQnames) {
       const qname = asQualifiedName(qn);
       const node = ctx.graphStore.getNode(ctx.orgId, qname);
       nodeMap.set(qn, { qualifiedName: qn, label: node?.label ?? "Changed" });
       const up = analyze.findDependents(ctx.graphStore, ctx.orgId, qname, input.depth);
       const down = analyze.findDependencies(ctx.graphStore, ctx.orgId, qname, input.depth);
+      if (up.truncated || down.truncated) truncated = true;
       for (const n of [...up.nodes, ...down.nodes]) {
         nodeMap.set(n.qualifiedName, { qualifiedName: n.qualifiedName, label: n.label });
       }
@@ -47,17 +49,23 @@ defineTool({
       edges,
       title: "impact_from_git_diff",
     });
-    const md = [
+    const mdLines = [
       `Seed: ${seedQnames.length} files. Total impacted: ${nodeMap.size}.`,
       "",
       "```mermaid",
       mermaid,
       "```",
-    ].join("\n");
+    ];
+    if (truncated) {
+      mdLines.push(
+        "",
+        "_truncated_ — one or more seeds hit the traversal node cap. Lower `depth` or split the diff.",
+      );
+    }
     return {
-      summary: `${nodeMap.size} nodes impacted from ${seedQnames.length} changed files`,
-      markdown: md,
-      data: { seedQnames, impacted: Array.from(nodeMap.keys()) },
+      summary: `${nodeMap.size} nodes impacted from ${seedQnames.length} changed files${truncated ? " (truncated)" : ""}`,
+      markdown: mdLines.join("\n"),
+      data: { seedQnames, impacted: Array.from(nodeMap.keys()), truncated },
     };
   },
 });

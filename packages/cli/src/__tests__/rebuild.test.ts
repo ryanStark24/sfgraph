@@ -15,15 +15,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let tmpDataDir: string;
 let tmpDbDir: string;
+let prevAllowAnyDb: string | undefined;
 
 beforeEach(() => {
   tmpDataDir = mkdtempSync(join(tmpdir(), "sfgraph-rebuild-data-"));
   tmpDbDir = mkdtempSync(join(tmpdir(), "sfgraph-rebuild-db-"));
+  // The CLI rebuild path validates that `--db` resolves inside the data dir
+  // unless `SFGRAPH_ALLOW_ANY_DB=1`. These tests deliberately point `--db`
+  // outside the data dir to verify backup-dir computation stays anchored
+  // to the data dir, so opt in to the cross-dir mode for this suite.
+  prevAllowAnyDb = process.env.SFGRAPH_ALLOW_ANY_DB;
+  process.env.SFGRAPH_ALLOW_ANY_DB = "1";
 });
 
 afterEach(() => {
   rmSync(tmpDataDir, { recursive: true, force: true });
   rmSync(tmpDbDir, { recursive: true, force: true });
+  if (prevAllowAnyDb === undefined) {
+    // biome-ignore lint/performance/noDelete: cleanest reset of an env var override
+    delete process.env.SFGRAPH_ALLOW_ANY_DB;
+  } else {
+    process.env.SFGRAPH_ALLOW_ANY_DB = prevAllowAnyDb;
+  }
   vi.restoreAllMocks();
   vi.resetModules();
 });

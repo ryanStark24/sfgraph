@@ -2,11 +2,16 @@ import { asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 
+// Cap annotation size at 16 KiB. Cached explanations are echoed back inside
+// markdown blockquotes; unbounded input bloats the SQLite row and would let
+// a poisoned graph break the host's markdown renderer.
+const ANNOTATION_MAX_BYTES = 16 * 1024;
+
 const inputSchema = z.object({
   org: z.string().min(1),
   qname: z.string().min(1),
   refresh: z.boolean().default(false),
-  annotation: z.string().optional(),
+  annotation: z.string().max(ANNOTATION_MAX_BYTES, "annotation exceeds 16 KiB cap").optional(),
 });
 
 defineTool({

@@ -89,4 +89,36 @@ describe("cross_org_diff", () => {
     const r = await callTool("cross_org_diff", { org_a: ORG_A, org_b: ORG_B });
     expect((r.data as { changed: string[] }).changed).toContain("ApexClass:Both");
   });
+
+  it("returns zero diff when comparing an org to itself", async () => {
+    const r = await callTool("cross_org_diff", { org_a: ORG_A, org_b: ORG_A });
+    const d = r.data as { onlyInA: string[]; onlyInB: string[]; changed: string[] };
+    expect(d.onlyInA).toEqual([]);
+    expect(d.onlyInB).toEqual([]);
+    expect(d.changed).toEqual([]);
+  });
+
+  it("rejects empty org_a", async () => {
+    await expect(callTool("cross_org_diff", { org_a: "", org_b: ORG_B })).rejects.toThrow();
+  });
+
+  it("rejects missing org_b", async () => {
+    await expect(callTool("cross_org_diff", { org_a: ORG_A })).rejects.toThrow();
+  });
+
+  it("throws when an unregistered org is passed", async () => {
+    await expect(callTool("cross_org_diff", { org_a: ORG_A, org_b: "ghost-org" })).rejects.toThrow(
+      /unknown org/,
+    );
+  });
+
+  it("respects category filter", async () => {
+    const r = await callTool("cross_org_diff", {
+      org_a: ORG_A,
+      org_b: ORG_B,
+      category: "ApexClass",
+    });
+    const d = r.data as { onlyInA: string[] };
+    expect(d.onlyInA.length).toBeGreaterThanOrEqual(1);
+  });
 });

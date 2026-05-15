@@ -2,6 +2,7 @@ import { analyze } from "@ryanstark24/sfgraph-core";
 import { ConfigError, readWorkspace } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
+import { resolveWipProjectRoot } from "./_project-root.js";
 
 const inputSchema = z.object({
   project_root: z.string().min(1).optional(),
@@ -16,7 +17,7 @@ defineTool({
     "USE THIS for any 'what tests am I missing for these local changes' / 'will my uncommitted changes have test coverage gaps' question. Runs wip_impact internally then filters dependents to those without IS_TEST_FOR coverage.",
   inputSchema,
   async execute(input) {
-    const projectRoot = input.project_root ?? process.cwd();
+    const projectRoot = resolveWipProjectRoot(input.project_root ?? process.cwd());
     let orgArg = input.org;
     if (!orgArg) {
       const ws = await readWorkspace(projectRoot);

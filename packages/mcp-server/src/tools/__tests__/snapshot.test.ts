@@ -24,6 +24,16 @@ describe("snapshot_create", () => {
     const r = await callTool("snapshot_create", { org: fix.orgId, name: "checkpoint-A" });
     expect((r.data as { label: string }).label).toBe("checkpoint-A");
   });
+
+  it("rejects empty org", async () => {
+    await expect(callTool("snapshot_create", { org: "" })).rejects.toThrow();
+  });
+
+  it("generates unique ids for back-to-back creates", async () => {
+    const a = await callTool("snapshot_create", { org: fix.orgId });
+    const b = await callTool("snapshot_create", { org: fix.orgId });
+    expect((a.data as { id: string }).id).not.toBe((b.data as { id: string }).id);
+  });
 });
 
 describe("snapshot_list", () => {
@@ -38,5 +48,17 @@ describe("snapshot_list", () => {
     const r = await callTool("snapshot_list", { org: fix.orgId });
     const arr = r.data as Array<{ label: string }>;
     expect(arr.length).toBe(2);
+  });
+
+  it("rejects empty org", async () => {
+    await expect(callTool("snapshot_list", { org: "" })).rejects.toThrow();
+  });
+
+  it("handles many snapshots without throwing", async () => {
+    for (let i = 0; i < 20; i++) {
+      await callTool("snapshot_create", { org: fix.orgId, name: `n${i}` });
+    }
+    const r = await callTool("snapshot_list", { org: fix.orgId });
+    expect((r.data as unknown[]).length).toBeGreaterThanOrEqual(20);
   });
 });

@@ -70,6 +70,26 @@ function printResultsTable(entries: MultiOrgIngestEntry[], mode: string): void {
   for (const r of rows) console.log(formatRow(r, widths));
 }
 
+/**
+ * Validate that a user-supplied `--db <path>` resolves to an absolute path
+ * inside `getSfgraphPaths().data`. The CLI is local, but treating `--db`
+ * as an unconstrained `fs.write` target lets a curious script overwrite
+ * unrelated files (or fill `/`). Require explicit `SFGRAPH_ALLOW_ANY_DB`
+ * to escape the data dir — for power-users who deliberately want to
+ * stash an ingest elsewhere.
+ */
+function validateDbPath(rawDbPath: string, dataDir: string): string {
+  const abs = path.resolve(rawDbPath);
+  const rel = path.relative(path.resolve(dataDir), abs);
+  const inside = rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
+  if (!inside && process.env.SFGRAPH_ALLOW_ANY_DB !== "1") {
+    throw new Error(
+      `--db path resolves outside the sfgraph data dir (${dataDir}). Refusing to write to ${abs}. Set SFGRAPH_ALLOW_ANY_DB=1 if this is intentional.`,
+    );
+  }
+  return abs;
+}
+
 async function buildSingleIngestOpts(
   alias: string,
   opts: IngestOpts,
@@ -77,7 +97,10 @@ async function buildSingleIngestOpts(
   deps: { resolveOrg: typeof import("@ryanstark24/sfgraph-core").resolveOrg },
 ): Promise<LiveIngestOpts> {
   const resolved = await deps.resolveOrg(alias);
-  const dbPath = opts.db ?? safeOrgDbPath(getSfgraphPaths().data, String(resolved.orgId));
+  const dataDir = getSfgraphPaths().data;
+  const dbPath = opts.db
+    ? validateDbPath(opts.db, dataDir)
+    : safeOrgDbPath(dataDir, String(resolved.orgId));
 
   if (opts.rebuild) {
     await applyRebuild(dbPath, String(resolved.orgId), Boolean(opts.noBackup), logger);

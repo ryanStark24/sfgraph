@@ -87,4 +87,23 @@ describe("explain_code", () => {
     expect(d.sourceText).toBeNull();
     expect(r.summary).toContain("no snippet stored");
   });
+
+  it("overwrites a prior annotation when a new one is supplied", async () => {
+    seedSnippet(fix, "ApexMethod:Foo.baz(0)", "return 2;", "h2", "first explanation");
+    const r = await callTool("explain_code", {
+      org: fix.orgId,
+      qname: "ApexMethod:Foo.baz(0)",
+      annotation: "replacement explanation",
+    });
+    const d = r.data as { cachedExplanation: string | null };
+    expect(d.cachedExplanation).toBe("replacement explanation");
+  });
+
+  it("rejects empty qname", async () => {
+    await expect(callTool("explain_code", { org: fix.orgId, qname: "" })).rejects.toThrow();
+  });
+
+  it("rejects missing qname", async () => {
+    await expect(callTool("explain_code", { org: fix.orgId })).rejects.toThrow();
+  });
 });

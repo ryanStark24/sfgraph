@@ -38,4 +38,43 @@ describe("dead_code_audit", () => {
     const r = await callTool("dead_code_audit", { org: fix.orgId });
     expect((r.data as { dead: string[] }).dead).not.toContain("ApexClass:Used");
   });
+
+  it("returns empty dead list for empty graph", async () => {
+    const r = await callTool("dead_code_audit", { org: fix.orgId });
+    const d = r.data as { dead: unknown[] };
+    expect(d.dead).toEqual([]);
+    expect(r.markdown).toContain("no dead code detected");
+  });
+
+  it("does not flag recently-modified class even when isolated", async () => {
+    fix.addNode({
+      qualifiedName: "ApexClass:JustWritten",
+      label: "ApexClass",
+      lastModifiedAt: Date.now(),
+    });
+    const r = await callTool("dead_code_audit", { org: fix.orgId });
+    expect((r.data as { dead: string[] }).dead).not.toContain("ApexClass:JustWritten");
+  });
+
+  it("rejects empty org", async () => {
+    await expect(callTool("dead_code_audit", { org: "" })).rejects.toThrow();
+  });
+
+  it("reports cached=false when no cache table is present", async () => {
+    const r = await callTool("dead_code_audit", { org: fix.orgId });
+    expect((r.data as { cached: boolean }).cached).toBe(false);
+  });
+
+  it("handles many isolated stale nodes", async () => {
+    const ancient = Date.now() - 1000 * 60 * 60 * 24 * 1000;
+    for (let i = 0; i < 30; i++) {
+      fix.addNode({
+        qualifiedName: `ApexClass:Old${i}`,
+        label: "ApexClass",
+        lastModifiedAt: ancient,
+      });
+    }
+    const r = await callTool("dead_code_audit", { org: fix.orgId });
+    expect((r.data as { dead: string[] }).dead.length).toBeGreaterThanOrEqual(30);
+  });
 });

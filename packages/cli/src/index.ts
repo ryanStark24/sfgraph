@@ -306,6 +306,38 @@ export function buildProgram(): Command {
       await refreshOrgsCmd();
     });
 
+  program
+    .command("serve")
+    .description("start the local web visualiser for the ingested graph")
+    .option("--port <port>", "port to bind", "7777")
+    .option(
+      "--host <host>",
+      "host to bind (default 127.0.0.1 — do not expose publicly)",
+      "127.0.0.1",
+    )
+    .option("--no-open", "do not auto-open the browser")
+    .option(
+      "--i-understand-public-bind",
+      "required acknowledgement when binding to a non-loopback host (the web API has no auth)",
+      false,
+    )
+    .action(
+      async (opts: {
+        port: string;
+        host: string;
+        open: boolean;
+        iUnderstandPublicBind: boolean;
+      }) => {
+        const { serveCmd } = await import("./commands/serve.js");
+        await serveCmd({
+          port: Number.parseInt(opts.port, 10) || 7777,
+          host: opts.host,
+          open: opts.open !== false,
+          iUnderstandPublicBind: Boolean(opts.iUnderstandPublicBind),
+        });
+      },
+    );
+
   const telemetry = program.command("telemetry").description("manage local telemetry");
   telemetry.command("status").action(async () => {
     await statusCmd();

@@ -31,10 +31,18 @@ defineTool({
       })),
       title: "downstream",
     });
+    const truncated = r.truncated === true;
+    const mdLines = ["```mermaid", mermaid, "```"];
+    if (truncated) {
+      mdLines.push(
+        "",
+        "_truncated_ — traversal hit the node cap; deeper downstream paths were not explored. Lower `depth` or pick a narrower `qname`.",
+      );
+    }
     return {
-      summary: `${r.nodes.length} downstream nodes`,
-      markdown: ["```mermaid", mermaid, "```"].join("\n"),
-      data: { nodes: r.nodes, edges: r.edges },
+      summary: `${r.nodes.length} downstream nodes${truncated ? " (truncated)" : ""}`,
+      markdown: mdLines.join("\n"),
+      data: { nodes: r.nodes, edges: r.edges, truncated },
     };
   },
 });
