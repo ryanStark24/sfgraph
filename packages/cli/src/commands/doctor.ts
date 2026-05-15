@@ -88,6 +88,67 @@ function checkBetterSqlite3(requireFn?: (id: string) => unknown): Omit<DoctorChe
   }
 }
 
+/**
+ * macOS-only: verify the better-sqlite3 binding's code signature is one
+ * dyld will actually accept. The failure mode this catches is the
+ * "linker-signed adhoc" stamp that the build toolchain emits — macOS 26+
+ * rejects it with SIGKILL on dlopen, with no JS handler able to intercept.
+ * The kill is silent; ingests die mid-run with no error message. This
+ * check surfaces the issue *before* the next ingest hits it.
+ */
+function checkMacosCodesign(requireFn?: (id: string) => unknown): Omit<DoctorCheck, "name"> | null {
+  if (process.platform !== "darwin") return null;
+  const req = requireFn ?? defaultRequire();
+  // Resolve the actual .node file path.
+  let bindingPath: string | null = null;
+  try {
+    // The official entry point is index.js; the .node lives under build/Release.
+    const entry = (req as unknown as { resolve: (id: string) => string }).resolve(
+      "better-sqlite3",
+    );
+    // entry ≈ <pkg>/lib/index.js — walk up to <pkg> then into build/Release.
+    const pkgRoot = path.resolve(path.dirname(entry), "..");
+    const candidate = path.join(pkgRoot, "build", "Release", "better_sqlite3.node");
+    if (existsSync(candidate)) bindingPath = candidate;
+  } catch {
+    /* unresolvable; skip */
+  }
+  if (!bindingPath) {
+    return {
+      status: "warn",
+      detail: "couldn't locate better_sqlite3.node to verify code signature",
+    };
+  }
+  const r = spawnSync("codesign", ["--verify", "--strict", bindingPath], {
+    encoding: "utf8",
+  });
+  if (r.error) {
+    return {
+      status: "warn",
+      detail: `codesign tool unavailable: ${r.error.message}`,
+    };
+  }
+  if (r.status === 0) {
+    // Verified. Also check it's not the brittle linker-signed adhoc stamp.
+    const display = spawnSync("codesign", ["-dvv", bindingPath], { encoding: "utf8" });
+    const out = (display.stderr || display.stdout || "").toString();
+    if (/linker-signed/.test(out)) {
+      return {
+        status: "warn",
+        detail:
+          "binding has linker-signed adhoc stamp; macOS 26+ may SIGKILL on dlopen. Re-sign with ad-hoc.",
+        fix: `codesign --force --sign - "${bindingPath}"`,
+      };
+    }
+    return { status: "ok", detail: `code signature valid (${bindingPath})` };
+  }
+  return {
+    status: "fail",
+    detail: `codesign rejected binding: ${(r.stderr || r.stdout || "").trim().split("\n")[0]}`,
+    fix: `codesign --force --sign - "${bindingPath}"`,
+  };
+}
+
 function checkDataDir(dataDir: string): Omit<DoctorCheck, "name"> {
   if (!existsSync(dataDir)) {
     return {
@@ -255,12 +316,18 @@ export function runDoctorChecks(opts: DoctorOpts = {}): DoctorReport {
   const checks: DoctorCheck[] = [
     check("node runtime", checkNode),
     check("better-sqlite3 native binding", () => checkBetterSqlite3(opts.requireFn)),
+  ];
+  if (process.platform === "darwin") {
+    const codesign = checkMacosCodesign(opts.requireFn);
+    if (codesign) checks.push({ name: "macOS code-signing", ...codesign });
+  }
+  checks.push(
     check("sfgraph data dir", () => checkDataDir(dataDir)),
     check("org databases", () => checkOrgDatabases(dataDir, opts.requireFn)),
     check("org snapshot", () => checkOrgSnapshot(dataDir)),
     check("sf CLI", () => checkSfCli(opts.sfProbe)),
     check("IDE MCP configs", () => checkMcpConfigs(opts.homeOverride)),
-  ];
+  );
   const ok = checks.every((c) => c.status !== "fail");
   return { checks, ok };
 }
