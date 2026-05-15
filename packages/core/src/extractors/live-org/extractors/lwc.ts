@@ -47,10 +47,13 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
   // graph for inventory / cross-org diff purposes) and skip the doomed
   // resource fetch.
   //
-  // Override via SFGRAPH_INCLUDE_MANAGED_LWC=1 for users who explicitly
-  // have View All Source on the relevant packages and want the (still
-  // redacted) Source captured anyway.
-  const includeManaged = process.env.SFGRAPH_INCLUDE_MANAGED_LWC === "1";
+  // Override via SFGRAPH_INCLUDE_MANAGED=1 (global, applies to all
+  // managed-package extractors) or SFGRAPH_INCLUDE_MANAGED_LWC=1 (LWC-
+  // specific). Either turns this off — fetches resources for managed
+  // bundles too, accepting the crash risk for users who explicitly want it.
+  const includeManaged =
+    process.env.SFGRAPH_INCLUDE_MANAGED === "1" ||
+    process.env.SFGRAPH_INCLUDE_MANAGED_LWC === "1";
   for (const b of allBundles) {
     if (skipSet.has(b.DeveloperName)) {
       if (debug) console.log(`ingest: [debug] lwc skip ${b.DeveloperName} (in SFGRAPH_SKIP_LWC)`);

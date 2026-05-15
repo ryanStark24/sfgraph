@@ -832,34 +832,48 @@ binary from a package's postinstall would be intrusive and irreversible
 without re-installing Node. The doctor surfaces the fix; you opt in by
 running the one-liner.
 
-### Managed-package LWC bundles are skipped by default
+### Managed-package source is skipped by default
 
-Salesforce returns `Source = "<hidden>"` for every file in a managed-
-package LWC bundle unless the package is unlocked and you have *View
-All Source*. Their content has no graph value, *and* fetching their
-resources through jsforce reliably crashes the Node process for some
-bundles on macOS 26+ (silent SIGKILL — same failure mode as the AMFI
-issues above, but actually triggered inside jsforce's HTTP response
-parser for this specific shape of redacted response).
+Salesforce redacts managed-package source content for any user without
+*View All Source* on the package — which is almost always. You see:
 
-Starting in 1.0.x, sfgraph skips managed LWC bundles by default and
-emits a metadata-only stub node (the bundle still appears in inventory
-queries and cross-org diff; only its inner `.js`/`.html` content is
-omitted). Look for this line in `--debug` output:
+- `LightningComponentResource.Source` → literal string `<hidden>`
+- `ApexClass.Body` / `ApexTrigger.Body` → literal string `(hidden)`
+- Same for `ApexPage.Markup`, `ApexComponent.Markup`, etc.
+
+The redacted text has zero graph value (no methods, no field refs, no
+internal references to walk), *and* on macOS 26+ fetching some managed
+LWC bundles through jsforce reliably crashes Node silently (probably an
+edge case in jsforce's response parser for this specific redacted
+shape). So starting in 1.0.x, sfgraph treats managed-package items as
+**metadata-only nodes**:
+
+- The bundle / class / trigger still appears in the graph (so inventory
+  tools, `list_orgs`, cross-org diff, and edge resolution from your own
+  code all work).
+- Body / Source / Markup is **not** fetched or parsed.
+
+You'll see lines like this in `--debug` output:
 
 ```
-ingest: [debug] lwc skip-managed <BundleName> (ns=<NamespacePrefix>; set SFGRAPH_INCLUDE_MANAGED_LWC=1 to override)
+ingest: [debug] lwc bundles total=1248 managed=973
+ingest: [debug] lwc skip-managed clmAcceptAction (ns=vlocity_cmt; ...)
 ```
 
 If you genuinely have *View All Source* on the relevant packages and
-want their (still redacted) Source captured anyway, force the fetch:
+want the (still redacted) content captured anyway, set the global
+override:
 
 ```bash
-SFGRAPH_INCLUDE_MANAGED_LWC=1 sfgraph ingest
+SFGRAPH_INCLUDE_MANAGED=1 sfgraph ingest
 ```
 
-Per-bundle exceptions: `SFGRAPH_SKIP_LWC=name1,name2` skips specific
-DeveloperNames regardless of namespace.
+This turns the skip OFF for every extractor (LWC, Apex, etc.). For
+finer control:
+
+- `SFGRAPH_INCLUDE_MANAGED_LWC=1` — LWC-only override.
+- `SFGRAPH_SKIP_LWC=name1,name2` — skip specific LWC bundle
+  DeveloperNames regardless of namespace.
 
 For diagnosing **any other** silent ingest death, re-run with `--debug`:
 

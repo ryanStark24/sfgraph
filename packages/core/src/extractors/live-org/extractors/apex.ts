@@ -56,6 +56,13 @@ export async function* iterApex(conn: any): AsyncIterable<RawMember> {
   ]);
   const classes = classesS.status === "fulfilled" ? classesS.value : null;
   const triggers = triggersS.status === "fulfilled" ? triggersS.value : null;
+  // For managed-package Apex, Body comes back as the literal string
+  // "(hidden)" — parsing it produces nothing useful. We still emit the
+  // node (so calling code's edges resolve to a real target) but skip
+  // the body. Set SFGRAPH_INCLUDE_MANAGED=1 to keep the redacted Body.
+  const includeManaged = process.env.SFGRAPH_INCLUDE_MANAGED === "1";
+  const stubBody = (r: ToolingClassRow): string =>
+    r.NamespacePrefix && !includeManaged ? "" : (r.Body ?? "");
   for (const r of classes?.records ?? []) {
     const metaXml = buildApexMetaXml("ApexClass", r);
     yield {
@@ -71,7 +78,11 @@ export async function* iterApex(conn: any): AsyncIterable<RawMember> {
       // apiVersion + Status) alongside the body. Plain-body content from
       // the filesystem path still parses correctly via the adapter's
       // shape detection.
-      content: JSON.stringify({ body: r.Body ?? "", metaXml }),
+      content: JSON.stringify({
+        body: stubBody(r),
+        metaXml,
+        ...(r.NamespacePrefix && !includeManaged ? { managed: true } : {}),
+      }),
     };
   }
   for (const r of triggers?.records ?? []) {
@@ -85,7 +96,11 @@ export async function* iterApex(conn: any): AsyncIterable<RawMember> {
         sourceUri: `sf://tooling/ApexTrigger/${r.Name}`,
         namespace: r.NamespacePrefix ?? null,
       },
-      content: JSON.stringify({ body: r.Body ?? "", metaXml }),
+      content: JSON.stringify({
+        body: stubBody(r),
+        metaXml,
+        ...(r.NamespacePrefix && !includeManaged ? { managed: true } : {}),
+      }),
     };
   }
 }
