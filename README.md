@@ -832,7 +832,60 @@ binary from a package's postinstall would be intrusive and irreversible
 without re-installing Node. The doctor surfaces the fix; you opt in by
 running the one-liner.
 
-### System telemetry SObjects skipped by default (managed-package SObjects are NOT)
+### SObject ingestion is whitelisted by default
+
+Salesforce's `describeGlobal()` returns every queryable SObject — often
+800–1500 of them on a demo / industry-cloud org. The vast majority are:
+
+- Industry-cloud platform tables (`AuthorizationFormConsent`,
+  `AuthorizedInsuranceLine`, `BatchCalcJobDefinition`, etc. — Health /
+  FinServ / Loyalty / EPCM scaffolding) that **user code never
+  references**.
+- Platform internals (`EntityParticle`, `FieldDefinition`,
+  `RelationshipInfo`, …) that exist for Tooling API introspection.
+- Auto-generated companion tables (`AccountFeed`, `AccountHistory`,
+  `AccountShare`, every `*OwnerSharingRule`).
+
+Describing all of them takes minutes, bloats the graph, and on macOS
+26+ historically crashed jsforce mid-run for some unlucky tables.
+Starting in 1.0.x, sfgraph **whitelists** what gets described:
+
+- **All custom SObjects** (`__c`, `__e`, `__b`, `__mdt`, `__x`, `__ka`,
+  `__kav`, `__chn`) — always included. Covers your own custom objects
+  *and* every managed-package custom object (Vlocity-CMT, OmniStudio,
+  etc.) — because user code that references them does so by their
+  custom name.
+- **A curated list of common standard SObjects** (Account, Contact,
+  Opportunity, User, Group, Profile, PermissionSet, RecordType, Case,
+  Task, Event, ContentDocument, Knowledge__kav, OmniProcess, and
+  ~90 others). The full list is in `packages/core/src/extractors/
+  live-org/extractors/object.ts` under `STANDARD_SOBJECT_WHITELIST`.
+- **Companion tables, audit tables, and a hard-coded list of
+  worthless platform internals** (`ApexLog`, `EventLogFile`,
+  `AuthConfig`, `EntityParticle`, etc.) — always skipped.
+
+Override to bring back the full queryable surface:
+
+```bash
+SFGRAPH_INCLUDE_ALL_SOBJECTS=1 sfgraph ingest
+```
+
+If your code legitimately references a standard SObject we missed,
+either add it to the whitelist in `object.ts` (PR welcome) or use the
+override.
+
+Per-SObject escape hatch (skip a specific table that crashes describe):
+
+```bash
+SFGRAPH_SKIP_SOBJECT=BadTable,OtherBadTable sfgraph ingest
+```
+
+**Per-describe timeout.** Each `describe()` is wrapped in a 45-second
+hard timeout. A single pathological SObject whose response never returns
+no longer wedges the run; it's caught as a timeout and skipped while
+everything else proceeds.
+
+### System telemetry SObjects skipped by default (managed-package custom SObjects are NOT)
 
 `describeGlobal()` returns every queryable SObject in the org. We
 distinguish based on **what Salesforce actually returns** for each:

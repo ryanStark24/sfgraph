@@ -155,6 +155,182 @@ const SYSTEM_SKIP_NAMES = new Set([
   "IconDefinition",
 ]);
 
+/**
+ * Whitelist of standard (non-custom) Salesforce SObjects that user code
+ * commonly references. Curated for Sales / Service / Marketing / Platform /
+ * Communities. Anything not in this list AND not a custom-suffix SObject
+ * is skipped by default to avoid the long tail of industry-cloud /
+ * platform-internal tables that bloat the graph, take seconds-each to
+ * describe, and have no user-code reference path.
+ *
+ * Override: SFGRAPH_INCLUDE_ALL_SOBJECTS=1 brings back every queryable
+ * SObject (still filtered by companion-table + SYSTEM_SKIP_NAMES).
+ */
+const STANDARD_SOBJECT_WHITELIST = new Set([
+  // Sales core
+  "Account",
+  "AccountContactRelation",
+  "AccountContactRole",
+  "AccountTeamMember",
+  "AccountPartner",
+  "Contact",
+  "ContactPointAddress",
+  "ContactPointEmail",
+  "ContactPointPhone",
+  "Opportunity",
+  "OpportunityContactRole",
+  "OpportunityLineItem",
+  "OpportunityHistory",
+  "OpportunityFieldHistory",
+  "OpportunityTeamMember",
+  "OpportunityStage",
+  "Lead",
+  "LeadStatus",
+  "Quote",
+  "QuoteLineItem",
+  "Order",
+  "OrderItem",
+  "Contract",
+  "ContractContactRole",
+  "Asset",
+  "AssetRelationship",
+  "Product2",
+  "PricebookEntry",
+  "Pricebook2",
+  "Campaign",
+  "CampaignMember",
+  "CampaignMemberStatus",
+  "Partner",
+  // Service
+  "Case",
+  "CaseComment",
+  "CaseTeamMember",
+  "CaseTeamRole",
+  "CaseTeamTemplate",
+  "CaseSolution",
+  "CaseContactRole",
+  "CaseMilestone",
+  "Solution",
+  "ServiceContract",
+  "ServiceAppointment",
+  "ServiceTerritory",
+  "ServiceTerritoryMember",
+  "ServiceResource",
+  "ServiceResourceCapacity",
+  "ServiceResourceSkill",
+  "WorkOrder",
+  "WorkOrderLineItem",
+  "WorkType",
+  "WorkTypeGroup",
+  "Entitlement",
+  "EntitlementContact",
+  "EntitlementTemplate",
+  "MilestoneType",
+  "SlaProcess",
+  // Activities
+  "Task",
+  "Event",
+  "EventRelation",
+  "OpenActivity",
+  "ActivityHistory",
+  "Reminder",
+  // Content / Files
+  "ContentDocument",
+  "ContentVersion",
+  "ContentDocumentLink",
+  "ContentNote",
+  "ContentWorkspace",
+  "Attachment",
+  "Note",
+  "Document",
+  "Folder",
+  "Library",
+  // Marketing / Email
+  "EmailMessage",
+  "EmailTemplate",
+  "EmailRelay",
+  "ListEmail",
+  // Setup / Identity / Access
+  "User",
+  "UserRole",
+  "UserLicense",
+  "Group",
+  "GroupMember",
+  "Queue",
+  "QueueSObject",
+  "Profile",
+  "PermissionSet",
+  "PermissionSetAssignment",
+  "PermissionSetGroup",
+  "PermissionSetGroupComponent",
+  "PermissionSetLicense",
+  "PermissionSetLicenseAssign",
+  "RecordType",
+  "BusinessProcess",
+  "BusinessHours",
+  "Holiday",
+  "FiscalYearSettings",
+  "Period",
+  "Territory2",
+  "Territory2Model",
+  "Territory2Type",
+  "UserTerritory2Association",
+  // Experience Cloud / Communities / Topics
+  "Network",
+  "NetworkMember",
+  "Site",
+  "Domain",
+  "DomainSite",
+  "Topic",
+  "TopicAssignment",
+  "FeedItem",
+  "FeedComment",
+  "FeedAttachment",
+  // Knowledge
+  "Knowledge__kav",
+  "KnowledgeArticle",
+  "KnowledgeArticleVersion",
+  "DataCategory",
+  // Reports / Dashboards
+  "Report",
+  "Dashboard",
+  "ReportType",
+  // CMS / DigEx
+  "ManagedContent",
+  "ManagedContentVersion",
+  "ManagedContentType",
+  // Platform staples that DO show up in user code
+  "Idea",
+  "Question",
+  "FAQ",
+  "AggregateResult",
+  "AuthProvider",
+  "ConnectedApplication",
+  "NamedCredential",
+  "ExternalCredential",
+  // Salesforce DX-style metadata SObjects user code sometimes joins
+  "ApexClass",
+  "ApexTrigger",
+  "ApexPage",
+  "ApexComponent",
+  "AuraDefinitionBundle",
+  "AuraDefinition",
+  "LightningComponentBundle",
+  "LightningComponentResource",
+  "FlowDefinition",
+  "Flow",
+  "CustomObject",
+  "CustomField",
+  "StaticResource",
+  "EmailService",
+  "EmailServicesAddress",
+  // OmniStudio-on-core (industry cloud but commonly used)
+  "OmniProcess",
+  "OmniProcessElement",
+  "OmniUiCard",
+  "OmniDataTransform",
+]);
+
 function shouldIncludeSObject(s: SObjectGlobal): boolean {
   if (!s.name) return false;
   if (s.deprecatedAndHidden) return false;
@@ -167,19 +343,23 @@ function shouldIncludeSObject(s: SObjectGlobal): boolean {
   for (const re of LEGACY_SKIP_PATTERNS) {
     if (re.test(s.name)) return false;
   }
-  // Default-skip Salesforce system / telemetry / audit tables. Opt back in
-  // for users who actually want every queryable surface in their graph.
-  //
-  // Note: we intentionally do NOT blanket-skip managed-package SObjects
-  // (e.g. vlocity_cmt__*). Unlike Apex Body / LWC Source — both of which
-  // Salesforce redacts to `(hidden)` / `<hidden>` for managed packages —
-  // SObject describe() returns the FULL field map for managed objects,
-  // including their lookups, formulas, and references. That's real graph
-  // value: user code that touches a Vlocity custom object needs the
-  // managed schema to resolve edges. So managed-package SObjects are
-  // included by default.
+  // Hardcoded skip list for known-useless / known-pathological system
+  // tables (ApexLog, EventLogFile, AuthConfig, etc.).
   const includeSystem = process.env.SFGRAPH_INCLUDE_SYSTEM_SOBJECTS === "1";
   if (!includeSystem && SYSTEM_SKIP_NAMES.has(s.name)) return false;
+  // Whitelist gating: by default, only describe custom SObjects (always
+  // user-relevant) + a curated list of common standards. Skip the long
+  // tail of industry-cloud / platform-internal SObjects that bloats the
+  // graph and historically crashes jsforce mid-run for the unlucky ones.
+  // Set SFGRAPH_INCLUDE_ALL_SOBJECTS=1 to opt into the full queryable
+  // surface (useful for industry-cloud-heavy orgs that reference tables
+  // outside the standard whitelist).
+  const includeAll = process.env.SFGRAPH_INCLUDE_ALL_SOBJECTS === "1";
+  if (!includeAll) {
+    if (isCustomSObject(s.name)) return true; // custom always included
+    if (STANDARD_SOBJECT_WHITELIST.has(s.name)) return true;
+    return false; // not custom, not on whitelist → skip
+  }
   return true;
 }
 
