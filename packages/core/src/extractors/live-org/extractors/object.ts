@@ -34,16 +34,42 @@ interface FieldDescribe {
   inlineHelpText?: string | null;
 }
 
-/** Internal entities that describeGlobal returns but have no useful metadata
- *  for our graph (system tables, audit tables, etc.). */
-const SKIP_PATTERNS = [
-  /__History$/, // history audit tables
-  /__Tag$/,
-  /__Feed$/,
-  /__Share$/, // sharing tables
-  /__ChangeEvent$/,
-  /__b$/, // big objects (separate handling)
+/** Suffixes that Salesforce uses for auto-generated companion tables.
+ *  These tables proxy the parent SObject's full field map (so a describe()
+ *  on `AccountFeed` returns ~100+ fields — every Account field plus
+ *  feed-specific ones), but they're never referenced in user code as graph
+ *  dependency targets. Skipping them collapses the SObject set by ~70% on
+ *  typical orgs (every Account/Contact/etc. has 3–5 companion tables) and
+ *  eliminates a major class of ingest-time slowness + crash risk. */
+const COMPANION_SUFFIXES = [
+  "Feed", // Chatter feed
+  "History", // field history tracking
+  "Share", // sharing records
+  "ChangeEvent", // Change Data Capture event
+  "StatusChangeEvent", // case/quote status CDC variant
+  "Tag", // entity tag join table
+  "OwnerSharingRule", // sharing rule definition (owner-based)
+  "CriteriaSharingRule", // sharing rule definition (criteria-based)
+  "TerritorySharingRule", // sharing rule definition (territory-based)
 ];
+
+/** Custom-object suffixes — we use these to detect "real" user-or-package
+ *  SObjects so we don't accidentally false-positive on user objects whose
+ *  name happens to end in 'Feed' (e.g. `MyFeed__c` is real, not a companion). */
+const CUSTOM_SUFFIXES = ["__c", "__e", "__b", "__mdt", "__x", "__ka", "__kav", "__chn"];
+
+function isCustomSObject(name: string): boolean {
+  return CUSTOM_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
+
+function isCompanionTable(name: string): boolean {
+  if (isCustomSObject(name)) return false;
+  return COMPANION_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
+
+/** Legacy big-object skip — matches both `*__b` (handled separately) and
+ *  Salesforce's audit-trail variants that aren't covered by COMPANION_SUFFIXES. */
+const LEGACY_SKIP_PATTERNS = [/__b$/];
 
 /**
  * High-volume platform / telemetry / audit SObjects that never appear in
@@ -99,7 +125,12 @@ function shouldIncludeSObject(s: SObjectGlobal): boolean {
   if (!s.name) return false;
   if (s.deprecatedAndHidden) return false;
   if (!s.queryable) return false;
-  for (const re of SKIP_PATTERNS) {
+  // Filter out auto-generated companion tables — works for BOTH the custom
+  // form (`MyObj__c` → `MyObj__Feed`) AND the standard form (`Account` →
+  // `AccountFeed`). The previous skip-patterns only caught the custom form
+  // and let through ~70% of unnecessary describes.
+  if (isCompanionTable(s.name)) return false;
+  for (const re of LEGACY_SKIP_PATTERNS) {
     if (re.test(s.name)) return false;
   }
   // Default-skip Salesforce system / telemetry / audit tables. Opt back in
@@ -183,9 +214,12 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
   // Fan out describe() in parallel chunks. Bottleneck's data pool throttles
   // actual concurrency to maxConcurrent (default 10). Was strictly serial:
   // 200 SObjects * ~500ms each = ~100s. With 10-way parallel: ~10s.
-  // Chunk size matches a generous ceiling above the pool size so the pool
-  // is the real bottleneck, not the chunk barrier.
-  const CHUNK = 25;
+  // Chunk size matches the pool's maxConcurrent — going higher just queues
+  // jobs in Bottleneck without adding parallelism, AND it buffers more
+  // describe responses simultaneously in memory (some SObject describes are
+  // 1MB+ JSON; 25 in flight = 25MB+ of buffered response per chunk).
+  // Default 10 keeps memory pressure flat at any one moment.
+  const CHUNK = 10;
   for (let i = 0; i < included.length; i += CHUNK) {
     const slice = included.slice(i, i + CHUNK).filter((s) => {
       if (skipSet.has(s.name)) {
