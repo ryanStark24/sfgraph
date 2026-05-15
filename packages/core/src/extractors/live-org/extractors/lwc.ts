@@ -23,7 +23,10 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
   )) as { records?: BundleRow[] } | null;
   const allBundles = bundles?.records ?? [];
   if (debug) {
-    console.log(`ingest: [debug] lwc bundles total=${allBundles.length}`);
+    const managedCount = allBundles.filter((b) => b.NamespacePrefix).length;
+    console.log(
+      `ingest: [debug] lwc bundles total=${allBundles.length} managed=${managedCount}`,
+    );
   }
   // Skip-list via env: comma-separated DeveloperNames to silently skip.
   // Lets users work around a specific bundle that crashes the run
@@ -35,9 +38,42 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
       .map((s) => s.trim())
       .filter((s) => s.length > 0),
   );
+  // Managed-package LWCs return Source = `<hidden>` (Salesforce redacts
+  // source unless the package is unlocked + user has View All Source).
+  // Their content is unusable for graph analysis, *and* fetching their
+  // resources through jsforce reliably crashes the Node process for some
+  // bundles on macOS 26+ (silent SIGKILL with no error). We emit a
+  // metadata-only node for each (so the bundle still appears in the
+  // graph for inventory / cross-org diff purposes) and skip the doomed
+  // resource fetch.
+  //
+  // Override via SFGRAPH_INCLUDE_MANAGED_LWC=1 for users who explicitly
+  // have View All Source on the relevant packages and want the (still
+  // redacted) Source captured anyway.
+  const includeManaged = process.env.SFGRAPH_INCLUDE_MANAGED_LWC === "1";
   for (const b of allBundles) {
     if (skipSet.has(b.DeveloperName)) {
       if (debug) console.log(`ingest: [debug] lwc skip ${b.DeveloperName} (in SFGRAPH_SKIP_LWC)`);
+      continue;
+    }
+    if (b.NamespacePrefix && !includeManaged) {
+      // Emit a stub bundle node with no files — preserves inventory
+      // signal without the resource fetch that kills the process.
+      if (debug)
+        console.log(
+          `ingest: [debug] lwc skip-managed ${b.DeveloperName} (ns=${b.NamespacePrefix}; set SFGRAPH_INCLUDE_MANAGED_LWC=1 to override)`,
+        );
+      yield {
+        ref: {
+          category: METADATA_CATEGORY.LWC,
+          memberType: "LightningComponentBundle",
+          memberName: b.DeveloperName,
+          lastModifiedAt: b.LastModifiedDate ?? null,
+          sourceUri: `sf://tooling/LightningComponentBundle/${b.DeveloperName}`,
+          namespace: b.NamespacePrefix,
+        },
+        content: JSON.stringify({ bundleName: b.DeveloperName, files: {}, managed: true }),
+      };
       continue;
     }
     if (debug) console.log(`ingest: [debug] lwc ← ${b.DeveloperName} (${b.Id})`);
