@@ -27,10 +27,12 @@ export class OmniUiCardParser implements Parser<OmniUiCardInput> {
     });
     nodes.push(node);
     const src = node.qualifiedName as unknown as string;
-    walk(md, (v, key) => {
+    walk(md, (v) => {
       if (!v || typeof v !== "object") return;
+      const rawType = (v as any).Type ?? (v as any).type;
+      if (typeof rawType !== "string" || rawType.length === 0) return;
       const props = (v as any).propertySet ?? v;
-      const type = String((v as any).Type ?? (v as any).type ?? key ?? "").toLowerCase();
+      const type = rawType.toLowerCase().replace(/[^a-z0-9]/g, "");
       if (type.includes("integrationprocedure")) {
         const target = String(props?.integrationProcedureKey ?? "");
         if (target)
@@ -42,7 +44,7 @@ export class OmniUiCardParser implements Parser<OmniUiCardInput> {
               `OmniIntegrationProcedure:${stripNs(target, ctx.namespace)}`,
             ),
           );
-      } else if (type.includes("datatransform")) {
+      } else if (type.includes("datatransform") || type.includes("dataraptor")) {
         const target = String(props?.dataTransformName ?? "");
         if (target)
           edges.push(

@@ -28,10 +28,12 @@ export class VlocityCardParser implements Parser<VlocityCardInput> {
     nodes.push(node);
     const src = node.qualifiedName as unknown as string;
 
-    walk(dp, (v, key) => {
+    walk(dp, (v) => {
       if (!v || typeof v !== "object") return;
+      const rawType = (v as any).Type ?? (v as any).type;
+      if (typeof rawType !== "string" || rawType.length === 0) return;
       const propSet = (v as any).propertySet ?? v;
-      const type = String((v as any).Type ?? (v as any).type ?? key ?? "").toLowerCase();
+      const type = rawType.toLowerCase().replace(/[^a-z0-9]/g, "");
       if (type.includes("dataraptor")) {
         const target = String(propSet?.dataRaptorBundleName ?? "");
         if (target)

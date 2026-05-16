@@ -28,17 +28,32 @@ export class IntegrationProcedureParser implements Parser<IntegrationProcedureIn
     nodes.push(node);
     const src = node.qualifiedName as unknown as string;
 
-    walk(dp, (v, key) => {
+    walk(dp, (v) => {
       if (!v || typeof v !== "object") return;
+      // Only emit edges when the visited object has an EXPLICIT Type
+      // property. The earlier implementation fell back to the parent
+      // key name when Type was absent — that triggered false-positive
+      // `Remote:unknown` edges every time the walker descended into an
+      // object nested under any key containing "remote" (e.g.
+      // `remoteOptions: {}`), which is rampant inside parsed
+      // PropertySet blobs. Real elements always carry Type explicitly.
+      const rawType = (v as any).Type ?? (v as any).type;
+      if (typeof rawType !== "string" || rawType.length === 0) return;
       const propSet = (v as any).propertySet ?? v;
-      const type = String((v as any).Type ?? (v as any).type ?? key ?? "");
       const nameProp =
         propSet?.bundle ??
         propSet?.integrationProcedureKey ??
         propSet?.remoteClass ??
         propSet?.dataRaptorBundleName ??
         "";
-      const t = type.toLowerCase();
+      // Normalize the type string by stripping whitespace and
+      // non-alphanumerics before substring checks. Salesforce element
+      // Type values use spaces ("Integration Procedure Action",
+      // "Remote Action", "DataRaptor Post Action") that `.includes(...)`
+      // queries miss without normalization. e.g. previously
+      // `"Integration Procedure Action".includes("integrationprocedure")`
+      // was false and the element fell through to the Remote branch.
+      const t = rawType.toLowerCase().replace(/[^a-z0-9]/g, "");
       if (t.includes("dataraptor")) {
         const target = String(nameProp || propSet?.dataRaptorBundleName || "");
         if (target) {

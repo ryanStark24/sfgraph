@@ -27,12 +27,26 @@ export class OmniProcessParser implements Parser<OmniProcessInput> {
     });
     nodes.push(node);
     const src = node.qualifiedName as unknown as string;
-    walk(md, (v, key) => {
+    walk(md, (v) => {
       if (!v || typeof v !== "object") return;
+      // Require explicit Type — see integration-procedure.ts comment.
+      // Without this, nested objects under keys like `remoteOptions`
+      // false-positive into OMNI_INVOKES_REMOTE edges.
+      const rawType = (v as any).Type ?? (v as any).type;
+      if (typeof rawType !== "string" || rawType.length === 0) return;
       const props = (v as any).propertySet ?? v;
-      const type = String((v as any).Type ?? (v as any).type ?? key ?? "").toLowerCase();
-      if (type.includes("datatransform")) {
-        const target = String(props?.dataTransformName ?? "");
+      // Normalize: strip whitespace + non-alphanumerics so
+      // `"DataRaptor Post Action"` → `"dataraptorpostaction"` matches
+      // both `.includes("dataraptor")` AND `.includes("datatransform")`.
+      const type = rawType.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (type.includes("datatransform") || type.includes("dataraptor")) {
+        // Vlocity-flavoured PropertySets use `dataRaptorBundleName` /
+        // `bundle`; on-core uses `dataTransformName`. Both can appear
+        // depending on the source org or which DataPack tool wrote
+        // the metadata. Check all three.
+        const target = String(
+          props?.dataTransformName ?? props?.dataRaptorBundleName ?? props?.bundle ?? "",
+        );
         if (target)
           edges.push(
             makeEdge(

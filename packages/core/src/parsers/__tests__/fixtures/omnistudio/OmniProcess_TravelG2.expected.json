@@ -12,50 +12,14 @@
   "edges": [
     {
       "srcQualifiedName": "OmniProcess:G2_Process",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "OMNI_INVOKES_REMOTE",
+      "dstQualifiedName": "OmniDataTransform:loadDestinationInformation",
+      "relType": "OMNI_CALLS_DATA_TRANSFORM",
       "attributes": {}
     },
     {
       "srcQualifiedName": "OmniProcess:G2_Process",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "OMNI_INVOKES_REMOTE",
-      "attributes": {}
-    },
-    {
-      "srcQualifiedName": "OmniProcess:G2_Process",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "OMNI_INVOKES_REMOTE",
-      "attributes": {}
-    },
-    {
-      "srcQualifiedName": "OmniProcess:G2_Process",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "OMNI_INVOKES_REMOTE",
-      "attributes": {}
-    },
-    {
-      "srcQualifiedName": "OmniProcess:G2_Process",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "OMNI_INVOKES_REMOTE",
-      "attributes": {}
-    },
-    {
-      "srcQualifiedName": "OmniProcess:G2_Process",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "OMNI_INVOKES_REMOTE",
-      "attributes": {}
-    },
-    {
-      "srcQualifiedName": "OmniProcess:G2_Process",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "OMNI_INVOKES_REMOTE",
-      "attributes": {}
-    },
-    {
-      "srcQualifiedName": "OmniProcess:G2_Process",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "OMNI_INVOKES_REMOTE",
+      "dstQualifiedName": "OmniDataTransform:loadTravelRequestInformation",
+      "relType": "OMNI_CALLS_DATA_TRANSFORM",
       "attributes": {}
     }
   ]

@@ -12,26 +12,8 @@
   "edges": [
     {
       "srcQualifiedName": "IntegrationProcedure:AddQGToSalesQLIs",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "IP_INVOKES_REMOTE",
-      "attributes": {}
-    },
-    {
-      "srcQualifiedName": "IntegrationProcedure:AddQGToSalesQLIs",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "IP_INVOKES_REMOTE",
-      "attributes": {}
-    },
-    {
-      "srcQualifiedName": "IntegrationProcedure:AddQGToSalesQLIs",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "IP_INVOKES_REMOTE",
-      "attributes": {}
-    },
-    {
-      "srcQualifiedName": "IntegrationProcedure:AddQGToSalesQLIs",
-      "dstQualifiedName": "Remote:unknown",
-      "relType": "IP_INVOKES_REMOTE",
+      "dstQualifiedName": "IntegrationProcedure:CloneModifyTo_SalesQLIs",
+      "relType": "IP_CALLS_IP",
       "attributes": {}
     },
     {
