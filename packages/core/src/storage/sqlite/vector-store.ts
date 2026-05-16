@@ -227,4 +227,24 @@ export class SqliteVectorStore implements VectorStore {
     if (!row) throw new StorageError("count query failed");
     return row.c;
   }
+
+  /** Fetch a stored node embedding by (orgId, qname). The vec0 virtual
+   *  table stores embeddings as BLOBs; the meta table maps to vec_rowid.
+   *  We do the JOIN here so callers don't have to know the schema. */
+  getNodeVector(orgId: OrgId, qname: QualifiedName): Float32Array | null {
+    const row = this.db
+      .prepare(
+        `SELECT vec.embedding AS blob
+         FROM _sfgraph_node_vectors AS vec
+         JOIN _sfgraph_node_vector_meta AS meta ON meta.vec_rowid = vec.rowid
+         WHERE meta.org_id = ? AND meta.qualified_name = ?
+         LIMIT 1`,
+      )
+      .get(orgId, qname) as { blob: Buffer | Uint8Array } | undefined;
+    if (!row?.blob) return null;
+    // vec0 stores Float32Array as packed little-endian bytes. Wrap, don't
+    // copy — caller treats the returned array as read-only.
+    const buf = row.blob instanceof Buffer ? row.blob : Buffer.from(row.blob);
+    return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+  }
 }

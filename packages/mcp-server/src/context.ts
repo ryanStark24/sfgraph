@@ -1,6 +1,11 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { type GraphStore, type SnapshotStore, loadBetterSqlite3 } from "@ryanstark24/sfgraph-core";
+import {
+  type GraphStore,
+  type SnapshotStore,
+  type VectorStore,
+  loadBetterSqlite3,
+} from "@ryanstark24/sfgraph-core";
 import {
   ErrorCode,
   type OrgId,
@@ -14,6 +19,12 @@ import {
 export interface ToolContext {
   graphStore: GraphStore;
   snapshotStore: SnapshotStore;
+  /** Shares the same SQLite handle as graphStore, so it doesn't double up
+   *  file descriptors. Optional because test factories build minimal
+   *  contexts without it; tools that need it (e.g. find_similar) check
+   *  for presence. Null at runtime when vec0 / sqlite-vec failed to load
+   *  on this Node ABI. */
+  vectorStore?: VectorStore | null;
   orgId: OrgId;
   /** Raw SQLite handle for cached analysis-table reads (optional). */
   db?: unknown;
@@ -216,7 +227,9 @@ async function defaultFactory(opts: { orgId?: string }): Promise<ToolContext> {
   }
 
   const dbPath = safeOrgDbPath(paths.data, resolvedOrgId);
-  const { SqliteGraphStore, SqliteSnapshotStore } = await import("@ryanstark24/sfgraph-core");
+  const { SqliteGraphStore, SqliteSnapshotStore, SqliteVectorStore } = await import(
+    "@ryanstark24/sfgraph-core"
+  );
   const graphStore = new SqliteGraphStore({ dbPath });
   await graphStore.init();
   const snapshotStore = new SqliteSnapshotStore({
@@ -226,6 +239,29 @@ async function defaultFactory(opts: { orgId?: string }): Promise<ToolContext> {
   });
   await snapshotStore.init();
   const db = (graphStore as unknown as { db: unknown }).db;
-  const ctx: ToolContext = { graphStore, snapshotStore, orgId: asOrgId(resolvedOrgId), db };
+  // VectorStore reuses the GraphStore's SQLite handle (skipMigrations:true —
+  // GraphStore's migration runner already created the vec0 tables) and
+  // loads the sqlite-vec extension on this connection so MATCH queries work.
+  // If sqlite-vec isn't available (e.g. native-binding install skipped),
+  // null out and let tools surface "no vector index" instead of crashing.
+  let vectorStore: VectorStore | null = null;
+  try {
+    const vs = new SqliteVectorStore({
+      dbPath,
+      db: (graphStore as unknown as { db: unknown }).db as never,
+      skipMigrations: true,
+    });
+    await vs.init();
+    vectorStore = vs;
+  } catch {
+    vectorStore = null;
+  }
+  const ctx: ToolContext = {
+    graphStore,
+    snapshotStore,
+    vectorStore,
+    orgId: asOrgId(resolvedOrgId),
+    db,
+  };
   return ctx;
 }

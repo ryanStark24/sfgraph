@@ -124,6 +124,10 @@ export interface VectorStore {
   ): NodeSearchHit[];
   searchBundles(orgId: OrgId, query: Float32Array, k: number): BundleSearchHit[];
   countNodeVectors(orgId: OrgId): number;
+  /** Return the stored embedding for a node, or null if no vector exists
+   *  for this (orgId, qname). Used by tools that find "more like this"
+   *  starting from an existing graph node rather than a free-text query. */
+  getNodeVector(orgId: OrgId, qname: QualifiedName): Float32Array | null;
 }
 
 export interface NodeDiff {
