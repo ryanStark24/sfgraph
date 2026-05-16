@@ -1,4 +1,4 @@
-import { ErrorCode, type OrgId, SfgraphError, asQualifiedName } from "@ryanstark24/sfgraph-shared";
+import { type OrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { Logger } from "@ryanstark24/sfgraph-shared";
 import type { ParseContext, ParseResult } from "../parsers/contract.js";
 import { resolveApexMethodArity } from "../parsers/apex/arity-resolver.js";
@@ -822,7 +822,3 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   };
 }
 
-export function rethrowAsIngestError(e: unknown, ctx: string): never {
-  if (e instanceof SfgraphError) throw e;
-  throw new SfgraphError(ErrorCode.E_SF_INGEST, `${ctx}: ${(e as Error).message ?? String(e)}`);
-}

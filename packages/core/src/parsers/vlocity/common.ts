@@ -87,13 +87,4 @@ export function buildBaseNode(args: BuildArgs): NodeFact {
   );
 }
 
-export function fieldRefEdge(
-  ctx: ParseContext,
-  src: string,
-  rel: RelType,
-  ref: FieldRef,
-): EdgeFact {
-  return makeEdge(ctx, src, rel, `CustomField:${stripNs(ref.object, ctx.namespace)}.${ref.field}`);
-}
-
 export { REL_TYPES };

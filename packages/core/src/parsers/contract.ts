@@ -29,13 +29,6 @@ export interface ParserRegistry {
   all(): Parser<unknown>[];
 }
 
-/** Strip the org namespace prefix from a name when it matches. */
-export function stripNamespace(name: string, namespace: string | null): string {
-  if (!namespace) return name;
-  const prefix = `${namespace}__`;
-  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
-}
-
 /** Build a qualifiedName by stripping namespace first. */
 export function qname(parts: TemplateStringsArray, ...vals: string[]): string {
   let out = "";
