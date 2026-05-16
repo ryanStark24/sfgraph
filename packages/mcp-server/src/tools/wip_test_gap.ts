@@ -52,6 +52,7 @@ defineTool({
       summary: `${uncovered.length} uncovered dependents from WIP changes`,
       markdown: md,
       data: { uncovered },
+      follow_up_tools: ["wip_impact", "impact_from_git_diff"],
     };
   },
 });

@@ -56,6 +56,7 @@ defineTool({
         changed: diff.changed.map((c) => c.a.qualifiedName),
         truncated: diff.truncated ?? false,
       },
+      follow_up_tools: ["point_in_time_diff", "deployment_manifest_gen"],
     };
   },
 });

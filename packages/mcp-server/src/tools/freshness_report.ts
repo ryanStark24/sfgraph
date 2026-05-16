@@ -67,6 +67,7 @@ defineTool({
         ? `${md}\n\n> _Note: at least one label hit the ${FRESHNESS_PER_LABEL_CAP}-row cap. Results are incomplete._`
         : md,
       data: { buckets, truncated },
+      follow_up_tools: ["dead_code_audit", "staleness_check"],
     };
   },
 });

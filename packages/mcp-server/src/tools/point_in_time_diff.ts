@@ -33,6 +33,7 @@ defineTool({
       summary: `diff: +${nodeDiff.added.length} ~${nodeDiff.changed.length} -${nodeDiff.removed.length}`,
       markdown: md,
       data: { nodeDiff, edgeDiff },
+      follow_up_tools: ["what_broke", "impact_from_git_diff"],
     };
   },
 });

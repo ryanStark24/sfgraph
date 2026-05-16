@@ -51,6 +51,7 @@ defineTool({
         stale,
         recommendation,
       },
+      follow_up_tools: ["freshness_report", "start_ingest_job"],
     };
   },
 });

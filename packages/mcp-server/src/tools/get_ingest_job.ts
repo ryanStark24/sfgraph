@@ -14,12 +14,14 @@ defineTool({
         summary: `unknown job ${input.job_id}`,
         markdown: `> No job with id \`${input.job_id}\``,
         data: { found: false },
+        follow_up_tools: ["freshness_report", "staleness_check"],
       };
     }
     return {
       summary: `job ${job.job_id} is ${job.state}`,
       markdown: `Job \`${job.job_id}\` — state **${job.state}** — progress ${job.progress.processed}/${job.progress.total}`,
       data: job,
+      follow_up_tools: ["freshness_report", "staleness_check"],
     };
   },
 });

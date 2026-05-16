@@ -101,6 +101,7 @@ defineTool({
       summary: `${participants.size} participants across layers${truncated ? " (truncated)" : ""}`,
       markdown: md,
       data: { participants: Array.from(participants.values()), messages, truncated },
+      follow_up_tools: ["analyze_field", "trace_downstream", "explain_code"],
     };
   },
 });

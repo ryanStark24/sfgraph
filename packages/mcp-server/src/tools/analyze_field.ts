@@ -36,6 +36,7 @@ defineTool({
         summary: "field not found",
         markdown: `> no node \`${qname}\``,
         data: { found: false },
+        follow_up_tools: ["trace_upstream", "trace_downstream", "security_audit", "find_similar"],
       };
     }
     const readers = ctx.graphStore.listEdgesTo(ctx.orgId, qname, REL_TYPES.READS_FIELD);
@@ -75,6 +76,7 @@ defineTool({
         writers: writers.map((e) => e.srcQualifiedName),
         grants: grants.map((e) => e.srcQualifiedName),
       },
+      follow_up_tools: ["trace_upstream", "trace_downstream", "security_audit", "find_similar"],
     };
   },
 });

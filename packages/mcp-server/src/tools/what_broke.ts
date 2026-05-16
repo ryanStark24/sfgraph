@@ -24,6 +24,7 @@ defineTool({
           summary: "no baseline snapshot",
           markdown: "> no auto snapshot found; pass `since` explicitly",
           data: { atRisk: [], covered: [] },
+          follow_up_tools: ["point_in_time_diff", "impact_from_git_diff"],
         };
       }
       fromId = auto.id;
@@ -38,6 +39,7 @@ defineTool({
         summary: "no changes",
         markdown: "_no changes since snapshot_",
         data: { atRisk: [], covered: [] },
+        follow_up_tools: ["point_in_time_diff", "impact_from_git_diff"],
       };
     }
     const atRisk: string[] = [];
@@ -89,6 +91,7 @@ defineTool({
       summary: `${atRisk.length} dependents at risk`,
       markdown: md,
       data: { changed: changedQnames, atRisk, covered },
+      follow_up_tools: ["point_in_time_diff", "impact_from_git_diff"],
     };
   },
 });

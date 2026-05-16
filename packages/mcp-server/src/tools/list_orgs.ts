@@ -376,6 +376,7 @@ defineTool({
       summary,
       markdown: md,
       data: { orgs, defaultAlias },
+      follow_up_tools: ["freshness_report", "staleness_check", "start_ingest_job"],
     };
   },
 });

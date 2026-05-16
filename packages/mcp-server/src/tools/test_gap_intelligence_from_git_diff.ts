@@ -46,6 +46,7 @@ defineTool({
       summary: `${gaps.length} dependents lack tests`,
       markdown: md,
       data: { gaps, covered },
+      follow_up_tools: ["impact_from_git_diff"],
     };
   },
 });

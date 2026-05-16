@@ -51,6 +51,7 @@ defineTool({
         summary: "no risks detected",
         markdown: "_no governor risks surfaced_",
         data: { risks: [], cached: cached !== null },
+        follow_up_tools: ["explain_code", "trace_downstream"],
       };
     }
     const md = [
@@ -62,6 +63,7 @@ defineTool({
       summary: `${risks.length} governor risks${cached ? " (cached)" : ""}`,
       markdown: md,
       data: { risks, cached: cached !== null },
+      follow_up_tools: ["explain_code", "trace_downstream"],
     };
   },
 });

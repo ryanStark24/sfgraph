@@ -39,6 +39,7 @@ defineTool({
         "```",
       ].join("\n"),
       data: manifest,
+      follow_up_tools: ["cross_org_diff"],
     };
   },
 });

@@ -21,6 +21,7 @@ defineTool({
       summary: `${snaps.length} snapshots`,
       markdown: snaps.length === 0 ? "_no snapshots_" : md,
       data: snaps,
+      follow_up_tools: ["point_in_time_diff", "snapshot_create"],
     };
   },
 });

@@ -85,6 +85,7 @@ defineTool({
           : "When it completes, MCP tools will see the new data on next invocation.",
       ].join("\n"),
       data: { executed: false, run_this_command: cmd },
+      follow_up_tools: ["get_ingest_job", "freshness_report"],
     };
   },
 });

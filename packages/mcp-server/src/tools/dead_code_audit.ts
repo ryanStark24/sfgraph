@@ -69,6 +69,7 @@ defineTool({
         summary: `${cached.length} dead-code candidates (cached)`,
         markdown: md,
         data: { dead: cached, cached: true },
+        follow_up_tools: ["trace_upstream", "find_similar", "freshness_report"],
       };
     }
     const dead = analyze.findDeadCode(ctx.graphStore, ctx.orgId);
@@ -83,6 +84,7 @@ defineTool({
       summary: `${dead.length} dead-code candidates`,
       markdown: md,
       data: { dead: dead.map((d) => d.qualifiedName), cached: false },
+      follow_up_tools: ["trace_upstream", "find_similar", "freshness_report"],
     };
   },
 });

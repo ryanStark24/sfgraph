@@ -40,13 +40,13 @@ defineTool({
         summary: "vector index unavailable for this org",
         markdown: [
           `> Vector search isn't available on this org's graph.`,
-          ``,
-          `Causes (most common first):`,
+          "",
+          "Causes (most common first):",
           `- The org was ingested before \`@ryanstark24/sfgraph-models\` was wired up; embeddings weren't generated. Re-run \`sfgraph ingest --org ${input.org} --rebuild\` to populate the vector index.`,
-          `- The optional \`@ryanstark24/sfgraph-models\` install was skipped (e.g. on slow connections). The model is ~30 MB; install it with \`npm install -g @ryanstark24/sfgraph-models\` and re-ingest.`,
-          `- The \`sqlite-vec\` extension failed to load on this Node ABI.`,
-          ``,
-          `_follow_up_tools: \`trace_downstream\`, \`trace_upstream\`, \`analyze_field\`_`,
+          "- The optional `@ryanstark24/sfgraph-models` install was skipped (e.g. on slow connections). The model is ~30 MB; install it with `npm install -g @ryanstark24/sfgraph-models` and re-ingest.",
+          "- The `sqlite-vec` extension failed to load on this Node ABI.",
+          "",
+          "_follow_up_tools: `trace_downstream`, `trace_upstream`, `analyze_field`_",
         ].join("\n"),
         data: { hits: [], reason: "vector_index_unavailable" },
       };
@@ -64,15 +64,15 @@ defineTool({
           summary: `no embedding stored for ${input.qname}`,
           markdown: [
             `> No vector exists for \`${input.qname}\`.`,
-            ``,
-            `Likely causes:`,
-            `- The qname is wrong (typo / wrong casing / wrong member type prefix). The graph keys are \`<Label>:<Name>\` (e.g. \`ApexClass:BillingSvc\`).`,
+            "",
+            "Likely causes:",
+            "- The qname is wrong (typo / wrong casing / wrong member type prefix). The graph keys are `<Label>:<Name>` (e.g. `ApexClass:BillingSvc`).",
             `- The node exists but its label doesn't get embedded (only code-bearing nodes — Apex, LWC, Flow, OmniStudio — are vectorised by default).`,
-            `- The org was last ingested before this label started producing embeddings; re-ingest with \`--rebuild\` to backfill.`,
-            ``,
+            "- The org was last ingested before this label started producing embeddings; re-ingest with `--rebuild` to backfill.",
+            "",
             `_Tip:_ if no node names the concept you're after, retry with \`text\` instead of \`qname\`.`,
-            ``,
-            `_follow_up_tools: \`analyze_field\`, \`trace_upstream\`_`,
+            "",
+            "_follow_up_tools: `analyze_field`, `trace_upstream`_",
           ].join("\n"),
           data: { hits: [], reason: "no_focal_vector" },
         };
@@ -89,10 +89,10 @@ defineTool({
           summary: "embedder unavailable",
           markdown: [
             `> Couldn't embed the query text \`"${input.text}"\`.`,
-            ``,
+            "",
             `Either the \`@xenova/transformers\` runtime isn't installed on this machine, or the MiniLM model files (\`@ryanstark24/sfgraph-models\`) aren't reachable. Both are optionalDependencies of \`@ryanstark24/sfgraph-core\`; reinstall with \`npm install -g @ryanstark24/sfgraph\` to pull them.`,
-            ``,
-            `_Fallback:_ retry with \`qname\` pointing at the closest existing node.`,
+            "",
+            "_Fallback:_ retry with `qname` pointing at the closest existing node.",
           ].join("\n"),
           data: { hits: [], reason: "embedder_unavailable" },
         };
@@ -130,15 +130,15 @@ defineTool({
       `**Top ${hits.length} nearest neighbour${hits.length === 1 ? "" : "s"} to ${focalLabel}${
         input.label ? ` (label: \`${input.label}\`)` : ""
       }:**`,
-      ``,
-      `| # | qname | label | similarity | distance |`,
-      `| - | ----- | ----- | ---------- | -------- |`,
+      "",
+      "| # | qname | label | similarity | distance |",
+      "| - | ----- | ----- | ---------- | -------- |",
     ];
     hits.forEach((h, i) => {
       const sim = (1 - h.distance / 2).toFixed(3);
       md.push(`| ${i + 1} | \`${h.qname}\` | \`${h.label}\` | ${sim} | ${h.distance.toFixed(4)} |`);
     });
-    md.push(``, `_follow_up_tools: \`explain_code\`, \`trace_downstream\`, \`analyze_field\`_`);
+    md.push("", "_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_");
 
     return {
       summary: `${hits.length} neighbour${hits.length === 1 ? "" : "s"} of ${focalLabel}`,

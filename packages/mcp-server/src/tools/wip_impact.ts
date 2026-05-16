@@ -53,6 +53,7 @@ defineTool({
         removed: result.removedQnames,
         dependents: result.dependents,
       },
+      follow_up_tools: ["wip_diff", "wip_test_gap", "impact_from_git_diff"],
     };
   },
 });

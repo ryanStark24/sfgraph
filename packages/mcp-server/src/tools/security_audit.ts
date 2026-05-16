@@ -58,6 +58,7 @@ defineTool({
         ? `${md}\n\n> _Note: at least one label hit the ${analyze.SECURITY_PER_LABEL_CAP}-row cap. Results are incomplete — pass \`object\` or \`field\` to narrow._`
         : md,
       data: { ...audit, cachedFindings, truncated: audit.truncated ?? false },
+      follow_up_tools: ["analyze_field", "trace_upstream"],
     };
   },
 });
