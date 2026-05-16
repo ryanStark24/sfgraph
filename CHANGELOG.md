@@ -1,6 +1,81 @@
 # Changelog
 
-## [Unreleased] — 1.1.0
+## 1.1.3 — edge resolution, Apex AST, dangling-edge audit
+
+### Added
+
+- **Apex AST extractor** (`packages/core/src/parsers/apex/ast-extractor.ts`) —
+  full AST walk over `apex-parser` output: class/method/property
+  declarations, SOQL/SOSL queries, DML statements, method invocations,
+  field access, type references. Replaces the prior regex-driven
+  approximation with structured edges and resolves the long tail of
+  false-negative impact-trace misses.
+- **Apex arity resolver** (`arity-resolver.ts`) — disambiguates overloaded
+  Apex methods by (name, arg count, arg-type signature) so cross-class
+  call edges land on the right target instead of fanning out across every
+  overload.
+- **Flow invocable-action resolver** (`invocable-resolver.ts`) — resolves
+  `Flow → invocable Apex method` and `Flow → subflow` edges that the
+  flow parser used to drop on the floor.
+- **LWC binding extractor** — HTML visitor now harvests `@wire`,
+  `lwc:if/elseif/else`, template event handlers, and slot bindings; JS
+  visitor follows them through to the Apex method they ultimately call.
+- **`sfgraph audit` command** (`packages/cli/src/commands/audit.ts`) —
+  graph-completeness audit that surfaces dangling edges (edges pointing
+  at non-existent nodes), unresolved Apex calls, and orphan invocable
+  references. Catches silent extraction regressions before they reach
+  consumers.
+- **Edge-resolution post-passes** in `liveIngest` — second-pass resolver
+  fires after every source completes, re-walking unresolved Apex
+  invocations / Flow invocables / LWC bindings now that the full node
+  graph is populated. Fixes the prior ordering problem where edges
+  emitted by an early extractor had nothing to bind to.
+
+### Fixed
+
+- **CodeRabbit review feedback on edge-resolution PR** (commit `9ce141e`).
+- **Per-call timeouts on every `conn.*` invocation** — every jsforce
+  call (`describe`, `query`, `bulkRetrieve`, `metadata.list`,
+  `metadata.read`, `tooling.*`) now wraps in a per-call timeout so a
+  single hung Salesforce call cannot wedge the ingest. Previously only
+  some extractors had this.
+- **Vlocity parallel refactor** — Vlocity extractor was serialising
+  every datapack-type query; now fans out across types through the
+  shared rate-limit pool, matching the rest of the extractor suite.
+
+## 1.1.2 — per-call timeouts, Vlocity parallelism, auto-retry
+
+### Added
+
+- **Auto-retry transient skips when >10 sources skipped** (commit
+  `52c5e84`) — when a debug-mode ingest finishes with more than 10
+  fail-soft skips, the orchestrator now reruns `--retry-skipped`
+  automatically once before reporting. Recovers cleanly from transient
+  rate-limit storms that previously required a manual second pass.
+
+### Fixed
+
+- **Per-call timeouts on every `conn.*`** — see 1.1.3 entry; this
+  release shipped the first half of the rollout (commit `4da3edb`).
+- **Vlocity parallel refactor** — same commit; restored intra-extractor
+  parallelism.
+- **Publish must go via `pnpm`** (commit `acddbff`) — version-bump
+  commit documenting that `npm publish` from inside the workspace
+  resolves wrong dependency tree; only `pnpm publish --filter
+  @ryanstark24/sfgraph` produces a correct tarball.
+
+## 1.1.1 — README in tarball
+
+### Fixed
+
+- **`README.md` missing from `@ryanstark24/sfgraph` tarball** (commit
+  `0ca9c30`) — npm page rendered blank because the published package
+  had no README at root. `prepack` / `postpack` scripts now copy the
+  monorepo root README into the package on pack and remove it after,
+  so the published tarball ships a README without committing a
+  duplicate file.
+
+## 1.1.0 — visualiser, ingest hardening, MCP surface fixes
 
 ### Fixed
 
