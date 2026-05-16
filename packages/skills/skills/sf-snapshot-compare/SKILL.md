@@ -1,12 +1,12 @@
 ---
 name: sf-snapshot-compare
-description: Compare two sfgraph snapshots (or one snapshot against current) to see what changed point-in-time.
+description: Compare two named sfgraph SNAPSHOTS of the same org (or one snapshot against current) for arbitrary point-in-time analysis. Use when the user explicitly references snapshots by name/id, wants to "rewind" to a prior state, or compare arbitrary points in time. For post-deploy regressions use sf-what-broke; for comparing two different orgs use sf-cross-org-diff.
 triggers:
   - "compare snapshots"
-  - "what changed between these snapshots"
+  - "diff snapshot <a> and <b>"
   - "point in time diff"
-  - "rewind"
-  - "show me the state before"
+  - "rewind to snapshot"
+  - "show me the state before <snapshot>"
 tools_used:
   - snapshot_list
   - snapshot_create

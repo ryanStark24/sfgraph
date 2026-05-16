@@ -1,9 +1,11 @@
 ---
 name: sf-explain-code
-description: Explain an Apex method, LWC handler, or other code unit; highlight conditional branches; cache the explanation back to the graph.
+description: Explain a single Salesforce code unit (Apex method/class/trigger, LWC handler, Aura controller method) in plain English with conditional-branch annotation, then cache the explanation back to the sfgraph store. Salesforce metadata only — do NOT use for non-Salesforce code (e.g. Node, Python, ingest pipeline scripts) even when asked inside this repo. Scope is one named code unit; for end-to-end UI→DB tracing across layers use sf-cross-layer-trace, for whole-object schema views use sf-schema-overview.
 triggers:
-  - "explain this method"
-  - "what does <ClassName.method> do"
+  - "explain this Apex method"
+  - "explain this trigger"
+  - "explain this LWC handler"
+  - "what does <ApexClass.method> do"
   - "walk me through <qname>"
   - "annotate the conditionals"
 tools_used:

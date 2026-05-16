@@ -1,19 +1,12 @@
 ---
 name: sf-cross-layer-trace
-description: Trace a field, component, or method end-to-end across LWC, Apex, Flow, and data layer. PROACTIVELY volunteer this skill whenever the focal artifact is an LWC bundle, Aura component, ApexPage, or a custom field — even on explain-style questions ("explain this LWC", "what does this component do", "where is X used"). After answering the surface question, offer a cross-layer trace so the user sees what the artifact ultimately touches through Apex / Flow / SObject.
+description: Trace a Salesforce field, LWC/Aura/VF component, or method end-to-end across UI → Apex → Flow → SObject. Use when the user asks "where is X used" or wants the full call chain across layers. For a plain-English explanation of one code unit only, prefer sf-explain-code. For schema/ERD views of objects, prefer sf-schema-overview. May be offered as a follow-up after sf-explain-code completes on a UI artifact, but do not auto-invoke alongside it — let the user opt in.
 triggers:
   - "UI to DB"
   - "trace this LWC"
   - "end-to-end"
   - "where is this field used"
   - "where does this come from"
-  - "explain this LWC"
-  - "explain this component"
-  - "what does this component do"
-  - "what does this LWC do"
-  - "explain this Aura"
-  - "explain this VisualForce"
-  - "explain this ApexPage"
   - "where is this component used"
   - "what pages embed"
   - "which pages use"

@@ -1,12 +1,12 @@
 ---
 name: sf-wip-impact
-description: Dry-run the impact of uncommitted local changes against the org graph before you commit.
+description: Dry-run the blast radius and test gaps for UNCOMMITTED local working-tree changes against the org graph — use before you commit. For committed PR/branch diffs use sf-impact-from-diff instead.
 triggers:
-  - "dry-run this change"
-  - "what would this PR do"
-  - "local impact"
-  - "uncommitted changes"
+  - "dry-run my local changes"
+  - "impact of my uncommitted changes"
   - "wip impact"
+  - "before I commit"
+  - "what would my working-tree changes affect"
 tools_used:
   - wip_impact
   - wip_test_gap

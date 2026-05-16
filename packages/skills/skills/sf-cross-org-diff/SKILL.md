@@ -1,12 +1,12 @@
 ---
 name: sf-cross-org-diff
-description: Compare metadata between two orgs (sandbox vs prod, two sandboxes) and summarise drift.
+description: Compare metadata between TWO DIFFERENT ORGS (sandbox vs prod, sandbox vs sandbox) and summarise configuration drift between them. Use only when the user names two orgs or clearly contrasts environments. For "what changed since deploy" in a single org use sf-what-broke; for comparing point-in-time snapshots of one org use sf-snapshot-compare.
 triggers:
   - "sandbox vs prod"
-  - "what changed"
-  - "org diff"
-  - "compare orgs"
-  - "drift"
+  - "compare these two orgs"
+  - "org-to-org diff"
+  - "drift between orgs"
+  - "what's different between <orgA> and <orgB>"
 tools_used:
   - cross_org_diff
   - point_in_time_diff
