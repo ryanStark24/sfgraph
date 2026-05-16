@@ -30,6 +30,7 @@ Twenty-five MCP tools ship in `@ryanstark24/sfgraph-server`. Every tool returns 
 | `list_orgs`                       | List ingested orgs with last-sync timestamps.            |
 | `staleness_check`                 | Check how old the local ingest is (warns at >=7 days).   |
 | `explain_code`                    | Read a stored code snippet; optionally cache an LLM explanation. |
+| `find_similar`                    | Semantic KNN over node embeddings — find similar metadata by qname or by free-text concept. |
 | `wip_impact`                      | Blast-radius for uncommitted local changes.              |
 | `wip_diff`                        | Compute the WIP overlay vs the ingested baseline.        |
 | `wip_test_gap`                    | Test coverage gaps for WIP changes.                      |

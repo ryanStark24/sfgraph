@@ -4,7 +4,7 @@
 [![license](https://img.shields.io/npm/l/@ryanstark24/sfgraph.svg)](LICENSE)
 [![node](https://img.shields.io/node/v/@ryanstark24/sfgraph.svg)](https://nodejs.org)
 
-A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-syncs your org to a SQLite + vector index on your machine and exposes 25 MCP tools to **Cursor, Claude Code/Desktop, and VS Code**, so the AI you already use can reason about Apex, LWC, Flow, Vlocity, OmniStudio, security, and integrations **without your code or schema ever leaving your laptop**.
+A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-syncs your org to a SQLite + vector index on your machine and exposes 26 MCP tools to **Cursor, Claude Code/Desktop, and VS Code**, so the AI you already use can reason about Apex, LWC, Flow, Vlocity, OmniStudio, security, and integrations **without your code or schema ever leaving your laptop**.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -52,7 +52,7 @@ After install, `sfgraph` is on your PATH.
 sfgraph install
 ```
 
-Idempotent. Copies 15 skill playbooks into `~/.claude/skills/` + `~/.cursor/rules/` and adds a `sfgraph` entry to your editor's MCP config. Existing MCP entries are preserved. Use `--target=claude|cursor|vscode` to wire only one, or `--dry-run` to preview.
+Idempotent. Copies 17 skill playbooks into `~/.claude/skills/` + `~/.cursor/rules/` and adds a `sfgraph` entry to your editor's MCP config. Existing MCP entries are preserved. Use `--target=claude|cursor|vscode` to wire only one, or `--dry-run` to preview.
 
 #### Using a different IDE or LLM client?
 
@@ -101,7 +101,7 @@ Use `which node` and `which sfgraph` to fill in the paths. Same effect as `sfgra
 
 After editing the file, fully restart the client so it re-reads the MCP server list. Then ask the agent something like *"list orgs from sfgraph"* to confirm the tools are visible.
 
-The skill playbooks (`sf-impact-from-diff`, `sf-security-audit`, etc.) are Claude/Cursor-specific. On other clients, the agent still has direct access to all 25 MCP tools — it just routes by tool name instead of by skill trigger.
+The skill playbooks (`sf-impact-from-diff`, `sf-security-audit`, etc.) are Claude/Cursor-specific. On other clients, the agent still has direct access to all 26 MCP tools — it just routes by tool name instead of by skill trigger.
 
 ### 4. Verify the install
 
@@ -188,8 +188,8 @@ A 3D force-graph explorer for the ingested org. Loopback-only by default. See [`
 | | |
 |---|---|
 | [`docs/CLI.md`](docs/CLI.md) | Full CLI reference — every command, every flag |
-| [`docs/TOOLS.md`](docs/TOOLS.md) | The 25 MCP tools — schemas, examples, algorithms |
-| [`docs/SKILLS.md`](docs/SKILLS.md) | The 15 skill playbooks installed into your editor |
+| [`docs/TOOLS.md`](docs/TOOLS.md) | The 26 MCP tools — schemas, examples, algorithms |
+| [`docs/SKILLS.md`](docs/SKILLS.md) | The 17 skill playbooks installed into your editor |
 | [`docs/SAMPLES.md`](docs/SAMPLES.md) | Worked agent-conversation examples |
 | [`docs/COVERAGE.md`](docs/COVERAGE.md) | Metadata coverage matrix and SObject classification logic |
 | [`docs/WEB.md`](docs/WEB.md) | Local web visualiser |

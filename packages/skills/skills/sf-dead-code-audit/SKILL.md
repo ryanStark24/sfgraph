@@ -12,6 +12,7 @@ tools_used:
   - freshness_report
   - trace_upstream
   - staleness_check
+  - find_similar
 ---
 
 # sf-dead-code-audit
@@ -22,7 +23,7 @@ Use when the user wants to inventory metadata that appears unreferenced. Output 
 
 1. Call `dead_code_audit` over the user's chosen scope (entire org, single namespace, or one metadata category). Capture every candidate plus the evidence the tool used (no incoming edges, no inclusion in deploy manifests, etc.).
 2. Call `freshness_report` to layer last-touched timestamps onto each candidate. Stale + unreferenced is stronger evidence than unreferenced alone.
-3. For any candidate the user names interactively, call `trace_upstream` to confirm absence of indirect callers (dynamic Apex, Flow lookups, callable interfaces).
+3. For any candidate the user names interactively, call `trace_upstream` to confirm absence of indirect callers (dynamic Apex, Flow lookups, callable interfaces). Optionally call `find_similar(qname=<candidate>, k=5)` — if the candidate has near-neighbours (similarity > 0.6) that ARE referenced, the candidate may be a copy-paste duplicate of live code and worth deleting; if every neighbour is also in the dead list, you've found a whole disused subsystem worth flagging as a group.
 4. Sort candidates into three buckets:
    - **confident-dead** — no incoming edges, no dynamic-invocation signature match, freshness > 12 months, no inclusion in active permission sets / page layouts.
    - **likely-dead** — no incoming edges, but at least one weak signal (recently modified, referenced from a managed package boundary, or named in a metadata file we don't parse fully).

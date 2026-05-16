@@ -22,6 +22,7 @@ intent description, decision rubric, and a chain of MCP tool calls. After
 | `sf-what-broke`                | Correlate a recent failure to the metadata that changed.   |
 | `sf-wip-impact`                | Blast-radius for uncommitted working-tree changes.         |
 | `sf-web-explorer`              | Launch the local web visualiser for visual graph exploration. |
+| `sf-find-similar`              | Semantic neighbour search — find metadata similar to an existing node or a free-text concept via MiniLM-L6 embeddings. |
 
 ## How a skill is wired
 

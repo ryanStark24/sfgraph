@@ -13,6 +13,7 @@ tools_used:
   - trace_upstream
   - trace_downstream
   - staleness_check
+  - find_similar
 ---
 
 # sf-explain-code
@@ -59,6 +60,18 @@ Continue the playbook either way; just flag the risk.
 - **Side effects** — SOQL/DML/callouts.
 - **Mermaid** — only when conditional structure justifies it.
 - **Cached** — confirm the explanation was cached back, with the qname.
+
+## Follow-up: "what else is like this?"
+
+After delivering the explanation, offer a one-line follow-up:
+
+> _Want me to find semantically similar code? I can run `find_similar` on this qname._
+
+If the user says yes, hand off to `sf-find-similar` with mode=qname and the same qname. Don't pre-emptively run it — the embedding query takes a moment and the user may not want it. The chain is most useful when:
+
+- The user is reviewing legacy code and wants to spot duplicates.
+- The method does something domain-specific (taxes, compliance, pricing) and the user wants to find every place that handles the same concept.
+- The agent already produced an explanation but the user wonders "is this the only place this logic lives?".
 
 ## Don't
 

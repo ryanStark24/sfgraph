@@ -45,9 +45,9 @@ packages/
     src/embedding/                      #   batched transformers.js queue
     src/analyze/                        #   dependents, freshness, governor, dead-code, ...
     src/render/mermaid/                 #   diagram generators
-  mcp-server/                           # stdio MCP, 25 tools, shutdown discipline
+  mcp-server/                           # stdio MCP, 26 tools, shutdown discipline
   cli/                                  # install, ingest, link, wip, mcp, telemetry, version
-  skills/                               # 15 SKILL.md playbooks + installer
+  skills/                               # 17 SKILL.md playbooks + installer
   web/                                  # local 3D web visualiser (`sfgraph serve`)
   models/                               # vendored MiniLM ONNX + loader
 ```

@@ -9,7 +9,7 @@
 | `~/.sfgraph/orgs-snapshot.json` | `sf`-CLI alias + default-org snapshot for sandboxed MCP children |
 | `~/.config/sfgraph/sfgraph.json` | Telemetry config (default off) |
 | `~/.config/sfgraph/machine-id` | Random UUID — only created if you enable telemetry |
-| `~/.claude/skills/sf-*` | 15 SKILL.md playbooks for Claude |
+| `~/.claude/skills/sf-*` | 17 SKILL.md playbooks for Claude |
 | `~/.cursor/rules/sf-*.mdc` | Same, Cursor flavor |
 | `<MCP-config>.json` | MCP server entry (per editor) |
 

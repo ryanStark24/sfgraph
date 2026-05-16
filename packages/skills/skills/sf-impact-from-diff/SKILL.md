@@ -11,6 +11,7 @@ tools_used:
   - impact_from_git_diff
   - test_gap_intelligence_from_git_diff
   - staleness_check
+  - find_similar
 ---
 
 # sf-impact-from-diff
@@ -25,6 +26,7 @@ Use when the user wants to understand the downstream consequences of a pending c
 4. Group findings by risk tier — **direct edits**, **first-degree dependents**, **transitive (depth ≥ 2)** — and call out anything that crosses metadata layers (LWC -> Apex -> Flow).
 5. Render the Mermaid impact graph returned by the tool. If the impact set is large (>40 nodes), summarise by category and offer a follow-up call scoped to a single changed file.
 6. If test gaps exist, list the specific impacted classes + methods that lack assertions, not just totals.
+7. **Semantic-sibling check (optional).** For each top-level changed file, call `find_similar(qname=<changed-node>, k=5)` and surface any near-neighbour (similarity > 0.6) that is NOT in the structural impact set. Rationale: copy-paste duplicates of the changed logic often live elsewhere in the codebase without a structural edge linking them. The diff doesn't touch them, but a behaviour change to the original probably should propagate. Flag these as "siblings worth reviewing" — don't add them to the at-risk list automatically (similarity ≠ dependency), but offer them for the user to scan.
 
 ## Visualization
 
