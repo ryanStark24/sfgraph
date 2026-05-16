@@ -1,12 +1,12 @@
 ---
 name: sf-impact-from-diff
-description: Compute downstream blast radius and test-coverage gaps for a git diff before merge.
+description: Compute downstream blast radius and test-coverage gaps for a COMMITTED git diff (a PR, a branch, a commit range) before merge. Requires the changes to already exist in git history. For uncommitted working-tree changes, use sf-wip-impact instead.
 triggers:
   - "what does this PR break"
-  - "impact of this diff"
-  - "before I merge"
-  - "blast radius"
-  - "what does this change affect"
+  - "impact of this PR"
+  - "blast radius of this branch"
+  - "before I merge this PR"
+  - "test gaps for this diff"
 tools_used:
   - impact_from_git_diff
   - test_gap_intelligence_from_git_diff

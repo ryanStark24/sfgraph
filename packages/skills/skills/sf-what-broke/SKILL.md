@@ -1,10 +1,10 @@
 ---
 name: sf-what-broke
-description: Identify what regressed in an org since a recent deploy or snapshot using point-in-time diffs.
+description: Identify what regressed in a SINGLE org since a recent deploy or sync — post-deployment regression triage. Use when the user reports something stopped working after a deploy, or asks what changed since the last ingest. For comparing two distinct orgs use sf-cross-org-diff; for arbitrary point-in-time snapshot comparison use sf-snapshot-compare.
 triggers:
-  - "what broke"
+  - "what broke after the deploy"
   - "post-deploy regression"
-  - "since deploy"
+  - "since the last deploy"
   - "what changed since last sync"
   - "regression triage"
 tools_used:

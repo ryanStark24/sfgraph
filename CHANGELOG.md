@@ -31,6 +31,25 @@
   graph is populated. Fixes the prior ordering problem where edges
   emitted by an early extractor had nothing to bind to.
 
+### Changed
+
+- **Skill descriptions tightened for unambiguous routing** — 7 SF
+  skills had overlapping triggers that made the host LLM coin-flip
+  between them:
+  - `sf-explain-code` now scoped to Salesforce code only; cross-refs
+    `sf-cross-layer-trace` / `sf-schema-overview` for broader scope.
+  - `sf-cross-layer-trace` dropped its "proactively volunteer on every
+    explain-style question" override and the `explain this LWC` /
+    `explain this component` triggers that double-fired with
+    `sf-explain-code`. Now offered as an opt-in follow-up.
+  - `sf-cross-org-diff` / `sf-what-broke` / `sf-snapshot-compare` no
+    longer all trigger on bare "what changed" — each now requires the
+    user to name two orgs, name a deploy, or name a snapshot
+    respectively, with explicit "use X instead when…" pointers.
+  - `sf-impact-from-diff` (committed git history) vs `sf-wip-impact`
+    (uncommitted working tree) now state their scope in caps so the
+    LLM can't pick the wrong one for "what would this change do."
+
 ### Fixed
 
 - **CodeRabbit review feedback on edge-resolution PR** (commit `9ce141e`).
