@@ -1,0 +1,18 @@
+{
+  "Id": "a5c000000000000001",
+  "LastModifiedDate": "2025-01-01T00:00:00.000Z",
+  "Name": "Campaign Detail",
+  "vlocity_cmt__Active__c": true,
+  "vlocity_cmt__Author__c": "Vlocity",
+  "vlocity_cmt__CardType__c": null,
+  "vlocity_cmt__Datasource__c": null,
+  "vlocity_cmt__Definition__c": "{\"dataSource\":{\"contextVariables\":[],\"type\":null,\"value\":{\"query\":\"\"}},\"filter\":{},\"states\":[{\"conditions\":[{\"field\":\"$scope.data.status\",\"operator\":\"===\",\"type\":\"system\",\"value\":\"'active'\"}],\"definedActions\":{\"actions\":[]},\"fields\":[{\"collapse\":true,\"editing\":false,\"fieldType\":\"standard\",\"label\":\"Description\",\"name\":\"['Description']\",\"type\":\"string\"},{\"collapse\":true,\"editing\":false,\"fieldType\":\"custom\",\"label\":\"Create By (footer)\",\"name\":\"['CreatedBy']['Name']\",\"type\":\"string\"},{\"collapse\":true,\"editing\":false,\"fieldType\":\"custom\",\"label\":\"Created on (footer)\",\"name\":\"['CreatedDate']\",\"type\":\"date\"},{\"collapse\":true,\"editing\":false,\"fieldType\":\"custom\",\"label\":\"Last Modified on (footer)\",\"name\":\"['LastModifiedDate']\",\"type\":\"date\"},{\"collapse\":true,\"editing\":false,\"fieldType\":\"standard\",\"label\":\"Email Template\",\"name\":\"['vlocity_cmt__EmailTemplate__c']\",\"type\":\"string\"},{\"collapse\":true,\"editing\":false,\"fieldType\":\"standard\",\"label\":\"OwnerId\",\"name\":\"['OwnerId']\",\"type\":\"string\"}],\"name\":\"Campaign Detail\",\"sObjectType\":\"Campaign\",\"templateUrl\":\"campaign-detail\"}],\"title\":\"Campaign Detail\"}",
+  "vlocity_cmt__Description__c": null,
+  "vlocity_cmt__GlobalKey__c": "Campaign Detail/Vlocity/1/1512450338041",
+  "vlocity_cmt__IsChildCard__c": false,
+  "vlocity_cmt__ParentID__c": null,
+  "vlocity_cmt__SampleData__c": null,
+  "vlocity_cmt__Styles__c": null,
+  "vlocity_cmt__Type__c": null,
+  "vlocity_cmt__Version__c": 1
+}

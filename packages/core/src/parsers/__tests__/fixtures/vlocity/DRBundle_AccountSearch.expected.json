@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "DataRaptor:AccountSearch",
+      "label": "DataRaptor",
+      "attributes": {
+        "name": "AccountSearch",
+        "flavor": "DR"
+      }
+    }
+  ],
+  "edges": []
+}

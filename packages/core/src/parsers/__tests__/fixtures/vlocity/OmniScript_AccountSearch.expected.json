@@ -1,0 +1,104 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "OmniScript:AccountSearch",
+      "label": "OmniScript",
+      "attributes": {
+        "name": "AccountSearch",
+        "flavor": "OS"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "DataRaptor:AccountSearch",
+      "relType": "OS_USES_DR",
+      "attributes": {}
+    }
+  ]
+}

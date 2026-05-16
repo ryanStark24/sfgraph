@@ -1,0 +1,44 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "IntegrationProcedure:AddQGToSalesQLIs",
+      "label": "IntegrationProcedure",
+      "attributes": {
+        "name": "AddQGToSalesQLIs",
+        "flavor": "IP"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "IntegrationProcedure:AddQGToSalesQLIs",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "IP_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "IntegrationProcedure:AddQGToSalesQLIs",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "IP_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "IntegrationProcedure:AddQGToSalesQLIs",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "IP_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "IntegrationProcedure:AddQGToSalesQLIs",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "IP_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "IntegrationProcedure:AddQGToSalesQLIs",
+      "dstQualifiedName": "Remote:vlocity_cmt.B2BCmexAppHandler",
+      "relType": "IP_INVOKES_REMOTE",
+      "attributes": {}
+    }
+  ]
+}

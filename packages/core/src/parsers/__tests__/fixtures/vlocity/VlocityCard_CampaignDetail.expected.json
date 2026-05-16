@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "VlocityCard:CampaignDetail",
+      "label": "VlocityCard",
+      "attributes": {
+        "name": "CampaignDetail",
+        "flavor": "VC"
+      }
+    }
+  ],
+  "edges": []
+}
