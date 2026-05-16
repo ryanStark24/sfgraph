@@ -1,5 +1,78 @@
 # Changelog
 
+## Unreleased — known parser limitations (file as follow-ups)
+
+- **DataRaptor / OmniDataTransform field-reference regex** doesn't match
+  the colon-separated path format Salesforce uses in real DRMapItem /
+  OmniDataTransformItem records (`Step:Field`, `Object:Field`). The
+  parsers' `extractFieldRefs()` uses a `/\bObject\.Field\b/` regex
+  matching dot-separated paths only — which exist in some Vlocity
+  legacy DataPacks but not in modern on-core or namespaced DRs. Effect:
+  `DR_READS_FIELD`, `DR_WRITES_FIELD`, and `OMNI_USES_DATA_TRANSFORM`
+  edges are silently missing on most real Vlocity-CMT and OmniStudio-on-
+  Core orgs. Documented by 0-edge golden tests in
+  `packages/core/src/parsers/__tests__/{vlocity,omnistudio}.golden.test.ts`.
+  Fix requires walking the JSON structure looking for the structured
+  `InputObjectName + InputFieldName` (on-core) / `InterfaceObjectName +
+  InterfaceFieldAPIName` (Vlocity) pairs rather than regex-matching the
+  flattened JSON string. ~30-50 LOC per parser. Help wanted.
+
+## 1.1.8 — follow_up_tools wire-up, parser bug fixes, dead-code cleanup
+
+### Fixed
+
+- **Parser walk() false-positives**. Five parsers (vlocity/integration-
+  procedure, vlocity/omni-script, vlocity/vlocity-card, omnistudio/process,
+  omnistudio/integration-procedure, omnistudio/ui-card) previously used
+  the parent JSON KEY as a fallback "type" when the visited object had
+  no `Type` property. PropertySet blobs contain nested objects under
+  keys like `remoteOptions` — each one false-positive matched
+  `type.includes("remote")` and emitted phantom `IP_INVOKES_REMOTE →
+  Remote:unknown` edges. Eliminated 27 false-positive edges across the
+  three real-data golden fixtures.
+
+- **`IP_CALLS_IP` edge type never emitted**. The Vlocity IntegrationProcedure
+  parser checked `type.includes("integrationprocedure")` but real elements
+  have `Type: "Integration Procedure Action"` (with spaces). Normalized
+  type strings now strip non-alphanumerics before substring checks.
+  Also enables the parallel `"DataRaptor Post Action"` → DataRaptor
+  edge match in OmniProcess.
+
+- **OmniProcess field-name fallback**. After the routing fix above,
+  OmniProcess parser also needed to accept Vlocity-flavoured
+  `dataRaptorBundleName` and `bundle` PropertySet keys alongside the
+  on-core `dataTransformName` — real Vlocity-exported metadata can
+  appear with either depending on the source tooling.
+
+### Added
+
+- **`follow_up_tools` populated on all 22 affected tools** (was 1/26).
+  Maps each tool's natural next-steps (e.g. `analyze_field` →
+  `trace_upstream`, `trace_downstream`, `security_audit`,
+  `find_similar`). MCP clients that consume the `_meta.follow_up_tools`
+  field can now auto-suggest the next action.
+
+- **Tests for 1.1.5 / 1.1.6 features**: `embedTexts` / `embedSingle`
+  contract tests (~5), liveness-probe tests with mocked conn (~5),
+  `find_similar` tests with stub VectorStore (~6). Closes the
+  "shipped without coverage" gap in the audit.
+
+- **Golden parser tests** for all 4 Vlocity DataPack types and 3
+  OmniStudio on-Core types. Closes the 6 originally-skipped tests
+  (down from 6 to 0).
+
+### Removed
+
+- 5 dead exports across `core` (`vlocityFallback`, `findTestsFor`,
+  `rethrowAsIngestError`, `stripNamespace`, `fieldRefEdge`). Internal-
+  only, zero importers; cleaned for clarity.
+
+### Docs
+
+- Full env-var reference in `docs/TROUBLESHOOTING.md` covering paths,
+  ingest tuning, coverage knobs, embedding overrides, and parser
+  internals (13 previously-undocumented vars surfaced).
+
 ## 1.1.3 — edge resolution, Apex AST, dangling-edge audit
 
 ### Added

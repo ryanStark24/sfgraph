@@ -178,6 +178,69 @@ sfgraph ingest --org <alias>
 
 ---
 
+## Environment-variable reference
+
+Every override sfgraph honors at runtime. Most of these have CLI-flag
+equivalents (preferred); env vars are useful for IDE-spawned MCP
+children and CI runs where you can't pass flags.
+
+### Paths / install layout
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SFGRAPH_HOME` | `~/.sfgraph` | Override the root sfgraph dir. |
+| `SFGRAPH_DATA_DIR` | platform-specific | Where per-org `<orgId>.sqlite` files live. |
+| `SFGRAPH_CONFIG_DIR` | platform-specific | Where `sfgraph.json` + machine-id live. |
+| `SFGRAPH_CACHE_DIR` | platform-specific | Embedding-model + transient cache. |
+| `SFGRAPH_LOG_DIR` | platform-specific | sfgraph's own logs (separate from your shell stderr). |
+| `SFGRAPH_TEMP_DIR` | OS tmpdir | Temp scratch (rebuild backups in flight, etc.). |
+| `SFGRAPH_ALLOW_ANY_DB` | unset | When set, lets `--db` point outside the data dir. Off by default to prevent accidental cross-org overwrites. |
+
+### Ingest tuning
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SFGRAPH_TOOLING_POOL` | `5` | Max concurrent Tooling-API calls. Same as `--tooling-pool`. |
+| `SFGRAPH_METADATA_POOL` | `10` | Max concurrent Metadata-API calls. Same as `--metadata-pool`. |
+| `SFGRAPH_DATA_POOL` | `10` | Max concurrent SObject/Bulk queries. Same as `--data-pool`. |
+| `SFGRAPH_SOURCE_CONCURRENCY` | `12` | How many source extractors run in parallel in the sliding window. Lower if you're hitting too many concurrent connections; higher rarely helps. |
+| `SFGRAPH_SEQUENTIAL_SOURCES` | unset | Legacy escape hatch — runs extractors strictly serially. Use only if parallel ingest is misbehaving in a way the pool knobs don't address. |
+| `SFGRAPH_BISECT_MAX_DEPTH` | `6` | How deep `readMetadataBatchAdaptive` recurses when bisecting a failed batch. Lower bound = faster fail; higher bound = more salvage. |
+| `SFGRAPH_AUTO_RETRY_THRESHOLD` | `10` | More than N transient skips triggers the post-ingest auto-retry. |
+| `SFGRAPH_NO_AUTO_RETRY` | unset | Disable the auto-retry pass entirely. Same as `--no-auto-retry-skipped`. |
+| `SFGRAPH_NO_LIVENESS_PROBE` | unset | Disable the conn.identity() liveness probe. Useful in tests with mock connections that don't implement `identity()`. |
+| `SFGRAPH_SKIP_THRESHOLD` | (varies by pool) | Per-pool skip-trigger threshold for the resilience layer. Tune only after reading the pool source. |
+| `SFGRAPH_DEBUG_INGEST` | unset | Verbose tracing + heartbeat + per-source phase logs. Same as `--debug`. |
+| `SFGRAPH_DEBUG_POOLS` | unset | Adds per-pool `running/queued/reservoir` counters to the heartbeat. Strict subset of `SFGRAPH_DEBUG_INGEST=1`. |
+
+### Coverage knobs (what to include / exclude)
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SFGRAPH_INCLUDE_MANAGED` | unset | Globally include managed-package source content. By default managed Apex / LWC ship as metadata-only stubs (faster + safer). |
+| `SFGRAPH_INCLUDE_MANAGED_LWC` | unset | LWC-only override of the above. |
+| `SFGRAPH_INCLUDE_SYSTEM_SOBJECTS` | unset | Include `ApexLog`, `EventLogFile`, etc. Almost never wanted. |
+| `SFGRAPH_INCLUDE_ALL_SOBJECTS` | unset | Bypass the EntityDefinition gate; include every queryable SObject. |
+| `SFGRAPH_INCLUDE_ALL_GENERIC` | unset | Bypass the generic-metadata whitelist; route every metadata type the org returns. |
+| `SFGRAPH_SKIP_LWC` | unset | Comma-separated DeveloperNames of LWC bundles to skip (e.g. one that crashes describe). |
+| `SFGRAPH_SKIP_SOBJECT` | unset | Comma-separated SObject names to skip. |
+
+### Embedding model overrides
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SFGRAPH_EMBED_MODEL_PATH` | (vendored MiniLM) | Absolute path to a transformers.js-compatible model dir. |
+| `SFGRAPH_EMBED_MODEL_ID` | `Xenova/all-MiniLM-L6-v2` | Model id under that dir. |
+| `SFGRAPH_EMBED_MODEL_DIM` | `384` | Embedding dimension. Must match the model. |
+
+### Parser internals
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SFGRAPH_APEX_PARSER` | (worker pool) | Override apex-parser strategy (e.g. force in-process). Internal — most users never need this. |
+
+---
+
 ## Windows install issues
 
 sfgraph runs on Windows 10/11 under Node ≥ 20. Install via `npm install -g @ryanstark24/sfgraph`; the `sfgraph install` command writes the MCP host config with `npx.cmd` (not `npx`) so Claude Code / Cursor on Windows invoke the right binary. Make sure Git LFS is installed before `npm install` so the vendored embedding model resolves on first ingest.
