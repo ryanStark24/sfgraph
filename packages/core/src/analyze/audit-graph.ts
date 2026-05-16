@@ -51,7 +51,9 @@ export function auditDanglingEdges(
   opts: AuditOpts = {},
 ): AuditResult {
   const orgId = typeof orgIdIn === "string" ? asOrgId(orgIdIn) : orgIdIn;
-  const sampleSize = opts.sampleSize ?? 25;
+  // Clamp to ≥0; a negative slice index would silently return a tail of the
+  // dangling array rather than an empty sample.
+  const sampleSize = Math.max(0, opts.sampleSize ?? 25);
 
   const totalEdges = store.countEdges(orgId);
   const dangling = store.listDanglingEdges(orgId, opts.scanLimit);

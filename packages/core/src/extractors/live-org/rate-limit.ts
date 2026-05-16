@@ -99,11 +99,27 @@ export async function readMetadataBatchAdaptive<TItem extends { fullName: string
     const out: (unknown | null)[] = [];
     for (let i = 0; i < items.length; i += 1) out.push(arr[i] ?? null);
     return out;
-  } catch (_e) {
+  } catch (e) {
+    const isDebug = process.env.SFGRAPH_DEBUG_INGEST === "1";
+    const errMsg = (e as Error)?.message ?? String(e);
     // Single-item slice → genuine skip.
-    if (items.length === 1) return [null];
+    if (items.length === 1) {
+      if (isDebug) {
+        console.warn(
+          `metadata.read ${type}: dropping ${items[0]?.fullName ?? "?"} after single-item failure: ${errMsg}`,
+        );
+      }
+      return [null];
+    }
     // Bisect ceiling → drop the slice to bound wall-clock cost.
-    if (depth >= MAX_BISECT_DEPTH) return items.map(() => null);
+    if (depth >= MAX_BISECT_DEPTH) {
+      if (isDebug) {
+        console.warn(
+          `metadata.read ${type}: bisect depth ceiling (${MAX_BISECT_DEPTH}) reached; dropping ${items.length} record(s): ${items.map((i) => i.fullName).join(",")} (${errMsg})`,
+        );
+      }
+      return items.map(() => null);
+    }
     const mid = Math.ceil(items.length / 2);
     const [left, right] = await Promise.all([
       readMetadataBatchAdaptive(conn, type, items.slice(0, mid), depth + 1),

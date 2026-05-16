@@ -43,14 +43,24 @@ export function extractHtmlEdges(
     if (bindings && parts.length >= 2) {
       const sObject = bindings.wireToSObject.get(head);
       if (sObject) {
-        // record.fields.Name and record.fields.Phone are the v53+ shape;
-        // strip the `fields.` segment when present so the qname matches
-        // the CustomField label we emit elsewhere.
+        // Extract the field name from the binding, handling both adapter shapes:
+        //   `record.Name`             → tail = [Name]                → field = Name
+        //   `record.fields.Name`      → tail = [fields, Name]        → field = Name
+        //   `record.fields.Name.value` → tail = [fields, Name, value] → field = Name
+        //     (v53+ getRecord returns FieldValueRepresentation; templates
+        //      access `.value` on the field proxy.)
+        // We deliberately *don't* concatenate intermediate segments — they're
+        // either the `fields` accessor or the proxy `.value`/`.displayValue`,
+        // neither of which are part of the CustomField qname.
         const tail = parts.slice(1);
-        const fieldParts = tail[0] === "fields" ? tail.slice(1) : tail;
-        const field = fieldParts.join(".");
+        let field = "";
+        if (tail[0] === "fields") {
+          field = tail[1] ?? "";
+        } else if (tail.length === 1) {
+          field = tail[0] ?? "";
+        }
         if (field) {
-          const dst = `CustomField:${stripNs(sObject, ctx.namespace)}.${field.split(".").pop()}`;
+          const dst = `CustomField:${stripNs(sObject, ctx.namespace)}.${stripNs(field, ctx.namespace)}`;
           if (!seenField.has(dst)) {
             seenField.add(dst);
             extraEdges.push(

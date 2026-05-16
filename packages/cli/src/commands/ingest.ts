@@ -411,11 +411,14 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
     // behavior for CI pipelines that rely on it.
     if (built.skipReportPath) {
       const threshold = (() => {
-        if (typeof opts.skipThreshold === "number" && Number.isFinite(opts.skipThreshold)) {
-          return opts.skipThreshold;
-        }
-        const env = Number.parseInt(process.env.SFGRAPH_SKIP_THRESHOLD ?? "", 10);
-        return Number.isFinite(env) ? env : 5;
+        // Accept only positive integers from either the flag or the env;
+        // anything else (negative, zero, fractional, NaN) silently falls back
+        // to the default rather than producing surprising exit-code behavior.
+        const candidate =
+          typeof opts.skipThreshold === "number"
+            ? opts.skipThreshold
+            : Number.parseInt(process.env.SFGRAPH_SKIP_THRESHOLD ?? "", 10);
+        return Number.isInteger(candidate) && candidate > 0 ? candidate : 5;
       })();
       const { existsSync, readFileSync } = await import("node:fs");
       if (existsSync(built.skipReportPath)) {

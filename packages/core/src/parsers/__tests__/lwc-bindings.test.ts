@@ -40,6 +40,31 @@ describe("LWC template binding resolution (Phase 5)", () => {
     ).toBe(true);
   });
 
+  it("resolves `{record.fields.Name.value}` v53+ getRecord proxy shape", async () => {
+    const js = `
+      import { LightningElement, wire, api } from 'lwc';
+      import { getRecord } from 'lightning/uiRecordApi';
+      import NAME_FIELD from '@salesforce/schema/Account.Name';
+      export default class V53 extends LightningElement {
+        @api recordId;
+        @wire(getRecord, { recordId: '$recordId', fields: [NAME_FIELD] })
+        record;
+      }
+    `;
+    const html = `<template><span>{record.fields.Name.value}</span></template>`;
+    const parser = new LwcBundleParser();
+    const result = await parser.parse(
+      { bundleName: "v53", files: { "v53.js": js, "v53.html": html } },
+      makeTestCtx(),
+    );
+    const fieldEdges = result.edges
+      .filter((e) => e.relType === "LWC_BINDS_FIELD")
+      .map((e) => String(e.dstQualifiedName));
+    expect(fieldEdges).toContain("CustomField:Account.Name");
+    // Must NOT capture the proxy accessor as the field name.
+    expect(fieldEdges).not.toContain("CustomField:Account.value");
+  });
+
   it("falls back to LWC_BINDS_PROPERTY when the binding can't be resolved to a sObject", async () => {
     const js = `
       import { LightningElement } from 'lwc';
