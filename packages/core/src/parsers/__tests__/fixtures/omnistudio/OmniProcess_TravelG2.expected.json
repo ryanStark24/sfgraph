@@ -1,0 +1,62 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "OmniProcess:G2_Process",
+      "label": "OmniProcess",
+      "attributes": {
+        "name": "G2_Process",
+        "flavor": "OMNI"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "OmniProcess:G2_Process",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OMNI_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniProcess:G2_Process",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OMNI_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniProcess:G2_Process",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OMNI_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniProcess:G2_Process",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OMNI_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniProcess:G2_Process",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OMNI_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniProcess:G2_Process",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OMNI_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniProcess:G2_Process",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OMNI_INVOKES_REMOTE",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniProcess:G2_Process",
+      "dstQualifiedName": "Remote:unknown",
+      "relType": "OMNI_INVOKES_REMOTE",
+      "attributes": {}
+    }
+  ]
+}

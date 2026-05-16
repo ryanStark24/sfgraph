@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "OmniDataTransform:extractTravelRequestInformation",
+      "label": "OmniDataTransform",
+      "attributes": {
+        "name": "extractTravelRequestInformation",
+        "flavor": "OMNI"
+      }
+    }
+  ],
+  "edges": []
+}

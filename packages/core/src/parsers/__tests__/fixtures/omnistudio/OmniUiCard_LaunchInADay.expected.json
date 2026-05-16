@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "OmniUiCard:LaunchOSAppInADay",
+      "label": "OmniUiCard",
+      "attributes": {
+        "name": "LaunchOSAppInADay",
+        "flavor": "OMNI"
+      }
+    }
+  ],
+  "edges": []
+}

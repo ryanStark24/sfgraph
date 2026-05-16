@@ -1,0 +1,316 @@
+{
+  "__source__": "SFDC-Assets/gps-dod-omnistudio-travel-application",
+  "__license__": "Apache-2.0",
+  "__upstream__": "https://github.com/SFDC-Assets/gps-dod-omnistudio-travel-application",
+  "__notes__": "Public OmniStudio sample. Redacted by sfgraph fixture-extract: Salesforce record IDs replaced with deterministic stand-ins; secrets-shaped fields removed. Element PropertySetConfig strings pre-parsed to objects under lowercase `propertySet` key to match what iterOmnistudio emits at runtime.",
+  "Description": "",
+  "Id": "0ko000000000031",
+  "IsActive": true,
+  "LastModifiedDate": "2025-01-01T00:00:00.000Z",
+  "Name": "LaunchOSAppInADay",
+  "OmniUiCardType": "Parent",
+  "VersionNumber": 2,
+  "dataSourceConfig": {
+    "dataSource": {
+      "contextVariables": [],
+      "orderBy": {},
+      "value": {}
+    }
+  },
+  "propertySetConfig": {
+    "dataSource": {
+      "contextVariables": [],
+      "orderBy": {},
+      "value": {}
+    },
+    "enableLwc": true,
+    "events": [
+      {
+        "actionList": [
+          {
+            "actionIndex": 0,
+            "card": "{card}",
+            "draggable": false,
+            "isOpen": true,
+            "key": "1688763630848-tl8hrdz9a",
+            "label": "close modal",
+            "stateAction": {
+              "displayName": "Action",
+              "eventName": "close_modal",
+              "id": "flex-action-1688763630936",
+              "message": "close",
+              "openUrlIn": "Current Window",
+              "subType": "PubSub",
+              "type": "Event",
+              "vlocityIcon": "standard-default"
+            }
+          }
+        ],
+        "channelname": "close_modal",
+        "displayLabel": "close_modal:data",
+        "element": "action",
+        "eventLabel": "pubsub",
+        "eventname": "data",
+        "eventtype": "pubsub",
+        "key": "event-0",
+        "recordIndex": "0",
+        "showSpinner": "false"
+      }
+    ],
+    "isFlex": true,
+    "lwc": {
+      "DeveloperName": "cfLaunchOSAppInADay_2_BrianStults",
+      "Id": "0Rb000000000033",
+      "ManageableState": "unmanaged",
+      "MasterLabel": "cfLaunchOSAppInADay_2_BrianStults",
+      "NamespacePrefix": "c"
+    },
+    "selectableMode": "Multi",
+    "states": [
+      {
+        "actions": [],
+        "childCards": [],
+        "components": {
+          "layer-0": {
+            "children": [
+              {
+                "class": "slds-col ",
+                "element": "action",
+                "elementLabel": "launchTravelRequestOS",
+                "name": "Action",
+                "property": {
+                  "actionList": [
+                    {
+                      "actionIndex": 0,
+                      "contextId": "",
+                      "draggable": true,
+                      "isOpen": true,
+                      "key": "1680877825149-igs7be63n",
+                      "label": "Create a New Travel Request",
+                      "stateAction": {
+                        "channelName": "close_modal",
+                        "flyoutLwc": "travel-travel-request-english",
+                        "flyoutParams": {
+                          "ContextId": "{recordId}",
+                          "vlocEvents": "close_modal"
+                        },
+                        "flyoutType": "OmniScripts",
+                        "hasExtraParams": true,
+                        "id": "flex-action-1688763704357",
+                        "layoutType": "lightning",
+                        "openFlyoutIn": "Modal",
+                        "openUrlIn": "Current Window",
+                        "osName": "travel/travelRequest/English",
+                        "type": "Flyout"
+                      }
+                    }
+                  ],
+                  "card": "{card}",
+                  "flyoutChannel": "close_modal",
+                  "flyoutDetails": {
+                    "openFlyoutIn": "Modal"
+                  },
+                  "iconName": "custom:custom31",
+                  "iconSize": "large",
+                  "label": "Foreign Travel Request",
+                  "record": "{record}",
+                  "showSpinner": "false",
+                  "stateObj": "{record}",
+                  "styles": {
+                    "label": {
+                      "fontSize": "20px"
+                    }
+                  }
+                },
+                "size": {
+                  "default": "12",
+                  "isResponsive": false
+                },
+                "stateIndex": 0,
+                "styleObject": {
+                  "background": {
+                    "color": "",
+                    "image": "",
+                    "position": "",
+                    "repeat": "",
+                    "size": ""
+                  },
+                  "border": {
+                    "color": "",
+                    "radius": "",
+                    "style": "",
+                    "type": "",
+                    "width": ""
+                  },
+                  "container": {
+                    "class": ""
+                  },
+                  "elementStyleProperties": {
+                    "iconSize": "large",
+                    "styles": {
+                      "label": {
+                        "fontSize": "20px"
+                      }
+                    }
+                  },
+                  "inlineStyle": "",
+                  "margin": [],
+                  "padding": [],
+                  "size": {
+                    "default": "12",
+                    "isResponsive": false
+                  },
+                  "sizeClass": "slds-size_12-of-12",
+                  "text": {
+                    "align": "",
+                    "color": ""
+                  }
+                },
+                "styleObjects": [
+                  {
+                    "conditionString": "",
+                    "conditions": "default",
+                    "draggable": false,
+                    "key": 0,
+                    "label": "Default",
+                    "name": "Default",
+                    "styleObject": {
+                      "background": {
+                        "color": "",
+                        "image": "",
+                        "position": "",
+                        "repeat": "",
+                        "size": ""
+                      },
+                      "border": {
+                        "color": "",
+                        "radius": "",
+                        "style": "",
+                        "type": "",
+                        "width": ""
+                      },
+                      "container": {
+                        "class": ""
+                      },
+                      "elementStyleProperties": {
+                        "iconSize": "large",
+                        "styles": {
+                          "label": {
+                            "fontSize": "20px"
+                          }
+                        }
+                      },
+                      "inlineStyle": "",
+                      "margin": [],
+                      "padding": [],
+                      "size": {
+                        "default": "12",
+                        "isResponsive": false
+                      },
+                      "sizeClass": "slds-size_12-of-12",
+                      "text": {
+                        "align": "",
+                        "color": ""
+                      }
+                    }
+                  }
+                ],
+                "type": "element",
+                "userUpdatedElementLabel": true
+              }
+            ]
+          }
+        },
+        "conditions": {
+          "group": [],
+          "id": "state-condition-object",
+          "isParent": true
+        },
+        "definedActions": {
+          "actions": []
+        },
+        "documents": [],
+        "fields": [],
+        "isSmartAction": false,
+        "name": "Active",
+        "omniscripts": [],
+        "smartAction": {},
+        "styleObject": {
+          "class": "slds-card slds-p-around_x-small slds-m-bottom_x-small",
+          "container": {
+            "class": "slds-card"
+          },
+          "margin": [
+            {
+              "size": "x-small",
+              "type": "bottom"
+            }
+          ],
+          "padding": [
+            {
+              "size": "x-small",
+              "type": "around"
+            }
+          ],
+          "size": {
+            "default": "12",
+            "isResponsive": false
+          },
+          "sizeClass": "slds-size_12-of-12"
+        }
+      }
+    ],
+    "theme": "slds",
+    "title": "Launch OS for App In a Day",
+    "xmlJson": [
+      {
+        "@attributes": {
+          "targets": "lightning__AppPage"
+        },
+        "property": [
+          {
+            "@attributes": {
+              "name": "debug",
+              "type": "Boolean"
+            }
+          },
+          {
+            "@attributes": {
+              "name": "recordId",
+              "type": "String"
+            }
+          }
+        ]
+      },
+      {
+        "@attributes": {
+          "targets": "lightning__RecordPage"
+        },
+        "property": [
+          {
+            "@attributes": {
+              "name": "debug",
+              "type": "Boolean"
+            }
+          }
+        ]
+      }
+    ],
+    "xmlObject": {
+      "apiVersion": 51,
+      "description": "",
+      "isExposed": false,
+      "masterLabel": "LaunchOSAppInADay",
+      "runtimeNamespace": "",
+      "targetConfigs": "PHRhcmdldENvbmZpZyB0YXJnZXRzPSJsaWdodG5pbmdfX0FwcFBhZ2UiPgogICAgICAgICAgICAgICAgICAgICAgPHByb3BlcnR5IG5hbWU9ImRlYnVnIiB0eXBlPSJCb29sZWFuIi8+CiAgICAgICAgICAgICAgICAgICAgICA8cHJvcGVydHkgbmFtZT0icmVjb3JkSWQiIHR5cGU9IlN0cmluZyIvPgogICAgICAgICAgICAgICAgICA8L3RhcmdldENvbmZpZz4KICAgICAgICAgICAgICAgICAgPHRhcmdldENvbmZpZyB0YXJnZXRzPSJsaWdodG5pbmdfX1JlY29yZFBhZ2UiPgogICAgICAgICAgICAgICAgICAgICAgPHByb3BlcnR5IG5hbWU9ImRlYnVnIiB0eXBlPSJCb29sZWFuIi8+CiAgICAgICAgICAgICAgICAgIDwvdGFyZ2V0Q29uZmlnPg==",
+      "targets": {
+        "target": [
+          "lightning__RecordPage",
+          "lightning__AppPage",
+          "lightning__HomePage"
+        ]
+      }
+    }
+  },
+  "stylingConfiguration": {}
+}
