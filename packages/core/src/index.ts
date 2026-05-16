@@ -11,4 +11,12 @@ export type {
 export { FilesystemMetadataSource } from "./extractors/filesystem/index.js";
 export * as render from "./render/mermaid/index.js";
 export * as analyze from "./analyze/index.js";
+// Top-level re-exports of the graph-audit API for CLI/host consumers.
+export {
+  auditDanglingEdges,
+  deleteDanglingEdges,
+  type AuditResult,
+  type AuditOpts,
+  type DanglingEdgeSample,
+} from "./analyze/audit-graph.js";
 export type { ToolResponse } from "./tools/types.js";

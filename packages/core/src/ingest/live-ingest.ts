@@ -1,9 +1,13 @@
 import { ErrorCode, type OrgId, SfgraphError, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { Logger } from "@ryanstark24/sfgraph-shared";
 import type { ParseContext, ParseResult } from "../parsers/contract.js";
+import { resolveApexMethodArity } from "../parsers/apex/arity-resolver.js";
+import { resolveCrossFlavor } from "../parsers/cross-flavor-resolver.js";
+import { resolveFlowApexMethods } from "../parsers/flow/invocable-resolver.js";
 import { parserRegistry } from "../parsers/registry.js";
 // Ensure all parsers are registered before we look them up.
 import "../parsers/index.js";
+import { auditDanglingEdges } from "../analyze/audit-graph.js";
 import { populateAnalysisTables } from "../analyze/populate.js";
 import { EmbeddingQueue, type VectorSink } from "../embedding/index.js";
 import type { MemberRef, RawMember } from "../extractors/interfaces/metadata-source.js";
@@ -55,6 +59,14 @@ export interface LiveIngestOpts {
    * written as JSON so --retry-skipped can read it on the next run.
    */
   skipReportPath?: string;
+  /** Skip the post-merge Vlocity↔OmniStudio canonical resolve pass. */
+  disableCrossFlavor?: boolean;
+  /** Skip the post-merge Apex method arity resolver pass. */
+  disableArityResolve?: boolean;
+  /** Skip the post-merge Flow→Apex method-level resolver pass. */
+  disableFlowInvocableResolve?: boolean;
+  /** Skip the post-merge dangling-edge audit pass. */
+  disableAudit?: boolean;
 }
 
 export interface LiveIngestResult {
@@ -65,6 +77,14 @@ export interface LiveIngestResult {
   parseErrors: number;
   deletions: number;
   durationMs: number;
+  /** Number of CANONICAL_OF edges emitted by the cross-flavor resolver. */
+  crossFlavorEdges: number;
+  /** Number of stranded Apex CALLS edges rewritten to real-arity targets. */
+  arityResolved: number;
+  /** Number of Flow→Apex class edges resolved to method-level. */
+  flowMethodsResolved: number;
+  /** Number of edges whose dst node does not exist after all post-passes. */
+  danglingEdges: number;
 }
 
 const NOOP_LOG: Logger = {
@@ -654,6 +674,93 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     }
   }
 
+  // -----------------------------------------------------------------------
+  // Post-merge resolver passes. Each step is isolated in try/catch so a
+  // single resolver bug never breaks ingest — it just reports zero work done.
+  // -----------------------------------------------------------------------
+  let crossFlavorEdges = 0;
+  let arityResolved = 0;
+  let flowMethodsResolved = 0;
+  let danglingEdges = 0;
+
+  // Synth a ParseContext for post-passes that need to mint edges/nodes.
+  const postCtx: ParseContext = {
+    ...parseCtxBase,
+    sourceUri: "post-merge://resolver",
+  };
+
+  if (!opts.disableCrossFlavor) {
+    try {
+      crossFlavorEdges = resolveCrossFlavor(graph, {
+        orgId: resolved.orgId,
+        namespace: null,
+        ctx: postCtx,
+      });
+      if (crossFlavorEdges > 0) {
+        logger.info("live-ingest: cross-flavor resolver linked Vlocity↔OmniStudio", {
+          edges: crossFlavorEdges,
+        });
+      }
+    } catch (e) {
+      logger.warn("live-ingest: cross-flavor resolver failed", { err: (e as Error).message });
+    }
+  }
+
+  if (!opts.disableFlowInvocableResolve) {
+    try {
+      const flowResult = resolveFlowApexMethods(graph, resolved.orgId, postCtx);
+      flowMethodsResolved = flowResult.resolved;
+      if (flowResult.scanned > 0) {
+        logger.info("live-ingest: flow→apex invocable resolver", {
+          scanned: flowResult.scanned,
+          resolved: flowResult.resolved,
+          missing: flowResult.missing,
+          ambiguous: flowResult.ambiguous,
+        });
+      }
+    } catch (e) {
+      logger.warn("live-ingest: flow→apex resolver failed", { err: (e as Error).message });
+    }
+  }
+
+  if (!opts.disableArityResolve) {
+    try {
+      const arityResult = resolveApexMethodArity(graph, {
+        orgId: resolved.orgId,
+        ctx: postCtx,
+      });
+      arityResolved = arityResult.resolved;
+      if (arityResult.scanned > 0) {
+        logger.info("live-ingest: apex method arity resolver", {
+          scanned: arityResult.scanned,
+          resolved: arityResult.resolved,
+          ambiguous: arityResult.ambiguous,
+          unresolved: arityResult.unresolved,
+          edgesEmitted: arityResult.edgesEmitted,
+        });
+      }
+    } catch (e) {
+      logger.warn("live-ingest: apex arity resolver failed", { err: (e as Error).message });
+    }
+  }
+
+  if (!opts.disableAudit) {
+    try {
+      const auditResult = auditDanglingEdges(graph, resolved.orgId, { sampleSize: 25 });
+      danglingEdges = auditResult.danglingCount;
+      if (auditResult.danglingCount > 0) {
+        logger.info("live-ingest: graph audit found dangling edges", {
+          totalEdges: auditResult.totalEdges,
+          danglingCount: auditResult.danglingCount,
+          byRel: auditResult.byRel,
+          byDstPrefix: auditResult.byDstPrefix,
+        });
+      }
+    } catch (e) {
+      logger.warn("live-ingest: graph audit failed", { err: (e as Error).message });
+    }
+  }
+
   const completedIso = new Date().toISOString();
   try {
     graph.touchSync(resolved.orgId, completedIso);
@@ -687,6 +794,10 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     parseErrors,
     deletions,
     durationMs: Date.now() - startedAt,
+    crossFlavorEdges,
+    arityResolved,
+    flowMethodsResolved,
+    danglingEdges,
   };
 }
 

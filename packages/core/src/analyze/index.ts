@@ -11,3 +11,4 @@ export * from "./security.js";
 export * from "./populate.js";
 export * from "./deployment-manifest/generate.js";
 export * from "./wip-impact.js";
+export * from "./audit-graph.js";

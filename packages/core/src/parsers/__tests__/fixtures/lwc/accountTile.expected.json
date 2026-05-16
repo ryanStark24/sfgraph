@@ -76,6 +76,22 @@
     },
     {
       "srcQualifiedName": "LWC:accountTile",
+      "dstQualifiedName": "LWCProperty:handleClick",
+      "relType": "LWC_BINDS_PROPERTY",
+      "attributes": {
+        "binding": "handleClick"
+      }
+    },
+    {
+      "srcQualifiedName": "LWC:accountTile",
+      "dstQualifiedName": "LWCProperty:recordId",
+      "relType": "LWC_BINDS_PROPERTY",
+      "attributes": {
+        "binding": "recordId"
+      }
+    },
+    {
+      "srcQualifiedName": "LWC:accountTile",
       "dstQualifiedName": "ApexMethod:AccountController.getAccountById(?)",
       "relType": "USES_WIRE",
       "attributes": {
