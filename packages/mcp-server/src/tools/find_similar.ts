@@ -2,28 +2,36 @@ import { asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 
-const inputSchema = z.object({
-  org: z.string().min(1),
-  /** The qualified_name of an existing graph node to use as the focal
-   *  point. The tool returns the top-k other nodes whose embedding
-   *  vectors are nearest in cosine distance. */
-  qname: z.string().min(1),
-  /** Top-k results to return (1–50). Default 10 — small enough to surface
-   *  in an agent reply without flooding the context window. */
-  k: z.number().int().min(1).max(50).default(10),
-  /** Restrict matches to a single node label (e.g. 'ApexClass', 'LWC',
-   *  'Flow'). When omitted, all labels are searched. */
-  label: z.string().min(1).optional(),
-});
+const inputSchema = z
+  .object({
+    org: z.string().min(1),
+    /** The qualified_name of an existing graph node to use as the focal
+     *  point. Mutually exclusive with `text`. */
+    qname: z.string().min(1).optional(),
+    /** A free-text query (e.g. "code that handles order cancellation").
+     *  Embedded on the fly through the same MiniLM pipeline used at
+     *  ingest time. Mutually exclusive with `qname`. Use this when no
+     *  existing node names the concept you're after — semantic match
+     *  surfaces conceptually-related code without an exact qname. */
+    text: z.string().min(1).max(4096).optional(),
+    /** Top-k results to return (1–50). Default 10 — small enough to surface
+     *  in an agent reply without flooding the context window. */
+    k: z.number().int().min(1).max(50).default(10),
+    /** Restrict matches to a single node label (e.g. 'ApexClass', 'LWC',
+     *  'Flow'). When omitted, all labels are searched. */
+    label: z.string().min(1).optional(),
+  })
+  .refine((v) => Boolean(v.qname) !== Boolean(v.text), {
+    message: "Provide exactly one of `qname` or `text`",
+  });
 
 defineTool({
   name: "find_similar",
   description:
-    "USE THIS to find Salesforce metadata semantically similar to a given node. Powered by the in-process MiniLM-L6 embeddings produced during ingest. Returns top-k nearest neighbours by cosine distance. Good for 'show me other Apex methods like BillingSvc.run', 'what LWCs are similar to accountTile', or surfacing related code when exact-name search misses. Filter by label when you want results restricted to one node type.",
+    "USE THIS to find Salesforce metadata semantically similar to a given node OR a free-text concept. Powered by the in-process MiniLM-L6 embeddings produced during ingest. Two modes: (1) pass `qname` for 'show me other Apex methods like BillingSvc.run' / 'what LWCs are similar to accountTile' — uses an existing node's stored vector; (2) pass `text` for 'find code that handles order cancellation' / 'where do we compute compliance fees' — embeds your text on the fly and runs KNN. Filter by label to restrict to one node type. Use this when exact-name search misses or no qname names the concept you're after.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
-    const qname = asQualifiedName(input.qname);
 
     // No vec0 / no embeddings table — degrade gracefully with a clear
     // message so the agent can fall back to structural traversal.
@@ -44,40 +52,73 @@ defineTool({
       };
     }
 
-    const focal = ctx.vectorStore.getNodeVector(ctx.orgId, qname);
-    if (!focal) {
-      return {
-        summary: `no embedding stored for ${input.qname}`,
-        markdown: [
-          `> No vector exists for \`${input.qname}\`.`,
-          ``,
-          `Likely causes:`,
-          `- The qname is wrong (typo / wrong casing / wrong member type prefix). The graph keys are \`<Label>:<Name>\` (e.g. \`ApexClass:BillingSvc\`).`,
-          `- The node exists but its label doesn't get embedded (only code-bearing nodes — Apex, LWC, Flow, OmniStudio — are vectorised by default).`,
-          `- The org was last ingested before this label started producing embeddings; re-ingest with \`--rebuild\` to backfill.`,
-          ``,
-          `_follow_up_tools: \`analyze_field\`, \`trace_upstream\`_`,
-        ].join("\n"),
-        data: { hits: [], reason: "no_focal_vector" },
-      };
+    // Resolve the focal vector — either looking it up by qname or
+    // embedding the free-text query through the same MiniLM pipeline.
+    let focal: Float32Array | null = null;
+    let focalLabel: string;
+    if (input.qname) {
+      focalLabel = input.qname;
+      focal = ctx.vectorStore.getNodeVector(ctx.orgId, asQualifiedName(input.qname));
+      if (!focal) {
+        return {
+          summary: `no embedding stored for ${input.qname}`,
+          markdown: [
+            `> No vector exists for \`${input.qname}\`.`,
+            ``,
+            `Likely causes:`,
+            `- The qname is wrong (typo / wrong casing / wrong member type prefix). The graph keys are \`<Label>:<Name>\` (e.g. \`ApexClass:BillingSvc\`).`,
+            `- The node exists but its label doesn't get embedded (only code-bearing nodes — Apex, LWC, Flow, OmniStudio — are vectorised by default).`,
+            `- The org was last ingested before this label started producing embeddings; re-ingest with \`--rebuild\` to backfill.`,
+            ``,
+            `_Tip:_ if no node names the concept you're after, retry with \`text\` instead of \`qname\`.`,
+            ``,
+            `_follow_up_tools: \`analyze_field\`, \`trace_upstream\`_`,
+          ].join("\n"),
+          data: { hits: [], reason: "no_focal_vector" },
+        };
+      }
+    } else {
+      // Free-text mode. Lazy-import via the public re-export so we don't
+      // require core consumers to ship the embedder runtime when they
+      // don't use this path.
+      focalLabel = `"${input.text}"`;
+      const { embedSingle } = await import("@ryanstark24/sfgraph-core");
+      focal = await embedSingle(input.text ?? "");
+      if (!focal) {
+        return {
+          summary: "embedder unavailable",
+          markdown: [
+            `> Couldn't embed the query text \`"${input.text}"\`.`,
+            ``,
+            `Either the \`@xenova/transformers\` runtime isn't installed on this machine, or the MiniLM model files (\`@ryanstark24/sfgraph-models\`) aren't reachable. Both are optionalDependencies of \`@ryanstark24/sfgraph-core\`; reinstall with \`npm install -g @ryanstark24/sfgraph\` to pull them.`,
+            ``,
+            `_Fallback:_ retry with \`qname\` pointing at the closest existing node.`,
+          ].join("\n"),
+          data: { hits: [], reason: "embedder_unavailable" },
+        };
+      }
     }
 
-    // Fetch k+1 because the focal node will be in its own neighbourhood
-    // (distance 0). We strip it below; trimming to k after the filter.
+    // For qname mode, fetch k+1 because the focal node will be in its
+    // own neighbourhood (distance 0); strip it below. For text mode the
+    // focal isn't a graph node, so k results is exact.
+    const fetchK = input.qname ? input.k + 1 : input.k;
     const raw = ctx.vectorStore.searchNodes(
       ctx.orgId,
       focal,
-      input.k + 1,
+      fetchK,
       input.label ? { label: input.label } : undefined,
     );
-    const hits = raw.filter((h) => h.qname !== qname).slice(0, input.k);
+    const hits = input.qname
+      ? raw.filter((h) => h.qname !== asQualifiedName(input.qname ?? "")).slice(0, input.k)
+      : raw.slice(0, input.k);
 
     if (hits.length === 0) {
       return {
-        summary: `no neighbours found for ${input.qname}`,
-        markdown: `> Vector index has no nearby neighbours for \`${input.qname}\`${
+        summary: `no neighbours found for ${focalLabel}`,
+        markdown: `> Vector index has no nearby neighbours for ${focalLabel}${
           input.label ? ` within label \`${input.label}\`` : ""
-        }. The org may be sparsely populated for this label, or the focal node may genuinely be isolated.`,
+        }. The org may be sparsely populated for this label, or the focal may genuinely be isolated.`,
         data: { hits: [], reason: "no_neighbours" },
       };
     }
@@ -86,7 +127,7 @@ defineTool({
     // Convert to a 0–1 similarity score for the agent's UX (higher = more
     // similar) — but keep the raw distance in `data` for programmatic use.
     const md: string[] = [
-      `**Top ${hits.length} nearest neighbour${hits.length === 1 ? "" : "s"} to \`${input.qname}\`${
+      `**Top ${hits.length} nearest neighbour${hits.length === 1 ? "" : "s"} to ${focalLabel}${
         input.label ? ` (label: \`${input.label}\`)` : ""
       }:**`,
       ``,
@@ -100,10 +141,11 @@ defineTool({
     md.push(``, `_follow_up_tools: \`explain_code\`, \`trace_downstream\`, \`analyze_field\`_`);
 
     return {
-      summary: `${hits.length} neighbour${hits.length === 1 ? "" : "s"} of ${input.qname}`,
+      summary: `${hits.length} neighbour${hits.length === 1 ? "" : "s"} of ${focalLabel}`,
       markdown: md.join("\n"),
       data: {
-        focalQname: input.qname,
+        focalQname: input.qname ?? null,
+        focalText: input.text ?? null,
         label: input.label ?? null,
         k: input.k,
         hits: hits.map((h) => ({

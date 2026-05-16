@@ -101,60 +101,12 @@ export class EmbeddingQueue {
   }
 }
 
-/** Default embedder: lazy-imports @xenova/transformers, returns zero-vectors on failure.
- *
- * Honors SFGRAPH_EMBED_MODEL_PATH / SFGRAPH_EMBED_MODEL_ID / SFGRAPH_EMBED_MODEL_DIM
- * env vars so users can BYO model without touching the package. When unset,
- * falls back to the vendored MiniLM L6 v2 shipped by @ryanstark24/sfgraph-models.
- */
+// Ingest's batched embedder is now a thin wrapper around the shared
+// `embedTexts` function exported from ./embed.ts. The function used to be a
+// closure here; pulling it out means the MCP `find_similar` tool (and any
+// future ad-hoc embedding caller) gets the same pipeline + same env-var
+// overrides, with no risk of drift.
 async function defaultEmbed(texts: string[]): Promise<Float32Array[]> {
-  try {
-    // @xenova/transformers is declared as an optionalDependency on this
-    // package so consumers who don't need embeddings can skip the WASM
-    // runtime. Use a plain dynamic import (no string cast) — when the
-    // optional dep is missing, the import rejects and we fall through to
-    // the zero-vector fallback below.
-    const mod = (await import("@xenova/transformers")) as unknown as {
-      pipeline: (
-        ...args: unknown[]
-      ) => Promise<(...args: unknown[]) => Promise<{ data: number[] }>>;
-      env: { allowRemoteModels: boolean; localModelPath?: string };
-    };
-    const { pipeline, env } = mod;
-    env.allowRemoteModels = false;
-
-    const envPath = process.env.SFGRAPH_EMBED_MODEL_PATH;
-    const modelId = process.env.SFGRAPH_EMBED_MODEL_ID ?? "Xenova/all-MiniLM-L6-v2";
-    const dim = process.env.SFGRAPH_EMBED_MODEL_DIM
-      ? Number.parseInt(process.env.SFGRAPH_EMBED_MODEL_DIM, 10)
-      : 384;
-
-    if (envPath) {
-      env.localModelPath = envPath;
-    } else {
-      try {
-        const models = (await import("@ryanstark24/sfgraph-models" as unknown as string)) as {
-          MODEL_DATA_DIR?: string;
-        };
-        if (models?.MODEL_DATA_DIR) env.localModelPath = models.MODEL_DATA_DIR;
-      } catch {
-        /* models package optional */
-      }
-    }
-
-    const pipe = await pipeline("feature-extraction", modelId, {
-      quantized: true,
-      local_files_only: true,
-    });
-    const out = await pipe(texts, { pooling: "mean", normalize: true });
-    const results: Float32Array[] = [];
-    for (let i = 0; i < texts.length; i++) {
-      results.push(new Float32Array(out.data.slice(i * dim, (i + 1) * dim)));
-    }
-    return results;
-  } catch {
-    // Transformers (or model) not present — return zero vectors so caller can
-    // still upsert placeholder embeddings if desired. Ingest must not crash.
-    return texts.map(() => new Float32Array(384));
-  }
+  const { embedTexts } = await import("./embed.js");
+  return embedTexts(texts);
 }

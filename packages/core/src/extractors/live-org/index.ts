@@ -1,4 +1,6 @@
 export { wrapConnectionReadOnly } from "./read-only-proxy.js";
+export { startLivenessProbe } from "./liveness.js";
+export type { LivenessProbeHandle, LivenessProbeOptions } from "./liveness.js";
 export { ReadOnlyViolationError } from "./errors.js";
 export { resolveOrg, resolveDefaultOrgAlias, safeOrgInfo } from "./auth.js";
 export type { ResolvedOrg, ResolveOrgDeps } from "./auth.js";

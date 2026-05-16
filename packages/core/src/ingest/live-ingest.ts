@@ -15,6 +15,10 @@ import { type ResolveOrgDeps, type ResolvedOrg, resolveOrg } from "../extractors
 import { type IngestSkipReport, bulkRetrieve } from "../extractors/live-org/bulk-retrieve.js";
 import { type OrgCapabilities, probeCapabilities } from "../extractors/live-org/capabilities.js";
 import { iterChanges } from "../extractors/live-org/source-member.js";
+import {
+  type LivenessProbeHandle,
+  startLivenessProbe,
+} from "../extractors/live-org/liveness.js";
 import { dataPool, metadataPool, toolingPool } from "../extractors/live-org/rate-limit.js";
 import { loadAllRules } from "../parsers/rules/_loader.js";
 import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
@@ -468,6 +472,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
     let heartbeatTimer: NodeJS.Timeout | null = null;
     let keepAlive: NodeJS.Timeout | null = null;
+    let livenessProbe: LivenessProbeHandle | null = null;
     // Track signal handlers we register so we can remove them in finally.
     // Without this, every invocation of liveIngest in debug mode leaked one
     // listener per signal (SIGTERM/SIGINT/SIGUSR2), eventually triggering
@@ -488,6 +493,21 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       // and Node will happily exit(0) on a perfectly healthy pending Promise
       // if no ref'd handle is left.
       keepAlive = setInterval(() => {}, 60_000);
+      // Background liveness probe. Polls conn.identity() every 30s with a
+      // 10s deadline; after two consecutive failures it logs a prominent
+      // "CONNECTION LOST" warning so the user knows why surviving
+      // extractors are about to time out one by one. We intentionally do
+      // NOT abort the ingest from here — per-call 60s timeouts (added in
+      // 1.1.3) already cap exposure, and aborting mid-flight would need
+      // an AbortSignal threaded through every extractor for marginal
+      // benefit. The probe's job is observability, not control flow.
+      // Disable via SFGRAPH_NO_LIVENESS_PROBE=1 for hermetic test runs
+      // where the mock connection has no identity() implementation.
+      if (process.env.SFGRAPH_NO_LIVENESS_PROBE !== "1") {
+        livenessProbe = startLivenessProbe(
+          resolved.conn as { identity: () => Promise<unknown> },
+        );
+      }
       // Wall-clock heartbeat — always on. Without this, silent phases (where
       // all in-window sources are awaiting Bottleneck-queued metadata reads
       // without yielding) look indistinguishable from a hung process. The
@@ -604,6 +624,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (keepAlive) clearInterval(keepAlive);
+      livenessProbe?.stop();
       for (const h of installedSignalHandlers) process.off(h.sig, h.fn);
     }
 

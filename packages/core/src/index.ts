@@ -3,6 +3,7 @@ export * from "./telemetry/index.js";
 export * from "./extractors/live-org/index.js";
 export * from "./storage/index.js";
 export * from "./ingest/index.js";
+export * from "./embedding/index.js";
 export type {
   MetadataSource,
   MemberRef,
