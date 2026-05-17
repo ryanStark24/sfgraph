@@ -32,7 +32,8 @@
         "isInvocable": false,
         "isRemote": false,
         "isFuture": false,
-        "httpVerbs": []
+        "httpVerbs": [],
+        "isTest": false
       }
     },
     {
@@ -53,7 +54,8 @@
         "isInvocable": false,
         "isRemote": false,
         "isFuture": false,
-        "httpVerbs": []
+        "httpVerbs": [],
+        "isTest": false
       }
     },
     {
@@ -75,7 +77,8 @@
         "isInvocable": false,
         "isRemote": false,
         "isFuture": false,
-        "httpVerbs": []
+        "httpVerbs": [],
+        "isTest": false
       }
     }
   ],

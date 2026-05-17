@@ -79,10 +79,15 @@ function extractClassHeader(src: string): {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
-  // class-level annotations
-  const headerStart = src.indexOf(headerMatch[0]);
-  const before = src.slice(0, headerStart);
-  const classAnnotations = parseAnnotations(before).map((a) => a.name.toLowerCase());
+  // Class-level annotations live INSIDE headerMatch[0] (the regex consumes
+  // them via the leading `(?:@[\w()=,'"\\s.]+\\s+)*` group), not before it.
+  // Slicing src up to headerStart yielded an empty string and always returned
+  // isTest=false — fixed: parse annotations out of the matched header text
+  // up to the `class`/`interface` keyword.
+  const headerText = headerMatch[0];
+  const keywordIdx = headerText.search(/\b(class|interface)\b/i);
+  const annotationsRegion = keywordIdx > 0 ? headerText.slice(0, keywordIdx) : "";
+  const classAnnotations = parseAnnotations(annotationsRegion).map((a) => a.name.toLowerCase());
   const isTest = classAnnotations.includes("istest");
 
   return { name, extendsClass, implementsList, isInterface, isTest, modifiers: mods };
@@ -380,6 +385,14 @@ export class ApexClassParser implements Parser<ApexClassInput> {
             isRemote,
             isFuture,
             httpVerbs,
+            // Mirror the test-status onto the attributes so rules and queries
+            // can filter on attributes.isTest uniformly across labels.
+            // (The label is already TestMethod vs ApexMethod, but
+            // label-based filtering requires consumers to know both.)
+            // Source: @isTest / @TestSetup annotation on the method itself,
+            // or @isTest on the enclosing class with the method static.
+            // Never derived from filename.
+            isTest: isTestLabel,
           },
           sha256(m.body),
         ),

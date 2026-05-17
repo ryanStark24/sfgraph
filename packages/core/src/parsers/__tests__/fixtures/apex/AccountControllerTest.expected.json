@@ -6,7 +6,7 @@
       "attributes": {
         "name": "AccountControllerTest",
         "modifiers": [],
-        "isTest": false,
+        "isTest": true,
         "apiVersion": "59.0"
       }
     },
@@ -28,7 +28,8 @@
         "isInvocable": false,
         "isRemote": false,
         "isFuture": false,
-        "httpVerbs": []
+        "httpVerbs": [],
+        "isTest": true
       }
     }
   ],
@@ -37,6 +38,18 @@
       "srcQualifiedName": "ApexClass:AccountControllerTest",
       "dstQualifiedName": "ApexMethod:AccountControllerTest.testGetAccount(0)",
       "relType": "CONTAINS_METHOD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexClass:AccountControllerTest",
+      "dstQualifiedName": "ApexClass:AccountController",
+      "relType": "IS_TEST_FOR",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "ApexClass:AccountControllerTest",
+      "dstQualifiedName": "ApexClass:System",
+      "relType": "IS_TEST_FOR",
       "attributes": {}
     },
     {
