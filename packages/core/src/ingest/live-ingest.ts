@@ -74,6 +74,15 @@ export interface LiveIngestOpts {
    * inverted default vs the other Disable* flags here.
    */
   enableOverlapDetect?: boolean;
+  /**
+   * Enable the MCD baseline pre-fan-out pass: queries
+   * `MetadataComponentDependency` for long-tail metadata types (Layouts,
+   * FieldSets, EmailTemplates, Tabs, Groups, Queues) and writes
+   * source='mcd' edges before the regular parser fan-out starts. Default
+   * **off** while the feature matures — opt in for orgs where breadth
+   * coverage of long-tail types is more valuable than ingest speed.
+   */
+  enableMcdBaseline?: boolean;
   /** Skip the post-merge Apex method arity resolver pass. */
   disableArityResolve?: boolean;
   /** Skip the post-merge Flow→Apex method-level resolver pass. */
@@ -490,6 +499,46 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     console.log(
       `ingest: starting full sync (Tooling pool ${tCap} / Metadata pool ${mCap} / Data pool ${dCap} concurrent)`,
     );
+
+    // MCD baseline runs BEFORE the parser fan-out so any (src, dst, REFERENCES)
+    // edges it writes can be overwritten if a real parser produces the same
+    // shape later. The MCD path uses generic REFERENCES while parsers use
+    // specific rel-types — so in practice MCD and parsed coexist in
+    // different edge tables rather than competing for the same row, but
+    // the pre-fan-out ordering preserves the "parsed wins" guarantee for
+    // the (rare) case where a parser does emit REFERENCES.
+    if (opts.enableMcdBaseline) {
+      try {
+        const { runMcdBaseline } = await import(
+          "../extractors/live-org/extractors/mcd-baseline.js"
+        );
+        const mcdCtx: ParseContext = {
+          ...parseCtxBase,
+          sourceUri: "mcd-baseline://tooling-soql",
+        };
+        const mcd = await runMcdBaseline(resolved.conn, {
+          orgId: resolved.orgId,
+          ctx: mcdCtx,
+          onError: (label, err) => {
+            skipReport.skips.push({
+              label,
+              reason: err.message,
+              category: "unknown",
+            });
+          },
+        });
+        if (mcd.edges.length > 0) {
+          graph.mergeEdges(mcd.edges);
+        }
+        logger.info("live-ingest: MCD baseline complete", {
+          edges: mcd.edges.length,
+          byType: mcd.byType,
+        });
+      } catch (e) {
+        logger.warn("live-ingest: MCD baseline failed", { err: (e as Error).message });
+      }
+    }
+
     const fanOutStart = Date.now();
     let progressCount = 0;
     let lastTickAt = Date.now();
