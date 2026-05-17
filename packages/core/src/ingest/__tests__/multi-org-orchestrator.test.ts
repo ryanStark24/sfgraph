@@ -16,6 +16,7 @@ function fakeResult(alias: string, durationMs = 0): LiveIngestResult {
     arityResolved: 0,
     flowMethodsResolved: 0,
     danglingEdges: 0,
+    reflectionEdges: 0,
     overlap: { matched: 0, diverged: 0, empty: 0, annotated: 0 },
     warnings: [],
   };

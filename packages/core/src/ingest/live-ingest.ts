@@ -92,6 +92,15 @@ export interface LiveIngestOpts {
    * minutes on large orgs.
    */
   enableOmnistudioRetrieve?: boolean;
+  /**
+   * Enable the reflection-based generic walker (post-merge). Scans every
+   * node's attributes for string values that match an existing qname's
+   * bare name and emits low-confidence REFERENCES edges tagged
+   * `source: 'reflection'`. Off by default — produces breadth-over-
+   * precision edges that pollute the graph for orgs that only want
+   * parsed-quality dependencies.
+   */
+  enableReflectionWalker?: boolean;
   /** Skip the post-merge Apex method arity resolver pass. */
   disableArityResolve?: boolean;
   /** Skip the post-merge Flow→Apex method-level resolver pass. */
@@ -116,6 +125,9 @@ export interface LiveIngestResult {
   flowMethodsResolved: number;
   /** Number of edges whose dst node does not exist after all post-passes. */
   danglingEdges: number;
+  /** REFERENCES edges emitted by the opt-in reflection walker. Zero when
+   *  enableReflectionWalker is off. */
+  reflectionEdges: number;
   /**
    * Overlap-detector summary. Populated only when `enableOverlapDetect: true`
    * was passed to liveIngest; otherwise every field is zero.
@@ -802,6 +814,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   let flowMethodsResolved = 0;
   let danglingEdges = 0;
   let overlapResult = { matched: 0, diverged: 0, empty: 0, annotated: 0 };
+  let reflectionEdges = 0;
 
   // Synth a ParseContext for post-passes that need to mint edges/nodes.
   const postCtx: ParseContext = {
@@ -892,6 +905,34 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     }
   }
 
+  // Reflection walker: runs BEFORE the dangling-edge audit so any
+  // REFERENCES edges it emits are validated by the audit alongside
+  // parser-emitted edges. Opt-in via enableReflectionWalker.
+  if (opts.enableReflectionWalker) {
+    try {
+      const { walkBlobsForReferences } = await import(
+        "../parsers/generic/reflection-walker.js"
+      );
+      const reflectionResult = walkBlobsForReferences(graph, {
+        orgId: resolved.orgId,
+        ctx: postCtx,
+      });
+      reflectionEdges = reflectionResult.edgesEmitted;
+      if (reflectionEdges > 0) {
+        logger.info("live-ingest: reflection walker emitted REFERENCES edges", {
+          scanned: reflectionResult.scanned,
+          edges: reflectionEdges,
+          truncated: reflectionResult.truncatedSources,
+          ambiguous: reflectionResult.ambiguousMatches,
+        });
+      }
+    } catch (e) {
+      logger.warn("live-ingest: reflection walker failed", {
+        err: (e as Error).message,
+      });
+    }
+  }
+
   if (!opts.disableAudit) {
     try {
       const auditResult = auditDanglingEdges(graph, resolved.orgId, { sampleSize: 25 });
@@ -946,6 +987,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     arityResolved,
     flowMethodsResolved,
     danglingEdges,
+    reflectionEdges,
     overlap: overlapResult,
     warnings: skipReport.skips.map((s) => `${s.label}: ${s.reason}`),
   };
