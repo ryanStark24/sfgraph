@@ -77,6 +77,24 @@ const MAX_BISECT_DEPTH = (() => {
   return Number.isFinite(env) && env > 0 ? env : 6;
 })();
 
+/**
+ * Maximum items per `metadata.read` Salesforce SOAP call. The platform docs
+ * cap this at 10 — passing more makes jsforce either error or silently
+ * truncate depending on version. Most callers already hand-chunk at 10
+ * (see extractors/generic-metadata, flow, integration); this constant
+ * centralises that value and lets readMetadataBatchAdaptive enforce it
+ * defensively for callers that don't.
+ *
+ * NOTE: The Salesforce Composite REST API allows 25 subrequests per call,
+ * but that's a different API (REST, not SOAP Metadata) which sfgraph does
+ * not currently use. Don't conflate the two — bumping this to 25 against
+ * the Metadata SOAP path is silently broken on real orgs.
+ */
+export const METADATA_READ_BATCH_SIZE = (() => {
+  const env = Number.parseInt(process.env.SFGRAPH_METADATA_READ_CHUNK_SIZE ?? "", 10);
+  return Number.isFinite(env) && env > 0 && env <= 10 ? env : 10;
+})();
+
 export async function readMetadataBatchAdaptive<TItem extends { fullName: string }>(
   conn: { metadata: { read: (type: string, names: string[]) => Promise<unknown> } },
   type: string,
@@ -84,6 +102,21 @@ export async function readMetadataBatchAdaptive<TItem extends { fullName: string
   depth = 0,
 ): Promise<(unknown | null)[]> {
   if (items.length === 0) return [];
+  // Pre-chunk to the platform's per-call ceiling before doing anything else.
+  // When the caller passes >10 items, run them as independent scheduled
+  // calls (the Bottleneck metadata pool bounds concurrency); on failure
+  // only the failing sub-chunk bisects, so an oversized happy-path batch
+  // doesn't drag healthy peers into the bisection cascade.
+  if (depth === 0 && items.length > METADATA_READ_BATCH_SIZE) {
+    const chunks: TItem[][] = [];
+    for (let i = 0; i < items.length; i += METADATA_READ_BATCH_SIZE) {
+      chunks.push(items.slice(i, i + METADATA_READ_BATCH_SIZE));
+    }
+    const partials = await Promise.all(
+      chunks.map((c) => readMetadataBatchAdaptive(conn, type, c, 0)),
+    );
+    return partials.flat();
+  }
   try {
     const raw = await scheduleMetadata(() =>
       withTimeout(
