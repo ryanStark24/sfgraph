@@ -66,7 +66,11 @@ defineTool({
       summary: `${nodeMap.size} nodes impacted from ${seedQnames.length} changed files${truncated ? " (truncated)" : ""}`,
       markdown: mdLines.join("\n"),
       data: { seedQnames, impacted: Array.from(nodeMap.keys()), truncated },
-      follow_up_tools: ["test_gap_intelligence_from_git_diff", "trace_downstream"],
+      follow_up_tools: [
+        "test_gap_intelligence_from_git_diff",
+        "trace_downstream",
+        "deployment_manifest_gen",
+      ],
     };
   },
 });

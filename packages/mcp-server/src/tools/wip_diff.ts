@@ -53,7 +53,7 @@ defineTool({
         changed: result.changedQnames,
         removed: result.removedQnames,
       },
-      follow_up_tools: ["wip_impact", "wip_test_gap"],
+      follow_up_tools: ["wip_impact", "wip_test_gap", "deployment_manifest_gen"],
     };
   },
 });

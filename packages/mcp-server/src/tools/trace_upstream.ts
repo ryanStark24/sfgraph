@@ -43,7 +43,7 @@ defineTool({
       summary: `${r.nodes.length} upstream nodes${truncated ? " (truncated)" : ""}`,
       markdown: mdLines.join("\n"),
       data: { nodes: r.nodes, edges: r.edges, truncated },
-      follow_up_tools: ["analyze_field", "explain_code", "find_similar"],
+      follow_up_tools: ["analyze_field", "explain_code", "find_similar", "deployment_manifest_gen"],
     };
   },
 });
