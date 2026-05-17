@@ -136,6 +136,41 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
           }),
         );
       }
+      // W2-04: MCD gap-fill edges. The platform's
+      // MetadataComponentDependency SObject omits picklist→GlobalValueSet
+      // and dependent-picklist→controlling-field references; synthesise
+      // them from the field's describe payload. The valueSet structure
+      // is fast-xml-parser's nested form: `{ valueSetName: 'X' }` or
+      // `{ controllingField: 'Status__c', valueSettings: [...] }`.
+      const valueSet = f.valueSet;
+      if (valueSet && typeof valueSet === "object") {
+        const valueSetName = (valueSet as Record<string, unknown>).valueSetName;
+        if (typeof valueSetName === "string" && valueSetName.length > 0) {
+          edges.push(
+            makeEdge(
+              ctx,
+              fieldQname,
+              REL_TYPES.USES_GLOBAL_VALUE_SET,
+              `GlobalValueSet:${valueSetName}`,
+              { ...(fieldType ? { fieldType } : {}) },
+            ),
+          );
+        }
+        const controllingField = (valueSet as Record<string, unknown>).controllingField;
+        if (typeof controllingField === "string" && controllingField.length > 0) {
+          // Controlling field is named on the SAME object as this dependent
+          // picklist (Salesforce only supports same-object controllers).
+          edges.push(
+            makeEdge(
+              ctx,
+              fieldQname,
+              REL_TYPES.DEPENDS_ON_FIELD,
+              `CustomField:${apiName}.${controllingField}`,
+              { reason: "dependent-picklist" },
+            ),
+          );
+        }
+      }
       // Formula refs on inline-fields path too (same regex pattern the
       // separate-file branch uses).
       if (formula) {
@@ -210,6 +245,38 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
             );
           }
           m = re.exec(f.formula);
+        }
+      }
+
+      // W2-04 MCD gap-fill on the filesystem path (mirrors the inline path
+      // above). parseField exposes the unparsed XML as `raw`, which we
+      // probe for valueSet.valueSetName / valueSet.controllingField.
+      const rawField = f.raw as Record<string, unknown> | undefined;
+      const fsValueSet = rawField?.valueSet;
+      if (fsValueSet && typeof fsValueSet === "object") {
+        const valueSetName = (fsValueSet as Record<string, unknown>).valueSetName;
+        if (typeof valueSetName === "string" && valueSetName.length > 0) {
+          edges.push(
+            makeEdge(
+              ctx,
+              fieldQname,
+              REL_TYPES.USES_GLOBAL_VALUE_SET,
+              `GlobalValueSet:${valueSetName}`,
+              { ...(f.type ? { fieldType: f.type } : {}) },
+            ),
+          );
+        }
+        const controllingField = (fsValueSet as Record<string, unknown>).controllingField;
+        if (typeof controllingField === "string" && controllingField.length > 0) {
+          edges.push(
+            makeEdge(
+              ctx,
+              fieldQname,
+              REL_TYPES.DEPENDS_ON_FIELD,
+              `CustomField:${apiName}.${controllingField}`,
+              { reason: "dependent-picklist" },
+            ),
+          );
         }
       }
     }

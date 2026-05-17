@@ -112,6 +112,14 @@ export const REL_TYPES = {
   INSTANCE_OF: "INSTANCE_OF",
   REFERENCES_LABEL: "REFERENCES_LABEL",
   GRANTS_USER_PERMISSION: "GRANTS_USER_PERMISSION",
+
+  // W2-04: MCD gap-fill edges. Salesforce's MetadataComponentDependency
+  // SObject silently omits these three classes (verified against the
+  // platform docs); the object parser fills them in from describe payloads.
+  /** Picklist CustomField references a GlobalValueSet for its picklist values. */
+  USES_GLOBAL_VALUE_SET: "USES_GLOBAL_VALUE_SET",
+  /** Dependent-picklist CustomField depends on a controlling CustomField. */
+  DEPENDS_ON_FIELD: "DEPENDS_ON_FIELD",
 } as const;
 
 export type RelType = (typeof REL_TYPES)[keyof typeof REL_TYPES];
