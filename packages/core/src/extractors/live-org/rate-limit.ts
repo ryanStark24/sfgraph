@@ -328,6 +328,125 @@ export function scheduleData<T>(fn: () => Promise<T>): Promise<T> {
  * Returns the concurrency caps actually applied (after merging defaults +
  * env vars + overrides), so callers can log what the user got.
  */
+// ---------------------------------------------------------------------------
+// W2-05: Tooling/Data SOQL auto-rebatcher for oversized IN-clauses
+// ---------------------------------------------------------------------------
+//
+// Some Tooling and Data SOQL calls embed a SOQL `IN (...)` set built from
+// dynamic ID lists. When that list grows the SOQL string can exceed
+// Salesforce's per-request size limit (414 URI Too Long for GET-routed
+// queries; 431 Request Header Fields Too Large in some proxy paths) before
+// the query gets a chance to run. Older Happy-Soup-style toolchains
+// rebatched by halving the ID set; sfgraph extractors had been chunking
+// defensively at 200 IDs each. This helper centralizes both: the caller
+// passes an ID list and a SOQL template, the helper picks a batch size and
+// recursively splits on rebatchable errors.
+//
+// Anti-features (intentionally NOT done here): retry on rate-limit (the
+// pools above handle that), retry on auth/permission errors (those need
+// caller-side classification), or any logic that mutates the SOQL beyond
+// substituting the IDs placeholder.
+
+export interface SoqlRebatchOpts<TRecord> {
+  /** Quoted, comma-joined ID list. The caller has already escaped each id. */
+  ids: string[];
+  /** SOQL template containing `${IDS}` exactly once — replaced with the
+   *  quoted, comma-joined list at execution time. */
+  template: string;
+  /** Greppable label for timeouts + warning messages. */
+  label: string;
+  /** Maximum IDs per request before the helper pre-splits. Default 300 —
+   *  conservative below the documented SOQL `IN()` 4000 cap but above the
+   *  200 most extractors hand-chunked at. */
+  rebatchAt?: number;
+  /** Maximum recursive split depth before giving up on a slice. Default 6 —
+   *  enough to cover (300 × 2^6 = 19200) IDs in a single starting batch. */
+  maxDepth?: number;
+  /**
+   * Pool to schedule each individual SOQL call through. Defaults to the
+   * Tooling pool; pass `scheduleQuery`/`scheduleData` for non-Tooling
+   * paths. The helper does NOT pick a pool based on the SOQL itself —
+   * staying explicit avoids "this call went to the wrong pool, why is
+   * Tooling starved" surprises.
+   */
+  scheduler?: <T>(fn: () => Promise<T>) => Promise<T>;
+  /** Per-call timeout label override. Defaults to SOQL_TIMEOUT_MS. */
+  timeoutMs?: number;
+  /** Function that runs the actual SOQL on the right API surface
+   *  (`conn.tooling.query` or `conn.query`). Returning a value with a
+   *  `records` array is required. */
+  runner: (soql: string) => Promise<{ records?: TRecord[] }>;
+}
+
+/** Detect errors that should trigger a smaller-batch retry rather than
+ *  failing the whole call. Tries the canonical jsforce error shape first
+ *  (`statusCode` / `errorCode`) then falls back to message matching. */
+export function isRebatchableSoqlError(err: unknown): boolean {
+  const e = err as { statusCode?: number; errorCode?: string; message?: string } | undefined;
+  if (e?.statusCode === 414 || e?.statusCode === 431) return true;
+  if (e?.errorCode === "URI_TOO_LONG" || e?.errorCode === "REQUEST_HEADER_FIELDS_TOO_LARGE") {
+    return true;
+  }
+  const msg = (e?.message ?? String(err)).toLowerCase();
+  if (msg.includes("uri too long") || msg.includes("414")) return true;
+  if (msg.includes("request header fields too large") || msg.includes("431")) return true;
+  if (msg.includes("malformed_query") && msg.includes("characters")) return true;
+  return false;
+}
+
+/**
+ * Execute `template` against `ids`, splitting the ID set on a rebatchable
+ * error or when it exceeds `rebatchAt`. Returns the merged record set.
+ * Throws only on non-rebatchable errors (the caller's existing failSoft /
+ * onError plumbing handles those).
+ */
+export async function runSoqlInRebatchable<TRecord>(
+  opts: SoqlRebatchOpts<TRecord>,
+): Promise<TRecord[]> {
+  const rebatchAt = opts.rebatchAt ?? 300;
+  const maxDepth = opts.maxDepth ?? 6;
+  const scheduler = opts.scheduler ?? scheduleQuery;
+  const timeoutMs = opts.timeoutMs ?? SOQL_TIMEOUT_MS;
+
+  if (opts.ids.length === 0) return [];
+
+  if (!opts.template.includes("${IDS}")) {
+    throw new Error(
+      `runSoqlInRebatchable(${opts.label}): template must contain \`\${IDS}\` placeholder`,
+    );
+  }
+
+  const runSlice = async (slice: string[], depth: number): Promise<TRecord[]> => {
+    const idList = slice.join(",");
+    const soql = opts.template.replace("${IDS}", idList);
+    try {
+      const res = await scheduler(() =>
+        withTimeout(opts.runner(soql), timeoutMs, `soql ${opts.label}`),
+      );
+      return res?.records ?? [];
+    } catch (e) {
+      if (slice.length === 1 || depth >= maxDepth) throw e;
+      if (!isRebatchableSoqlError(e)) throw e;
+      // Halve and recurse.
+      const mid = Math.ceil(slice.length / 2);
+      const [left, right] = await Promise.all([
+        runSlice(slice.slice(0, mid), depth + 1),
+        runSlice(slice.slice(mid), depth + 1),
+      ]);
+      return [...left, ...right];
+    }
+  };
+
+  // Pre-chunk to rebatchAt. Each chunk runs through the scheduler
+  // independently so the pool's concurrency cap controls fan-out.
+  const chunks: string[][] = [];
+  for (let i = 0; i < opts.ids.length; i += rebatchAt) {
+    chunks.push(opts.ids.slice(i, i + rebatchAt));
+  }
+  const results = await Promise.all(chunks.map((c) => runSlice(c, 0)));
+  return results.flat();
+}
+
 export async function configureDefaultPools(
   overrides: PoolConcurrencyOverrides = {},
 ): Promise<{ tooling: number; metadata: number; data: number }> {
