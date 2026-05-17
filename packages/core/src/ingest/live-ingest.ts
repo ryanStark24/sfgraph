@@ -66,41 +66,50 @@ export interface LiveIngestOpts {
   /** Skip the post-merge Vlocity↔OmniStudio canonical resolve pass. */
   disableCrossFlavor?: boolean;
   /**
-   * Enable the post-merge OmniStudio overlap detector that annotates
-   * CANONICAL_OF edges with `signaturesMatch` + `divergencePoints`. Default
-   * **off**: false-positive recovery cost is high (a wrong "diverged" label
-   * sends an engineer chasing a non-issue), so the feature ships flagged
-   * off until consumers explicitly opt in for migration audits. Note the
-   * inverted default vs the other Disable* flags here.
+   * Skip the post-merge OmniStudio overlap detector that annotates
+   * CANONICAL_OF edges with `signaturesMatch` + `divergencePoints`.
+   * Default **on** — runs every ingest. Pitfalls research flagged the
+   * false-positive recovery cost as high (a wrong "diverged" label
+   * sends an engineer chasing a non-issue); we accept that risk in
+   * exchange for migration-audit visibility on every sync. Filter by
+   * `attributes.signaturesMatch === false` on CANONICAL_OF edges to
+   * surface the diverged set; ignore the flag if the column doesn't
+   * matter to your use case.
    */
-  enableOverlapDetect?: boolean;
+  disableOverlapDetect?: boolean;
   /**
-   * Enable the MCD baseline pre-fan-out pass: queries
+   * Skip the MCD baseline pre-fan-out pass that queries
    * `MetadataComponentDependency` for long-tail metadata types (Layouts,
    * FieldSets, EmailTemplates, Tabs, Groups, Queues) and writes
-   * source='mcd' edges before the regular parser fan-out starts. Default
-   * **off** while the feature matures — opt in for orgs where breadth
-   * coverage of long-tail types is more valuable than ingest speed.
+   * source='mcd' edges before the regular parser fan-out starts.
+   * Default **on** — long-tail coverage is generally a clear win;
+   * disable only for ingest-time-sensitive scenarios where ~6 Tooling
+   * SOQL queries per type are unwelcome.
    */
-  enableMcdBaseline?: boolean;
+  disableMcdBaseline?: boolean;
   /**
-   * Enable the Metadata API `retrieve()` path for OmniStudio-on-Core
-   * types (OmniUiCard, OmniIntegrationProcedure, OmniDataTransform)
-   * alongside the existing SOQL path. Yields RawMember records with
-   * the full design-time XML envelope (vs PropertySet JSON only). Off
-   * by default: consumes 10k/24h Metadata API quota and can take
-   * minutes on large orgs.
+   * Skip the Metadata API `retrieve()` path for OmniStudio-on-Core
+   * types (OmniUiCard, OmniIntegrationProcedure, OmniDataTransform).
+   * Default **on** — the SOQL path runs alongside this and the
+   * retrieve path yields the full design-time XML envelope (vs
+   * PropertySet JSON only). Disable when your org is quota-constrained
+   * (Metadata API allows 10k retrieve calls per 24h org-wide) or when
+   * you don't need the XML envelope downstream. Quota-guard auto-skips
+   * at >=90% utilization regardless of this flag.
    */
-  enableOmnistudioRetrieve?: boolean;
+  disableOmnistudioRetrieve?: boolean;
   /**
-   * Enable the reflection-based generic walker (post-merge). Scans every
-   * node's attributes for string values that match an existing qname's
-   * bare name and emits low-confidence REFERENCES edges tagged
-   * `source: 'reflection'`. Off by default — produces breadth-over-
-   * precision edges that pollute the graph for orgs that only want
-   * parsed-quality dependencies.
+   * Skip the reflection-based generic walker (post-merge). Default
+   * **on** — scans every node's attributes for string values that
+   * match an existing qname's bare name and emits low-confidence
+   * REFERENCES edges tagged `source: 'reflection'`. Pitfalls research
+   * flagged precision concerns (false positives when a string
+   * coincidentally equals a qname); we accept that in exchange for
+   * coverage of OmniStudio/Vlocity blobs the platform doesn't expose
+   * a schema for. Filter `attributes.source !== 'reflection'` for the
+   * parser-quality subset when precision matters.
    */
-  enableReflectionWalker?: boolean;
+  disableReflectionWalker?: boolean;
   /** Skip the post-merge Apex method arity resolver pass. */
   disableArityResolve?: boolean;
   /** Skip the post-merge Flow→Apex method-level resolver pass. */
@@ -125,12 +134,12 @@ export interface LiveIngestResult {
   flowMethodsResolved: number;
   /** Number of edges whose dst node does not exist after all post-passes. */
   danglingEdges: number;
-  /** REFERENCES edges emitted by the opt-in reflection walker. Zero when
-   *  enableReflectionWalker is off. */
+  /** REFERENCES edges emitted by the reflection walker. Zero when
+   *  `disableReflectionWalker: true` was passed. */
   reflectionEdges: number;
   /**
-   * Overlap-detector summary. Populated only when `enableOverlapDetect: true`
-   * was passed to liveIngest; otherwise every field is zero.
+   * Overlap-detector summary. Zero across the board when
+   * `disableOverlapDetect: true` was passed; otherwise populated.
    */
   overlap: {
     /** CANONICAL_OF pairs whose endpoints share an identical signature. */
@@ -528,7 +537,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // different edge tables rather than competing for the same row, but
     // the pre-fan-out ordering preserves the "parsed wins" guarantee for
     // the (rare) case where a parser does emit REFERENCES.
-    if (opts.enableMcdBaseline) {
+    if (!opts.disableMcdBaseline) {
       try {
         const { runMcdBaseline } = await import(
           "../extractors/live-org/extractors/mcd-baseline.js"
@@ -686,7 +695,11 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, {
           skipReport,
           ...(opts.onlyLabels ? { onlyLabels: opts.onlyLabels } : {}),
-          ...(opts.enableOmnistudioRetrieve ? { enableOmnistudioRetrieve: true } : {}),
+          // The bulk-retrieve flag name follows the same convention as
+          // the bulk-retrieve's other opts; semantically it's "do the
+          // retrieve()" which is now on by default. Caller-side disable
+          // routes through this same boolean inverted.
+          ...(opts.disableOmnistudioRetrieve ? {} : { enableOmnistudioRetrieve: true }),
           // jsforce attaches the version it negotiated on conn.version; fall
           // back to a sensible recent release if absent (mocks, etc.)
           apiVersion: ((resolved.conn as { version?: string }).version) ?? "60.0",
@@ -843,7 +856,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   // edges resolveCrossFlavor just emitted with signaturesMatch + divergence
   // detail. Must run *after* cross-flavor and *before* the audit so the
   // audit sees the annotated edges as the same edges (idempotent merge).
-  if (opts.enableOverlapDetect) {
+  if (!opts.disableOverlapDetect) {
     try {
       const { detectOmnistudioOverlap } = await import(
         "../parsers/omnistudio/overlap-detector.js"
@@ -907,8 +920,8 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
 
   // Reflection walker: runs BEFORE the dangling-edge audit so any
   // REFERENCES edges it emits are validated by the audit alongside
-  // parser-emitted edges. Opt-in via enableReflectionWalker.
-  if (opts.enableReflectionWalker) {
+  // parser-emitted edges. Default on; disable via disableReflectionWalker.
+  if (!opts.disableReflectionWalker) {
     try {
       const { walkBlobsForReferences } = await import(
         "../parsers/generic/reflection-walker.js"

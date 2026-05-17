@@ -29,9 +29,10 @@ import { normalizeKey } from "../cross-flavor-resolver.js";
  * (src/dst/relType) is unchanged, so mergeEdges idempotently updates the
  * attributes in place.
  *
- * Feature-flagged off by default in live-ingest (`disableOverlapDetect: true`)
- * because the false-positive recovery cost is high — a wrong "diverged"
- * label on a real duplicate sends an engineer chasing a non-issue.
+ * Runs on every ingest by default; disable via `disableOverlapDetect:
+ * true` in LiveIngestOpts if the false-positive recovery cost (a wrong
+ * "diverged" label sends an engineer chasing a non-issue) outweighs the
+ * migration-audit visibility for your use case.
  */
 
 export interface OverlapDetectOpts {

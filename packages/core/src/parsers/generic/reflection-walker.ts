@@ -44,10 +44,12 @@ import type { ParseContext } from "../contract.js";
  * Vlocity heavy, expect ~30s; bounded by maxEdgesPerSource so a single
  * 10MB blob can't dominate the run.
  *
- * Wired into live-ingest as an opt-in post-merge pass via
- * `enableReflectionWalker`. Off by default — precision-conscious orgs
- * should stick to parsed edges; breadth-over-precision orgs (migration
- * audits, dead-code first-pass scans) flip it on.
+ * Wired into live-ingest as a post-merge pass, default **on**.
+ * Precision-conscious consumers filter `attributes.source !==
+ * 'reflection'` to see only parser-quality edges; breadth-conscious
+ * consumers (migration audits, dead-code first-pass scans) take the
+ * union. Disable entirely via `disableReflectionWalker: true` if even
+ * the cost of emitting these edges is unwelcome.
  */
 
 export interface ReflectionWalkerOpts {
