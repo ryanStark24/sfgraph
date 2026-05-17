@@ -151,6 +151,76 @@ const DML_RE = /\b(insert|update|delete|upsert|undelete|merge)\s+([A-Za-z_][\w.]
 const FIELD_ACCESS_RE = /\b([A-Z][A-Za-z0-9_]*(?:__r)?)\.([A-Za-z_][\w]*?)(?:__c)?\b/g;
 const NEW_INSTANCE_RE = /\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\(/g;
 const STATIC_CALL_RE = /\b([A-Z][A-Za-z0-9_]*)\.([a-z][A-Za-z0-9_]*)\s*\(/g;
+
+/**
+ * Count the arguments in a balanced parenthesised arg list starting one
+ * character after `openParenIdx` (which must point at the `(` opening the
+ * call). Handles nested parens, string literals, and single-line `//`
+ * plus block `/* * /` comments. Returns the arg count, or `null` if the
+ * caller's parens never close inside `body` (truncated source / unbalanced).
+ *
+ * Used by the regex pass to emit `ApexMethod:Foo.bar(2)` instead of the
+ * `(?)` ambiguity placeholder — turning most regex-mode CALLS edges into
+ * precise-arity edges that bypass the arity resolver's overload fan-out.
+ * Cases that genuinely can't be counted (lambdas, splat, comment-split
+ * args) fall back to `(?)` — preserving the existing ambiguous-fan-out
+ * semantics on the long tail.
+ */
+function countCallArgs(body: string, openParenIdx: number): number | null {
+  // empty args → arity 0; we detect by peeking for the matching `)` after
+  // any whitespace before counting commas.
+  let depth = 1;
+  let i = openParenIdx + 1;
+  let argCount = 0;
+  let sawNonWhitespace = false;
+  while (i < body.length && depth > 0) {
+    const ch = body[i];
+    // Line comment
+    if (ch === "/" && body[i + 1] === "/") {
+      const nl = body.indexOf("\n", i + 2);
+      i = nl < 0 ? body.length : nl + 1;
+      continue;
+    }
+    // Block comment
+    if (ch === "/" && body[i + 1] === "*") {
+      const close = body.indexOf("*/", i + 2);
+      i = close < 0 ? body.length : close + 2;
+      continue;
+    }
+    // String literal — Apex uses single-quoted strings with `\\` and `\'` escapes
+    if (ch === "'") {
+      i += 1;
+      while (i < body.length) {
+        const c = body[i];
+        if (c === "\\") {
+          i += 2;
+          continue;
+        }
+        if (c === "'") {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      sawNonWhitespace = true;
+      continue;
+    }
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) break;
+    } else if (ch === "," && depth === 1) {
+      argCount += 1;
+    } else if (ch && /\S/.test(ch)) {
+      sawNonWhitespace = true;
+    }
+    i += 1;
+  }
+  if (depth !== 0) return null; // unbalanced — let caller emit `(?)`
+  // No commas + no non-whitespace content between parens = arity 0.
+  // Any non-whitespace + N commas = N+1 args.
+  return sawNonWhitespace ? argCount + 1 : 0;
+}
 const NAMED_CRED_RE = /['"]callout:([A-Za-z_][\w]*)/g;
 
 function parseClassNameAndIsTest(body: string): {
@@ -426,13 +496,25 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         const target = sc[1] ?? "";
         const targetMethod = sc[2] ?? "";
         if (target !== effectiveName && /^[A-Z]/.test(target)) {
+          // The regex's match index + match length lands one char before
+          // the `(`. Walk forward past any whitespace to find it, then
+          // count balanced args. When counting succeeds we emit a precise
+          // arity dst (same shape AST pass uses), which skips the
+          // arity-resolver's overload fan-out entirely.
+          const matchEnd = scRe.lastIndex - 1;
+          const arity = countCallArgs(body, matchEnd);
+          const dstArity = arity == null ? "?" : String(arity);
+          const attrs: Record<string, unknown> =
+            arity == null
+              ? { unresolvedArity: true }
+              : { resolvedBy: "regex-arg-count", arity };
           edges.push(
             makeEdge(
               ctx,
               methodQname,
               REL_TYPES.CALLS,
-              `ApexMethod:${stripNs(target, ctx.namespace)}.${targetMethod}(?)`,
-              { unresolvedArity: true },
+              `ApexMethod:${stripNs(target, ctx.namespace)}.${targetMethod}(${dstArity})`,
+              attrs,
             ),
           );
         }

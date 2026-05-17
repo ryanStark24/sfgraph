@@ -41,18 +41,20 @@
     },
     {
       "srcQualifiedName": "ApexMethod:AccountControllerTest.testGetAccount(0)",
-      "dstQualifiedName": "ApexMethod:AccountController.getAccountById(?)",
+      "dstQualifiedName": "ApexMethod:AccountController.getAccountById(1)",
       "relType": "CALLS",
       "attributes": {
-        "unresolvedArity": true
+        "resolvedBy": "regex-arg-count",
+        "arity": 1
       }
     },
     {
       "srcQualifiedName": "ApexMethod:AccountControllerTest.testGetAccount(0)",
-      "dstQualifiedName": "ApexMethod:System.assertEquals(?)",
+      "dstQualifiedName": "ApexMethod:System.assertEquals(2)",
       "relType": "CALLS",
       "attributes": {
-        "unresolvedArity": true
+        "resolvedBy": "regex-arg-count",
+        "arity": 2
       }
     }
   ]
