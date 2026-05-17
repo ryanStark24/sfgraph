@@ -51,7 +51,7 @@ Commands:
 | `--data-pool <n>` | `10` | Max concurrent SObject/Bulk SOQL queries. Also reads `SFGRAPH_DATA_POOL`. |
 | `--debug` | `false` | Verbose tracing for diagnosing silent ingest deaths: heartbeat every 10s with heap/RSS/last-source label, per-record parse and graph-merge phase logs, SIGTERM/SIGINT stack traces, per-source enter/finalise markers. Also sets `SFGRAPH_DEBUG_INGEST=1`. |
 | `--no-auto-retry-skipped` | (auto-retry on) | Disable the post-ingest auto-retry. By default, if more than 10 sources were skipped with transient errors (`rate_limit`, `network`, `unknown`), sfgraph waits briefly and re-ingests just those sources. Tune the threshold with `SFGRAPH_AUTO_RETRY_THRESHOLD=N`; disable entirely with this flag or `SFGRAPH_NO_AUTO_RETRY=1`. |
-| `--db <path>` | `~/.sfgraph/<orgId>.sqlite` | Override SQLite database path |
+| `--db <path>` | `<data-dir>/<orgId>.sqlite` (platform-specific via env-paths; see [`DATA_LOCATIONS.md`](DATA_LOCATIONS.md)) | Override SQLite database path |
 
 Auto-detects default org from `sf config`. Auto-snapshot taken before every sync.
 
@@ -192,7 +192,7 @@ sfgraph link --org my-sandbox [--project <path>]
 sfgraph wip [--depth N] [--mode changed-only|full-folder] [--project <path>] [--org <alias>]
 ```
 
-`link` writes `~/.sfgraph/workspaces/<projectHash>.json` so the wip command knows which org's graph to overlay your local source against. `wip` parses the sfdx-source tree (`force-app/`), overlays transient nodes onto the org's graph in-memory (never persisted), and runs the same dependent-BFS as `impact_from_git_diff` — but for uncommitted changes. Read-only against the persisted graph.
+`link` writes `<data-dir>/workspaces/<projectHash>.json` so the wip command knows which org's graph to overlay your local source against. `wip` parses the sfdx-source tree (`force-app/`), overlays transient nodes onto the org's graph in-memory (never persisted), and runs the same dependent-BFS as `impact_from_git_diff` — but for uncommitted changes. Read-only against the persisted graph.
 
 ## `sfgraph snapshot`
 

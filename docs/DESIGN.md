@@ -88,7 +88,7 @@ Everything is partition-keyed on `org_id`. Same-org queries never read another o
 
 - **Real MCP server** instead of a CLI-only Python tool — works natively with Claude Code, Cursor, and VS Code without shell-out tricks.
 - **Multi-org** as a first-class concept — every row in storage is partitioned by `org_id`; cross-org diff is one graph query.
-- **Typed semantic edges** (`READS_FIELD`, `CALLS_DR`, `INVOKES_REMOTE_ACTION`, `GRANTS_FIELD_ACCESS`, …) replace the v0 heuristic walker's generic `REFERENCES`. ~80 typed relationship types now.
+- **Typed semantic edges** (`READS_FIELD`, `CALLS_DR`, `INVOKES_REMOTE_ACTION`, `GRANTS_FIELD_ACCESS`, …) replace the v0 heuristic walker's generic `REFERENCES`. 88 typed relationship types now — full enum in `packages/core/src/domain/rel-types.ts`.
 - **Snapshots + point-in-time diff** built into the storage layer.
 - **Cross-flavor resolver** for Vlocity ↔ OmniStudio.
 - **Capability-driven dispatch** — new metadata types ship with Salesforce releases and are picked up automatically.

@@ -4,7 +4,7 @@ This document is the technical deep-dive. The README is for "how do I use this";
 
 ## 1. Storage model
 
-sfgraph stores everything in a per-org SQLite file under `~/.sfgraph/data/<alias>.sqlite`. The schema is **dynamically extended at ingest time** — labels and edge types each get their own physical table, created on first use.
+sfgraph stores everything in a per-org SQLite file under the platform's user-data directory — `~/Library/Application Support/sfgraph/<alias>.sqlite` on macOS, `~/.local/share/sfgraph/<alias>.sqlite` on Linux, `%APPDATA%\sfgraph\<alias>.sqlite` on Windows. See [`DATA_LOCATIONS.md`](DATA_LOCATIONS.md) for the full set and the `SFGRAPH_DATA_DIR` override. The schema is **dynamically extended at ingest time** — labels and edge types each get their own physical table, created on first use.
 
 ### Per-label tables
 
@@ -51,7 +51,7 @@ CREATE TABLE _sfgraph_snippets (
 
 ### Migration registry
 
-`packages/core/src/storage/sqlite/migrations.ts` exports `MIGRATIONS: Migration[]`. Each migration has an integer `version` and an `up(db)` callback. The `MigrationRunner` sorts by version, applies any newer than the recorded `MAX(version)` in `_sfgraph_schema_version`, and **takes a `VACUUM INTO` backup before each step** (when there is prior state worth preserving). Backups roll under `~/.sfgraph/data/.sfgraph-backups/` with a configurable retention.
+`packages/core/src/storage/sqlite/migrations.ts` exports `MIGRATIONS: Migration[]`. Each migration has an integer `version` and an `up(db)` callback. The `MigrationRunner` sorts by version, applies any newer than the recorded `MAX(version)` in `_sfgraph_schema_version`, and **takes a `VACUUM INTO` backup before each step** (when there is prior state worth preserving). Backups roll under `<data-dir>/.sfgraph-backups/` with a configurable retention.
 
 ## 2. Ingestion strategy
 
@@ -177,7 +177,7 @@ As mentioned above, label/edge tables are created on demand. The first ingest of
 
 ### Pre-migration backup + retention
 
-Every schema migration triggers a `VACUUM INTO` backup of the prior-version DB. Backups land in `~/.sfgraph/data/.sfgraph-backups/`. Default retention is 5 backups per DB; oldest are pruned on each new migration. This is the simplest possible "I want my old graph back" insurance.
+Every schema migration triggers a `VACUUM INTO` backup of the prior-version DB. Backups land in `<data-dir>/.sfgraph-backups/`. Default retention is 5 backups per DB; oldest are pruned on each new migration. This is the simplest possible "I want my old graph back" insurance.
 
 ## 5. Snapshot + diff model
 

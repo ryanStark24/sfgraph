@@ -188,11 +188,11 @@ children and CI runs where you can't pass flags.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `SFGRAPH_HOME` | `~/.sfgraph` | Override the root sfgraph dir. |
-| `SFGRAPH_DATA_DIR` | platform-specific | Where per-org `<orgId>.sqlite` files live. |
-| `SFGRAPH_CONFIG_DIR` | platform-specific | Where `sfgraph.json` + machine-id live. |
-| `SFGRAPH_CACHE_DIR` | platform-specific | Embedding-model + transient cache. |
-| `SFGRAPH_LOG_DIR` | platform-specific | sfgraph's own logs (separate from your shell stderr). |
+| `SFGRAPH_DATA_DIR` | env-paths default | Where per-org `<orgId>.sqlite` files live. macOS: `~/Library/Application Support/sfgraph/`. Linux: `~/.local/share/sfgraph/`. Windows: `%APPDATA%\sfgraph\`. |
+| `SFGRAPH_CONFIG_DIR` | env-paths default | Where `sfgraph.json` + machine-id live. |
+| `SFGRAPH_CACHE_DIR` | env-paths default | Embedding-model + transient cache. |
+| `SFGRAPH_LOG_DIR` | env-paths default | sfgraph's own logs (separate from your shell stderr). |
+| `SFGRAPH_TEMP_DIR` | env-paths default | Scratch space. |
 | `SFGRAPH_TEMP_DIR` | OS tmpdir | Temp scratch (rebuild backups in flight, etc.). |
 | `SFGRAPH_ALLOW_ANY_DB` | unset | When set, lets `--db` point outside the data dir. Off by default to prevent accidental cross-org overwrites. |
 

@@ -5,22 +5,26 @@ sfgraph is local-only and read-only by design.
 ## Three pillars
 
 1. **No codebase egress.** Source content never leaves your machine. The graph
-   and vector store are SQLite files under `~/.sfgraph/`. The MCP server
-   listens on stdio only.
+   and vector store are SQLite files under the platform's user-data directory
+   (`~/Library/Application Support/sfgraph/` on macOS, `~/.local/share/sfgraph/`
+   on Linux, `%APPDATA%\sfgraph\` on Windows — see
+   [`DATA_LOCATIONS.md`](DATA_LOCATIONS.md)). The MCP server listens on stdio
+   only.
 2. **Read-only Salesforce access.** Every `jsforce`/`@salesforce/core` call is
    wrapped in a `ReadOnlyProxy` that throws on any mutating method
    (`create`, `update`, `delete`, `upsert`, `destroy`, `*sobject().create`,
    etc.). The proxy is verified by a unit test that enumerates every method
    on a connection mock.
 3. **Failure-only, sanitized telemetry.** Default is `NullSink`. Opt-in users
-   get `LocalFileSink` writing JSONL under
-   `~/.sfgraph/telemetry/`. Every event passes through `Sanitizer` which
+   get `LocalFileSink` writing JSONL under `<log-dir>/telemetry/` (resolved
+   via env-paths; macOS: `~/Library/Logs/sfgraph/telemetry/`). Every event
+   passes through `Sanitizer` which
    - strips Salesforce IDs, org URLs, usernames, emails, tokens, JWTs, file
      paths under `$HOME`, and stack-trace user-paths;
    - allowlists only the keys declared in `event-schema.ts`;
    - includes a machine ID that is a random UUIDv4 generated only on opt-in
      (no hash of OS user / hostname; just a UUID stored locally at
-     `~/.config/sfgraph/machine-id`) so the same install can be correlated
+     `<config-dir>/machine-id`) so the same install can be correlated
      without revealing identity. Reset or delete it any time with
      `sfgraph telemetry reset-id` / `sfgraph telemetry purge`.
 

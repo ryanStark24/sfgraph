@@ -11,11 +11,11 @@ A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-s
 │  Cursor / Claude / VS Code   ←──── MCP stdio ────→   sfgraph         │
 │                                                                      │
 │              read-only Salesforce APIs    ──→    your org            │
-│              local SQLite + sqlite-vec    ←──    ~/.sfgraph/         │
+│              local SQLite + sqlite-vec    ←──    OS data dir         │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-**Privacy in one line.** Nothing leaves your machine — graph, vectors, logs all live in `~/.sfgraph/`. Salesforce auth is delegated to the `sf` CLI (token stays in `~/.sfdx/`). Every connection is wrapped in a read-only Proxy. Full threat model: [`docs/PRIVACY.md`](docs/PRIVACY.md).
+**Privacy in one line.** Nothing leaves your machine — graph, vectors, logs all live under the platform's user-data directory (`~/Library/Application Support/sfgraph/` on macOS, `~/.local/share/sfgraph/` on Linux, `%APPDATA%\sfgraph\` on Windows; see [`docs/DATA_LOCATIONS.md`](docs/DATA_LOCATIONS.md)). Salesforce auth is delegated to the `sf` CLI (token stays in `~/.sfdx/`). Every connection is wrapped in a read-only Proxy. Full threat model: [`docs/PRIVACY.md`](docs/PRIVACY.md).
 
 ---
 
@@ -131,7 +131,7 @@ sfgraph ingest
 sfgraph ingest --org my-prod
 ```
 
-The graph lands in `~/.sfgraph/<orgId>.sqlite`. From this point every MCP tool reads only from that file — no network calls.
+The graph lands in `<data-dir>/<orgId>.sqlite` (macOS: `~/Library/Application Support/sfgraph/`, Linux: `~/.local/share/sfgraph/`, Windows: `%APPDATA%\sfgraph\`). From this point every MCP tool reads only from that file — no network calls.
 
 **Keep it fresh.** Re-run `sfgraph ingest` whenever you want current data. Skills warn the agent when the graph is older than 7 days.
 
