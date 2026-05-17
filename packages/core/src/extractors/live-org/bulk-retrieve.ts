@@ -343,6 +343,13 @@ export interface BulkRetrieveOpts {
    *  'security', 'integration', 'vlocity', 'omnistudio', or
    *  'generic:<MetadataType>' for the long tail. */
   onlyLabels?: Set<string>;
+  /** Opt-in: invoke the OmniStudio-on-Core retrieve() extractor in addition
+   *  to the existing SOQL path. Default off — retrieve() consumes Metadata
+   *  API quota (10k/24h) and is slower; only enable when the higher-fidelity
+   *  XML envelope is actually needed by a downstream parser. */
+  enableOmnistudioRetrieve?: boolean;
+  /** API version string for the retrieve() request envelope. */
+  apiVersion?: string;
 }
 
 export async function* bulkRetrieve(
@@ -448,6 +455,17 @@ export async function* bulkRetrieve(
   }
   if (caps.omnistudioOncore) {
     invoke("omnistudio", () => iterOmnistudio(conn));
+    if (normalized.enableOmnistudioRetrieve) {
+      invoke("omnistudio-retrieve", async function* () {
+        const { iterOmnistudioRetrieve } = await import(
+          "./extractors/omnistudio-retrieve.js"
+        );
+        yield* iterOmnistudioRetrieve(conn, String(orgId), {
+          apiVersion: normalized.apiVersion ?? "60.0",
+          ...(onSkip ? { onError: onSkip } : {}),
+        });
+      });
+    }
   }
   // Log the generic-type filter summary once at fan-out start — makes the
   // skip-vs-route decision visible without --debug.

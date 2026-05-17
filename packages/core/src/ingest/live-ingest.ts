@@ -83,6 +83,15 @@ export interface LiveIngestOpts {
    * coverage of long-tail types is more valuable than ingest speed.
    */
   enableMcdBaseline?: boolean;
+  /**
+   * Enable the Metadata API `retrieve()` path for OmniStudio-on-Core
+   * types (OmniUiCard, OmniIntegrationProcedure, OmniDataTransform)
+   * alongside the existing SOQL path. Yields RawMember records with
+   * the full design-time XML envelope (vs PropertySet JSON only). Off
+   * by default: consumes 10k/24h Metadata API quota and can take
+   * minutes on large orgs.
+   */
+  enableOmnistudioRetrieve?: boolean;
   /** Skip the post-merge Apex method arity resolver pass. */
   disableArityResolve?: boolean;
   /** Skip the post-merge Flow→Apex method-level resolver pass. */
@@ -665,6 +674,10 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, {
           skipReport,
           ...(opts.onlyLabels ? { onlyLabels: opts.onlyLabels } : {}),
+          ...(opts.enableOmnistudioRetrieve ? { enableOmnistudioRetrieve: true } : {}),
+          // jsforce attaches the version it negotiated on conn.version; fall
+          // back to a sensible recent release if absent (mocks, etc.)
+          apiVersion: ((resolved.conn as { version?: string }).version) ?? "60.0",
         })) {
           try {
             await processOne(member.ref, member.content);

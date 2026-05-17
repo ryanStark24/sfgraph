@@ -40,6 +40,7 @@
     "bottleneck": "^2.19.5",
     "fast-xml-parser": "^5.8.0",
     "jsforce": "^3.10.14",
+    "jszip": "^3.10.1",
     "p-limit": "^7.3.0",
     "parse5": "^8.0.1",
     "piscina": "^5.1.4",
