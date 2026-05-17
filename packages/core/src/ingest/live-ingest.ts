@@ -65,6 +65,15 @@ export interface LiveIngestOpts {
   skipReportPath?: string;
   /** Skip the post-merge Vlocity↔OmniStudio canonical resolve pass. */
   disableCrossFlavor?: boolean;
+  /**
+   * Enable the post-merge OmniStudio overlap detector that annotates
+   * CANONICAL_OF edges with `signaturesMatch` + `divergencePoints`. Default
+   * **off**: false-positive recovery cost is high (a wrong "diverged" label
+   * sends an engineer chasing a non-issue), so the feature ships flagged
+   * off until consumers explicitly opt in for migration audits. Note the
+   * inverted default vs the other Disable* flags here.
+   */
+  enableOverlapDetect?: boolean;
   /** Skip the post-merge Apex method arity resolver pass. */
   disableArityResolve?: boolean;
   /** Skip the post-merge Flow→Apex method-level resolver pass. */
@@ -89,6 +98,20 @@ export interface LiveIngestResult {
   flowMethodsResolved: number;
   /** Number of edges whose dst node does not exist after all post-passes. */
   danglingEdges: number;
+  /**
+   * Overlap-detector summary. Populated only when `enableOverlapDetect: true`
+   * was passed to liveIngest; otherwise every field is zero.
+   */
+  overlap: {
+    /** CANONICAL_OF pairs whose endpoints share an identical signature. */
+    matched: number;
+    /** CANONICAL_OF pairs whose endpoint signatures diverge. */
+    diverged: number;
+    /** CANONICAL_OF pairs with no outgoing non-canonical edges on either side. */
+    empty: number;
+    /** Total CANONICAL_OF edges annotated. */
+    annotated: number;
+  };
   /**
    * Per-source warnings collected during ingest. Each entry is a stringified
    * `label: reason` describing a skipped extractor, a failed per-type query,
@@ -716,6 +739,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   let arityResolved = 0;
   let flowMethodsResolved = 0;
   let danglingEdges = 0;
+  let overlapResult = { matched: 0, diverged: 0, empty: 0, annotated: 0 };
 
   // Synth a ParseContext for post-passes that need to mint edges/nodes.
   const postCtx: ParseContext = {
@@ -737,6 +761,34 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       }
     } catch (e) {
       logger.warn("live-ingest: cross-flavor resolver failed", { err: (e as Error).message });
+    }
+  }
+
+  // Overlap detector: opt-in (off by default) — annotates the CANONICAL_OF
+  // edges resolveCrossFlavor just emitted with signaturesMatch + divergence
+  // detail. Must run *after* cross-flavor and *before* the audit so the
+  // audit sees the annotated edges as the same edges (idempotent merge).
+  if (opts.enableOverlapDetect) {
+    try {
+      const { detectOmnistudioOverlap } = await import(
+        "../parsers/omnistudio/overlap-detector.js"
+      );
+      overlapResult = detectOmnistudioOverlap(graph, {
+        orgId: resolved.orgId,
+        ctx: postCtx,
+      });
+      if (overlapResult.annotated > 0) {
+        logger.info("live-ingest: omnistudio overlap detector annotated CANONICAL_OF pairs", {
+          matched: overlapResult.matched,
+          diverged: overlapResult.diverged,
+          empty: overlapResult.empty,
+          annotated: overlapResult.annotated,
+        });
+      }
+    } catch (e) {
+      logger.warn("live-ingest: omnistudio overlap detector failed", {
+        err: (e as Error).message,
+      });
     }
   }
 
@@ -832,6 +884,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     arityResolved,
     flowMethodsResolved,
     danglingEdges,
+    overlap: overlapResult,
     warnings: skipReport.skips.map((s) => `${s.label}: ${s.reason}`),
   };
 }
