@@ -26,5 +26,6 @@ import "./staleness_check.js";
 import "./explain_code.js";
 import "./find_similar.js";
 import "./export_sarif.js";
+import "./find_nodes.js";
 
 export { defaultRegistry } from "../tool-registry.js";

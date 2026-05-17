@@ -13,3 +13,4 @@ export * from "./deployment-manifest/generate.js";
 export * from "./wip-impact.js";
 export * from "./audit-graph.js";
 export * from "./findings.js";
+export * from "./find-nodes.js";

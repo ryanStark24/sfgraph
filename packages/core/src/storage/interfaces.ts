@@ -70,6 +70,9 @@ export interface GraphStore {
    *  dangling-edge audit and `sfgraph audit` CLI. */
   listDanglingEdges(orgId: OrgId, limit?: number): EdgeFact[];
   listAllQnames(orgId: OrgId): QualifiedName[];
+  /** Distinct node labels known to the store (across all orgs). Used by
+   *  find-nodes glob matching to enumerate label tables. */
+  listAllLabels(): string[];
   countNodes(orgId: OrgId): number;
   countEdges(orgId: OrgId): number;
   transaction<T>(fn: () => T): T;

@@ -594,6 +594,15 @@ export class SqliteGraphStore implements GraphStore {
     return out;
   }
 
+  /**
+   * Return every distinct node label the store currently knows about. Used
+   * by find-nodes glob matching (W3-04) to enumerate label tables without
+   * exposing the private nodeLabelCache. Order is undefined.
+   */
+  listAllLabels(): string[] {
+    return [...this.nodeLabelCache.keys()];
+  }
+
   countNodes(orgId: OrgId): number {
     let total = 0;
     for (const tbl of this.nodeLabelCache.values()) {
