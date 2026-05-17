@@ -204,6 +204,26 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 7,
+    description:
+      "W3-05: service-id ↔ qualified-name map for rename stability. When a metadata component's underlying Salesforce ID is unchanged but its developer name changes, we rewrite incoming edges to point at the new qname instead of treating it as a delete+add.",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS _sfgraph_service_ids (
+          org_id TEXT NOT NULL,
+          service_id TEXT NOT NULL,
+          qualified_name TEXT NOT NULL,
+          label TEXT NOT NULL,
+          first_seen_at INTEGER NOT NULL,
+          last_seen_at INTEGER NOT NULL,
+          PRIMARY KEY (org_id, service_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_service_ids_qname
+          ON _sfgraph_service_ids (org_id, qualified_name);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRunnerOpts {

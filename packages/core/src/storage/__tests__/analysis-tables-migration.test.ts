@@ -16,7 +16,7 @@ describe("v5 analysis tables migration", () => {
     const v = db.prepare("SELECT MAX(version) AS v FROM _sfgraph_schema_version").get() as {
       v: number;
     };
-    expect(v.v).toBe(6);
+    expect(v.v).toBe(7);
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '_sfgraph_%'")
       .all()

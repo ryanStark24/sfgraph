@@ -13,3 +13,11 @@ export {
   loadBetterSqlite3,
   wrapAbiError,
 } from "./sqlite/load-better-sqlite3.js";
+export {
+  lookupServiceId,
+  recordServiceId,
+  resetServiceIdMap,
+  rewriteEdgesForRename,
+  type RenameResult,
+  type ServiceIdRecord,
+} from "./sqlite/rename-stability.js";

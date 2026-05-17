@@ -365,6 +365,19 @@ export function buildProgram(): Command {
     );
 
   program
+    .command("reset-elemid-map")
+    .description(
+      "W3-05: clear the service-id ↔ qualified-name map for an org. Non-destructive (nodes/edges/snapshots untouched); the next ingest re-populates the map. Use as a recovery escape hatch when rename-stability has produced incorrect inferences (e.g. serviceId collisions across managed packages with the same DeveloperName).",
+    )
+    .option("--org <alias>", "Salesforce alias (defaults to workspace binding or `sf` default)")
+    .option("--project <path>", "override project root (defaults to CWD)")
+    .option("--yes", "confirmation flag required to actually clear", false)
+    .action(async (opts: { org?: string; project?: string; yes?: boolean }) => {
+      const { resetElemIdMap } = await import("./commands/reset-elemid-map.js");
+      await resetElemIdMap({ org: opts.org, project: opts.project, yes: opts.yes });
+    });
+
+  program
     .command("rebuild-bindings")
     .description(
       "rebuild better-sqlite3's native binding for the current Node runtime (fixes 'bindings file not found' / ABI mismatch after Node upgrade or on a Node version without prebuilts)",
