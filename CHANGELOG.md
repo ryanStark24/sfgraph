@@ -1,5 +1,262 @@
 # Changelog
 
+## 1.2.0 — hardening + capability expansion
+
+Eighteen feature commits across six work phases. Every change ships with
+tests (core grew 389 → 474, +85 tests). All four new optional passes
+default to **on**; see "Default-behavior change" below for the off-switch
+filters consumers can use to recover the 1.1.8 precision-first behavior.
+
+### Added — new MCP tools
+
+- **`export_sarif`**. Emit every audit finding (governor risks, security
+  gaps, dead code, dangling edges) as a single SARIF 2.1.0 report that
+  round-trips into GitHub Code Scanning and the VS Code SARIF Viewer.
+  Per-rule definitions come from a new `RULE_CATALOG` indexed by stable
+  ruleId (`governor.soql-in-loop`, `security.fls-gap`, etc. — PMD-aligned
+  vocabulary). Hand-rolled emitter; no `node-sarif-builder` dep.
+
+- **`find_nodes`**. Glob-pattern node lookup (`ApexClass:*`,
+  `CustomField:Account.*`, `Flow:{Lead,Account}_*`, `**:*Email*`). Uses
+  `picomatch` with `.` as the path separator (not `/`) so qname-shaped
+  globs work the way they read. Sub-millisecond on warm graph; capped at
+  500 matches with `truncated: true` on overflow.
+
+### Added — new CLI command
+
+- **`sfgraph reset-elemid-map --org <alias> --yes`**. Clears the new
+  service-id ↔ qname rename-stability map (see W3-05 below). Non-
+  destructive — touches only the rename-detection lookup table, not
+  nodes/edges/snapshots/vectors. Used as recovery hatch when the
+  rename layer has produced incorrect inferences (e.g. serviceId
+  collisions across managed packages with the same DeveloperName).
+
+### Added — new typed edge relations
+
+- **`USES_GLOBAL_VALUE_SET`** — CustomField (picklist) → GlobalValueSet.
+  Synthesized from the field's `valueSet.valueSetName` describe column.
+- **`DEPENDS_ON_FIELD`** — CustomField (dependent picklist) → controlling
+  CustomField on the same object. Synthesized from
+  `valueSet.controllingField`.
+
+Total typed rel-types: **88 → 90**. Both gap-fills cover edge classes
+Salesforce's `MetadataComponentDependency` SObject silently omits.
+
+### Added — ingest result fields
+
+- **`LiveIngestResult.warnings: string[]`**. Per-source skips collected
+  during ingest (formerly only available in stdout). MCP consumers of
+  `get_ingest_job` can now read "what got skipped and why" without
+  parsing log lines.
+- **`LiveIngestResult.overlap: { matched, diverged, empty, annotated }`**.
+  OmniStudio overlap-detector summary.
+- **`LiveIngestResult.reflectionEdges: number`**. Edges emitted by the
+  reflection walker (zero when disabled).
+
+### Added — post-merge passes (default on; opt-out flags noted)
+
+- **OmniStudio overlap detector** (`disableOverlapDetect: true` to skip).
+  Annotates every `CANONICAL_OF` pair (Vlocity DataRaptor ↔ Omni
+  DataTransform, IntegrationProcedure ↔ OmniIntegrationProcedure,
+  OmniScript ↔ OmniProcess, VlocityCard ↔ OmniUiCard) with
+  `signaturesMatch: boolean` and `divergencePoints: string[]`.
+  Signature = sorted multiset of `(relType, normalisedDstLabel)` across
+  the node's outgoing edges with the four cross-flavour prefixes
+  collapsed. Lets a migration audit tell a true duplicate (cleanup
+  candidate) from a diverged implementation (manual reconciliation).
+
+- **MCD baseline extractor** (`disableMcdBaseline: true` to skip).
+  Queries `MetadataComponentDependency` for Layouts, FieldSets,
+  EmailTemplates, CustomTabs, Groups, and Queues with Id-range
+  pagination around Salesforce's documented 2000-row LIMIT/OFFSET cap.
+  Edges tagged `attributes.source: 'mcd'`; coexist with parsed edges
+  via separate rel-type tables. Includes Happy-Soup-equivalent
+  `isDynamicReference` heuristic (`id == name` → `dynamic: true`).
+
+- **OmniStudio retrieve()** (`disableOmnistudioRetrieve: true` to skip).
+  Metadata API `retrieve()` for `OmniUiCard`,
+  `OmniIntegrationProcedure`, `OmniDataTransform` alongside the
+  existing SOQL path. Yields `RawMember` records with full design-time
+  XML envelopes that the SOQL `PropertySet` JSON path can't reach.
+  Auto-skips at ≥90% Metadata API quota utilisation
+  (`Sforce-Limit-Info` header). Uses `jszip` for zip extraction.
+
+- **Reflection-based generic walker** (`disableReflectionWalker: true`
+  to skip). Walks every node's attributes for string values matching
+  an existing qname's bare name; emits low-confidence `REFERENCES`
+  edges tagged `attributes.source: 'reflection'`. Catches dependency
+  references buried in undocumented blob schemas (OmniStudio
+  PropertySet, Vlocity Definition, etc.). Self-references, reserved
+  words, whitespace strings, and short strings (<4 chars) filtered;
+  ambiguous matches across labels tagged `ambiguous: true`. Per-source
+  cap of 200 edges (configurable).
+
+### Added — provenance on every edge
+
+- **`EdgeFact` attributes now carry `sourceUri`, `line`, `column`**
+  automatically. `makeEdge` mirrors `makeNode`: threads
+  `ParseContext.sourceUri` (and optional AST `loc`) onto every emitted
+  edge. All 104 `makeEdge` call sites across parsers picked this up
+  for free.
+
+### Added — LWC directive handling
+
+- **`lwc:if / lwc:elseif / lwc:else / lwc:for:each`** (and legacy
+  `if:true / if:false / for:each / iterator:each`) directive
+  attributes are now harvested by the HTML visitor. Bindings are
+  emitted as `LWC_BINDS_PROPERTY` edges with `attributes.directive`
+  set so consumers can distinguish conditional-rendering bindings
+  from regular property reads. `for:each` records the `for:item`
+  alias for future child-binding resolution.
+
+### Added — Apex regex-mode arity counting
+
+- The regex-mode Apex parser now counts call-site arguments with a
+  balanced-paren scan (handles nested calls, string literals,
+  line/block comments). Emits precise dst arities
+  (`ApexMethod:Util.doWork(2)`) tagged
+  `resolvedBy: 'regex-arg-count'`, matching what AST mode already
+  produced. Falls back to `(?)` + `unresolvedArity: true` only when
+  the counter can't determine arity — preserves the existing arity-
+  resolver's overload fan-out for genuine unknowns.
+
+### Added — IS_TEST attribute
+
+- `attributes.isTest: boolean` now appears on every Apex method node
+  derived from the `@isTest` / `@TestSetup` annotation (or `@isTest`
+  on the enclosing class with the method static). The label
+  (`TestMethod` vs `ApexMethod`) already encoded this; now the
+  attribute lets consumers filter uniformly without knowing both
+  labels.
+
+### Added — service-id rename stability
+
+- New SQLite table `_sfgraph_service_ids` (migration v7) with
+  composite PK `(org_id, service_id)`. Three storage helpers in
+  `storage/sqlite/rename-stability.ts`:
+  `lookupServiceId(db, orgId, serviceId)`,
+  `recordServiceId(db, orgId, serviceId, qname, label)`, and
+  `rewriteEdgesForRename(db, orgId, oldQname, newQname)`. When a
+  metadata component's Salesforce Id is unchanged but its
+  `fullName` changes (rename), the rewriter migrates every edge
+  (both directions) from the old qname to the new one in a single
+  transaction — replacing the delete+add pattern that silently
+  broke the call graph until the next full sync.
+
+- **Mechanism shipped, ingest-time wiring deferred.** Extractor
+  integration (calling `recordServiceId` at emit time, triggering
+  rewrites in `mergeNodes`) is a follow-up that benefits from
+  incremental rollout against real-org data. The reset CLI command
+  exists today so any incorrect inferences can be cleared
+  non-destructively.
+
+### Added — SOQL infrastructure
+
+- **`runSoqlInRebatchable`** in `extractors/live-org/rate-limit.ts`
+  pre-splits oversized ID sets and recursively halves on HTTP 414/
+  431 (URI Too Long / Request Header Fields Too Large) errors.
+  Bounded by `maxDepth` (default 6); non-rebatchable errors pass
+  through to caller's failSoft. Used by the MCD baseline; available
+  to future extractors.
+
+- **`readMetadataBatchAdaptive`** now pre-chunks to the
+  Metadata-API per-call cap (`METADATA_READ_BATCH_SIZE = 10`) before
+  any bisection. Configurable via `SFGRAPH_METADATA_READ_CHUNK_SIZE`
+  (clamped ≤10 — the SOAP-side cap). Bisection only fires on
+  legitimate errors now.
+
+### Added — pre-PMD-aligned finding catalog
+
+- `analyze/findings.ts` defines the canonical `Finding` type, the
+  `RuleDescriptor` shape (name / shortDescription / fullDescription /
+  defaultLevel / helpUri — mirrors PMD), and `RULE_CATALOG` indexing
+  every rule sfgraph emits. Adapters
+  (`governorRisksToFindings`, `securityAuditToFindings`,
+  `deadCodeToFindings`, `danglingEdgesToFindings`,
+  `collectFindings`) convert each audit's native shape into
+  `Finding[]` for downstream SARIF / IDE / CI consumption.
+
+### Fixed — class-level @isTest detection (latent bug)
+
+- `extractClassHeader` was parsing class-level annotations from an
+  empty slice (the regex consumed annotations via its leading
+  `(?:@[\w()=,'"\s.]+\s+)*` group; the code looked for them in
+  `src.slice(0, headerStart)` which was empty). Every `@isTest`
+  class had been reporting `isTest: false` on its node, silently
+  disabling the `IS_TEST_FOR` edge emission gated on
+  `header.isTest`. Fix wakes up the dormant edges — visible in the
+  regenerated `AccountControllerTest` golden showing
+  `IS_TEST_FOR` edges to `AccountController` and `System`.
+
+### Fixed — silent Vlocity failures
+
+- The three `catch {}` blocks in `extractors/live-org/vlocity/
+  runner.ts` (per-type query failure, child-fetch failure) now
+  route through an `onError(label, err)` callback wired to
+  `bulkRetrieve`'s existing `skipReport`. Schema drift (e.g.
+  `DRBundleId__c` removed in newer `vlocity_cmt` versions) and
+  "type genuinely absent" now produce distinguishable telemetry
+  on `LiveIngestResult.warnings`.
+
+### Default-behavior change — breadth over precision
+
+The four new post-merge passes (overlap detector, MCD baseline,
+OmniStudio retrieve, reflection walker) ship on by default. Two of
+them — overlap detector and reflection walker — were flagged in
+Pitfalls research as "false-positive recovery cost is high"; we
+ship them on regardless because the breadth they add to migration
+audits and OmniStudio coverage outweighs the cost of an occasional
+false positive.
+
+**Recovering 1.1.8-equivalent precision** on any of the four:
+
+```ts
+// At ingest time — disable specific passes
+liveIngest({
+  ...,
+  disableOverlapDetect: true,        // skip CANONICAL_OF annotations
+  disableMcdBaseline: true,           // skip MCD long-tail edges
+  disableOmnistudioRetrieve: true,    // skip Metadata API retrieve()
+  disableReflectionWalker: true,      // skip pattern-match REFERENCES
+})
+
+// At query time — filter on edge attributes
+edges.filter((e) => e.attributes.source !== 'reflection');  // parsed-only
+edges.filter((e) => e.attributes.source !== 'mcd');         // skip MCD
+edges.filter(                                                 // skip overlap-flagged divergences
+  (e) => !(e.relType === 'CANONICAL_OF' && e.attributes.signaturesMatch === false),
+);
+```
+
+### Schema migration — v7 (auto-applied)
+
+`MigrationRunner` adds `_sfgraph_service_ids` on next ingest. Single
+`CREATE TABLE` + index; no data migration. Backup of the prior
+schema taken automatically before the migration runs (default
+retention: 5 backups under `<data-dir>/.sfgraph-backups/`). Safe to
+roll back by replacing the live DB with a backup file.
+
+### Internal — new dependencies
+
+- `jszip@^3.10.1` (runtime — for OmniStudio retrieve() zip parsing)
+- `picomatch@^4.0.4` (runtime — for find_nodes glob matching)
+- `@types/picomatch@^4.0.0` (devDependency)
+
+All three were already transitively available via `@salesforce/core`;
+now pinned as direct deps.
+
+### Internal — README + docs corrected
+
+`docs/DATA_LOCATIONS.md`, `docs/ARCHITECTURE.md`, `docs/PRIVACY.md`,
+`docs/DESIGN.md`, `docs/TROUBLESHOOTING.md`, `docs/CLI.md`, and the
+top-level README all corrected to reflect the actual platform-
+specific storage paths (`~/Library/Application Support/sfgraph/` on
+macOS, `~/.local/share/sfgraph/` on Linux, `%APPDATA%\sfgraph\` on
+Windows — resolved via the `env-paths` library) and the real env
+var inventory (`SFGRAPH_DATA_DIR` / `_CONFIG_DIR` / `_CACHE_DIR` /
+`_LOG_DIR` / `_TEMP_DIR`, not the non-existent `SFGRAPH_HOME`). Rel-
+type count updated to **90**.
+
 ## Unreleased — known parser limitations (file as follow-ups)
 
 - **DataRaptor / OmniDataTransform field-reference regex** doesn't match
