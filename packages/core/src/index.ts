@@ -11,6 +11,7 @@ export type {
 } from "./extractors/interfaces/metadata-source.js";
 export { FilesystemMetadataSource } from "./extractors/filesystem/index.js";
 export * as render from "./render/mermaid/index.js";
+export { emitSarif, lintSarifReport, type SarifReport } from "./render/sarif.js";
 export * as analyze from "./analyze/index.js";
 // Top-level re-exports of the graph-audit API for CLI/host consumers.
 export {
