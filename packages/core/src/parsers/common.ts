@@ -33,14 +33,25 @@ export function makeEdge(
   rel: RelType,
   dst: string,
   attributes: Record<string, unknown> = {},
+  loc?: { line?: number; column?: number },
 ): EdgeFact {
   const ts = nowMs(ctx);
+  // Thread provenance from ParseContext + optional AST location into the
+  // edge's attributes. Mirrors makeNode's behaviour (line 22) so every edge
+  // can answer "where did this come from" without parser changes — callers
+  // that have AST positions pass `loc` and get line/column too. Caller-
+  // provided attributes win on key collision so an extractor can override
+  // (e.g. post-merge resolver passes set sourceUri="post-merge://resolver").
+  const provenance: Record<string, unknown> = {};
+  if (ctx.sourceUri) provenance.sourceUri = ctx.sourceUri;
+  if (loc?.line != null) provenance.line = loc.line;
+  if (loc?.column != null) provenance.column = loc.column;
   return {
     orgId: asOrgId(ctx.orgId),
     srcQualifiedName: asQualifiedName(src),
     dstQualifiedName: asQualifiedName(dst),
     relType: rel,
-    attributes,
+    attributes: { ...provenance, ...attributes },
     firstSeenAt: ts,
     lastSeenAt: ts,
   };
