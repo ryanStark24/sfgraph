@@ -171,6 +171,7 @@ async function fetchChildrenByParent(
   vdpType: string,
   namespace: string,
   parentIds: string[],
+  onError?: (label: string, err: Error) => void,
 ): Promise<Map<string, Array<Record<string, unknown>>>> {
   const byParent = new Map<string, Array<Record<string, unknown>>>();
   const spec = CHILD_FETCHES[vdpType];
@@ -185,7 +186,14 @@ async function fetchChildrenByParent(
       res = (await scheduleQuery(() =>
         soqlWithTimeout(conn.query(soql), `vlocity ${vdpType} children (${namespace})`),
       )) as { records?: VElementRow[] } | null;
-    } catch {
+    } catch (e) {
+      // Child fetch failed for this chunk — could be schema drift (e.g.
+      // DRMapItem.DRBundleId__c removed in newer vlocity_cmt packages) or
+      // a transient pool/socket failure. Surface via onError so callers can
+      // distinguish "feature absent" from "schema drift" instead of seeing
+      // identical empty output. Continue to the next chunk — partial
+      // children are still useful.
+      onError?.(`vlocity:${vdpType}:children:${namespace}`, e as Error);
       continue;
     }
     for (const r of res?.records ?? []) {
@@ -214,6 +222,7 @@ export async function* iterVlocityRecords(
   conn: any,
   caps: OrgCapabilities,
   orgId: string,
+  onError?: (label: string, err: Error) => void,
 ): AsyncIterable<RawMember> {
   const namespaces = caps.vlocityNamespaces ?? [];
   if (namespaces.length === 0) return;
@@ -243,11 +252,15 @@ export async function* iterVlocityRecords(
           `vlocity ${t.typeDef.vlocityDataPackType} (${t.namespace})`,
         ),
       )) as { records?: VRow[] } | null;
-    } catch {
-      // Per-type errors are silent — the type may not exist in this org
-      // (different Vlocity industry namespaces install different DataPack
-      // types), or the call timed out on a dead socket. Either way, skip
-      // this type and let peers continue.
+    } catch (e) {
+      // Per-type query failed. Common causes: type doesn't exist in this
+      // org (different Vlocity industry namespaces install different
+      // DataPack types — INVALID_TYPE / sObject not supported), socket
+      // timeout, schema drift. Report via onError so the caller can
+      // distinguish "type genuinely absent" from "type present but query
+      // wedged" — these used to look identical (empty output) which made
+      // schema-drift bugs invisible.
+      onError?.(`vlocity:${t.typeDef.vlocityDataPackType}:${t.namespace}`, e as Error);
       return { idx, t, records: [], childrenByParent: new Map() };
     }
     const records = res?.records ?? [];
@@ -258,6 +271,7 @@ export async function* iterVlocityRecords(
           t.typeDef.vlocityDataPackType,
           t.namespace,
           records.map((r) => String(r.Id ?? "")).filter((id) => id.length > 0),
+          onError,
         )
       : new Map<string, Array<Record<string, unknown>>>();
     return { idx, t, records, childrenByParent };

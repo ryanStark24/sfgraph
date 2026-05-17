@@ -93,4 +93,37 @@ describe("iterVlocityRecords", () => {
     await collect(iterVlocityRecords(conn, baseCaps, "00Dxx0000000001"));
     expect(soqls).toEqual([]);
   });
+
+  it(
+    "reports per-type query failures via onError instead of swallowing them",
+    { timeout: 20_000 },
+    async () => {
+      // Fail every parent query for vlocity_cmt; vlocity_ins succeeds with
+      // empty results. Before W1-01 these failures were `catch {}` and
+      // indistinguishable from "type genuinely absent" — onError now
+      // surfaces them so MCP consumers can tell the two apart.
+      const errors: Array<{ label: string; message: string }> = [];
+      const conn = {
+        query: async (soql: string) => {
+          if (soql.includes("vlocity_cmt__")) throw new Error("INVALID_TYPE: simulated drift");
+          return { records: [], done: true };
+        },
+      };
+      const caps: OrgCapabilities = {
+        ...baseCaps,
+        vlocityNamespaces: ["vlocity_cmt", "vlocity_ins"],
+        vlocityLegacy: true,
+        vlocityCmt: true,
+      };
+      await collect(
+        iterVlocityRecords(conn, caps, "00Dxx0000000001", (label, err) => {
+          errors.push({ label, message: err.message });
+        }),
+      );
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.every((e) => e.label.startsWith("vlocity:"))).toBe(true);
+      expect(errors.every((e) => e.label.endsWith(":vlocity_cmt"))).toBe(true);
+      expect(errors.every((e) => e.message.includes("INVALID_TYPE"))).toBe(true);
+    },
+  );
 });

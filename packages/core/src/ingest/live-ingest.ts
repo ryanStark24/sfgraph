@@ -89,6 +89,14 @@ export interface LiveIngestResult {
   flowMethodsResolved: number;
   /** Number of edges whose dst node does not exist after all post-passes. */
   danglingEdges: number;
+  /**
+   * Per-source warnings collected during ingest. Each entry is a stringified
+   * `label: reason` describing a skipped extractor, a failed per-type query,
+   * a child-fetch failure, or any other non-fatal event the run wants
+   * surfaced to MCP consumers (get_ingest_job) rather than buried in stdout.
+   * Empty array on a clean run.
+   */
+  warnings: string[];
 }
 
 const NOOP_LOG: Logger = {
@@ -333,6 +341,12 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   // wiping nodes that were never visited due to the abort.
   let streamAborted = false;
   const touchedQnames = new Set<string>();
+  // Skip/warning report collected across all branches. Populated by the
+  // full-sync fan-out via bulkRetrieve's onError callback; incremental mode
+  // currently emits no entries (single-stream iterChanges has no per-source
+  // failure surface). Returned on LiveIngestResult.warnings so MCP consumers
+  // can read what was skipped without parsing stdout.
+  const skipReport: IngestSkipReport = { skips: [] };
 
   const parseCtxBase: Omit<ParseContext, "sourceUri"> = {
     orgId: resolved.orgId,
@@ -459,7 +473,6 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     let lastActivityAt = Date.now();
     let lastMemberLabel = "(none)";
     const PROGRESS_TICK_MS = 5000; // emit a heartbeat at least every 5s
-    const skipReport: IngestSkipReport = { skips: [] };
     if (opts.onlyLabels && opts.onlyLabels.size > 0) {
       console.log(
         `ingest: --only filter active (${opts.onlyLabels.size} source${opts.onlyLabels.size === 1 ? "" : "s"}): ${[...opts.onlyLabels].join(", ")}`,
@@ -819,6 +832,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     arityResolved,
     flowMethodsResolved,
     danglingEdges,
+    warnings: skipReport.skips.map((s) => `${s.label}: ${s.reason}`),
   };
 }
 

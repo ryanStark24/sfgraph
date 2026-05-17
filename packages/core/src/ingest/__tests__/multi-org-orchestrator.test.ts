@@ -16,6 +16,7 @@ function fakeResult(alias: string, durationMs = 0): LiveIngestResult {
     arityResolved: 0,
     flowMethodsResolved: 0,
     danglingEdges: 0,
+    warnings: [],
   };
 }
 

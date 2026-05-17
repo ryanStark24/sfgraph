@@ -444,7 +444,7 @@ export async function* bulkRetrieve(
   }
 
   if (caps.vlocityLegacy) {
-    invoke("vlocity", () => iterVlocity(conn, caps, String(orgId)));
+    invoke("vlocity", () => iterVlocity(conn, caps, String(orgId), onSkip));
   }
   if (caps.omnistudioOncore) {
     invoke("omnistudio", () => iterOmnistudio(conn));
