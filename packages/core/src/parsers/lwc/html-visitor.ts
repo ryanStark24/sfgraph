@@ -35,6 +35,48 @@ export function extractHtmlEdges(
   const seenField = new Set<string>();
   const seenProperty = new Set<string>();
 
+  // Directive attribute names — both the modern `lwc:*` family and the
+  // legacy template:1 forms. Each maps to a label recorded on the emitted
+  // edge's `attributes.directive` so consumers can distinguish "conditional"
+  // bindings from regular property reads.
+  //
+  // `lwc:for:each` and legacy `for:each` carry an iterable expression; the
+  // companion `for:item` / `lwc:for:item` attributes name an alias used by
+  // child bindings (e.g. `{card.title}` where `card` aliases `items[i]`).
+  // We record the iterable as a property bind with `directive: 'lwc:for:each'`
+  // plus `forItem: '<alias>'` when the sibling attribute is present.
+  // Alias-resolution of child bindings is intentionally out of scope here —
+  // see W2 follow-ups.
+  const CONDITIONAL_DIRECTIVES = new Map<string, string>([
+    ["lwc:if", "lwc:if"],
+    ["lwc:elseif", "lwc:elseif"],
+    ["if:true", "if:true"],
+    ["if:false", "if:false"],
+  ]);
+  const FOR_EACH_DIRECTIVES = new Set(["lwc:for:each", "for:each", "lwc:iterator:each"]);
+  const FOR_ITEM_ATTRS = new Set(["lwc:for:item", "for:item", "iterator:item"]);
+
+  const emitDirectiveBinding = (
+    expr: string,
+    directive: string,
+    extra: Record<string, unknown>,
+  ): void => {
+    // Pull the head identifier out of `{user.isAdmin}` → `user.isAdmin` →
+    // head = `user`. Mirrors emitBinding's split for consistency, but we
+    // always emit as LWC_BINDS_PROPERTY because directive bindings are
+    // imperative property reads (not field reads on a @wire'd sObject).
+    const dst = `LWCProperty:${expr}`;
+    if (seenProperty.has(dst)) return;
+    seenProperty.add(dst);
+    extraEdges.push(
+      makeEdge(ctx, lwcQname, REL_TYPES.LWC_BINDS_PROPERTY, dst, {
+        binding: expr,
+        directive,
+        ...extra,
+      }),
+    );
+  };
+
   const emitBinding = (expr: string): void => {
     // `record.Name` → split into [record, Name]; `record.fields.Account.Name`
     // is unusual in templates and falls through to property.
@@ -114,10 +156,56 @@ export function extractHtmlEdges(
         extraEdges.push(makeEdge(ctx, lwcQname, REL_TYPES.EMBEDS_AURA, dst, { tag }));
       }
     }
+    // Two-pass attribute scan. First pass picks up directive attributes
+    // (lwc:if / lwc:for:each / legacy if:true / for:each) so the binding
+    // gets emitted with `attributes.directive` set. Second pass runs the
+    // general onevent / value-binding logic and skips bindings the
+    // directive pass already recorded.
+    const attrs: Array<{ name: string; value: string }> = (n?.attrs ?? []).map(
+      (a: { name?: string; value?: string }) => ({ name: a?.name ?? "", value: a?.value ?? "" }),
+    );
+
+    // Resolve for:item alias up front so the for:each directive can record it.
+    let forItemAlias: string | undefined;
+    for (const a of attrs) {
+      if (FOR_ITEM_ATTRS.has(a.name)) {
+        forItemAlias = a.value || undefined;
+        break;
+      }
+    }
+
+    for (const a of attrs) {
+      const directive = CONDITIONAL_DIRECTIVES.get(a.name);
+      if (directive) {
+        // Conditional directive: `lwc:if={isShown}` / `if:true={state.ready}`
+        // The value is a single bound expression wrapped in braces (or
+        // sometimes bare for legacy if:true). Strip braces defensively.
+        const raw = a.value.trim();
+        const expr = raw.startsWith("{") && raw.endsWith("}") ? raw.slice(1, -1) : raw;
+        if (expr) emitDirectiveBinding(expr, directive, {});
+        continue;
+      }
+      if (FOR_EACH_DIRECTIVES.has(a.name)) {
+        const raw = a.value.trim();
+        const expr = raw.startsWith("{") && raw.endsWith("}") ? raw.slice(1, -1) : raw;
+        if (expr) {
+          const extra: Record<string, unknown> = {};
+          if (forItemAlias) extra.forItem = forItemAlias;
+          emitDirectiveBinding(expr, a.name, extra);
+        }
+        continue;
+      }
+    }
+
     // Attributes that look like onevent listeners + mustache bindings in
     // attribute values (e.g. `<lightning-input value={record.Name}>`).
-    for (const a of n?.attrs ?? []) {
-      const name: string = a?.name ?? "";
+    // Directive attributes already handled above are skipped via the
+    // `seenProperty` set populated by emitDirectiveBinding.
+    for (const a of attrs) {
+      const name = a.name;
+      if (CONDITIONAL_DIRECTIVES.has(name) || FOR_EACH_DIRECTIVES.has(name) || FOR_ITEM_ATTRS.has(name)) {
+        continue;
+      }
       if (name.startsWith("on") && name.length > 2) {
         const evtName = name.slice(2);
         if (!seenEvt.has(evtName)) {
@@ -127,7 +215,7 @@ export function extractHtmlEdges(
           );
         }
       }
-      const val: string | undefined = a?.value;
+      const val = a.value;
       if (typeof val === "string") scanText(val);
     }
   });
