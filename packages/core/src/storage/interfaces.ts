@@ -36,12 +36,66 @@ export interface SnippetUpsertResult {
   unchanged: boolean;
 }
 
+/**
+ * W1.5-08: combined sync-state snapshot read by MCP tool responses so
+ * concurrent readers can detect "the graph is currently being rewritten"
+ * without requiring a global ingest transaction or snapshot isolation.
+ *
+ * - `generation` is monotonic across successful ingests. It does NOT
+ *   change when an ingest fails (markSyncFailed leaves it alone).
+ * - `in_progress` is true while an ingest holds the org (between
+ *   markSyncStarted and markSyncComplete/Failed).
+ * - `started_at` is the ISO timestamp of the in-flight ingest, or null
+ *   when no ingest is running.
+ * - `last_sync_at` is the unix-ms timestamp of the last successful
+ *   completion (the existing `last_synced_at` column).
+ */
+export interface SyncStatus {
+  generation: number;
+  in_progress: boolean;
+  started_at: string | null;
+  last_sync_at: number | null;
+}
+
 export interface GraphStore {
   init(): Promise<void>;
   close(): Promise<void>;
   upsertOrg(org: Org): void;
   getOrg(id: OrgId): Org | null;
   touchSync(orgId: OrgId, iso: string): void;
+  /**
+   * W1.5-08 lifecycle: flag the start of an ingest. Sets `sync_in_progress = 1`
+   * and `sync_started_at = NOW_ISO`. Does NOT increment `sync_generation`
+   * yet — the counter only advances on successful completion via
+   * `markSyncComplete`. Called from the very top of the ingest function so
+   * concurrent MCP readers see `staleness.in_progress: true` for the entire
+   * sync duration.
+   */
+  markSyncStarted(orgId: OrgId, startedAtIso: string): void;
+  /**
+   * W1.5-08 lifecycle: flag a successful ingest completion. In one
+   * transaction: increments `sync_generation` by 1, clears
+   * `sync_in_progress`, clears `sync_started_at`, and updates
+   * `last_synced_at` to the supplied completion timestamp. Pairs with
+   * `markSyncStarted`; intentionally distinct from `markSyncFailed`
+   * because the generation counter must only advance on success.
+   */
+  markSyncComplete(orgId: OrgId, completedAtIso: string): void;
+  /**
+   * W1.5-08 lifecycle: flag an ingest that threw. Clears
+   * `sync_in_progress` and `sync_started_at` but leaves both
+   * `sync_generation` and `last_synced_at` unchanged so failed runs do
+   * not look like fresh data to readers.
+   */
+  markSyncFailed(orgId: OrgId): void;
+  /**
+   * W1.5-08: combined sync-state read used by the MCP tool dispatcher to
+   * attach a `staleness` block on every response. Returns sensible
+   * defaults (generation=0, in_progress=false, both timestamps null) when
+   * the org row does not exist yet so callers do not need to special-case
+   * "first ingest hasn't run".
+   */
+  getSyncStatus(orgId: OrgId): SyncStatus;
   deleteNode(orgId: OrgId, qname: QualifiedName): void;
   deleteEdgesFor(orgId: OrgId, qname: QualifiedName): void;
   mergeNodes(facts: NodeFact[]): MergeResult;
@@ -53,19 +107,9 @@ export interface GraphStore {
   /** Find edges whose dst_qname matches a SQL LIKE pattern (e.g. `ApexMethod:%(?)`).
    *  Optional relType narrows the search to a single edge table; otherwise every
    *  known table is scanned. Used by post-merge resolvers (arity, dangling-edge audit). */
-  listEdgesByDstLike(
-    orgId: OrgId,
-    pattern: string,
-    relType?: RelType,
-    limit?: number,
-  ): EdgeFact[];
+  listEdgesByDstLike(orgId: OrgId, pattern: string, relType?: RelType, limit?: number): EdgeFact[];
   /** Delete a specific edge. No-op if it doesn't exist. */
-  deleteEdge(
-    orgId: OrgId,
-    src: QualifiedName,
-    dst: QualifiedName,
-    relType: RelType,
-  ): void;
+  deleteEdge(orgId: OrgId, src: QualifiedName, dst: QualifiedName, relType: RelType): void;
   /** Edges whose dst_qname has no row in `_sfgraph_node_index`. Used by the
    *  dangling-edge audit and `sfgraph audit` CLI. */
   listDanglingEdges(orgId: OrgId, limit?: number): EdgeFact[];

@@ -224,6 +224,26 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 8,
+    description:
+      "W1.5-08: sync-generation counter + in-progress flag on _sfgraph_orgs so concurrent MCP readers can detect 'graph is being rewritten' mid-ingest. Additive ALTER TABLE; pre-existing rows default to (0, 0, NULL).",
+    up(db) {
+      // SQLite forbids ALTER TABLE ADD COLUMN with a non-constant default,
+      // but constant 0 / NULL are fine. Existing rows pick up the defaults
+      // automatically. Three separate ALTERs (SQLite ALTER syntax doesn't
+      // batch column adds).
+      db.exec(`
+        ALTER TABLE _sfgraph_orgs ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
+      `);
+      db.exec(`
+        ALTER TABLE _sfgraph_orgs ADD COLUMN sync_in_progress INTEGER NOT NULL DEFAULT 0;
+      `);
+      db.exec(`
+        ALTER TABLE _sfgraph_orgs ADD COLUMN sync_started_at TEXT;
+      `);
+    },
+  },
 ];
 
 export interface MigrationRunnerOpts {

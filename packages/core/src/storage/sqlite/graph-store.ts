@@ -12,6 +12,7 @@ import type {
   SnippetRecord,
   SnippetSourceFormat,
   SnippetUpsertResult,
+  SyncStatus,
 } from "../interfaces.js";
 import { wrapAbiError } from "./load-better-sqlite3.js";
 import { MIGRATIONS, MigrationRunner } from "./migrations.js";
@@ -284,6 +285,88 @@ export class SqliteGraphStore implements GraphStore {
     this.db.prepare("UPDATE _sfgraph_orgs SET last_synced_at = ? WHERE id = ?").run(ts, orgId);
   }
 
+  // ─── W1.5-08: sync-generation lifecycle ────────────────────────────────────
+  // Three helpers (started / complete / failed) plus a getter. The shape is
+  // designed so concurrent MCP readers can answer "is the graph being
+  // rewritten right now?" cheaply (one SELECT) without taking a global lock.
+  // Generation only advances on success — failed ingests are invisible to
+  // the counter, matching how readers would expect "the graph has been
+  // updated" to be a synonym of "an ingest completed cleanly".
+
+  markSyncStarted(orgId: OrgId, startedAtIso: string): void {
+    // Validate the ISO early — better to fail loud at start than to write a
+    // garbage timestamp and confuse the staleness block readers see.
+    if (!Number.isFinite(Date.parse(startedAtIso))) {
+      throw new StorageError(
+        `markSyncStarted: invalid ISO timestamp ${JSON.stringify(startedAtIso)}`,
+      );
+    }
+    this.db
+      .prepare("UPDATE _sfgraph_orgs SET sync_in_progress = 1, sync_started_at = ? WHERE id = ?")
+      .run(startedAtIso, orgId);
+  }
+
+  markSyncComplete(orgId: OrgId, completedAtIso: string): void {
+    const ts = Date.parse(completedAtIso);
+    if (!Number.isFinite(ts)) {
+      throw new StorageError(
+        `markSyncComplete: invalid ISO timestamp ${JSON.stringify(completedAtIso)}`,
+      );
+    }
+    // Single transaction so concurrent readers never observe a half-applied
+    // state (e.g. generation incremented but in_progress still 1).
+    const apply = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE _sfgraph_orgs
+             SET sync_generation = sync_generation + 1,
+                 sync_in_progress = 0,
+                 sync_started_at = NULL,
+                 last_synced_at = ?
+           WHERE id = ?`,
+        )
+        .run(ts, orgId);
+    });
+    apply();
+  }
+
+  markSyncFailed(orgId: OrgId): void {
+    // Generation deliberately untouched — a failed ingest is not a new
+    // version of the graph, so readers polling the counter should not be
+    // tricked into thinking data refreshed.
+    this.db
+      .prepare("UPDATE _sfgraph_orgs SET sync_in_progress = 0, sync_started_at = NULL WHERE id = ?")
+      .run(orgId);
+  }
+
+  getSyncStatus(orgId: OrgId): SyncStatus {
+    const row = this.db
+      .prepare(
+        `SELECT sync_generation, sync_in_progress, sync_started_at, last_synced_at
+           FROM _sfgraph_orgs WHERE id = ?`,
+      )
+      .get(orgId) as
+      | {
+          sync_generation: number | null;
+          sync_in_progress: number | null;
+          sync_started_at: string | null;
+          last_synced_at: number | null;
+        }
+      | undefined;
+    if (!row) {
+      // Org row not present yet (e.g. tool fired against an MCP context
+      // whose DB was just provisioned). Return sane defaults so callers
+      // don't have to null-check every field.
+      return { generation: 0, in_progress: false, started_at: null, last_sync_at: null };
+    }
+    return {
+      generation: row.sync_generation ?? 0,
+      in_progress: (row.sync_in_progress ?? 0) === 1,
+      started_at: row.sync_started_at ?? null,
+      last_sync_at: row.last_synced_at ?? null,
+    };
+  }
+
   deleteNode(orgId: OrgId, qname: QualifiedName): void {
     const apply = this.db.transaction(() => {
       const idx = this.db
@@ -513,12 +596,7 @@ export class SqliteGraphStore implements GraphStore {
     return out;
   }
 
-  listEdgesByDstLike(
-    orgId: OrgId,
-    pattern: string,
-    relType?: RelType,
-    limit?: number,
-  ): EdgeFact[] {
+  listEdgesByDstLike(orgId: OrgId, pattern: string, relType?: RelType, limit?: number): EdgeFact[] {
     const out: EdgeFact[] = [];
     const types = relType ? [relType] : Array.from(this.edgeRelCache.keys());
     const cap = limit && limit > 0 ? limit : Number.POSITIVE_INFINITY;
@@ -527,21 +605,17 @@ export class SqliteGraphStore implements GraphStore {
       const tbl = this.edgeRelCache.get(t);
       if (!tbl) continue;
       const remaining = Number.isFinite(cap) ? cap - out.length : -1;
-      const sql = remaining > 0
-        ? `SELECT org_id, src_qname, dst_qname, attributes, first_seen_at, last_seen_at FROM ${tbl} WHERE org_id = ? AND dst_qname LIKE ? LIMIT ${remaining}`
-        : `SELECT org_id, src_qname, dst_qname, attributes, first_seen_at, last_seen_at FROM ${tbl} WHERE org_id = ? AND dst_qname LIKE ?`;
+      const sql =
+        remaining > 0
+          ? `SELECT org_id, src_qname, dst_qname, attributes, first_seen_at, last_seen_at FROM ${tbl} WHERE org_id = ? AND dst_qname LIKE ? LIMIT ${remaining}`
+          : `SELECT org_id, src_qname, dst_qname, attributes, first_seen_at, last_seen_at FROM ${tbl} WHERE org_id = ? AND dst_qname LIKE ?`;
       const rows = this.db.prepare(sql).all(orgId, pattern) as RawEdgeRow[];
       for (const r of rows) out.push(rowToEdge(r, t as RelType));
     }
     return out;
   }
 
-  deleteEdge(
-    orgId: OrgId,
-    src: QualifiedName,
-    dst: QualifiedName,
-    relType: RelType,
-  ): void {
+  deleteEdge(orgId: OrgId, src: QualifiedName, dst: QualifiedName, relType: RelType): void {
     const tbl = this.edgeRelCache.get(relType);
     if (!tbl) return;
     this.db

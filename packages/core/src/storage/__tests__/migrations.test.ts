@@ -47,16 +47,16 @@ describe("MigrationRunner", () => {
   it("applyPending brings DB to highest version", () => {
     const runner = new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 });
     runner.applyPending();
-    expect(currentVersion(db)).toBe(7);
+    expect(currentVersion(db)).toBe(8);
   });
 
   it("is idempotent on re-run", () => {
     const runner = new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 });
     runner.applyPending();
     runner.applyPending();
-    expect(currentVersion(db)).toBe(7);
+    expect(currentVersion(db)).toBe(8);
     const rows = db.prepare("SELECT version FROM _sfgraph_schema_version ORDER BY version").all();
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(8);
   });
 
   it("creates snippet table at v6", () => {
@@ -86,7 +86,7 @@ describe("MigrationRunner", () => {
 
     // Now apply through v3; should produce backups.
     new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 }).applyPending();
-    expect(currentVersion(db)).toBe(7);
+    expect(currentVersion(db)).toBe(8);
     const files = readdirSync(backupDir).filter((f) => f.endsWith(".sqlite"));
     expect(files.length).toBeGreaterThanOrEqual(1);
   });

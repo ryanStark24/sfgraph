@@ -362,6 +362,27 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     createdAt: now,
   });
 
+  // W1.5-08: flag the org row as having an in-flight ingest before any
+  // extractor work. Done after upsertOrg so the row definitely exists.
+  // The matching markSyncComplete / markSyncFailed calls below are wired
+  // into a try/catch around the whole ingest body so concurrent MCP
+  // readers always see in_progress flip back to 0 even when ingest throws.
+  // Failure to record sync-start is non-fatal — log and continue rather
+  // than aborting an ingest because the bookkeeping column is unhappy.
+  const ingestStartedIso = new Date(now).toISOString();
+  try {
+    graph.markSyncStarted(resolved.orgId, ingestStartedIso);
+  } catch (e) {
+    logger.warn("live-ingest: markSyncStarted failed", { err: (e as Error).message });
+  }
+
+  // W1.5-08: the rest of the ingest runs inside this try so a thrown
+  // exception still flips `sync_in_progress` back to 0 via markSyncFailed.
+  // Per-resolver try/catch isolation inside bulkRetrieve / live-ingest is
+  // preserved — this wrapper only catches exceptions that escape *all* of
+  // those inner handlers (i.e. genuinely fatal failures).
+  try {
+
   const caps = await probeCapabilities(resolved.conn);
   logger.info("live-ingest: probed capabilities", { caps });
 
@@ -1024,9 +1045,12 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
 
   const completedIso = new Date().toISOString();
   try {
-    graph.touchSync(resolved.orgId, completedIso);
+    // W1.5-08: markSyncComplete subsumes the old touchSync — it updates
+    // last_synced_at AND increments sync_generation AND clears the
+    // in-progress flag, atomically in one transaction.
+    graph.markSyncComplete(resolved.orgId, completedIso);
   } catch (e) {
-    logger.warn("live-ingest: touchSync failed", { err: (e as Error).message });
+    logger.warn("live-ingest: markSyncComplete failed", { err: (e as Error).message });
   }
 
   if (opts.analysisDb) {
@@ -1069,5 +1093,21 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       ...wedgeWarnings,
     ],
   };
+  } catch (e) {
+    // W1.5-08: ingest threw before reaching markSyncComplete. Flip
+    // sync_in_progress back to 0 (and clear sync_started_at) so concurrent
+    // MCP readers don't see an orphaned in_progress flag forever. Generation
+    // is intentionally NOT incremented — failed ingests don't count as
+    // fresh graph data. Re-throw so callers (CLI / MCP job runner) see the
+    // original error unchanged.
+    try {
+      graph.markSyncFailed(resolved.orgId);
+    } catch (markErr) {
+      logger.warn("live-ingest: markSyncFailed failed", {
+        err: (markErr as Error).message,
+      });
+    }
+    throw e;
+  }
 }
 
