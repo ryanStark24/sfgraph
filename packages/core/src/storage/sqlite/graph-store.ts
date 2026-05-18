@@ -614,6 +614,24 @@ export class SqliteGraphStore implements GraphStore {
     return total;
   }
 
+  /**
+   * Count nodes of `label` for `orgId`. Returns 0 if the label table has
+   * not been created yet. Used by the W1.5-07 detect-deletions guard.
+   *
+   * Note: a similar helper `countNodes(orgId)` already exists for whole-org
+   * counts, but it sums across all labels. The guard needs per-label
+   * precision to compute drop ratios per deletion-target, so a dedicated
+   * helper is added rather than overloading countNodes.
+   */
+  countNodesByLabel(orgId: OrgId, label: string): number {
+    const tbl = this.nodeLabelCache.get(label);
+    if (!tbl) return 0;
+    const row = this.db.prepare(`SELECT COUNT(*) AS c FROM ${tbl} WHERE org_id = ?`).get(orgId) as
+      | { c: number }
+      | undefined;
+    return row?.c ?? 0;
+  }
+
   countEdges(orgId: OrgId): number {
     let total = 0;
     for (const tbl of this.edgeRelCache.values()) {

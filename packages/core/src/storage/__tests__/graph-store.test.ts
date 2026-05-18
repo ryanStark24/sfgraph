@@ -147,6 +147,20 @@ describe("SqliteGraphStore", () => {
     expect(store.countEdges(asOrgId("org1"))).toBe(1);
   });
 
+  it("countNodesByLabel scopes count to a single label (W1.5-07)", () => {
+    store.mergeNodes([
+      n("ApexClass", "A1", "h1"),
+      n("ApexClass", "A2", "h2"),
+      n("Flow", "F1", "h3"),
+    ]);
+    expect(store.countNodesByLabel(asOrgId("org1"), "ApexClass")).toBe(2);
+    expect(store.countNodesByLabel(asOrgId("org1"), "Flow")).toBe(1);
+    // Label whose table has not been created yet returns 0, not throw.
+    expect(store.countNodesByLabel(asOrgId("org1"), "Profile")).toBe(0);
+    // Unknown org returns 0.
+    expect(store.countNodesByLabel(asOrgId("other"), "ApexClass")).toBe(0);
+  });
+
   it("composite PK dedupes within a single merge call", () => {
     const r = store.mergeNodes([n("ApexClass", "Foo", "h1"), n("ApexClass", "Foo", "h1")]);
     // first insert, second sees it as unchanged.

@@ -74,6 +74,10 @@ export interface GraphStore {
    *  find-nodes glob matching to enumerate label tables. */
   listAllLabels(): string[];
   countNodes(orgId: OrgId): number;
+  /** Count nodes of a given label for `orgId`. Returns 0 if the label table
+   *  has not yet been created. Used by the W1.5-07 detect-deletions guard
+   *  to compute per-label drop ratios before mass-wiping nodes. */
+  countNodesByLabel(orgId: OrgId, label: string): number;
   countEdges(orgId: OrgId): number;
   transaction<T>(fn: () => T): T;
   upsertSnippet(rec: SnippetRecord): SnippetUpsertResult;

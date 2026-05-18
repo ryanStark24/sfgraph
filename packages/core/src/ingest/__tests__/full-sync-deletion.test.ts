@@ -77,8 +77,13 @@ describe("liveIngest full-sync detectDeletions", () => {
     ]);
     expect(graphStore.getNode(orgId, staleQ)).not.toBeNull();
 
-    // Full-sync that touches NOTHING (no apex returned). With detectDeletions,
-    // the stale node should be wiped.
+    // Full-sync that touches NOTHING (no apex returned). With detectDeletions
+    // the stale node would normally be wiped — but W1.5-07's empty-stream
+    // guard refuses to delete when touchedCount=0. Disable the guard here
+    // (SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO=1.0 effectively turns it off
+    // for the drop-ratio path; empty-stream is still refused, so this test
+    // now demonstrates the SAFER behavior: stale node survives, refusal
+    // warning is emitted).
     const conn = buildJsforceMock({
       toolingQueryResults: emptyToolingResults(),
       metadataList: emptyMetadataList(),
@@ -94,8 +99,14 @@ describe("liveIngest full-sync detectDeletions", () => {
       detectDeletions: true,
     });
 
-    expect(result.deletions).toBeGreaterThanOrEqual(1);
-    expect(graphStore.getNode(orgId, staleQ)).toBeNull();
+    // W1.5-07: empty-stream refusal — node survives; refusal warning recorded.
+    expect(result.deletions).toBe(0);
+    expect(graphStore.getNode(orgId, staleQ)).not.toBeNull();
+    expect(
+      result.warnings.some((w) =>
+        w.startsWith("wedge:detect-deletions:refuse:label=ApexClass:reason=empty-stream"),
+      ),
+    ).toBe(true);
   });
 
   it("does NOT delete anything when parseErrors > 0 (safety bail-out)", async () => {

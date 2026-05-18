@@ -8,6 +8,7 @@ import { parserRegistry } from "../parsers/registry.js";
 // Ensure all parsers are registered before we look them up.
 import "../parsers/index.js";
 import { auditDanglingEdges } from "../analyze/audit-graph.js";
+import { evaluateDeletionGuard, resolveMaxDropRatio } from "./detect-deletions-guard.js";
 import { populateAnalysisTables } from "../analyze/populate.js";
 import { EmbeddingQueue, type VectorSink } from "../embedding/index.js";
 import type { MemberRef, RawMember } from "../extractors/interfaces/metadata-source.js";
@@ -403,6 +404,10 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   // wiping nodes that were never visited due to the abort.
   let streamAborted = false;
   const touchedQnames = new Set<string>();
+  // W1.5-07: maintain per-label touched-qnames sets in parallel with the
+  // flat `touchedQnames` set so the deletion-sweep guard can compute
+  // priorCount/touchedCount per label without re-deriving labels later.
+  const touchedQnamesByLabel = new Map<string, Set<string>>();
   // Skip/warning report collected across all branches. Populated by the
   // full-sync fan-out via bulkRetrieve's onError callback; incremental mode
   // currently emits no entries (single-stream iterChanges has no per-source
@@ -432,7 +437,17 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   const handleParsed = (parsed: ParseResult): void => {
     if (parsed.nodes.length) {
       graph.mergeNodes(parsed.nodes);
-      for (const n of parsed.nodes) touchedQnames.add(String(n.qualifiedName));
+      for (const n of parsed.nodes) {
+        const qn = String(n.qualifiedName);
+        touchedQnames.add(qn);
+        // W1.5-07: also bucket by label for the per-label deletion guard.
+        let bucket = touchedQnamesByLabel.get(n.label);
+        if (!bucket) {
+          bucket = new Set<string>();
+          touchedQnamesByLabel.set(n.label, bucket);
+        }
+        bucket.add(qn);
+      }
     }
     if (parsed.edges.length) graph.mergeEdges(parsed.edges);
     if (parsed.snippets?.length) {
@@ -803,20 +818,58 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       logger.warn("live-ingest: detect-deletions skipped due to parseErrors", { parseErrors });
     } else {
       try {
-        const persisted = graph.listAllQnames(resolved.orgId);
-        const stale: string[] = [];
-        for (const q of persisted) {
-          if (!touchedQnames.has(String(q))) stale.push(String(q));
-        }
-        for (const q of stale) {
-          graph.deleteEdgesFor(resolved.orgId, asQualifiedName(q));
-          graph.deleteNode(resolved.orgId, asQualifiedName(q));
-          deletions += 1;
-        }
-        if (stale.length > 0) {
-          logger.info("live-ingest: detect-deletions removed stale qnames", {
-            count: stale.length,
-          });
+        // W1.5-07: per-label drop-ratio guard. The sweep used to run as a
+        // single set-difference across ALL labels; a wedged source with
+        // streamAborted=false + touchedCount=0 for its label would silently
+        // wipe every node of that label (graph-extinction risk that
+        // compounds with the W1.5-01/02 wedge cascade). Now we evaluate the
+        // guard per label and refuse when the implied drop is suspicious.
+        const maxDropRatio = resolveMaxDropRatio(
+          process.env.SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO,
+        );
+        const labels = graph.listAllLabels();
+        for (const label of labels) {
+          const priorCount = graph.countNodesByLabel(resolved.orgId, label);
+          const touchedCount = touchedQnamesByLabel.get(label)?.size ?? 0;
+          const verdict = evaluateDeletionGuard(
+            label,
+            priorCount,
+            touchedCount,
+            maxDropRatio,
+          );
+          if (!verdict.proceed) {
+            if (verdict.warning) wedgeWarnings.push(verdict.warning);
+            logger.warn("live-ingest: detect-deletions refused", {
+              label,
+              priorCount,
+              touchedCount,
+              maxDropRatio,
+              warning: verdict.warning,
+            });
+            continue;
+          }
+
+          // Proceed with deletion for this label only. Scoped to this label's
+          // table via listNodesByLabel rather than the global listAllQnames
+          // walk, so a refusal for one label cannot accidentally affect
+          // sweeps for other labels.
+          const touchedSet = touchedQnamesByLabel.get(label);
+          const persisted = graph.listNodesByLabel(resolved.orgId, label);
+          let labelDeletions = 0;
+          for (const node of persisted) {
+            const q = String(node.qualifiedName);
+            if (touchedSet?.has(q)) continue;
+            graph.deleteEdgesFor(resolved.orgId, asQualifiedName(q));
+            graph.deleteNode(resolved.orgId, asQualifiedName(q));
+            deletions += 1;
+            labelDeletions += 1;
+          }
+          if (labelDeletions > 0) {
+            logger.info("live-ingest: detect-deletions removed stale qnames", {
+              label,
+              count: labelDeletions,
+            });
+          }
         }
       } catch (e) {
         logger.warn("live-ingest: detect-deletions failed", { err: (e as Error).message });
