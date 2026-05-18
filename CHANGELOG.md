@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.2.1 — packaging fix (re-publish of 1.2.0 for `-cli`, `-server`, `sfgraph`)
+
+**No source changes.** This release exists only because `1.2.0` of three
+packages (`@ryanstark24/sfgraph-cli`, `@ryanstark24/sfgraph-server`,
+`@ryanstark24/sfgraph`) shipped to npm with **unresolved `workspace:*`
+dep specifiers** that `npm install` rejects with
+`EUNSUPPORTEDPROTOCOL: Unsupported URL Type "workspace:"`.
+
+Root cause: pnpm's `workspace:*` protocol must be rewritten to a
+concrete version at pack time. **`pnpm publish` does this; `npm publish`
+does not.** The 1.2.0 release used `npm publish` for those three
+packages by mistake (`-core@1.2.0` was packed via pnpm and is
+fine — no change here).
+
+Affected, now fixed:
+
+| Package | 1.2.0 (broken) | 1.2.1 (fixed) |
+|---|---|---|
+| `@ryanstark24/sfgraph-cli`    | `workspace:*` in deps | concrete versions |
+| `@ryanstark24/sfgraph-server` | `workspace:*` in deps | concrete versions |
+| `@ryanstark24/sfgraph`        | `workspace:*` in deps | concrete versions |
+
+Unchanged (1.2.0 was correct):
+
+| Package | Version |
+|---|---|
+| `@ryanstark24/sfgraph-core` | 1.2.0 (kept) |
+| `@ryanstark24/sfgraph-shared` | 1.1.3 |
+| `@ryanstark24/sfgraph-skills` | 1.1.4 |
+| `@ryanstark24/sfgraph-web` | 1.1.8 |
+
+**Migration:** if you tried `npm i -g @ryanstark24/sfgraph@1.2.0` and got
+the `EUNSUPPORTEDPROTOCOL` error, re-run with `@1.2.1`:
+
+```bash
+npm i -g @ryanstark24/sfgraph@1.2.1
+```
+
+The 1.2.0 broken versions have been deprecated on npm with a pointer to
+1.2.1, so `@latest` resolution now skips them automatically.
+
+**Publish hygiene going forward:** every release MUST use `pnpm publish`
+(not `npm publish`) from within a pnpm workspace. Added to release docs.
+
 ## 1.2.0 — hardening + capability expansion
 
 Eighteen feature commits across six work phases. Every change ships with

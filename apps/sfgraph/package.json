@@ -1,6 +1,6 @@
 {
   "name": "@ryanstark24/sfgraph",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "type": "module",
   "bin": {
     "sfgraph": "./bin/sfgraph.mjs"
