@@ -19,7 +19,8 @@
     "lint": "biome check bin",
     "lint:fix": "biome check --write bin",
     "typecheck": "echo no-op",
-    "clean": "echo no-op"
+    "clean": "echo no-op",
+    "prepublishOnly": "node ../../scripts/assert-pnpm-publish.mjs"
   },
   "dependencies": {
     "@ryanstark24/sfgraph-cli": "workspace:*",

@@ -12,7 +12,9 @@
     "typecheck": "pnpm -r typecheck",
     "clean": "pnpm -r clean",
     "models:refresh": "tsx scripts/refresh-vendored-model.ts",
-    "vlocity:refresh": "tsx scripts/refresh-vlocity-registry.ts"
+    "vlocity:refresh": "tsx scripts/refresh-vlocity-registry.ts",
+    "preflight:publish": "node scripts/preflight-publish.mjs",
+    "release:publish": "pnpm preflight:publish && pnpm -r publish --access public --no-git-checks"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
