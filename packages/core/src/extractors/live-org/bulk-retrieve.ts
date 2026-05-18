@@ -21,6 +21,85 @@ export interface IngestSkipReport {
   skips: Array<{ label: string; reason: string; category: SkipCategory }>;
 }
 
+/**
+ * Phase 1.5 (W1.5-02): soft-isolate wedge coordination state.
+ *
+ * Threaded through the bulkRetrieve fan-out so `failSoft` wrappers can:
+ *   (a) push namespaced-string warnings into a shared sink (the warnings
+ *       eventually surface on LiveIngestResult.warnings),
+ *   (b) park the still-pending iterator from a wedged source into a bounded
+ *       background-wedge set (the merger's slot is released immediately,
+ *       so queued neighbors can proceed),
+ *   (c) yield late-arriving records from those background iterators with
+ *       `attributes.lateYield = true` so they still reach the output stream.
+ *
+ * One coordinator instance per bulkRetrieve invocation. Default sourced
+ * from `SFGRAPH_MAX_BACKGROUND_WEDGES` (default 4).
+ */
+export interface BackgroundWedgeEntry {
+  label: string;
+  /** Iterator that was wedged. Used by the late-drain loop to keep pumping
+   *  it after slot release. */
+  iterator: AsyncIterator<RawMember>;
+  /**
+   * The in-flight `it.next()` promise that was racing the watchdog at the
+   * moment the watchdog won. Async-generator semantics queue concurrent
+   * `.next()` calls — so if the drain loop calls `iterator.next()` while
+   * this promise is still pending, the drain will wait behind it AND
+   * "lose" the value it eventually resolves with (the first `.next()` gets
+   * it, then the drain's `.next()` advances to the NEXT yield). We must
+   * therefore consume this promise BEFORE calling `iterator.next()` again
+   * in the drain loop. After the drain consumes the first pending result,
+   * this field is set to null and subsequent calls go through the normal
+   * `iterator.next()` path.
+   */
+  pendingFirstNext: Promise<IteratorResult<RawMember>> | null;
+  /** Wall-clock epoch when this entry was registered (post slot-release). */
+  registeredAt: number;
+  /** Set true when the cap-eviction policy decides this wedge has outlived
+   *  its budget. The drain loop checks this each iteration and bails. The
+   *  pending HTTP request (if any) is NOT actively cancelled — that's the
+   *  job of W1.5-03. */
+  stopWaitingRef: { value: boolean };
+}
+
+export interface WedgeCoordinator {
+  /** Shared namespaced-warning sink. Format documented in PLAN.md:
+   *  `wedge:<source>:<stage>:<detail>`. The warning strings reach the
+   *  surface via `bulkRetrieve` opts → `LiveIngestResult.warnings`. */
+  warnings: string[];
+  /** Active background-wedge set. Bounded by `maxBackgroundWedges`. When
+   *  a new wedge would exceed the cap, the OLDEST entry gets its
+   *  `stopWaitingRef.value = true` flag set + a `backgroundWedgeAborted`
+   *  warning is emitted. The old iterator is NOT removed from the set —
+   *  the late-drain loop sees the flag and bails. */
+  backgroundWedges: BackgroundWedgeEntry[];
+  /** Maximum simultaneous active background wedges. From
+   *  `SFGRAPH_MAX_BACKGROUND_WEDGES`, default 4. */
+  maxBackgroundWedges: number;
+  /** Bounded wall-clock budget for the post-merger late-drain pass. The
+   *  drain races each pending `it.next()` against this budget; whatever
+   *  arrives gets `attributes.lateYield = true`. Default 60 000ms; set to
+   *  0 to disable late-drain entirely (used by some tests). */
+  lateDrainBudgetMs: number;
+}
+
+function createWedgeCoordinator(
+  warnings: string[] = [],
+  overrides?: Partial<Pick<WedgeCoordinator, "maxBackgroundWedges" | "lateDrainBudgetMs">>,
+): WedgeCoordinator {
+  const capEnv = Number.parseInt(process.env.SFGRAPH_MAX_BACKGROUND_WEDGES ?? "", 10);
+  const cap = Number.isFinite(capEnv) && capEnv > 0 ? capEnv : 4;
+  const drainEnv = Number.parseInt(process.env.SFGRAPH_LATE_DRAIN_BUDGET_MS ?? "", 10);
+  const drain = Number.isFinite(drainEnv) && drainEnv >= 0 ? drainEnv : 60_000;
+  return {
+    warnings,
+    backgroundWedges: [],
+    maxBackgroundWedges: overrides?.maxBackgroundWedges ?? cap,
+    lateDrainBudgetMs: overrides?.lateDrainBudgetMs ?? drain,
+  };
+}
+
 export type SkipCategory =
   | "insufficient_access"
   | "not_found"
@@ -72,8 +151,43 @@ export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>)
  * Output ordering is non-deterministic. `live-ingest`'s processOne is
  * order-independent (idempotent per-record upserts), so this is safe.
  */
-export async function* mergeAsyncIterablesParallel<T>(
-  ...iters: Array<AsyncIterable<T>>
+export interface MergeParallelOptions {
+  /** Override the sliding-window size for this call. When omitted, the
+   *  env-var / default path applies as before. Used by unit tests that
+   *  need deterministic queue-vs-active ordering. */
+  concurrency?: number;
+}
+
+export function mergeAsyncIterablesParallel<T>(...iters: Array<AsyncIterable<T>>): AsyncIterable<T>;
+export function mergeAsyncIterablesParallel<T>(
+  iters: Array<AsyncIterable<T>>,
+  opts: MergeParallelOptions,
+): AsyncIterable<T>;
+export function mergeAsyncIterablesParallel<T>(...args: unknown[]): AsyncIterable<T> {
+  // Disambiguate the two overloads. The 2-arg array+opts form is used by
+  // tests; the rest-args form is the production fan-out path.
+  let iters: Array<AsyncIterable<T>>;
+  let opts: MergeParallelOptions | undefined;
+  if (
+    args.length === 2 &&
+    Array.isArray(args[0]) &&
+    args[1] != null &&
+    typeof args[1] === "object" &&
+    !((args[1] as object) instanceof Promise) &&
+    !(Symbol.asyncIterator in (args[1] as object))
+  ) {
+    iters = args[0] as Array<AsyncIterable<T>>;
+    opts = args[1] as MergeParallelOptions;
+  } else {
+    iters = args as Array<AsyncIterable<T>>;
+    opts = undefined;
+  }
+  return mergeAsyncIterablesParallelImpl(iters, opts);
+}
+
+async function* mergeAsyncIterablesParallelImpl<T>(
+  iters: Array<AsyncIterable<T>>,
+  opts?: MergeParallelOptions,
 ): AsyncIterable<T> {
   const envConcurrency = Number.parseInt(process.env.SFGRAPH_SOURCE_CONCURRENCY ?? "", 10);
   // Raised 8 -> 12: a wider window lets Tooling-backed sources (apex, lwc)
@@ -83,7 +197,11 @@ export async function* mergeAsyncIterablesParallel<T>(
   // still caps total HTTP fan-out, so this only opens up parallelism that
   // was being throttled at the wrong layer.
   const concurrency =
-    Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 12;
+    opts?.concurrency != null && opts.concurrency > 0
+      ? opts.concurrency
+      : Number.isFinite(envConcurrency) && envConcurrency > 0
+        ? envConcurrency
+        : 12;
   const iterators = iters.map((it) => it[Symbol.asyncIterator]());
   type Tagged = Promise<{ idx: number; result: IteratorResult<T> }>;
   const pending = new Map<number, Tagged>();
@@ -123,73 +241,254 @@ export async function* mergeAsyncIterablesParallel<T>(
   }
 }
 
-/** Wrap an iterable so a thrown error is captured + the stream ends cleanly
- *  instead of aborting the whole ingest. The error is recorded into a
- *  shared skip report (consumed at end-of-run) and a compact ✗ line is
- *  printed so the user sees something happened without the full error
- *  message scrolling past during the run. */
-async function* failSoft<T>(
+/**
+ * Per-source watchdog budgets. Centralized here so the failSoft wrapper and
+ * tests share the same constants.
+ *
+ * Phase 1.5 W1.5-01 contract: these are the budgets the watchdog uses, but
+ * the clock against which they measure starts at slot-acquisition time
+ * (i.e., on the FIRST `it.next()` call inside `failSoft`'s body), NOT at
+ * source registration. Queued-but-not-yet-executing sources accumulate
+ * ZERO clock time, so a wedge in one source can no longer cascade-kill
+ * its queued neighbors.
+ *
+ * Anti-feature reminder: do NOT raise these to "fix" a real wedge. The
+ * correct fix is per-source override (W1.5-future) or fixing the underlying
+ * pre-yield setup call. See `.planning/phase-1.5/PLAN.md` anti-features.
+ */
+const WATCHDOG_INACTIVITY_MS_DEFAULT = 5 * 60_000;
+const WATCHDOG_FIRST_YIELD_MS_DEFAULT = 90_000;
+
+/** Read watchdog budgets per-call so unit tests can override via env vars
+ *  without restarting the process. Production env should leave these unset
+ *  (they default to the documented 90s first-yield / 5min inactivity). */
+function readWatchdogBudgets(): { firstYieldMs: number; inactivityMs: number } {
+  const fy = Number.parseInt(process.env.SFGRAPH_WATCHDOG_FIRST_YIELD_MS ?? "", 10);
+  const inact = Number.parseInt(process.env.SFGRAPH_WATCHDOG_INACTIVITY_MS ?? "", 10);
+  return {
+    firstYieldMs: Number.isFinite(fy) && fy > 0 ? fy : WATCHDOG_FIRST_YIELD_MS_DEFAULT,
+    inactivityMs: Number.isFinite(inact) && inact > 0 ? inact : WATCHDOG_INACTIVITY_MS_DEFAULT,
+  };
+}
+
+/** Build the namespaced wedge warning string per the schema documented in
+ *  PLAN.md (`wedge:<source>:<stage>:<detail>`). Centralized here so the
+ *  format is stable across emit sites + grep-friendly. */
+function fmtWedgeWarning(
+  source: string,
+  stage: string,
+  detail: Record<string, string | number>,
+): string {
+  const parts: string[] = [`wedge:${source}:${stage}`];
+  for (const [k, v] of Object.entries(detail)) {
+    parts.push(`${k}=${v}`);
+  }
+  return parts.join(":");
+}
+
+/**
+ * Enforce the background-wedge cap. When admitting a new entry would push
+ * the count above `maxBackgroundWedges`, mark the OLDEST entries' stop-
+ * waiting flags so their drain loops bail at the next iteration. Emits a
+ * `wedge:cap:backgroundWedgeAborted:...` warning per evicted entry. The
+ * iterator object itself is left in the set; the late-drain loop is what
+ * sees the flag and skips it. (We do NOT remove from `backgroundWedges`
+ * here so post-merger inspection still sees every wedge that ever fired
+ * during the run.)
+ */
+function enforceBackgroundWedgeCap(coordinator: WedgeCoordinator): void {
+  const active = coordinator.backgroundWedges.filter((e) => !e.stopWaitingRef.value);
+  const overage = active.length - coordinator.maxBackgroundWedges;
+  if (overage <= 0) return;
+  // Sort by registeredAt ascending; oldest first.
+  active.sort((a, b) => a.registeredAt - b.registeredAt);
+  for (let i = 0; i < overage; i += 1) {
+    const victim = active[i];
+    if (!victim) continue;
+    victim.stopWaitingRef.value = true;
+    const ageMs = Date.now() - victim.registeredAt;
+    coordinator.warnings.push(
+      fmtWedgeWarning("cap", "backgroundWedgeAborted", {
+        source: victim.label,
+        ageMs,
+        reason: "backgroundWedgeCapExceeded",
+      }),
+    );
+  }
+}
+
+/**
+ * Drain a single background-wedge iterator. Called once per wedged source,
+ * post-merger, with a wall-clock budget. Each iteration races the iterator's
+ * `it.next()` against the remaining budget. Records arriving inside the
+ * budget are yielded with `attributes.lateYield = true`. The pending HTTP
+ * request (if the wedge is on a network call) is NOT actively cancelled
+ * (W1.5-03's job); we just stop awaiting it.
+ *
+ * Bails immediately if `stopWaitingRef.value === true` (cap eviction).
+ */
+async function* drainBackgroundWedge(
+  entry: BackgroundWedgeEntry,
+  budgetMs: number,
+  warnings: string[],
+): AsyncIterable<RawMember> {
+  const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
+  const startedAt = Date.now();
+  let lateCount = 0;
+  while (!entry.stopWaitingRef.value) {
+    const remaining = startedAt + budgetMs - Date.now();
+    if (remaining <= 0) break;
+    // First iteration: consume the abandoned-but-still-pending `it.next()`
+    // promise from when the watchdog fired. Subsequent iterations call
+    // `iterator.next()` normally. Async-generator semantics queue
+    // concurrent `.next()` calls, so we MUST consume the pending one
+    // before issuing a new one — otherwise the late-yielded value goes
+    // to the abandoned promise and the drain sees the NEXT yield (or
+    // `done:true` if the generator is single-yield).
+    const nextPromise =
+      entry.pendingFirstNext !== null ? entry.pendingFirstNext : entry.iterator.next();
+    if (entry.pendingFirstNext !== null) entry.pendingFirstNext = null;
+    let next: IteratorResult<RawMember>;
+    try {
+      next = await Promise.race([
+        nextPromise,
+        new Promise<IteratorResult<RawMember>>((resolve) => {
+          setTimeout(
+            // Resolve (not reject) with a synthetic done sentinel — bailing
+            // is the normal exit path from a budget-exceeded drain, not an
+            // error condition.
+            () => resolve({ value: undefined as unknown as RawMember, done: true }),
+            remaining,
+          );
+        }),
+      ]);
+    } catch (e) {
+      // Late-arriving error from the wedged iterator. Don't crash the drain;
+      // surface as a warning and stop.
+      const err = (e as Error)?.message ?? String(e);
+      warnings.push(fmtWedgeWarning(entry.label, "lateError", { error: err.slice(0, 120) }));
+      break;
+    }
+    if (next.done) break;
+    lateCount += 1;
+    const rec = next.value as RawMember;
+    // Tag with lateYield so downstream consumers / tests can identify the
+    // record as having arrived after slot release.
+    const tagged: RawMember = {
+      ...rec,
+      attributes: { ...(rec.attributes ?? {}), lateYield: true },
+    };
+    yield tagged;
+  }
+  if (lateCount > 0) {
+    const totalMs = Date.now() - entry.registeredAt;
+    warnings.push(
+      fmtWedgeWarning(entry.label, "resolvedLate", {
+        totalMs,
+        records: lateCount,
+      }),
+    );
+  }
+  if (debug) {
+    console.log(
+      `ingest: [debug] ${entry.label} background-wedge drain finished (${lateCount} late records, stopWaiting=${entry.stopWaitingRef.value})`,
+    );
+  }
+}
+
+/**
+ * Wrap an iterable so a thrown error is captured + the stream ends cleanly
+ * instead of aborting the whole ingest. The error is recorded into a
+ * shared skip report (consumed at end-of-run) and a compact ✗ line is
+ * printed so the user sees something happened without the full error
+ * message scrolling past during the run.
+ *
+ * Phase 1.5 W1.5-01 + W1.5-02 contract:
+ *
+ *  - The watchdog clock starts when this generator's BODY first executes
+ *    (i.e., when the merger calls `.next()` on us for the first time —
+ *    that's slot-acquisition time). Queued sources still inside
+ *    `mergeAsyncIterablesParallel`'s waiting list accumulate ZERO clock
+ *    time. Implemented via an internal `startedAtRef` that's written once
+ *    on body entry; if the caller passes a `startedAtRef` we update it in
+ *    place so the merger can observe the slot-acquisition moment.
+ *
+ *  - On watchdog fire, we DO NOT throw (which would abort the merger's
+ *    Promise.race for our slot AND lose the still-pending iterator).
+ *    Instead we:
+ *       1. Emit a `wedge:<label>:firstYield:90s:...` (or `:inactivity:300s:`)
+ *          warning into coordinator.warnings.
+ *       2. Register the still-pending iterator into coordinator.background
+ *          Wedges with a stopWaitingRef. Enforce the cap (evict oldest).
+ *       3. RETURN from the generator. This cleanly releases the merger's
+ *          slot — `pending.delete(idx)` runs in mergeAsyncIterablesParallel
+ *          and the next queued source acquires the slot.
+ *    Post-merger, the bulkRetrieve top-level fan-out drains the background
+ *    wedge set; records arriving inside the late-drain budget are yielded
+ *    with `attributes.lateYield = true`.
+ */
+async function* failSoft<T extends RawMember>(
   label: string,
   factory: () => AsyncIterable<T>,
   onError?: (label: string, err: Error) => void,
+  coordinator?: WedgeCoordinator,
+  /** Optional outer-visible clock cell. The merger does not currently read
+   *  this, but the contract is "set by failSoft on body entry"; tests use
+   *  it to assert slot-acquisition timing. */
+  startedAtRef?: { value: number },
 ): AsyncIterable<T> {
   const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
+  // W1.5-01: the clock starts HERE — body-entry, which is slot-acquisition
+  // time. NOT at failSoft() invocation (that's source registration, which
+  // can be hundreds of seconds before the merger picks us out of the queue).
   const startedAt = Date.now();
+  if (startedAtRef) startedAtRef.value = startedAt;
   let count = 0;
   let started = false;
-  // Watchdog at 5 minutes. Per-call withTimeouts (120s) catch hung HTTP;
-  // this catches the case where every call ALSO times out and the source
-  // never yields a single record. 5 min = ~2.5× the per-call budget,
-  // generous for queued-but-healthy, tight enough that a genuinely
-  // wedged source surfaces fast and doesn't park its sliding-window slot
-  // for half an hour. With the no-retry-on-timeout fix in
-  // readMetadataBatchAdaptive, the inner loop also can't balloon, so 5
-  // minutes is a real ceiling now.
-  const inactivityMs = 5 * 60_000;
-  // Tighter deadline for the FIRST record. The 5-min inactivity watchdog
-  // is for healthy-but-slow sources that have already started yielding;
-  // a source that hasn't yielded a single record in 90s is almost
-  // certainly parked on a pre-yield setup call (metadata.list, describe,
-  // EntityDefinition pagination) and won't recover. Killing it fast frees
-  // the sliding-window slot for queued peers.
-  const firstYieldMs = 90_000;
+  // Track last-yielded qualifiedName for diagnostic warnings — the smoking-
+  // gun field that names WHICH record was in flight when the wedge fired.
+  let lastYieldedQName = "<none>";
+  const { firstYieldMs, inactivityMs } = readWatchdogBudgets();
+
+  const it = factory()[Symbol.asyncIterator]();
+  if (debug) console.log(`ingest: [debug] ${label} ← invoked at ${startedAt}`);
 
   try {
-    if (debug) console.log(`ingest: [debug] ${label} ← invoked at ${startedAt}`);
-    const it = factory()[Symbol.asyncIterator]();
     while (true) {
       const remainingFirstYield = started
         ? Number.POSITIVE_INFINITY
         : startedAt + firstYieldMs - Date.now();
       const watchdogMs = Math.min(inactivityMs, remainingFirstYield);
-      if (watchdogMs <= 0) {
-        throw new Error(
-          `source watchdog (first-yield ${firstYieldMs / 1000}s): no record yielded — pre-yield setup wedged`,
-        );
-      }
-      const watchdogLabel = started
-        ? `${inactivityMs / 60_000}m inactivity`
-        : `first-yield ${firstYieldMs / 1000}s`;
-      const next = await Promise.race([
-        it.next(),
-        new Promise<never>((_resolve, reject) => {
-          setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `source watchdog (${watchdogLabel}): no record yielded — pool jammed or call wedged`,
-                ),
-              ),
-            watchdogMs,
-          );
+      const stage: "firstYield" | "inactivity" = started ? "inactivity" : "firstYield";
+      const stageDetail = started ? `${inactivityMs / 1000}s` : `${firstYieldMs / 1000}s`;
+
+      const pending = it.next();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const wedged = await Promise.race<
+        { wedge: true } | { wedge: false; result: IteratorResult<T> }
+      >([
+        pending.then((result) => {
+          if (timer) clearTimeout(timer);
+          return { wedge: false as const, result };
+        }),
+        new Promise<{ wedge: true }>((resolve) => {
+          // watchdogMs may be <=0 if the budget is already burned (defensive
+          // — should be rare since the clock starts at body-entry). setTimeout
+          // with non-positive delay fires on the next event-loop tick, which
+          // is the correct wedge-immediately behavior.
+          timer = setTimeout(() => resolve({ wedge: true as const }), Math.max(0, watchdogMs));
         }),
       ]);
-      if (next.done) break;
-      if (!started) {
-        started = true;
-        console.log(`ingest:   ${label} → starting…`);
+
+      if (wedged.wedge) {
+        // Hand off the still-pending it.next() so the drain can consume
+        // it directly — see BackgroundWedgeEntry.pendingFirstNext.
+        emitWedge(stage, stageDetail, pending as unknown as Promise<IteratorResult<RawMember>>);
+        return;
       }
-      count += 1;
+      const next = wedged.result;
+      if (next.done) break;
+      recordYield(next.value);
       yield next.value;
     }
     if (started) {
@@ -210,6 +509,67 @@ async function* failSoft<T>(
       console.log(
         `ingest: [debug] ${label} → finalised (${count} records, ${Date.now() - startedAt}ms)`,
       );
+    }
+  }
+
+  /** Inline helper: extracts qualifiedName-ish text from a RawMember for the
+   *  `lastYielded=...` diagnostic field. Safe against undefined. */
+  function recordYield(v: T): void {
+    if (!started) {
+      started = true;
+      console.log(`ingest:   ${label} → starting…`);
+    }
+    count += 1;
+    const ref = (v as unknown as RawMember).ref;
+    if (ref) {
+      lastYieldedQName = `${ref.memberType}/${ref.memberName}`;
+    }
+  }
+
+  /**
+   * Slot-release + soft-isolate on watchdog fire. Two side effects:
+   *   1. Push a `wedge:<label>:<stage>:<detail>` warning into the shared sink.
+   *   2. Park the still-pending iterator into the background-wedge set so
+   *      the post-merger late-drain pass can capture any records that
+   *      eventually arrive. Enforce the cap (oldest evicted with a
+   *      `backgroundWedgeAborted` warning).
+   * The generator then RETURNS (caller is `for await` of the merger; the
+   * merger sees `done:true` and releases the slot).
+   */
+  function emitWedge(
+    stage: "firstYield" | "inactivity",
+    stageDetail: string,
+    pendingFirstNext: Promise<IteratorResult<RawMember>>,
+  ): void {
+    const wedgedFor = Date.now() - startedAt;
+    if (coordinator) {
+      // Schema (PLAN.md): `wedge:<label>:<stage>:<stageDetail>:<k=v>:<k=v>`.
+      // <stageDetail> is a positional value (e.g. "90s"), not a key=value.
+      const w =
+        `wedge:${label}:${stage}:${stageDetail}` +
+        `:lastYielded=${lastYieldedQName}` +
+        `:wedgedForMs=${wedgedFor}`;
+      coordinator.warnings.push(w);
+      console.log(
+        `ingest:   ${label} ⚠ wedged (${stage} ${stageDetail}); slot released, draining in background`,
+      );
+
+      const stopWaitingRef = { value: false };
+      coordinator.backgroundWedges.push({
+        label,
+        iterator: it as unknown as AsyncIterator<RawMember>,
+        pendingFirstNext,
+        registeredAt: Date.now(),
+        stopWaitingRef,
+      });
+      enforceBackgroundWedgeCap(coordinator);
+    } else {
+      // No coordinator (e.g. unit-test path that didn't wire one up, or
+      // back-compat caller): fall back to the old "log+skip" behavior so
+      // the caller still gets observable feedback.
+      const msg = `source watchdog (${stage} ${stageDetail}): no record yielded — pool jammed or call wedged`;
+      onError?.(label, new Error(msg));
+      console.log(`ingest:   ${label} ✗ skipped (${msg.slice(0, 80)})`);
     }
   }
 }
@@ -350,6 +710,15 @@ export interface BulkRetrieveOpts {
   enableOmnistudioRetrieve?: boolean;
   /** API version string for the retrieve() request envelope. */
   apiVersion?: string;
+  /**
+   * Phase 1.5 W1.5-02 warning sink. When provided, the watchdog soft-isolate
+   * path pushes namespaced wedge strings (`wedge:<source>:<stage>:...`) into
+   * this array. The caller (live-ingest) concatenates them onto
+   * LiveIngestResult.warnings. When omitted, wedge events fall through to
+   * the legacy `onSkip` / skipReport path so existing tests still see a
+   * skip entry.
+   */
+  warnings?: string[];
 }
 
 export async function* bulkRetrieve(
@@ -366,6 +735,13 @@ export async function* bulkRetrieve(
       : (opts as BulkRetrieveOpts);
   const skipReport = normalized.skipReport;
   const onlyLabels = normalized.onlyLabels;
+  // Phase 1.5 W1.5-02 coordinator. Built only when a warnings sink was
+  // supplied — without one, no place to push wedge strings, so the legacy
+  // "watchdog fires → skip entry" behavior is preserved. The coordinator
+  // owns the background-wedge cap + late-drain budget.
+  const coordinator: WedgeCoordinator | undefined = normalized.warnings
+    ? createWedgeCoordinator(normalized.warnings)
+    : undefined;
   // Discover the type list this org actually supports. If discovery fails or
   // returns nothing usable, fall back to invoking every known extractor —
   // preserves Commit-A behavior for mocks that don't implement describe.
@@ -398,7 +774,7 @@ export async function* bulkRetrieve(
     // ingest. The wrapper records the source label + error into skipReport
     // (consumed at end of run for a consolidated summary) and ends the
     // stream cleanly.
-    sources.push(failSoft(key, factory, onSkip));
+    sources.push(failSoft(key, factory, onSkip, coordinator));
   };
 
   if (types.length === 0) {
@@ -457,9 +833,7 @@ export async function* bulkRetrieve(
     invoke("omnistudio", () => iterOmnistudio(conn));
     if (normalized.enableOmnistudioRetrieve) {
       invoke("omnistudio-retrieve", async function* () {
-        const { iterOmnistudioRetrieve } = await import(
-          "./extractors/omnistudio-retrieve.js"
-        );
+        const { iterOmnistudioRetrieve } = await import("./extractors/omnistudio-retrieve.js");
         yield* iterOmnistudioRetrieve(conn, String(orgId), {
           apiVersion: normalized.apiVersion ?? "60.0",
           ...(onSkip ? { onError: onSkip } : {}),
@@ -481,4 +855,62 @@ export async function* bulkRetrieve(
   // anyone who hits an ordering bug or wants the old log layout.
   const sequential = process.env.SFGRAPH_SEQUENTIAL_SOURCES === "1";
   yield* sequential ? mergeAsyncIterables(...sources) : mergeAsyncIterablesParallel(...sources);
+
+  // Phase 1.5 W1.5-02 late-yield drain. When the merger has finished its
+  // main loop (all live slots cleared), drain any background-wedge iterators
+  // for the configured budget. Records arriving inside the budget are
+  // yielded with `attributes.lateYield = true`. Iterators whose stopWaiting
+  // flag was set by the cap-eviction path skip immediately. Anything still
+  // unresolved after the budget is dropped on the floor — its underlying
+  // jsforce HTTP request continues running until libuv tears it down at
+  // process exit (W1.5-03 will surface a "stop-waiting" semantic for this).
+  if (coordinator && coordinator.backgroundWedges.length > 0 && coordinator.lateDrainBudgetMs > 0) {
+    if (process.env.SFGRAPH_DEBUG_INGEST === "1") {
+      console.log(
+        `ingest: [debug] late-drain pass: ${coordinator.backgroundWedges.length} background wedge(s), budget=${coordinator.lateDrainBudgetMs}ms`,
+      );
+    }
+    for (const entry of coordinator.backgroundWedges) {
+      yield* drainBackgroundWedge(entry, coordinator.lateDrainBudgetMs, coordinator.warnings);
+    }
+  }
 }
+
+/**
+ * Internal-surface exports for unit tests in `__tests__/`. Not part of the
+ * public package API — these are intentionally namespaced under `__testing`
+ * so they don't appear in the package's exports surface to downstream
+ * consumers. (They're still importable, but the underscore convention
+ * signals "test only".)
+ *
+ * Exposed:
+ *   - `failSoft`: wrap an iterable with the W1.5-01/02 watchdog + soft-isolate.
+ *   - `createWedgeCoordinator`: build a coordinator + warnings sink with
+ *      optional cap/drain overrides for deterministic tests.
+ *   - `drainBackgroundWedge`: run the post-merger late-drain pass against
+ *      a single background-wedge entry.
+ *   - `mergeAsyncIterablesParallel`: re-export for symmetry; the (array,
+ *      opts) overload is what tests use to fix concurrency.
+ *   - `setTestWatchdogBudgets` / `resetTestWatchdogBudgets`: env-var-backed
+ *      knobs to squeeze the watchdog budget for fast tests. Always paired
+ *      via try/finally in tests so the environment is left clean.
+ */
+export const __testing = {
+  failSoft,
+  createWedgeCoordinator,
+  drainBackgroundWedge,
+  mergeAsyncIterablesParallel,
+  setTestWatchdogBudgets(opts: { firstYieldMs: number; inactivityMs: number }): void {
+    process.env.SFGRAPH_WATCHDOG_FIRST_YIELD_MS = String(opts.firstYieldMs);
+    process.env.SFGRAPH_WATCHDOG_INACTIVITY_MS = String(opts.inactivityMs);
+  },
+  resetTestWatchdogBudgets(): void {
+    // Note: assigning `undefined` to a `process.env.X` key in Node coerces to
+    // the string "undefined". That's fine here because readWatchdogBudgets()
+    // runs parseInt() on the value, parseInt("undefined") === NaN, and NaN
+    // falls through to the *_MS_DEFAULT branch. So semantically equivalent
+    // to `delete`, but satisfies biome's lint/performance/noDelete.
+    process.env.SFGRAPH_WATCHDOG_FIRST_YIELD_MS = undefined;
+    process.env.SFGRAPH_WATCHDOG_INACTIVITY_MS = undefined;
+  },
+};

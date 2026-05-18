@@ -409,6 +409,11 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   // failure surface). Returned on LiveIngestResult.warnings so MCP consumers
   // can read what was skipped without parsing stdout.
   const skipReport: IngestSkipReport = { skips: [] };
+  // Phase 1.5 W1.5-02: namespaced wedge warnings populated by bulkRetrieve's
+  // soft-isolate path (`wedge:<source>:<stage>:<detail>`). Concatenated with
+  // the legacy `${label}: ${reason}` strings from skipReport.skips into the
+  // final LiveIngestResult.warnings array. See bulk-retrieve.ts WedgeCoordinator.
+  const wedgeWarnings: string[] = [];
 
   const parseCtxBase: Omit<ParseContext, "sourceUri"> = {
     orgId: resolved.orgId,
@@ -694,6 +699,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       try {
         for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, {
           skipReport,
+          warnings: wedgeWarnings,
           ...(opts.onlyLabels ? { onlyLabels: opts.onlyLabels } : {}),
           // The bulk-retrieve flag name follows the same convention as
           // the bulk-retrieve's other opts; semantically it's "do the
@@ -1002,7 +1008,13 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     danglingEdges,
     reflectionEdges,
     overlap: overlapResult,
-    warnings: skipReport.skips.map((s) => `${s.label}: ${s.reason}`),
+    warnings: [
+      ...skipReport.skips.map((s) => `${s.label}: ${s.reason}`),
+      // Phase 1.5 W1.5-02 namespaced wedge strings. Format documented in
+      // PLAN.md: `wedge:<source>:<stage>:<detail>`. Forward-compatible
+      // with Phase 1's structured-warnings refactor (W1-01).
+      ...wedgeWarnings,
+    ],
   };
 }
 
