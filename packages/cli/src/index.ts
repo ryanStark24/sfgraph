@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { auditCmd } from "./commands/audit.js";
+import { diagnoseCmd } from "./commands/diagnose.js";
 import { doctorCmd } from "./commands/doctor.js";
 import { ingestCmd } from "./commands/ingest.js";
 import { installCmd } from "./commands/install.js";
@@ -148,22 +149,13 @@ export function buildProgram(): Command {
       "--no-auto-retry-skipped",
       "disable the post-ingest auto-retry. By default, if more than SFGRAPH_AUTO_RETRY_THRESHOLD (10) sources were skipped with transient errors (rate_limit/network/unknown), sfgraph waits briefly and re-ingests just those sources. Pass this flag (or set SFGRAPH_NO_AUTO_RETRY=1) to skip it.",
     )
-    .option(
-      "--no-cross-flavor",
-      "skip the post-merge Vlocity↔OmniStudio canonical-of resolver.",
-    )
+    .option("--no-cross-flavor", "skip the post-merge Vlocity↔OmniStudio canonical-of resolver.")
     .option(
       "--no-arity-resolve",
       "skip the post-merge Apex method-arity resolver (leaves CALLS→ApexMethod:X.y(?) edges dangling).",
     )
-    .option(
-      "--no-flow-resolve",
-      "skip the post-merge Flow→Apex invocable-method resolver.",
-    )
-    .option(
-      "--no-audit",
-      "skip the post-merge dangling-edge audit summary printed at end of run.",
-    )
+    .option("--no-flow-resolve", "skip the post-merge Flow→Apex invocable-method resolver.")
+    .option("--no-audit", "skip the post-merge dangling-edge audit summary printed at end of run.")
     .option(
       "--skip-threshold <n>",
       "exit non-zero when ≥N transient sources skipped in a single-org ingest. Env: SFGRAPH_SKIP_THRESHOLD. Default 5. Use a large value (e.g. 9999) to preserve the prior exit-0 behavior.",
@@ -400,6 +392,46 @@ export function buildProgram(): Command {
     .action(async () => {
       await doctorCmd();
     });
+
+  program
+    .command("diagnose <orgId>")
+    .description(
+      "W1.5-05: run an ingest in diagnostic mode (forces source/Tooling/Metadata/Data pool concurrency to 1) and write a structured JSON report capturing per-source timing, wedge events, capability probes, and detect-deletions refusals. NOTE: wall-clock is NOT comparable to a production run — this names wedges, it does not predict prod throughput. Defaults to a temporary graph DB so the user's main graph is untouched.",
+    )
+    .option("--output <path>", "override default report path")
+    .option("--max-duration <seconds>", "overall diagnose timeout in seconds (default 600)", (v) =>
+      Number.parseInt(v, 10),
+    )
+    .option("--verbose", "stream per-source timing to stdout in addition to the JSON report", false)
+    .option(
+      "--keep-graph",
+      "write to the real org graph DB instead of a temp DB (default: temp)",
+      false,
+    )
+    .action(
+      async (
+        orgId: string,
+        opts: {
+          output?: string;
+          maxDuration?: number;
+          verbose?: boolean;
+          keepGraph?: boolean;
+        },
+      ) => {
+        const args: Parameters<typeof diagnoseCmd>[0] = { orgId };
+        if (opts.output !== undefined) args.output = opts.output;
+        if (opts.maxDuration !== undefined) args.maxDuration = opts.maxDuration;
+        if (opts.verbose !== undefined) args.verbose = opts.verbose;
+        if (opts.keepGraph !== undefined) args.keepGraph = opts.keepGraph;
+        try {
+          const { report } = await diagnoseCmd(args);
+          if (report.exitStatus !== "ok") process.exitCode = 1;
+        } catch (e) {
+          console.error(`diagnose: ${(e as Error).message}`);
+          process.exitCode = 1;
+        }
+      },
+    );
 
   program
     .command("refresh-orgs")
