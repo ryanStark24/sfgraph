@@ -3,6 +3,7 @@ import type { RawMember } from "../interfaces/metadata-source.js";
 import type { OrgCapabilities } from "./capabilities.js";
 import { discoverMetadataTypes } from "./discovery.js";
 import { buildDispatchTable } from "./dispatch.js";
+import { stopSignalContext, StopWaitingError } from "./rate-limit.js";
 import { iterApex } from "./extractors/apex.js";
 import { iterFlow } from "./extractors/flow.js";
 import { iterGenericMetadata } from "./extractors/generic-metadata.js";
@@ -346,7 +347,9 @@ async function* drainBackgroundWedge(
     // to the abandoned promise and the drain sees the NEXT yield (or
     // `done:true` if the generator is single-yield).
     const nextPromise =
-      entry.pendingFirstNext !== null ? entry.pendingFirstNext : entry.iterator.next();
+      entry.pendingFirstNext !== null
+        ? entry.pendingFirstNext
+        : stopSignalContext.run(entry.stopWaitingRef, () => entry.iterator.next());
     if (entry.pendingFirstNext !== null) entry.pendingFirstNext = null;
     let next: IteratorResult<RawMember>;
     try {
@@ -450,7 +453,17 @@ async function* failSoft<T extends RawMember>(
   let lastYieldedQName = "<none>";
   const { firstYieldMs, inactivityMs } = readWatchdogBudgets();
 
-  const it = factory()[Symbol.asyncIterator]();
+  // W1.5-03: pre-allocate the per-source stop-signal at body entry and
+  // publish it into AsyncLocalStorage so any downstream rate-limit wrapper
+  // (`withTimeout`, `soqlWithTimeout`, `scheduleQuery`) inside the wedged
+  // iterator can observe `value = true` after cap-eviction flips it. Same
+  // ref is later attached to the BackgroundWedgeEntry so the keystone's
+  // `enforceBackgroundWedgeCap` flip propagates to in-flight calls without
+  // any per-extractor signature change. AsyncLocalStorage propagates across
+  // awaits within an async function started inside .run() — we factor the
+  // iterator into a helper started inside the .run() callback.
+  const stopWaitingRef: { value: boolean } = { value: false };
+  const it = stopSignalContext.run(stopWaitingRef, () => factory()[Symbol.asyncIterator]());
   if (debug) console.log(`ingest: [debug] ${label} ← invoked at ${startedAt}`);
 
   try {
@@ -462,7 +475,10 @@ async function* failSoft<T extends RawMember>(
       const stage: "firstYield" | "inactivity" = started ? "inactivity" : "firstYield";
       const stageDetail = started ? `${inactivityMs / 1000}s` : `${firstYieldMs / 1000}s`;
 
-      const pending = it.next();
+      // Run each `.next()` synchronously inside the ALS context so awaits
+      // inside the underlying generator's body that call into rate-limit
+      // wrappers can resolve the stop-signal via `getStore()`.
+      const pending = stopSignalContext.run(stopWaitingRef, () => it.next());
       let timer: ReturnType<typeof setTimeout> | undefined;
       const wedged = await Promise.race<
         { wedge: true } | { wedge: false; result: IteratorResult<T> }
@@ -554,7 +570,13 @@ async function* failSoft<T extends RawMember>(
         `ingest:   ${label} ⚠ wedged (${stage} ${stageDetail}); slot released, draining in background`,
       );
 
-      const stopWaitingRef = { value: false };
+      // W1.5-03: reuse the SAME stopWaitingRef that was published into ALS
+      // at body entry. When enforceBackgroundWedgeCap later flips this ref's
+      // `.value = true` on cap eviction, any in-flight rate-limit wrapper
+      // inside the wedged iterator's continuing background pumps will see
+      // the flag through `stopSignalContext.getStore()` and reject with
+      // `StopWaitingError` quickly. The underlying jsforce HTTP call still
+      // leaks until socket idle timeout — documented in rate-limit.ts.
       coordinator.backgroundWedges.push({
         label,
         iterator: it as unknown as AsyncIterator<RawMember>,

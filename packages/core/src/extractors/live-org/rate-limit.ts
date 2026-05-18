@@ -1,8 +1,111 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import Bottleneck from "bottleneck";
 import pLimit from "p-limit";
 
 /** Cap concurrent query invocations against a single org connection. */
 export const queryLimit = pLimit(5);
+
+// ---------------------------------------------------------------------------
+// Phase 1.5 W1.5-03: Stop-waiting plumbing
+// ---------------------------------------------------------------------------
+//
+// "Stop-waiting" is the W1.5-02 cap-eviction primitive: when the merger
+// decides a wedged source has outlived its background-wedge budget, it
+// flips a `stopSignal.value = true` flag. Every rate-limit wrapper below
+// (`withTimeout`, `soqlWithTimeout`, `scheduleQuery`) honors that flag by
+// (a) clearing its own setTimeout (so the Node timer queue does not leak),
+// (b) rejecting the caller's awaited Promise with a typed `StopWaitingError`
+//     (the merger / late-drain loop can catch this distinctly from a real
+//     timeout), and (c) releasing the closure that holds the Bottleneck job
+//     so the caller-side reference can be GC'd.
+//
+// KNOWN LIMITATION — SOCKET LEAK.
+//
+//   jsforce 3.10.15 creates its own internal `AbortController` and never
+//   exposes it to callers (verified at
+//   `node_modules/.pnpm/jsforce@3.10.15.../jsforce/lib/request.js:55,128,180`).
+//   `conn.tooling.query()` returns a `Promise`, not an abortable `Request`.
+//   Therefore an HTTP request that has already left Bottleneck and is in
+//   flight CANNOT be aborted from outside jsforce. "Stop-waiting" releases
+//   caller-side resources (Node timers, Promise references, Bottleneck
+//   queue slots) but the underlying TCP socket continues running until
+//   Salesforce responds OR Node's default socket idle timeout (~10 minutes)
+//   reaps it. Memory cost per leaked socket: ~1MB (Node socket buffer +
+//   jsforce parser state). With `SFGRAPH_MAX_BACKGROUND_WEDGES=4` default,
+//   worst-case leak per ingest is ~4MB, garbage-collected at process exit.
+//
+//   A future upgrade to jsforce that exposes `AbortController` (or a sfgraph
+//   fork patching `request.js`) is the proper fix; tracked as a Phase 1.5
+//   backlog item. The current implementation is the best that can be done
+//   within sfgraph's surface against jsforce 3.10.x.
+//
+// API SHAPE.
+//
+//   Every wrapper accepts an optional final `stopSignal?: StopSignal` arg.
+//   The signal is a mutable cell `{ value: boolean }` — easier to plumb than
+//   AbortController (which is observable but not freely re-assignable), and
+//   it composes with the existing `BackgroundWedgeEntry.stopWaitingRef` from
+//   bulk-retrieve.ts without any adapter. When the flag is set the wrapper
+//   resolves its race quickly (≤ STOP_WAITING_POLL_MS) with `StopWaitingError`.
+//
+//   Additionally, an AsyncLocalStorage context channel lets the merger's
+//   `failSoft` wrapper attach a per-source stopSignal once at body entry;
+//   nested extractor calls into `scheduleQuery` / `soqlWithTimeout` /
+//   `withTimeout` then pick it up automatically without each extractor
+//   needing to thread an explicit options parameter through ~13 call sites.
+//   The explicit-arg path remains preferred and is what tests exercise; the
+//   context fallback is a pragmatic concession to avoid a 150-200 LOC
+//   plumbing wave across every extractor in this phase.
+//
+// ---------------------------------------------------------------------------
+
+/** Mutable cell observed by every rate-limit wrapper. The merger (W1.5-02)
+ *  flips `.value = true` to instruct callers to abandon the current await.
+ *  Compatible with `BackgroundWedgeEntry.stopWaitingRef` (same shape). */
+export interface StopSignal {
+  value: boolean;
+}
+
+/** Typed sentinel surfaced by the rate-limit wrappers when a stop-signal
+ *  is observed mid-race. Distinct from a real timeout so callers (e.g. the
+ *  late-drain loop in bulk-retrieve.ts) can branch on the kind of failure.
+ *
+ *  This is a voluntary stop on the caller side — it is NOT a wedge, and it
+ *  is NOT proof that the underlying HTTP request was cancelled (see
+ *  socket-leak limitation above). */
+export class StopWaitingError extends Error {
+  readonly stopWaiting = true as const;
+  constructor(label: string) {
+    super(
+      `stop-waiting: source "${label}" was instructed to stop awaiting an in-flight request`,
+    );
+    this.name = "StopWaitingError";
+  }
+}
+
+/** How often a wrapper polls the stop-signal flag while racing the underlying
+ *  promise. 50ms gives sub-100ms median latency from flip to rejection
+ *  without burning the event loop. Tests can squeeze via env if needed. */
+const STOP_WAITING_POLL_MS = 50;
+
+/**
+ * AsyncLocalStorage context channel — the merger's `failSoft` wrapper
+ * `.run()`s the body inside `stopSignalContext.run(stopSignal, ...)` so any
+ * downstream call into a rate-limit wrapper that did not receive an
+ * explicit stopSignal can still pick one up. Tradeoff: implicit, but the
+ * alternative is threading a new optional param through every extractor
+ * signature (~13 files). Documented as a deviation in the W1.5-03 SUMMARY.
+ */
+export const stopSignalContext = new AsyncLocalStorage<StopSignal>();
+
+/** Pick up a stop-signal from either the explicit arg or the async context.
+ *  Explicit always wins. Returns `undefined` when neither is present, which
+ *  keeps the existing fast path (no extra setTimeout) for callers that have
+ *  not opted in. */
+function resolveStopSignal(explicit?: StopSignal): StopSignal | undefined {
+  if (explicit) return explicit;
+  return stopSignalContext.getStore();
+}
 
 /**
  * Hard upper bound on a single jsforce call. Used to wrap metadata.list /
@@ -11,19 +114,54 @@ export const queryLimit = pLimit(5);
  * Rejects with a descriptive error after `ms`; the failSoft wrapper one
  * level up surfaces it as a skip. The underlying jsforce HTTP request may
  * continue until libuv tears it down — we just stop waiting.
+ *
+ * Phase 1.5 W1.5-03: accepts an optional `stopSignal` cell. When the cell's
+ * `.value` flips to `true` mid-race, the timer is cleared and the returned
+ * promise rejects with `StopWaitingError`. The underlying jsforce request
+ * is NOT cancelled — see the socket-leak limitation block at the top of
+ * this file.
  */
-export function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+export function withTimeout<T>(
+  p: Promise<T>,
+  ms: number,
+  label: string,
+  stopSignal?: StopSignal,
+): Promise<T> {
+  const signal = resolveStopSignal(stopSignal);
   return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms);
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+      if (pollTimer !== undefined) clearInterval(pollTimer);
+      fn();
+    };
+
+    const timeoutTimer = setTimeout(
+      () => finish(() => reject(new Error(`${label} timeout (${ms}ms)`))),
+      ms,
+    );
+
+    // Stop-waiting poller. Only wired when a signal is in scope — otherwise
+    // we keep the original two-promise race and pay zero extra timer cost.
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    if (signal) {
+      // Fast-path: signal already set at entry. Reject on next tick so the
+      // returned promise is well-formed (no synchronous reject before
+      // listeners attach).
+      if (signal.value) {
+        queueMicrotask(() => finish(() => reject(new StopWaitingError(label))));
+      } else {
+        pollTimer = setInterval(() => {
+          if (signal.value) finish(() => reject(new StopWaitingError(label)));
+        }, STOP_WAITING_POLL_MS);
+      }
+    }
+
     p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      },
+      (v) => finish(() => resolve(v)),
+      (e) => finish(() => reject(e)),
     );
   });
 }
@@ -54,8 +192,13 @@ export const METADATA_DESCRIBE_TIMEOUT_MS = 60_000;
  *  with a SOQL-flavoured withTimeout. Centralizes the timeout value so
  *  callers don't drift; centralizes the label format so failures are
  *  greppable. */
-export function soqlWithTimeout<T>(p: Promise<T>, label: string, ms = SOQL_TIMEOUT_MS): Promise<T> {
-  return withTimeout(p, ms, `soql ${label}`);
+export function soqlWithTimeout<T>(
+  p: Promise<T>,
+  label: string,
+  ms = SOQL_TIMEOUT_MS,
+  stopSignal?: StopSignal,
+): Promise<T> {
+  return withTimeout(p, ms, `soql ${label}`, stopSignal);
 }
 
 /**
@@ -177,9 +320,73 @@ export interface RateLimitPools {
   toolingPool: Bottleneck;
   metadataPool: Bottleneck;
   dataPool: Bottleneck;
-  scheduleQuery<T>(fn: () => Promise<T>): Promise<T>;
-  scheduleMetadata<T>(fn: () => Promise<T>): Promise<T>;
-  scheduleData<T>(fn: () => Promise<T>): Promise<T>;
+  scheduleQuery<T>(fn: () => Promise<T>, stopSignal?: StopSignal): Promise<T>;
+  scheduleMetadata<T>(fn: () => Promise<T>, stopSignal?: StopSignal): Promise<T>;
+  scheduleData<T>(fn: () => Promise<T>, stopSignal?: StopSignal): Promise<T>;
+}
+
+/**
+ * Wrap a Bottleneck-bound factory with stop-waiting semantics.
+ *
+ * Two distinct fast paths the caller sees:
+ *
+ *   (1) Signal flips while the job is still QUEUED in Bottleneck. The
+ *       outer race rejects with StopWaitingError quickly; when Bottleneck
+ *       eventually dequeues the wrapped factory it sees `signal.value` and
+ *       returns a no-op rejected promise WITHOUT executing the user's
+ *       callable. No HTTP fires. The queue slot is released cleanly.
+ *
+ *   (2) Signal flips while the job is EXECUTING (HTTP in flight). The
+ *       outer race rejects with StopWaitingError; the underlying jsforce
+ *       request continues running until network-layer timeout. This is
+ *       the documented socket leak. The caller-side Promise reference is
+ *       released so the merger's `pending` Map can drop the iterator.
+ *
+ * Bottleneck 2.19.x does not expose a per-job `.cancel()` — see d.ts:602+.
+ * Implementing pool-level cancel would require either using
+ * Bottleneck.JobOptions's `expiration` (a real wall-clock timeout, not a
+ * runtime signal) or stopping the entire pool (`stop()`), neither of which
+ * is appropriate here. The pre-execution flag-check is the cleanest
+ * surface within the library's actual API.
+ */
+function wrapScheduled<T>(
+  pool: Bottleneck,
+  fn: () => Promise<T>,
+  stopSignal: StopSignal | undefined,
+  label: string,
+): Promise<T> {
+  if (!stopSignal) return pool.schedule(fn);
+  const guarded = (): Promise<T> => {
+    // Pre-execution gate. If the signal was flipped while we were queued,
+    // do not fire the underlying call at all. This is the clean queue-
+    // cancel path documented in the W1.5-03 plan section.
+    if (stopSignal.value) return Promise.reject(new StopWaitingError(label));
+    return fn();
+  };
+  const inner = pool.schedule(guarded);
+  // Caller-side race: reject quickly when the signal flips, regardless of
+  // whether the job is queued or executing. Mirrors withTimeout's poller.
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (fn2: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer !== undefined) clearInterval(pollTimer);
+      fn2();
+    };
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    if (stopSignal.value) {
+      queueMicrotask(() => finish(() => reject(new StopWaitingError(label))));
+    } else {
+      pollTimer = setInterval(() => {
+        if (stopSignal.value) finish(() => reject(new StopWaitingError(label)));
+      }, STOP_WAITING_POLL_MS);
+    }
+    inner.then(
+      (v) => finish(() => resolve(v)),
+      (e) => finish(() => reject(e)),
+    );
+  });
 }
 
 function parseRetryAfter(err: unknown): number | null {
@@ -310,14 +517,17 @@ export function createRateLimitPools(overrides: PoolConcurrencyOverrides = {}): 
     toolingPool,
     metadataPool,
     dataPool,
-    scheduleQuery<T>(fn: () => Promise<T>): Promise<T> {
-      return toolingPool.schedule(() => queryLimit(fn));
+    scheduleQuery<T>(fn: () => Promise<T>, stopSignal?: StopSignal): Promise<T> {
+      const sig = resolveStopSignal(stopSignal);
+      return wrapScheduled(toolingPool, () => queryLimit(fn), sig, "scheduleQuery");
     },
-    scheduleMetadata<T>(fn: () => Promise<T>): Promise<T> {
-      return metadataPool.schedule(fn);
+    scheduleMetadata<T>(fn: () => Promise<T>, stopSignal?: StopSignal): Promise<T> {
+      const sig = resolveStopSignal(stopSignal);
+      return wrapScheduled(metadataPool, fn, sig, "scheduleMetadata");
     },
-    scheduleData<T>(fn: () => Promise<T>): Promise<T> {
-      return dataPool.schedule(fn);
+    scheduleData<T>(fn: () => Promise<T>, stopSignal?: StopSignal): Promise<T> {
+      const sig = resolveStopSignal(stopSignal);
+      return wrapScheduled(dataPool, fn, sig, "scheduleData");
     },
   };
 }
@@ -337,18 +547,18 @@ export const dataPool = defaultPools.dataPool;
 export const limiter = toolingPool;
 
 /** Helper that runs a single SOQL/Tooling callable through both gates. */
-export function scheduleQuery<T>(fn: () => Promise<T>): Promise<T> {
-  return defaultPools.scheduleQuery(fn);
+export function scheduleQuery<T>(fn: () => Promise<T>, stopSignal?: StopSignal): Promise<T> {
+  return defaultPools.scheduleQuery(fn, stopSignal);
 }
 
 /** Schedule a Metadata API call (list/read/retrieve/deploy). */
-export function scheduleMetadata<T>(fn: () => Promise<T>): Promise<T> {
-  return defaultPools.scheduleMetadata(fn);
+export function scheduleMetadata<T>(fn: () => Promise<T>, stopSignal?: StopSignal): Promise<T> {
+  return defaultPools.scheduleMetadata(fn, stopSignal);
 }
 
 /** Schedule a SObject SOQL / Bulk query (Vlocity, CMDT, generic records). */
-export function scheduleData<T>(fn: () => Promise<T>): Promise<T> {
-  return defaultPools.scheduleData(fn);
+export function scheduleData<T>(fn: () => Promise<T>, stopSignal?: StopSignal): Promise<T> {
+  return defaultPools.scheduleData(fn, stopSignal);
 }
 
 /**
