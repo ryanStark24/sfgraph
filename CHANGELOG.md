@@ -1,5 +1,73 @@
 # Changelog
 
+## 1.3.0 — Phase 1.5: wedge isolation + ingest correctness
+
+A real-org ingest no longer reports a metadata type as "skipped" because of a wedge in an unrelated source. Seven atomic commits closed a cascade failure that, in a baseline run against a Vlocity-CMT org, caused **37 metadata types** (including `security`, `vlocity`, `object`, `flow`, `lwc`, `layout`, `customMetadata`, GenAi types, ExperienceBundle, ConnectedApp, and SamlSsoConfig) to be silently skipped after a single LWC bundle wedged the pool for 440 seconds. Also closed a latent **graph-extinction risk** where the `--detect-deletions` sweep could wipe an entire label on a wedge-induced empty stream.
+
+### Added
+
+- **Wedge isolation (W1.5-01 + W1.5-02).** When the per-source watchdog (90 s first-yield, 5 min inactivity) fires, the source's pool slot is released so the next queued source runs. The wedged iterator continues in the background; late records are drained with `attributes.lateYield: true`. Background-wedge count capped at `SFGRAPH_MAX_BACKGROUND_WEDGES` (default 4); when exceeded, oldest entries are marked `stopWaiting: true` and skipped from the late-drain pass.
+- **Stop-waiting semantics (W1.5-03).** New `StopWaitingError` sentinel. `withTimeout` / `soqlWithTimeout` / `scheduleQuery` accept an optional `stopSignal`. On flip: the race rejects with `StopWaitingError`, the local `setTimeout` is cleared, queued Bottleneck jobs are dropped before their callable runs. **Known limitation:** the underlying HTTP request continues until Node's socket idle timeout (~10 min) — jsforce 3.10.15 creates its `AbortController` internally and never exposes it. Worst-case memory leak: 4 wedges × ~1 MB ≈ 4 MB per ingest, garbage-collected at process exit.
+- **LWC per-bundle parallelization (W1.5-04).** Replaced the serial for-loop in `extractors/lwc.ts` with a sliding window of 8 concurrent per-bundle `LightningComponentResource` Tooling SOQL calls. Yields as each bundle completes (order-independent). Tooling pool cap = 5 prevents oversubscription; Bottleneck queues the extra 3. One slow bundle no longer freezes the `lwc` source; the watchdog heartbeat stays fresh.
+- **Detect-deletions drop-ratio guard (W1.5-07).** The `--detect-deletions` sweep at end of full-sync now refuses to wipe any label whose drop ratio exceeds `SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO` (default 0.30), and unconditionally refuses when a label has prior nodes but zero touched (empty-stream case). Refused labels keep their `last_seen_at` so staleness reports still surface them. Emits `wedge:detect-deletions:refuse:label=X:reason=...` warning.
+- **Sync-generation counter + MCP `_meta.staleness` (W1.5-08).** New columns on `_sfgraph_orgs`: `sync_generation INTEGER`, `sync_in_progress INTEGER`, `sync_started_at TEXT` (additive migration v8). Every MCP tool response now carries:
+  ```ts
+  _meta.staleness: { generation, in_progress, started_at, last_sync_at }
+  ```
+  Concurrent MCP clients can detect `in_progress: true` and warn the user that the graph is being rewritten. No global ingest transaction; per-resolver isolation preserved.
+- **`sfgraph diagnose <orgId>` CLI subcommand (W1.5-05).** Runs an ingest with concurrency forced to 1, captures per-source timing + wedge events + capability probe results + detect-deletions refusals, and writes a structured JSON report to:
+  - macOS: `~/Library/Application Support/sfgraph/diagnostics/<orgId>-<timestamp>.json`
+  - Linux: `~/.local/share/sfgraph/diagnostics/<orgId>-<timestamp>.json`
+  - Windows: `%APPDATA%\sfgraph\diagnostics\<orgId>-<timestamp>.json`
+
+  Flags: `--output <path>`, `--max-duration <seconds>`, `--verbose`, `--keep-graph`. Defaults to a temporary graph DB so the user's main graph is untouched.
+- **New environment variables.** `SFGRAPH_MAX_BACKGROUND_WEDGES` (4), `SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO` (0.30), `SFGRAPH_WATCHDOG_FIRST_YIELD_MS` (90 000), `SFGRAPH_WATCHDOG_INACTIVITY_MS` (300 000), `SFGRAPH_LATE_DRAIN_BUDGET_MS` (60 000). All documented in the new "Environment variables" reference table in the README.
+- **`docs/COVERAGE.md`** (new). Authoritative matrix of every metadata type sfgraph ingests, status (Full / Partial / Generic-Only / Unsupported), edges emitted, known limitations, and source file. Replaces the old narrative-style coverage page.
+
+### Changed
+
+- **README reconciled with shipped reality.** Corrected MCP tool count (was claimed "26", actual **28**). Added Reliability, Diagnostics, MCP staleness signal, Environment variables (36 vars documented, sorted alphabetically with type / default / purpose / since-version), Honest disclosures, and Coverage sections. Honest disclosures call out the four security types that are Generic-Only (`PermissionSetGroup`, `MutingPermissionSet`, `ProfileSessionSetting`, `ProfilePasswordPolicy`), the `SECURITY_PER_LABEL_CAP=5000` analysis truncation, the 80-of-327 generic whitelist, the LWC empty-bundle behavior change (see below), and the socket-leak limitation.
+- **Warning surface format.** Warnings emitted into `LiveIngestResult.warnings: string[]` now use a namespaced colon-delimited convention: `wedge:<sourceLabel>:firstYield:90s:lastYieldedRecord=...`, `wedge:<sourceLabel>:inactivity:300s`, `wedge:<sourceLabel>:resolvedLate:atMs=N`, `wedge:cap:backgroundWedgeAborted:source=...`, `wedge:lwc:bundleFetchFailed:bundleId=...:bundleName=...:error=...`, `wedge:detect-deletions:refuse:label=L:reason=empty-stream|drop-ratio:...`. Forward-compatible with a future structured shape via a documented parse schema.
+
+### Behavior changes (read before upgrading)
+
+- **LWC empty-bundle nodes will disappear on re-ingest.** Prior versions yielded a stub `RawMember` with `files: {}` on per-bundle resource-fetch failure, creating empty `LightningComponentBundle` nodes in the graph. 1.3.0 emits a `wedge:lwc:bundleFetchFailed:...` warning and no record. Users upgrading from 1.2.x may see previously-recorded empty LWC bundles disappear from their graph on the next re-ingest. **This is correct** — those nodes were artifacts of a silent failure.
+- **No public API changes.** All new options are optional with safe defaults; existing call sites of `liveIngest`, `bulkRetrieve`, `withTimeout`, `soqlWithTimeout`, `scheduleQuery`, and `graph.touchSync` keep their pre-1.3.0 contract.
+
+### Tests
+
+- **+59 new tests across the workspace.** Full suite: 807/807 passing.
+  - Wedge isolation: 4 cases (`packages/core/src/extractors/live-org/__tests__/wedge-isolation.test.ts`)
+  - Detect-deletions guard: 19 cases (`packages/core/src/ingest/__tests__/live-ingest.detect-deletions-guard.test.ts`)
+  - LWC parallelization: 5 cases (`packages/core/src/extractors/live-org/extractors/__tests__/lwc.parallel.test.ts`)
+  - Sync-generation: 11 cases (`packages/core/src/storage/__tests__/sync-generation.test.ts`)
+  - MCP staleness surface: 5 cases (`packages/mcp-server/src/__tests__/staleness-surface.test.ts`)
+  - Stop-waiting: 10 cases (`packages/core/src/extractors/live-org/__tests__/stop-waiting.test.ts`)
+  - Diagnose CLI: 11 cases (`packages/cli/src/__tests__/diagnose.test.ts`)
+
+### Versions
+
+| Package | 1.2.x | 1.3.0 |
+|---|---|---|
+| `@ryanstark24/sfgraph-core`    | 1.2.0 | **1.3.0** |
+| `@ryanstark24/sfgraph-cli`     | 1.2.1 | **1.3.0** |
+| `@ryanstark24/sfgraph-server`  | 1.2.1 | **1.3.0** |
+| `@ryanstark24/sfgraph`         | 1.2.1 | **1.3.0** |
+
+Unchanged in this release: `-shared@1.1.3`, `-skills@1.1.4`, `-models@1.1.0`, `-web@1.1.8` (no source changes).
+
+### Publish
+
+Use `pnpm publish` (not `npm publish`) per the 1.2.1 release-hygiene note — required to rewrite `workspace:*` specifiers to concrete versions at pack time.
+
+### Deferred to future phases
+
+- **Bulk API 2.0 migration** for large SOQL paths — gated on profiling proof that parsing is CPU-bound. Tracked in `.planning/STATE.md` backlog.
+- **Parallel `processOne` + buffered SQLite writes** — gated on profiling proof; speculative 3–5× throughput claim was rejected without per-record timing data.
+- **First-class extractors for PermSetGroup / Muting / ProfileSessionSetting / ProfilePasswordPolicy** — currently Generic-Only; deferred to a future Security phase.
+- **`SECURITY_PER_LABEL_CAP` removal** — analysis-layer cap stays at 5000; documented in `docs/COVERAGE.md`.
+- **jsforce upgrade exposing `AbortController`** — required for true in-flight HTTP cancellation; tracked as backlog. Worst-case socket leak (4 MB per ingest) is the documented bound.
+
 ## 1.2.1 — packaging fix (re-publish of 1.2.0 for `-cli`, `-server`, `sfgraph`)
 
 **No source changes.** This release exists only because `1.2.0` of three
