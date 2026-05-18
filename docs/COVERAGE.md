@@ -1,22 +1,170 @@
-# Metadata coverage
+# sfgraph Coverage Matrix
+
+This document is the authoritative reference for which Salesforce metadata types sfgraph supports, the edges each emits, and known limitations.
+
+**Status legend:**
+
+- **Full** — first-class extractor; parsed deeply; emits relationship-specific edges (`READS_FIELD`, `EMBEDS_LWC`, `GRANTS_OBJECT_ACCESS`, etc.).
+- **Partial** — first-class extractor, but some structural relationships are not modeled.
+- **Generic-Only** — ingested via the generic-metadata path; node exists with raw attributes, but no relationship-specific edges (only opaque `REFERENCES`).
+- **Unsupported** — type appears in `describeMetadata()` output but is not dispatched to any extractor (only ingested if `SFGRAPH_INCLUDE_ALL_GENERIC=1`).
 
 Coverage is **dynamic, not hardcoded**. At ingest start, `conn.metadata.describe(apiVersion)` asks the org for its full supported type list — which automatically includes any types added by installed managed packages or by new Salesforce releases. Each type is routed to either a code parser, a declarative YAML rule, or the generic opaque-node fallback.
 
-**Code parsers (6, complex AST work)**: Apex, LWC, Flow, Object, 4 Vlocity JSON content parsers.
+Last updated: **2026-05-18** (Phase 1.5).
 
-**Declarative rules (21 YAML files)**: Profile, PermissionSet, SharingRule, NamedCredential, ExternalServiceRegistration, PlatformEvent, ApexPage, ApexComponent, Layout, LightningPage, Report, Dashboard, GenAiPlanner, GenAiPlugin, Network, Workflow, ApprovalProcess, DuplicateRule, MatchingRule, CustomMetadataType, CustomLabel, PermissionSetGroup.
+See also: [`../README.md#coverage`](../README.md#coverage) for the high-level summary and [`../README.md#honest-disclosures--known-limitations`](../README.md#honest-disclosures--known-limitations) for the disclosure list (mirrored at the end of this file).
 
-**Vlocity legacy industry clouds** — all 5 namespaces covered by a single vendored registry (`vlocity_build`'s `QueryDefinitions.yaml`, MIT, 48 DataPack types):
+---
 
-| Namespace | Industry cloud(s) |
-|---|---|
-| `vlocity_cmt` | Communications, Media, Energy & Utilities |
-| `vlocity_ins` | Insurance |
-| `vlocity_hc` | Health |
-| `vlocity_ps` | Public Sector |
-| `vlocity_fs` | Financial Services (legacy) |
+## Status matrix
 
-**Anything else** — types `describeMetadata()` lists but no rule covers — emits an opaque NodeFact with raw fields so the agent can still answer "does X exist?". Zero-day coverage.
+### Apex
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `ApexClass` | Full | `CALLS`, `READS_FIELD`, `WRITES_FIELD`, `READS_SOBJECT`, `WRITES_SOBJECT`, `EMBEDS_LWC` (from Aura wrappers), `IS_TEST_FOR` | Managed-package `Body` is `(hidden)` — metadata-only node. | `packages/core/src/extractors/live-org/extractors/apex.ts` |
+| `ApexTrigger` | Full | `TRIGGER_ON`, `CALLS`, `READS_FIELD`, `WRITES_FIELD` | Managed-package `Body` is `(hidden)` — metadata-only node. | `packages/core/src/extractors/live-org/extractors/apex.ts` |
+| `ApexPage` | Generic-Only | `REFERENCES` (opaque) | VF markup not parsed; references to Apex controllers / static resources not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `ApexComponent` | Generic-Only | `REFERENCES` (opaque) | VF component markup not parsed. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### UI components
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `LightningComponentBundle` (LWC) | Full | `EMBEDS_LWC`, `IMPORTS_LMS_CHANNEL`, `CALLS_APEX`, `WIRES_APEX`, `BINDS_FIELD` | Managed-package `Source` is `<hidden>` — metadata-only node. Empty bundle stubs no longer emitted on per-bundle fetch failure (Phase 1.5 change). | `packages/core/src/extractors/live-org/extractors/lwc.ts` |
+| `AuraDefinitionBundle` | Generic-Only | `REFERENCES` (opaque) | Aura markup not parsed; Apex / LWC embeds not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `FlexiPage` | Generic-Only | `REFERENCES` (opaque) | Lightning App Builder references (embedded LWCs, RecordType bindings) not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `Layout` | Generic-Only | `REFERENCES` (opaque) | Field placements / QuickAction references not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `QuickAction` | Generic-Only | `REFERENCES` (opaque) | Target object / Flow references not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `CustomTab` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `CustomApplication` | Generic-Only | `REFERENCES` (opaque) | Tab list / utility bar references not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `HomePageLayout` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `CustomPageWebLink` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `WebLink` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `LightningMessageChannel` | Generic-Only | `REFERENCES` (opaque) | LWC `IMPORTS_LMS_CHANNEL` resolves against bundle imports; channel node itself is opaque. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### Process automation
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `Flow` | Full | `INVOKES_APEX`, `READS_FIELD`, `WRITES_FIELD`, `CALLS_SUBFLOW` | Definition modes (active version selection) follow `FlowDefinition`'s `ActiveVersionNumber`. | `packages/core/src/extractors/live-org/extractors/flow.ts` |
+| `FlowDefinition` | Generic-Only | `REFERENCES` (opaque) | Used to resolve active Flow version; not modeled as a graph relationship. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `Workflow` | Generic-Only | `REFERENCES` (opaque) | Field updates / email alerts / outbound messages not modeled. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `ApprovalProcess` | Generic-Only | `REFERENCES` (opaque) | Step-level actor / field references not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `AssignmentRules` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `AutoResponseRules` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `EscalationRules` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `DuplicateRule` | Generic-Only | `REFERENCES` (opaque) | MatchingRule pairing not modeled as a graph edge. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `MatchingRule` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### Data model
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `CustomObject` | Full | `HAS_FIELD`, `LOOKUP_TO`, `MASTER_DETAIL_TO`, `EXTERNAL_LOOKUP_TO`, `HAS_RECORD_TYPE`, `HAS_VALIDATION_RULE` | Per-`describe()` 12s hard timeout; pathological objects are caught and skipped. SObject inclusion governed by `EntityDefinition.IsCustomizable` (see below). | `packages/core/src/extractors/live-org/extractors/object.ts` |
+| `CustomMetadata` (records) | Generic-Only | `REFERENCES` (opaque) | CMDT type definition is modeled via `CustomObject`; per-record metadata is opaque. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `CustomLabels` / `CustomLabel` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `GlobalValueSet` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `StandardValueSet` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `CustomPermission` | Generic-Only | `REFERENCES` (opaque) | Grants to Profile / PermSet not modeled as a graph edge. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### Security & access
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `Profile` | Full | `GRANTS_OBJECT_ACCESS`, `GRANTS_FIELD_ACCESS`, `GRANTS_APEX_CLASS_ACCESS`, `GRANTS_VF_PAGE_ACCESS`, `GRANTS_USER_PERMISSION` | Analysis layer caps results at 5000 per label (`SECURITY_PER_LABEL_CAP`); graph storage is complete. | `packages/core/src/extractors/live-org/extractors/security.ts` |
+| `PermissionSet` | Full | `GRANTS_OBJECT_ACCESS`, `GRANTS_FIELD_ACCESS`, `GRANTS_APEX_CLASS_ACCESS`, `GRANTS_VF_PAGE_ACCESS`, `GRANTS_USER_PERMISSION` | Same 5000-per-label analysis cap. | `packages/core/src/extractors/live-org/extractors/security.ts` |
+| `SharingRules` | Full | `SHARES_TO_GROUP`, `SHARES_TO_ROLE`, `SHARES_BASED_ON_CRITERIA`, `SHARES_BASED_ON_OWNER` | — | `packages/core/src/extractors/live-org/extractors/security.ts` |
+| **`PermissionSetGroup`** | **Generic-Only** | `REFERENCES` (opaque) | **No `GRANTS_*` / `INCLUDES_PERMSET` edges.** Composition of constituent permission sets is not modeled. Audits relying on permission inheritance will MISS findings for grouped permissions. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| **`MutingPermissionSet`** | **Generic-Only** | `REFERENCES` (opaque) | **No `DENIES_*` edges.** Mutes within a PermissionSetGroup are not modeled. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| **`ProfileSessionSetting`** | **Generic-Only** | `REFERENCES` (opaque) | **Session security policy (IP ranges, login hours, session timeouts) not modeled.** | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| **`ProfilePasswordPolicy`** | **Generic-Only** | `REFERENCES` (opaque) | **Password policy (complexity, expiration, history) not modeled.** | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `ConnectedApp` | Generic-Only | `REFERENCES` (opaque) | OAuth scopes / SAML config / IP relaxation not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `SamlSsoConfig` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `SharingSet` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `GroupMember` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### Integrations
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `NamedCredential` | Full | `USES_EXTERNAL_CREDENTIAL`, `CALLED_BY_APEX` (resolved from Apex callouts) | — | `packages/core/src/extractors/live-org/extractors/integration.ts` |
+| `ExternalServiceRegistration` | Full | `BACKED_BY_NAMED_CREDENTIAL`, `EXPOSES_SCHEMA` | OpenAPI schema is captured as an attribute blob, not as edges into a structured operation graph. | `packages/core/src/extractors/live-org/extractors/integration.ts` |
+| `ExternalCredential` | Generic-Only | `REFERENCES` (opaque) | Principal / parameter records not modeled. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `RemoteSiteSetting` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `CspTrustedSite` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### Platform Events & CDC
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `PlatformEventChannel` | Generic-Only | `REFERENCES` (opaque) | Channel-member fan-out not modeled. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `PlatformEventChannelMember` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `PlatformEventSubscriberConfig` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### Vlocity legacy industry clouds
+
+Coverage delivered via a vendored copy of `vlocity_build`'s `QueryDefinitions.yaml` (MIT, 48 DataPack types). Namespaces: `vlocity_cmt`, `vlocity_ins`, `vlocity_hc`, `vlocity_ps`, `vlocity_fs`.
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| Vlocity DataPacks (48 types) | Full | `EMBEDS_VLOCITY`, `REFERENCES_DATA_RAPTOR`, `INVOKES_VLOCITY_PROCEDURE` | Capability-gated — only runs when the `vlocityLegacy` capability probe fires. | `packages/core/src/extractors/live-org/extractors/vlocity.ts` |
+
+### OmniStudio on-Core
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `OmniProcess` | Full | `INVOKES_IP`, `READS_DATA_RAPTOR`, `EMBEDS_OMNISCRIPT` | Storage SObject is `OmniProcess`; metadata access via `metadata.list/read`. | `packages/core/src/extractors/live-org/extractors/omnistudio.ts` |
+| `OmniScript` | Generic-Only | `REFERENCES` (opaque) | OmniStudio retrieve path (`omnistudio-retrieve.ts`) hydrates richer content when enabled. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `OmniIntegrationProcedure` | Partial | `REFERENCES`, retrieve-path attributes | Retrieved as opaque from `metadata.list`, hydrated via `metadata.retrieve()` async polling when `enableOmnistudioRetrieve` is set. | `packages/core/src/extractors/live-org/extractors/omnistudio-retrieve.ts` |
+| `OmniDataTransform` | Partial | `REFERENCES`, retrieve-path attributes | Same retrieve-path behavior as `OmniIntegrationProcedure`. | `packages/core/src/extractors/live-org/extractors/omnistudio-retrieve.ts` |
+| `OmniUiCard` | Partial | `REFERENCES`, retrieve-path attributes | Same retrieve-path behavior. | `packages/core/src/extractors/live-org/extractors/omnistudio-retrieve.ts` |
+
+### Communities / Networks
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `Network` | Generic-Only | `REFERENCES` (opaque) | Community member / tab references not modeled. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `NetworkBranding` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `NavigationMenu` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `Community` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `ExperienceBundle` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `DigitalExperienceBundle` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### Reports & Analytics
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `Report` | Generic-Only | `REFERENCES` (opaque) | ReportType binding / field references not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `Dashboard` | Generic-Only | `REFERENCES` (opaque) | Report references not modeled. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `ReportType` | Generic-Only | `REFERENCES` (opaque) | Object joins / accessible fields not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### Notifications & Sites
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `CustomNotificationType` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `CustomSite` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `EmailTemplate` | Generic-Only | `REFERENCES` (opaque) | Merge-field references not parsed. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `EmailServicesFunction` | Generic-Only | `REFERENCES` (opaque) | Apex handler class binding not modeled. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `StaticResource` | Generic-Only | `REFERENCES` (opaque) | Binary body not fetched. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `RecordActionDeployment` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `PathAssistant` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### Einstein / GenAI / Bots
+
+| Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
+|---|---|---|---|---|
+| `Bot` | Generic-Only | `REFERENCES` (opaque) | Intent / dialog node references not extracted. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `GenAiPromptTemplate` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `GenAiFunction` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `GenAiPlugin` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+| `GenAiPlannerBundle` | Generic-Only | `REFERENCES` (opaque) | — | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
+
+### Long tail (`Unsupported` unless `SFGRAPH_INCLUDE_ALL_GENERIC=1`)
+
+Every other type returned by `describeMetadata()` that does not appear in any of the rows above and is not in `GENERIC_TYPE_WHITELIST` is filtered out by default. Setting `SFGRAPH_INCLUDE_ALL_GENERIC=1` runs them through the generic extractor at the cost of longer ingest and more opaque nodes. Out of the ~327 metadata types a typical org's `describeMetadata()` returns, sfgraph dispatches ~80 to a named or whitelisted-generic extractor; the rest are filtered.
 
 ---
 
@@ -34,37 +182,25 @@ FROM EntityDefinition
 
 If `IsCustomizable=true`, `IsApexTriggerable=true`, or `IsCustomSetting=true` (and not `IsDeprecatedAndHidden`), the SObject is in scope. Otherwise it's a platform internal and gets skipped.
 
-This works across Salesforce editions and industry clouds:
-`AuthorizationFormConsent` (Health Cloud) returns `IsCustomizable=true` → included automatically. `AuthConfig` (SSO internal) returns false → skipped. No hardcoded list to maintain — Salesforce's own metadata tells us what's real.
+This works across Salesforce editions and industry clouds: `AuthorizationFormConsent` (Health Cloud) returns `IsCustomizable=true` → included automatically. `AuthConfig` (SSO internal) returns false → skipped. No hardcoded list to maintain — Salesforce's own metadata tells us what's real.
 
 ### Layered filters (applied in order)
 
 1. Companion tables (`*Feed`, `*History`, `*Share`, etc.) — always skipped.
-2. `SYSTEM_SKIP_NAMES` hard blacklist (ApexLog, EventLogFile, etc.) — always skipped (acts as a ceiling even if EntityDefinition says otherwise).
+2. `SYSTEM_SKIP_NAMES` hard blacklist (`ApexLog`, `EventLogFile`, etc.) — always skipped (acts as a ceiling even if `EntityDefinition` says otherwise).
 3. Custom SObjects (`__c`, `__e`, `__b`, `__mdt`, `__x`, `__ka`, `__kav`, `__chn`) — always **included**. Covers user-owned and every managed-package custom object.
 4. `EntityDefinition.IsCustomizable` filter — primary signal for non-custom SObjects.
-5. Static `STANDARD_SOBJECT_WHITELIST` — fallback only if EntityDefinition query fails or returns 0 records (some scratch / dev orgs).
+5. Static `STANDARD_SOBJECT_WHITELIST` — fallback only if `EntityDefinition` query fails or returns 0 records (some scratch / dev orgs).
+
+### Per-describe timeout
+
+Each `describe()` is wrapped in a 12-second hard timeout. A single pathological SObject whose response never returns no longer wedges the run; it's caught as a timeout and skipped while everything else proceeds.
 
 ### Overrides
 
-Bring back the full queryable surface (useful for diagnostic ingests):
-
 ```bash
-SFGRAPH_INCLUDE_ALL_SOBJECTS=1 sfgraph ingest
-```
-
-`--debug` mode prints the EntityDefinition probe outcome on every run:
-
-```
-ingest: [debug] object EntityDefinition probe → 487 user-relevant SObjects classified
-```
-
-If you see `EntityDefinition unavailable — falling back to static whitelist`, your org's edition restricts that Tooling table and we use the curated list as a safe default.
-
-Per-SObject escape hatch (skip a specific table that crashes describe):
-
-```bash
-SFGRAPH_SKIP_SOBJECT=BadTable,OtherBadTable sfgraph ingest
+SFGRAPH_INCLUDE_ALL_SOBJECTS=1   # bring back the full queryable surface
+SFGRAPH_SKIP_SOBJECT=Foo,Bar     # per-SObject escape hatch for crashes
 ```
 
 ---
@@ -90,13 +226,6 @@ The redacted text has zero graph value (no methods, no field refs, no internal r
 - The bundle / class / trigger still appears in the graph (inventory tools, `list_orgs`, cross-org diff, edge resolution from your own code all work).
 - Body / Source / Markup is **not** fetched or parsed.
 
-You'll see lines like this in `--debug` output:
-
-```
-ingest: [debug] lwc bundles total=1248 managed=973
-ingest: [debug] lwc skip-managed clmAcceptAction (ns=vlocity_cmt; ...)
-```
-
 ### Override knobs
 
 ```bash
@@ -107,6 +236,49 @@ SFGRAPH_SKIP_LWC=name1,name2        # skip specific LWC bundle DeveloperNames
 SFGRAPH_INCLUDE_ALL_GENERIC=1       # invoke every metadata.describe() type, not just whitelist
 ```
 
-### Per-describe timeout
+---
 
-Each `describe()` is wrapped in a 12-second hard timeout. A single pathological SObject whose response never returns no longer wedges the run; it's caught as a timeout and skipped while everything else proceeds.
+## Caps and thresholds
+
+| Constant / Env var | Default | Layer | Effect |
+|---|---|---|---|
+| `SECURITY_PER_LABEL_CAP` | 5000 | Analysis | Profile / PermissionSet results truncated per label; graph storage unaffected. Sets `truncated: true` on the response. |
+| `CROSS_ORG_PER_LABEL_CAP` | 10000 | Analysis | Cross-org diff truncation per label. |
+| `maxEdgesPerSource` | 200 | Ingest (generic) | Per opaque generic node; sets `cappedSources` flag in result. |
+| `SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO` | `0.30` | Ingest (deletion sweep) | Per-label drop-ratio threshold; sweep refuses to wipe a label whose drop ratio exceeds this. |
+| `SFGRAPH_MAX_BACKGROUND_WEDGES` | `4` | Ingest (watchdog) | Cap on simultaneous background wedge runners. |
+| `SFGRAPH_WATCHDOG_FIRST_YIELD_MS` | `90000` | Ingest (watchdog) | Per-source first-yield deadline. |
+| `SFGRAPH_WATCHDOG_INACTIVITY_MS` | `300000` | Ingest (watchdog) | Per-source inactivity deadline. |
+| `describe()` per-call timeout | 12s | Ingest (object) | Pathological SObjects caught as timeouts and skipped. |
+
+---
+
+## Async / polling paradigms used
+
+| Path | Paradigm | Polling cadence | Ceiling |
+|---|---|---|---|
+| SOQL / Tooling SOQL | Synchronous REST query + `nextRecordsUrl` pagination | N/A | N/A |
+| Metadata API `metadata.read` | SOAP single-shot with batch bisection on timeout | N/A | `SFGRAPH_BISECT_MAX_DEPTH` (default 6) |
+| Metadata API `retrieve()` (OmniStudio on-Core retrieve path only) | Async with jsforce-internal polling | 3s | 180s |
+| Bulk API | **Not currently used.** | — | — |
+
+---
+
+## Known limitations
+
+Mirrored from the [README's "Honest disclosures" section](../README.md#honest-disclosures--known-limitations) — keep these in sync.
+
+- **Security model gaps.** `PermissionSetGroup`, `MutingPermissionSet`, `ProfileSessionSetting`, `ProfilePasswordPolicy` are **Generic-Only** (no `GRANTS_*` / `DENIES_*` edges). Audits relying on permission inheritance through PermissionSetGroups will MISS findings until a future Security phase.
+- **Security analysis caps.** Results capped at 5000 per label in the analysis layer; graph storage is complete.
+- **Generic-type whitelist.** ~80 of ~327 metadata types are dispatched to a named or whitelisted-generic extractor; the rest are filtered out unless `SFGRAPH_INCLUDE_ALL_GENERIC=1`.
+- **LWC empty-bundle behavior change (Phase 1.5).** Per-bundle fetch failures now emit a `wedge:lwc:bundleFetchFailed:...` warning and NO record (previously: stub bundle with `files: {}`). Re-ingest after upgrade will remove previously-recorded empty bundles. This is correct.
+- **Socket leak on wedged HTTP requests (jsforce 3.10.15 stop-waiting).** When the per-source watchdog fires, sfgraph releases the slot but the underlying jsforce HTTP request is NOT cancelled (jsforce does not expose `AbortController`). Wedged sockets are reaped by Node's idle-timeout (~10min). Worst case: 4 wedges × ~1MB ≈ 4MB transient memory per ingest, GC'd at process exit.
+
+---
+
+## Future hardening (cross-reference)
+
+- **Bulk API migration** for large SOQL paths — deferred; profiling-gated. Bulk API has higher per-job overhead, so the migration is only worth it for the longest-tail label populations.
+- **First-class extractors for `PermissionSetGroup` / `MutingPermissionSet` / `ProfileSessionSetting` / `ProfilePasswordPolicy`** — deferred to a future Security phase. Closing this gap requires modeling group composition (`INCLUDES_PERMSET`), mute semantics (`DENIES_*`), and session/password policy semantics that don't fit the current `GRANTS_*` schema.
+- **jsforce upgrade or fork exposing `AbortController`** — needed for true in-flight HTTP cancellation; tracked in `.planning/STATE.md` backlog. Until then, the socket-leak caveat above applies.
+- **Aura / VF deep parsing** — `AuraDefinitionBundle`, `ApexPage`, `ApexComponent` are currently Generic-Only. A first-class extractor would unlock LWC ↔ Aura embed edges and VF ↔ Apex controller edges. Deferred (low industry-cloud priority).

@@ -4,7 +4,7 @@
 [![license](https://img.shields.io/npm/l/@ryanstark24/sfgraph.svg)](LICENSE)
 [![node](https://img.shields.io/node/v/@ryanstark24/sfgraph.svg)](https://nodejs.org)
 
-A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-syncs your org to a SQLite + vector index on your machine and exposes 26 MCP tools to **Cursor, Claude Code/Desktop, and VS Code**, so the AI you already use can reason about Apex, LWC, Flow, Vlocity, OmniStudio, security, and integrations **without your code or schema ever leaving your laptop**.
+A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-syncs your org to a SQLite + vector index on your machine and exposes 28 MCP tools to **Cursor, Claude Code/Desktop, and VS Code**, so the AI you already use can reason about Apex, LWC, Flow, Vlocity, OmniStudio, security, and integrations **without your code or schema ever leaving your laptop**.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -101,7 +101,7 @@ Use `which node` and `which sfgraph` to fill in the paths. Same effect as `sfgra
 
 After editing the file, fully restart the client so it re-reads the MCP server list. Then ask the agent something like *"list orgs from sfgraph"* to confirm the tools are visible.
 
-The skill playbooks (`sf-impact-from-diff`, `sf-security-audit`, etc.) are Claude/Cursor-specific. On other clients, the agent still has direct access to all 26 MCP tools — it just routes by tool name instead of by skill trigger.
+The skill playbooks (`sf-impact-from-diff`, `sf-security-audit`, etc.) are Claude/Cursor-specific. On other clients, the agent still has direct access to all 28 MCP tools — it just routes by tool name instead of by skill trigger.
 
 ### 4. Verify the install
 
@@ -183,12 +183,141 @@ A 3D force-graph explorer for the ingested org. Loopback-only by default. See [`
 
 ---
 
+## Reliability
+
+### Wedge isolation (Phase 1.5)
+
+A slow or hung source no longer blocks neighbors. When the per-source watchdog (90s first-yield, 5min inactivity) fires, the source's slot is released and the next queued source runs. The wedge runs to completion in the background; late records are drained with `attributes.lateYield: true`.
+
+You will see warnings of the form `wedge:<source>:<reason>:...` in the ingest run summary — these are now *informational* (the run continues), not fatal.
+
+**Socket-leak caveat (honest disclosure).** The underlying HTTP request to Salesforce is NOT cancelled (jsforce 3.10.15 does not expose `AbortController`). Wedged sockets are reaped by Node's idle-timeout (~10min). Worst-case memory: 4 wedges × ~1MB ≈ 4MB per ingest, garbage-collected at process exit. The cap is `SFGRAPH_MAX_BACKGROUND_WEDGES` (default 4).
+
+### Detect-deletions drop-ratio guard (Phase 1.5)
+
+When run with `--detect-deletions --rebuild`, sfgraph refuses to wipe a label whose drop ratio exceeds `SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO` (default `0.30`). A wedge-induced empty stream emits a `wedge:detect-deletions:refuse:label=<L>:reason=empty-stream` warning instead of silently destroying the label. Refused labels keep their previous `last_seen_at` so the staleness clock keeps ticking — staleness reports will still surface them.
+
+---
+
+## Diagnostics
+
+When ingest reports skips you don't understand, use the diagnose subcommand:
+
+```bash
+sfgraph diagnose <orgId>
+```
+
+`diagnose` forces source / Tooling / Metadata / Data pool concurrency to 1 and writes a structured JSON report capturing per-source timing, wedge events, capability probes, and detect-deletions refusals. By default it writes to a temporary graph DB so your main org graph is untouched.
+
+> **Note:** wall-clock is NOT comparable to a production run — diagnose names wedges, it does not predict prod throughput.
+
+**Default report path** (platform-aware, under the same data dir as the graph):
+
+| Platform | Path |
+|---|---|
+| macOS | `~/Library/Application Support/sfgraph/diagnostics/<orgId>-<ISO-timestamp>.json` |
+| Linux | `~/.local/share/sfgraph/diagnostics/<orgId>-<ISO-timestamp>.json` |
+| Windows | `%APPDATA%\sfgraph\diagnostics\<orgId>-<ISO-timestamp>.json` |
+
+**Flags:**
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--output <path>` | (auto) | Override the default report path. |
+| `--max-duration <seconds>` | `600` | Overall diagnose timeout (10 min). |
+| `--verbose` | `false` | Stream per-source timing to stdout in addition to the JSON report. |
+| `--keep-graph` | `false` | Write to the real org graph DB instead of a temp DB. |
+
+---
+
+## MCP staleness signal
+
+Every MCP tool response carries a `_meta.staleness` block:
+
+```ts
+{
+  generation: number,            // monotonic per-org sync counter
+  in_progress: boolean,          // true if an ingest is currently rewriting the graph
+  started_at: string | null,     // ISO timestamp of the in-progress ingest
+  last_sync_at: string | null    // ISO timestamp of the most recent completed sync
+}
+```
+
+**Reader-side contract.** MCP clients should check `staleness.in_progress === true` to warn users that the graph is being rewritten and results may reflect partial state. Tools that don't carry an `orgId` argument (e.g. `ping`, `list_orgs`) omit the block instead of guessing.
+
+---
+
+## Environment variables
+
+Authoritative inventory — every `SFGRAPH_*` env var read at runtime, sorted alphabetically. Verified via `grep -rn "process.env.SFGRAPH_" packages/ --include="*.ts"`.
+
+| Name | Type | Default | Purpose | Since |
+|---|---|---|---|---|
+| `SFGRAPH_ALLOW_ANY_DB` | bool (`1`) | unset | Bypass the "graph DB must live under data dir" safety check. | 1.0 |
+| `SFGRAPH_APEX_PARSER` | string | `regex` | Apex class parser strategy (`regex` is the default; other values reserved). | 1.0 |
+| `SFGRAPH_AUTO_RETRY_THRESHOLD` | int | `10` | Skip-count threshold above which `ingest` auto-retries the wedged sources. | 1.0 |
+| `SFGRAPH_BISECT_MAX_DEPTH` | int | `6` | Tooling SOQL adaptive bisection depth cap. | 1.0 |
+| `SFGRAPH_CACHE_DIR` | path | platform default | Override OS cache directory. | 1.0 |
+| `SFGRAPH_CONFIG_DIR` | path | platform default | Override OS config directory. | 1.0 |
+| `SFGRAPH_DATA_DIR` | path | platform default | Override OS data directory (where `<orgId>.sqlite` lives). | 1.0 |
+| `SFGRAPH_DATA_POOL` | int | varies | Data API pool concurrency. | 1.0 |
+| `SFGRAPH_DEBUG_INGEST` | bool (`1`) | unset | Verbose ingest logging (per-source counters, dispatch table, etc.). | 1.0 |
+| `SFGRAPH_DEBUG_POOLS` | bool (`1`) | unset | Print pool-counter snapshots during ingest. | 1.0 |
+| `SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO` | float | `0.30` | Per-label drop-ratio threshold above which `--detect-deletions` sweep refuses to act. | 1.5 |
+| `SFGRAPH_EMBED_MODEL_DIM` | int | model default | Embedding model dimensionality override. | 1.0 |
+| `SFGRAPH_EMBED_MODEL_ID` | string | model default | Embedding model identifier override. | 1.0 |
+| `SFGRAPH_EMBED_MODEL_PATH` | path | (auto) | Local path to a custom embedding model file. | 1.0 |
+| `SFGRAPH_INCLUDE_ALL_GENERIC` | bool (`1`) | unset | Disable `GENERIC_TYPE_WHITELIST` filter — route every discovered metadata type through the generic extractor. | 1.0 |
+| `SFGRAPH_INCLUDE_ALL_SOBJECTS` | bool (`1`) | unset | Skip the `EntityDefinition.IsCustomizable` filter and include every queryable SObject. | 1.0 |
+| `SFGRAPH_INCLUDE_MANAGED` | bool (`1`) | unset | Include managed-namespace components globally (Apex body, generic metadata, LWC source). | 1.0 |
+| `SFGRAPH_INCLUDE_MANAGED_LWC` | bool (`1`) | unset | LWC-only override for managed-namespace inclusion (independent of the global flag). | 1.0 |
+| `SFGRAPH_INCLUDE_SYSTEM_SOBJECTS` | bool (`1`) | unset | Include platform telemetry SObjects (`ApexLog`, `EventLogFile`, etc.). | 1.0 |
+| `SFGRAPH_LATE_DRAIN_BUDGET_MS` | int (ms) | (impl default) | Per-wedge late-yield drain budget — how long the background runner gets to drain late records before being abandoned. | 1.5 |
+| `SFGRAPH_LOG_DIR` | path | platform default | Override OS log directory. | 1.0 |
+| `SFGRAPH_MAX_BACKGROUND_WEDGES` | int | `4` | Cap on simultaneous background wedges per ingest. | 1.5 |
+| `SFGRAPH_METADATA_POOL` | int | varies | Metadata API pool concurrency. | 1.0 |
+| `SFGRAPH_METADATA_READ_CHUNK_SIZE` | int | `10` | `metadata.read` composite batch size. | 1.0 |
+| `SFGRAPH_NO_AUTO_RETRY` | bool (`1`) | unset | Disable automatic retry on watchdog wedge / skip cascade. | 1.0 |
+| `SFGRAPH_NO_LIVENESS_PROBE` | bool (`1`) | unset | Skip the pre-ingest liveness probe. | 1.0 |
+| `SFGRAPH_SEQUENTIAL_SOURCES` | bool (`1`) | unset | Force serial source execution (debug aid; bypasses the sliding-window merger). | 1.0 |
+| `SFGRAPH_SKIP_LWC` | csv | unset | Skip specific LWC bundle `DeveloperName`s (also accepts `1` to skip the source entirely). | 1.0 |
+| `SFGRAPH_SKIP_SOBJECT` | csv | unset | Skip specific SObjects by `QualifiedApiName` (escape hatch for `describe()`-crashing tables). | 1.0 |
+| `SFGRAPH_SKIP_THRESHOLD` | int | (impl default) | Skip-count threshold for `ingest`-level retry/abort behavior. | 1.0 |
+| `SFGRAPH_SOURCE_CONCURRENCY` | int | `12` | Concurrency of the sliding-window source merger in `bulk-retrieve.ts`. | 1.0 |
+| `SFGRAPH_TEMP_DIR` | path | platform default | Override OS temp directory. | 1.0 |
+| `SFGRAPH_TOOLING_POOL` | int | `5` | Tooling API pool concurrency. | 1.0 |
+| `SFGRAPH_TRAVERSAL_NODE_CAP` | int | (impl default) | Cap on nodes visited by dependents / dependencies traversal in the analysis layer. | 1.0 |
+| `SFGRAPH_WATCHDOG_FIRST_YIELD_MS` | int (ms) | `90000` | Per-source first-yield watchdog timeout. | 1.5 |
+| `SFGRAPH_WATCHDOG_INACTIVITY_MS` | int (ms) | `300000` | Per-source inactivity watchdog timeout (5 min). | 1.5 |
+
+---
+
+## Honest disclosures — known limitations
+
+sfgraph aims to be honest about gaps. Read this section before relying on it for security or compliance audits.
+
+- **Security model gaps.** Profile / PermissionSet / SharingRules are ingested as first-class nodes with `GRANTS_*` edges. However, **PermissionSetGroup, MutingPermissionSet, ProfileSessionSetting, ProfilePasswordPolicy** are ingested as opaque generic nodes WITHOUT `GRANTS_*` or `DENIES_*` edges — they exist as nodes but their security semantics are not modeled. Audits that rely on these edges will not surface findings for those types until a future Security phase.
+- **Security analysis caps.** The analysis layer caps results at 5000 per label (`SECURITY_PER_LABEL_CAP`). On orgs with more than 5k Profiles or PermissionSets, analysis is truncated with a `truncated: true` flag — **but graph storage is complete**.
+- **Generic-type whitelist.** sfgraph dispatches ~80 of the ~327 metadata types Salesforce returns from `describeMetadata()` to the parsed extractor path. The rest are recorded only as opaque generic nodes when matched by the whitelist; everything else is filtered out. Set `SFGRAPH_INCLUDE_ALL_GENERIC=1` to override (every discovered type runs through the generic extractor — longer ingest, more opaque nodes). The full type list is documented in [`docs/COVERAGE.md`](docs/COVERAGE.md).
+- **LWC empty-bundle behavior change (Phase 1.5).** Prior versions yielded a stub `RawMember` with `files: {}` on per-bundle resource-fetch failure, creating empty bundle nodes in the graph. Phase 1.5 emits a `wedge:lwc:bundleFetchFailed:...` warning and **no record**. Users who upgrade may see previously-recorded empty LWC bundles disappear from their graph on the next re-ingest. **This is correct.**
+- **Socket leak on wedged HTTP requests.** When the per-source watchdog fires, sfgraph releases the slot but the underlying jsforce HTTP request is NOT cancelled (no `AbortController` exposed by jsforce 3.10.15). The socket is reaped by Node's idle-timeout (~10min). Worst case: `SFGRAPH_MAX_BACKGROUND_WEDGES` (default 4) × ~1MB ≈ 4MB transient memory per ingest, GC'd at process exit. Tracked as future hardening; an upstream jsforce PR or fork is needed for true in-flight HTTP cancellation.
+
+---
+
+## Coverage
+
+sfgraph mixes deep parsing (Apex, LWC, Flow, Object, Profile/PermissionSet, NamedCredential, Vlocity, OmniStudio) with opaque-node fallback for the long tail of metadata types. Coverage is **dynamic, not hardcoded** — at ingest start, `conn.metadata.describe(apiVersion)` asks the org for its full supported type list, which automatically includes types added by managed packages or future Salesforce releases. Each type is routed to a named extractor, the generic opaque-node path, or filtered out.
+
+See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the full status matrix: every type, the edges it emits, known limitations, and the source file that implements it.
+
+---
+
 ## Documentation
 
 | | |
 |---|---|
 | [`docs/CLI.md`](docs/CLI.md) | Full CLI reference — every command, every flag |
-| [`docs/TOOLS.md`](docs/TOOLS.md) | The 26 MCP tools — schemas, examples, algorithms |
+| [`docs/TOOLS.md`](docs/TOOLS.md) | The 28 MCP tools — schemas, examples, algorithms |
 | [`docs/SKILLS.md`](docs/SKILLS.md) | The 17 skill playbooks installed into your editor |
 | [`docs/SAMPLES.md`](docs/SAMPLES.md) | Worked agent-conversation examples |
 | [`docs/COVERAGE.md`](docs/COVERAGE.md) | Metadata coverage matrix and SObject classification logic |
