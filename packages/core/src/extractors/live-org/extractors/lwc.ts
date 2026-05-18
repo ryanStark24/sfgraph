@@ -27,9 +27,7 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
   const allBundles = bundles?.records ?? [];
   if (debug) {
     const managedCount = allBundles.filter((b) => b.NamespacePrefix).length;
-    console.log(
-      `ingest: [debug] lwc bundles total=${allBundles.length} managed=${managedCount}`,
-    );
+    console.log(`ingest: [debug] lwc bundles total=${allBundles.length} managed=${managedCount}`);
   }
   // Skip-list via env: comma-separated DeveloperNames to silently skip.
   // Lets users work around a specific bundle that crashes the run
@@ -55,37 +53,29 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
   // specific). Either turns this off — fetches resources for managed
   // bundles too, accepting the crash risk for users who explicitly want it.
   const includeManaged =
-    process.env.SFGRAPH_INCLUDE_MANAGED === "1" ||
-    process.env.SFGRAPH_INCLUDE_MANAGED_LWC === "1";
-  for (const b of allBundles) {
-    if (skipSet.has(b.DeveloperName)) {
-      if (debug) console.log(`ingest: [debug] lwc skip ${b.DeveloperName} (in SFGRAPH_SKIP_LWC)`);
-      continue;
-    }
-    if (b.NamespacePrefix && !includeManaged) {
-      // Emit a stub bundle node with no files — preserves inventory
-      // signal without the resource fetch that kills the process.
-      if (debug)
-        console.log(
-          `ingest: [debug] lwc skip-managed ${b.DeveloperName} (ns=${b.NamespacePrefix}; set SFGRAPH_INCLUDE_MANAGED_LWC=1 to override)`,
-        );
-      yield {
-        ref: {
-          category: METADATA_CATEGORY.LWC,
-          memberType: "LightningComponentBundle",
-          memberName: b.DeveloperName,
-          lastModifiedAt: b.LastModifiedDate ?? null,
-          sourceUri: `sf://tooling/LightningComponentBundle/${b.DeveloperName}`,
-          namespace: b.NamespacePrefix,
-        },
-        content: JSON.stringify({ bundleName: b.DeveloperName, files: {}, managed: true }),
-      };
-      continue;
-    }
+    process.env.SFGRAPH_INCLUDE_MANAGED === "1" || process.env.SFGRAPH_INCLUDE_MANAGED_LWC === "1";
+
+  // W1.5-04: sliding-window of WINDOW=8 concurrent per-bundle resource fetches.
+  // Mirrors the vlocity/runner.ts pattern (WINDOW=4). We pick 8 here for LWC
+  // because the Tooling pool cap is 5 (rate-limit.ts:286-292); WINDOW=8 keeps
+  // 5 in-flight at the pool layer and Bottleneck queues the remaining 3 — no
+  // oversubscription. We don't go higher because per-bundle parsing
+  // (HTML/JS bind resolution downstream) is non-trivial, and bounded WINDOW
+  // keeps memory and parser load predictable. Yield-as-completed (not in
+  // input order) is intentional: it keeps the source's lastYieldedAt
+  // heartbeat fresh as bundles complete, even if one bundle stalls near its
+  // 60s per-call SOQL ceiling. Downstream processOne does not depend on
+  // order. Managed-namespace bundles bypass the window entirely — they yield
+  // synchronously without an HTTP call.
+  const WINDOW = 8;
+
+  type BundleResult = { member: RawMember } | { skipped: true };
+
+  const processBundle = async (b: BundleRow): Promise<BundleResult> => {
     if (debug) console.log(`ingest: [debug] lwc ← ${b.DeveloperName} (${b.Id})`);
     // Per-bundle try/catch: a single bad bundle's resource fetch must NOT
-    // kill iterLwc. Catch + log + continue so the rest of the run lands.
-    let files: Record<string, string> = {};
+    // kill iterLwc. Catch + log + emit a stub so the rest of the run lands.
+    const files: Record<string, string> = {};
     try {
       const escapedId = b.Id.replace(/'/g, "\\'");
       const resources = (await scheduleQuery(() =>
@@ -108,11 +98,13 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
         );
     } catch (e) {
       // The resource fetch failed for this one bundle (network, malformed
-      // payload, etc.). Log + emit a stub so the bundle still appears as
-      // a node in the graph but with no inner files.
+      // payload, etc.). Per W1.5-04: emit a namespaced warning and skip
+      // (do not yield). Other bundles in the window continue unaffected.
       const msg = (e as Error).message ?? String(e);
-      console.warn(`ingest: lwc bundle ${b.DeveloperName} resource fetch failed: ${msg}`);
-      files = {};
+      console.warn(
+        `wedge:lwc:bundleFetchFailed:bundleId=${b.Id}:bundleName=${b.DeveloperName}:error=${msg}`,
+      );
+      return { skipped: true };
     }
     let content: string;
     try {
@@ -126,16 +118,76 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
       );
       content = JSON.stringify({ bundleName: b.DeveloperName, files: {} });
     }
-    yield {
-      ref: {
-        category: METADATA_CATEGORY.LWC,
-        memberType: "LightningComponentBundle",
-        memberName: b.DeveloperName,
-        lastModifiedAt: b.LastModifiedDate ?? null,
-        sourceUri: `sf://tooling/LightningComponentBundle/${b.DeveloperName}`,
-        namespace: b.NamespacePrefix ?? null,
+    return {
+      member: {
+        ref: {
+          category: METADATA_CATEGORY.LWC,
+          memberType: "LightningComponentBundle",
+          memberName: b.DeveloperName,
+          lastModifiedAt: b.LastModifiedDate ?? null,
+          sourceUri: `sf://tooling/LightningComponentBundle/${b.DeveloperName}`,
+          namespace: b.NamespacePrefix ?? null,
+        },
+        content,
       },
-      content,
     };
+  };
+
+  // In-flight Map<token, Promise<{token, result}>> — wrapper resolves with
+  // a stable token so we can delete the settled entry from the map after
+  // Promise.race returns. Without the token, we'd need to await each
+  // settled promise twice to identify it.
+  type Settled = { token: number; result: BundleResult };
+  const inFlight = new Map<number, Promise<Settled>>();
+  let nextToken = 0;
+
+  const launch = (b: BundleRow): void => {
+    const token = nextToken++;
+    const p: Promise<Settled> = processBundle(b).then((result) => ({ token, result }));
+    inFlight.set(token, p);
+  };
+
+  for (const b of allBundles) {
+    if (skipSet.has(b.DeveloperName)) {
+      if (debug) console.log(`ingest: [debug] lwc skip ${b.DeveloperName} (in SFGRAPH_SKIP_LWC)`);
+      continue;
+    }
+    if (b.NamespacePrefix && !includeManaged) {
+      // Managed fast-path — yield synchronously, does NOT consume a window
+      // slot (per W1.5-04 spec). No HTTP call, no parsing cost.
+      if (debug)
+        console.log(
+          `ingest: [debug] lwc skip-managed ${b.DeveloperName} (ns=${b.NamespacePrefix}; set SFGRAPH_INCLUDE_MANAGED_LWC=1 to override)`,
+        );
+      yield {
+        ref: {
+          category: METADATA_CATEGORY.LWC,
+          memberType: "LightningComponentBundle",
+          memberName: b.DeveloperName,
+          lastModifiedAt: b.LastModifiedDate ?? null,
+          sourceUri: `sf://tooling/LightningComponentBundle/${b.DeveloperName}`,
+          namespace: b.NamespacePrefix,
+        },
+        content: JSON.stringify({ bundleName: b.DeveloperName, files: {}, managed: true }),
+      };
+      continue;
+    }
+
+    // Window full → drain one before launching the next. Yield as soon as
+    // any in-flight bundle completes (order-independent) so the source's
+    // lastYieldedAt stays fresh.
+    if (inFlight.size >= WINDOW) {
+      const settled = await Promise.race(inFlight.values());
+      inFlight.delete(settled.token);
+      if ("member" in settled.result) yield settled.result.member;
+    }
+    launch(b);
+  }
+
+  // Drain remaining in-flight bundles. Yield as each completes.
+  while (inFlight.size > 0) {
+    const settled = await Promise.race(inFlight.values());
+    inFlight.delete(settled.token);
+    if ("member" in settled.result) yield settled.result.member;
   }
 }
