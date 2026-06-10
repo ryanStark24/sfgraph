@@ -28,6 +28,10 @@ interface OQuery {
    *  OmniProcessElement. Without this, the parser walk() finds zero
    *  inner nodes and emits zero edges. */
   fetchElements?: boolean;
+  /** Whether this type has a field-mapping child query against
+   *  OmniDataTransformItem. Without this, the DataTransform parser has
+   *  no mapping rows to read and emits zero field edges. */
+  fetchItems?: boolean;
 }
 
 // Minimal universal fields — Id, Name, LastModifiedDate exist on every
@@ -46,6 +50,7 @@ const QUERIES: OQuery[] = [
     memberType: "OmniDataTransform",
     category: METADATA_CATEGORY.OMNI_DATA_TRANSFORM,
     soql: "SELECT Id, Name, LastModifiedDate FROM OmniDataTransform",
+    fetchItems: true,
   },
   {
     memberType: "OmniUiCard",
@@ -64,7 +69,10 @@ async function fetchElementsByProcess(
   conn: any,
   processIds: string[],
 ): Promise<Map<string, Array<{ Type: string; propertySet: unknown; name: string | null }>>> {
-  const byProcess = new Map<string, Array<{ Type: string; propertySet: unknown; name: string | null }>>();
+  const byProcess = new Map<
+    string,
+    Array<{ Type: string; propertySet: unknown; name: string | null }>
+  >();
   if (processIds.length === 0) return byProcess;
   // SOQL IN() has a 4000-item ceiling; chunk defensively.
   const CHUNK = 200;
@@ -106,7 +114,62 @@ async function fetchElementsByProcess(
   return byProcess;
 }
 
-export async function* iterOmnistudio(conn: any): AsyncIterable<RawMember> {
+/**
+ * Fetch every OmniDataTransformItem mapping row for the given transform Ids,
+ * grouped by OmniDataTransformationId. These rows carry the structured
+ * field mappings (InputObjectName/InputFieldName, Output*, Lookup*) that
+ * the OmniDataTransform parser turns into DR_READS_FIELD / DR_WRITES_FIELD
+ * edges. Wrapped in its own try/catch per chunk so field-name drift on a
+ * newer org version degrades to "no items" with a breadcrumb, never a
+ * failed source.
+ */
+async function fetchItemsByTransform(
+  conn: any,
+  transformIds: string[],
+): Promise<Map<string, Array<Record<string, unknown>>>> {
+  const byTransform = new Map<string, Array<Record<string, unknown>>>();
+  if (transformIds.length === 0) return byTransform;
+  const CHUNK = 200;
+  for (let i = 0; i < transformIds.length; i += CHUNK) {
+    const slice = transformIds.slice(i, i + CHUNK);
+    const idList = slice.map((id) => `'${id.replace(/'/g, "\\'")}'`).join(",");
+    const ITEM_FIELDS =
+      "Id, Name, InputObjectName, InputFieldName, OutputObjectName, OutputFieldName, LookupObjectName, LookupByFieldName, FilterValue, FilterOperator, OmniDataTransformationId";
+    const soql = `SELECT ${ITEM_FIELDS} FROM OmniDataTransformItem WHERE OmniDataTransformationId IN (${idList})`;
+    let res: { records?: Array<Record<string, unknown>> } | null = null;
+    try {
+      res = (await scheduleData(() =>
+        soqlWithTimeout(conn.query(soql), "data OmniDataTransformItem"),
+      )) as { records?: Array<Record<string, unknown>> } | null;
+    } catch (e) {
+      console.log(
+        `ingest:   omnistudio item query failed for OmniDataTransformItem: ${(e as Error).message?.slice(0, 200) ?? String(e)}`,
+      );
+      continue;
+    }
+    for (const r of res?.records ?? []) {
+      const parentId = String(r.OmniDataTransformationId ?? "");
+      if (!parentId) continue;
+      const arr = byTransform.get(parentId) ?? [];
+      arr.push(r);
+      byTransform.set(parentId, arr);
+    }
+  }
+  return byTransform;
+}
+
+export interface IterOmnistudioOpts {
+  /** Member types to skip on the SOQL path. Used by bulk-retrieve to avoid
+   *  double-ingesting types the Metadata-API retrieve path already covers
+   *  with higher fidelity (OmniDataTransform, OmniUiCard) when
+   *  enableOmnistudioRetrieve is on. */
+  skipTypes?: Set<string>;
+}
+
+export async function* iterOmnistudio(
+  conn: any,
+  opts: IterOmnistudioOpts = {},
+): AsyncIterable<RawMember> {
   // Fire all 4 Tooling SOQL queries in parallel — they're independent and
   // the Tooling pool throttles concurrency.
   // Each mapped task wraps scheduleQuery in try/catch so allSettled is
@@ -117,8 +180,9 @@ export async function* iterOmnistudio(conn: any): AsyncIterable<RawMember> {
   // how capabilities.ts detects them). They are NOT Tooling objects, so
   // routing through `conn.tooling.query` silently returned zero rows on
   // orgs that actually had data. Use regular SOQL via the data pool.
+  const activeQueries = QUERIES.filter((q) => !opts.skipTypes?.has(q.memberType));
   const settled = await Promise.allSettled(
-    QUERIES.map(async (q) => {
+    activeQueries.map(async (q) => {
       try {
         const res = (await scheduleData(() =>
           soqlWithTimeout(conn.query(q.soql), `data ${q.memberType}`),
@@ -156,19 +220,28 @@ export async function* iterOmnistudio(conn: any): AsyncIterable<RawMember> {
   // pass those edges never get emitted (parent-only rows have no nested
   // configuration to walk).
   const parentIds: string[] = [];
+  const transformIds: string[] = [];
   for (const { q, res } of results) {
-    if (!q.fetchElements) continue;
+    if (!q.fetchElements && !q.fetchItems) continue;
     for (const r of res?.records ?? []) {
-      if (r.Id) parentIds.push(String(r.Id));
+      if (!r.Id) continue;
+      if (q.fetchElements) parentIds.push(String(r.Id));
+      if (q.fetchItems) transformIds.push(String(r.Id));
     }
   }
-  const elementsByProcess = await fetchElementsByProcess(conn, parentIds);
+  const [elementsByProcess, itemsByTransform] = await Promise.all([
+    fetchElementsByProcess(conn, parentIds),
+    fetchItemsByTransform(conn, transformIds),
+  ]);
 
   for (const { q, res } of results) {
     for (const r of res?.records ?? []) {
       const name = String(r.DeveloperName ?? r.Name ?? r.Id ?? "");
       const elements = q.fetchElements && r.Id ? (elementsByProcess.get(String(r.Id)) ?? []) : [];
-      const enriched = elements.length > 0 ? { ...r, elements } : r;
+      const items = q.fetchItems && r.Id ? (itemsByTransform.get(String(r.Id)) ?? []) : [];
+      let enriched: Record<string, unknown> = r;
+      if (elements.length > 0) enriched = { ...enriched, elements };
+      if (items.length > 0) enriched = { ...enriched, items };
       yield {
         ref: {
           category: q.category,

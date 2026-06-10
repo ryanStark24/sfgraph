@@ -162,7 +162,10 @@ describe("omnistudio extractor — element graph", () => {
     const process = members.find((m) => m.ref.memberType === "OmniProcess");
     expect(process).toBeDefined();
     const parsed = JSON.parse(process!.content) as {
-      elements?: Array<{ Type: string; propertySet: { cardName?: string; dataTransformName?: string } }>;
+      elements?: Array<{
+        Type: string;
+        propertySet: { cardName?: string; dataTransformName?: string };
+      }>;
     };
     expect(parsed.elements).toHaveLength(2);
     expect(parsed.elements?.[0]?.Type).toBe("DataRaptorExtractAction");
@@ -193,6 +196,58 @@ describe("omnistudio extractor — element graph", () => {
     const parsed = JSON.parse(dt!.content) as { elements?: unknown };
     expect(parsed.elements).toBeUndefined();
   });
+
+  it("attaches OmniDataTransformItem rows under metadata.items for OmniDataTransform", async () => {
+    const conn = {
+      query: async (soql: string) => {
+        if (soql.includes("FROM OmniDataTransformItem")) {
+          return {
+            records: [
+              {
+                Id: "0DI1",
+                Name: "Transform1",
+                InputObjectName: "Account",
+                InputFieldName: "Name",
+                OutputObjectName: "json",
+                OutputFieldName: "Details:Name",
+                OmniDataTransformationId: "0DT1",
+              },
+            ],
+            done: true,
+          };
+        }
+        if (soql.includes("FROM OmniDataTransform")) {
+          return { records: [{ Id: "0DT1", Name: "Transform1" }], done: true };
+        }
+        return { records: [], done: true };
+      },
+    };
+    const members = await collect(iterOmnistudio(conn));
+    const dt = members.find((m) => m.ref.memberType === "OmniDataTransform");
+    expect(dt).toBeDefined();
+    const parsed = JSON.parse(dt!.content) as {
+      items?: Array<{ InputObjectName?: string; InputFieldName?: string }>;
+    };
+    expect(parsed.items).toHaveLength(1);
+    expect(parsed.items?.[0]?.InputObjectName).toBe("Account");
+    expect(parsed.items?.[0]?.InputFieldName).toBe("Name");
+  });
+
+  it("skipTypes suppresses the SOQL pass for retrieve-covered types", async () => {
+    const queried: string[] = [];
+    const conn = {
+      query: async (soql: string) => {
+        queried.push(soql);
+        return { records: [], done: true };
+      },
+    };
+    await collect(
+      iterOmnistudio(conn, { skipTypes: new Set(["OmniDataTransform", "OmniUiCard"]) }),
+    );
+    expect(queried.some((s) => s.includes("FROM OmniProcess"))).toBe(true);
+    expect(queried.some((s) => s.includes("FROM OmniDataTransform"))).toBe(false);
+    expect(queried.some((s) => s.includes("FROM OmniUiCard"))).toBe(false);
+  });
 });
 
 describe("vlocity runner — content blob + element children", () => {
@@ -207,129 +262,141 @@ describe("vlocity runner — content blob + element children", () => {
     sourceTracking: false,
   };
 
-  it("strips namespace prefix from row keys and parses PropertySet JSON for OmniScript", { timeout: 15_000 }, async () => {
-    const conn = {
-      query: async (soql: string) => {
-        if (soql.includes("__OmniScript__c") && !soql.includes("__Element__c")) {
-          return {
-            records: [
-              {
-                Id: "a0O1",
-                vlocity_cmt__Type__c: "Account",
-                vlocity_cmt__SubType__c: "Summary",
-                vlocity_cmt__Language__c: "English",
-                vlocity_cmt__PropertySet__c: JSON.stringify({ persistentComponent: true }),
-              },
-            ],
-            done: true,
-          };
-        }
-        if (soql.includes("__Element__c")) {
-          return {
-            records: [
-              {
-                Id: "a0E1",
-                Name: "DR_Step",
-                vlocity_cmt__Type__c: "DataRaptorExtractAction",
-                vlocity_cmt__PropertySet__c: JSON.stringify({
-                  dataRaptorBundleName: "DR_AccountInfo",
-                }),
-                vlocity_cmt__OmniScriptId__c: "a0O1",
-              },
-            ],
-            done: true,
-          };
-        }
-        return { records: [], done: true };
-      },
-    };
-    const members = await collect(iterVlocityRecords(conn, caps, "00DTestVloc"));
-    const os = members.find((m) => m.ref.memberType === "OmniScript");
-    expect(os).toBeDefined();
-    const parsed = JSON.parse(os!.content) as {
-      Type?: string;
-      SubType?: string;
-      PropertySet?: { persistentComponent?: boolean };
-      propertySet?: { persistentComponent?: boolean };
-      elements?: Array<{ Type: string; PropertySet: { dataRaptorBundleName?: string } }>;
-    };
-    expect(parsed.Type).toBe("Account");
-    expect(parsed.SubType).toBe("Summary");
-    expect(parsed.propertySet?.persistentComponent).toBe(true);
-    expect(parsed.elements).toHaveLength(1);
-    expect(parsed.elements?.[0]?.Type).toBe("DataRaptorExtractAction");
-    expect(parsed.elements?.[0]?.PropertySet?.dataRaptorBundleName).toBe("DR_AccountInfo");
-  });
+  it(
+    "strips namespace prefix from row keys and parses PropertySet JSON for OmniScript",
+    { timeout: 15_000 },
+    async () => {
+      const conn = {
+        query: async (soql: string) => {
+          if (soql.includes("__OmniScript__c") && !soql.includes("__Element__c")) {
+            return {
+              records: [
+                {
+                  Id: "a0O1",
+                  vlocity_cmt__Type__c: "Account",
+                  vlocity_cmt__SubType__c: "Summary",
+                  vlocity_cmt__Language__c: "English",
+                  vlocity_cmt__PropertySet__c: JSON.stringify({ persistentComponent: true }),
+                },
+              ],
+              done: true,
+            };
+          }
+          if (soql.includes("__Element__c")) {
+            return {
+              records: [
+                {
+                  Id: "a0E1",
+                  Name: "DR_Step",
+                  vlocity_cmt__Type__c: "DataRaptorExtractAction",
+                  vlocity_cmt__PropertySet__c: JSON.stringify({
+                    dataRaptorBundleName: "DR_AccountInfo",
+                  }),
+                  vlocity_cmt__OmniScriptId__c: "a0O1",
+                },
+              ],
+              done: true,
+            };
+          }
+          return { records: [], done: true };
+        },
+      };
+      const members = await collect(iterVlocityRecords(conn, caps, "00DTestVloc"));
+      const os = members.find((m) => m.ref.memberType === "OmniScript");
+      expect(os).toBeDefined();
+      const parsed = JSON.parse(os!.content) as {
+        Type?: string;
+        SubType?: string;
+        PropertySet?: { persistentComponent?: boolean };
+        propertySet?: { persistentComponent?: boolean };
+        elements?: Array<{ Type: string; PropertySet: { dataRaptorBundleName?: string } }>;
+      };
+      expect(parsed.Type).toBe("Account");
+      expect(parsed.SubType).toBe("Summary");
+      expect(parsed.propertySet?.persistentComponent).toBe(true);
+      expect(parsed.elements).toHaveLength(1);
+      expect(parsed.elements?.[0]?.Type).toBe("DataRaptorExtractAction");
+      expect(parsed.elements?.[0]?.PropertySet?.dataRaptorBundleName).toBe("DR_AccountInfo");
+    },
+  );
 
-  it("fetches DRMapItem__c children for DataRaptor and attaches as mapItems", { timeout: 15_000 }, async () => {
-    const conn = {
-      query: async (soql: string) => {
-        if (soql.includes("__DRBundle__c")) {
-          return {
-            records: [{ Id: "a0D1", Name: "DR_Test" }],
-            done: true,
-          };
-        }
-        if (soql.includes("__DRMapItem__c")) {
-          return {
-            records: [
-              {
-                Id: "a0M1",
-                Name: "Map1",
-                vlocity_cmt__InputFieldName__c: "Account.Name",
-                vlocity_cmt__OutputFieldName__c: "Customer.FullName",
-                vlocity_cmt__DRBundleId__c: "a0D1",
-              },
-            ],
-            done: true,
-          };
-        }
-        return { records: [], done: true };
-      },
-    };
-    const members = await collect(iterVlocityRecords(conn, caps, "00DTestVloc"));
-    const dr = members.find((m) => m.ref.memberType === "DataRaptor");
-    expect(dr).toBeDefined();
-    const parsed = JSON.parse(dr!.content) as {
-      mapItems?: Array<{ InputFieldName?: string; OutputFieldName?: string }>;
-    };
-    expect(parsed.mapItems).toHaveLength(1);
-    expect(parsed.mapItems?.[0]?.InputFieldName).toBe("Account.Name");
-    expect(parsed.mapItems?.[0]?.OutputFieldName).toBe("Customer.FullName");
-  });
+  it(
+    "fetches DRMapItem__c children for DataRaptor and attaches as mapItems",
+    { timeout: 15_000 },
+    async () => {
+      const conn = {
+        query: async (soql: string) => {
+          if (soql.includes("__DRBundle__c")) {
+            return {
+              records: [{ Id: "a0D1", Name: "DR_Test" }],
+              done: true,
+            };
+          }
+          if (soql.includes("__DRMapItem__c")) {
+            return {
+              records: [
+                {
+                  Id: "a0M1",
+                  Name: "Map1",
+                  vlocity_cmt__InputFieldName__c: "Account.Name",
+                  vlocity_cmt__OutputFieldName__c: "Customer.FullName",
+                  vlocity_cmt__DRBundleId__c: "a0D1",
+                },
+              ],
+              done: true,
+            };
+          }
+          return { records: [], done: true };
+        },
+      };
+      const members = await collect(iterVlocityRecords(conn, caps, "00DTestVloc"));
+      const dr = members.find((m) => m.ref.memberType === "DataRaptor");
+      expect(dr).toBeDefined();
+      const parsed = JSON.parse(dr!.content) as {
+        mapItems?: Array<{ InputFieldName?: string; OutputFieldName?: string }>;
+      };
+      expect(parsed.mapItems).toHaveLength(1);
+      expect(parsed.mapItems?.[0]?.InputFieldName).toBe("Account.Name");
+      expect(parsed.mapItems?.[0]?.OutputFieldName).toBe("Customer.FullName");
+    },
+  );
 
-  it("selects extra long-text blobs that the vendored YAML omits (VlocityCard Definition)", { timeout: 15_000 }, async () => {
-    const queries: string[] = [];
-    const conn = {
-      query: async (soql: string) => {
-        queries.push(soql);
-        if (soql.includes("__VlocityCard__c")) {
-          return {
-            records: [
-              {
-                Id: "a0V1",
-                Name: "MyCard",
-                vlocity_cmt__Definition__c: JSON.stringify({ states: ["Active"] }),
-                vlocity_cmt__Active__c: true,
-              },
-            ],
-            done: true,
-          };
-        }
-        return { records: [], done: true };
-      },
-    };
-    const members = await collect(iterVlocityRecords(conn, caps, "00DTestVloc"));
-    // Verify the SOQL was enriched with the Definition__c column.
-    const cardSoql = queries.find((q) => q.includes("__VlocityCard__c"));
-    expect(cardSoql).toContain("vlocity_cmt__Definition__c");
-    const card = members.find((m) => m.ref.memberType === "VlocityCard");
-    expect(card).toBeDefined();
-    const parsed = JSON.parse(card!.content) as {
-      Definition?: { states?: string[] };
-    };
-    expect(parsed.Definition?.states).toEqual(["Active"]);
-  });
+  it(
+    "selects extra long-text blobs that the vendored YAML omits (VlocityCard Definition)",
+    { timeout: 15_000 },
+    async () => {
+      const queries: string[] = [];
+      const conn = {
+        query: async (soql: string) => {
+          queries.push(soql);
+          if (soql.includes("__VlocityCard__c")) {
+            return {
+              records: [
+                {
+                  Id: "a0V1",
+                  Name: "MyCard",
+                  vlocity_cmt__Definition__c: JSON.stringify({ states: ["Active"] }),
+                  vlocity_cmt__Active__c: true,
+                },
+              ],
+              done: true,
+            };
+          }
+          return { records: [], done: true };
+        },
+      };
+      const members = await collect(iterVlocityRecords(conn, caps, "00DTestVloc"));
+      // Verify the SOQL was enriched with the Definition__c column.
+      const cardSoql = queries.find((q) => q.includes("__VlocityCard__c"));
+      expect(cardSoql).toContain("vlocity_cmt__Definition__c");
+      const card = members.find((m) => m.ref.memberType === "VlocityCard");
+      expect(card).toBeDefined();
+      const parsed = JSON.parse(card!.content) as {
+        Definition?: { states?: string[] };
+      };
+      expect(parsed.Definition?.states).toEqual(["Active"]);
+    },
+  );
 });
 
 void asOrgId;

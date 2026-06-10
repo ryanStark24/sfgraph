@@ -3,7 +3,6 @@ import type { RawMember } from "../interfaces/metadata-source.js";
 import type { OrgCapabilities } from "./capabilities.js";
 import { discoverMetadataTypes } from "./discovery.js";
 import { buildDispatchTable } from "./dispatch.js";
-import { stopSignalContext, StopWaitingError } from "./rate-limit.js";
 import { iterApex } from "./extractors/apex.js";
 import { iterFlow } from "./extractors/flow.js";
 import { iterGenericMetadata } from "./extractors/generic-metadata.js";
@@ -13,6 +12,7 @@ import { iterObject } from "./extractors/object.js";
 import { iterOmnistudio } from "./extractors/omnistudio.js";
 import { iterSecurity } from "./extractors/security.js";
 import { iterVlocity } from "./extractors/vlocity.js";
+import { StopWaitingError, stopSignalContext } from "./rate-limit.js";
 
 /** Aggregate of every source that errored during a bulkRetrieve run.
  *  bulkRetrieve mutates this in-place via onError; live-ingest reads it at
@@ -852,7 +852,19 @@ export async function* bulkRetrieve(
     invoke("vlocity", () => iterVlocity(conn, caps, String(orgId), onSkip));
   }
   if (caps.omnistudioOncore) {
-    invoke("omnistudio", () => iterOmnistudio(conn));
+    // When the Metadata-API retrieve path is enabled it covers
+    // OmniDataTransform and OmniUiCard with higher fidelity — skip them on
+    // the SOQL path so the same component is not ingested twice (the
+    // retrieve XML would otherwise clobber the SOQL-enriched node, and
+    // vice versa, nondeterministically by merge order).
+    invoke("omnistudio", () =>
+      iterOmnistudio(
+        conn,
+        normalized.enableOmnistudioRetrieve
+          ? { skipTypes: new Set(["OmniDataTransform", "OmniUiCard"]) }
+          : {},
+      ),
+    );
     if (normalized.enableOmnistudioRetrieve) {
       invoke("omnistudio-retrieve", async function* () {
         const { iterOmnistudioRetrieve } = await import("./extractors/omnistudio-retrieve.js");
