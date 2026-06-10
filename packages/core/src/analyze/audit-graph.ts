@@ -28,6 +28,16 @@ export interface DanglingEdgeSample {
 export interface AuditResult {
   totalEdges: number;
   danglingCount: number;
+  /** Dangling edges whose dst is a platform built-in that can never have a
+   *  metadata source: standard tabs (`CustomTab:standard-*`) and fields /
+   *  objects of standard-schema entities (no `__c`/`__mdt`/… suffix).
+   *  These are *expected* — the reference data is real and useful (e.g.
+   *  profile tab visibility), the target just isn't org metadata. Included
+   *  in `danglingCount`; broken out so the headline number isn't dominated
+   *  by ~60k standard-tab grants on a vanilla org. */
+  platformRefCount: number;
+  /** danglingCount - platformRefCount: the subset worth investigating. */
+  unexpectedCount: number;
   byRel: Record<string, number>;
   byDstPrefix: Record<string, number>;
   sample: DanglingEdgeSample[];
@@ -45,6 +55,29 @@ function prefix(qname: string): string {
   return idx > 0 ? qname.slice(0, idx) : "(unlabeled)";
 }
 
+const CUSTOM_SUFFIX_RE = /__(?:c|e|b|mdt|x|kav)$/i;
+
+/** True when a dangling dst names a platform built-in that no extractor can
+ *  ever materialize: standard tabs, or fields/objects of standard-schema
+ *  entities (Incident, Location, Case, …) the org metadata pass doesn't
+ *  enumerate. Custom-suffixed targets are NEVER platform refs — a missing
+ *  `__c` target is a real gap worth surfacing. */
+export function isPlatformBuiltinRef(dst: string): boolean {
+  if (dst.startsWith("CustomTab:standard-")) return true;
+  if (dst.startsWith("CustomField:")) {
+    const rest = dst.slice("CustomField:".length);
+    const dot = rest.indexOf(".");
+    if (dot <= 0) return false;
+    const obj = rest.slice(0, dot);
+    const field = rest.slice(dot + 1);
+    return !CUSTOM_SUFFIX_RE.test(obj) && !CUSTOM_SUFFIX_RE.test(field);
+  }
+  if (dst.startsWith("CustomObject:")) {
+    return !CUSTOM_SUFFIX_RE.test(dst.slice("CustomObject:".length));
+  }
+  return false;
+}
+
 export function auditDanglingEdges(
   store: GraphStore,
   orgIdIn: OrgId | string,
@@ -60,13 +93,24 @@ export function auditDanglingEdges(
 
   const byRel: Record<string, number> = {};
   const byDstPrefix: Record<string, number> = {};
+  let platformRefCount = 0;
   for (const e of dangling) {
     byRel[e.relType] = (byRel[e.relType] ?? 0) + 1;
-    const p = prefix(String(e.dstQualifiedName));
+    const dst = String(e.dstQualifiedName);
+    const p = prefix(dst);
     byDstPrefix[p] = (byDstPrefix[p] ?? 0) + 1;
+    if (isPlatformBuiltinRef(dst)) platformRefCount += 1;
   }
 
-  const sample: DanglingEdgeSample[] = dangling.slice(0, sampleSize).map((e) => ({
+  // Sample the *unexpected* dangling edges first — those are the ones a
+  // user can act on; platform refs only pad the sample once the unexpected
+  // set is smaller than sampleSize.
+  const unexpectedFirst = [...dangling].sort((a, b) => {
+    const ap = isPlatformBuiltinRef(String(a.dstQualifiedName)) ? 1 : 0;
+    const bp = isPlatformBuiltinRef(String(b.dstQualifiedName)) ? 1 : 0;
+    return ap - bp;
+  });
+  const sample: DanglingEdgeSample[] = unexpectedFirst.slice(0, sampleSize).map((e) => ({
     src: String(e.srcQualifiedName),
     rel: String(e.relType),
     dst: String(e.dstQualifiedName),
@@ -75,6 +119,8 @@ export function auditDanglingEdges(
   return {
     totalEdges,
     danglingCount: dangling.length,
+    platformRefCount,
+    unexpectedCount: dangling.length - platformRefCount,
     byRel,
     byDstPrefix,
     sample,
@@ -82,19 +128,30 @@ export function auditDanglingEdges(
 }
 
 /**
- * Destructive companion to `auditDanglingEdges`: deletes every dangling edge.
+ * Destructive companion to `auditDanglingEdges`: deletes dangling edges.
  * Reserved for the CLI `--delete-dangling --yes` flag; callers must own the
  * authorization decision (we just do the work).
+ *
+ * Platform-builtin references (standard-tab grants, standard-schema field
+ * grants) are KEPT by default — they're real, queryable security data whose
+ * target simply has no metadata source. Pass `includePlatformRefs: true` to
+ * delete those too.
  */
 export function deleteDanglingEdges(
   store: GraphStore,
   orgIdIn: OrgId | string,
-): { deleted: number } {
+  opts: { includePlatformRefs?: boolean } = {},
+): { deleted: number; keptPlatformRefs: number } {
   const orgId = typeof orgIdIn === "string" ? asOrgId(orgIdIn) : orgIdIn;
   const dangling = store.listDanglingEdges(orgId);
   let deleted = 0;
+  let keptPlatformRefs = 0;
   store.transaction(() => {
     for (const e of dangling) {
+      if (!opts.includePlatformRefs && isPlatformBuiltinRef(String(e.dstQualifiedName))) {
+        keptPlatformRefs += 1;
+        continue;
+      }
       store.deleteEdge(
         orgId,
         e.srcQualifiedName as QualifiedName,
@@ -104,7 +161,7 @@ export function deleteDanglingEdges(
       deleted += 1;
     }
   });
-  return { deleted };
+  return { deleted, keptPlatformRefs };
 }
 
 export type { EdgeFact };

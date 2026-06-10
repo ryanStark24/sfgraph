@@ -53,6 +53,8 @@ function printTable(
   orgId: string,
   totalEdges: number,
   danglingCount: number,
+  platformRefCount: number,
+  unexpectedCount: number,
   byRel: Record<string, number>,
   byDstPrefix: Record<string, number>,
   sample: Array<{ src: string; rel: string; dst: string }>,
@@ -61,6 +63,10 @@ function printTable(
   console.log(`audit: org=${orgId}`);
   console.log(`  total edges:   ${totalEdges}`);
   console.log(`  dangling:      ${danglingCount}  (${pct})`);
+  console.log(
+    `    platform refs (expected — standard tabs / standard-schema fields): ${platformRefCount}`,
+  );
+  console.log(`    unexpected (worth investigating): ${unexpectedCount}`);
   if (danglingCount === 0) return;
   console.log("");
   console.log("  by relType:");
@@ -99,6 +105,8 @@ export async function auditCmd(opts: AuditOpts): Promise<void> {
           orgId,
           result.totalEdges,
           result.danglingCount,
+          result.platformRefCount,
+          result.unexpectedCount,
           result.byRel,
           result.byDstPrefix,
           result.sample,
@@ -107,14 +115,17 @@ export async function auditCmd(opts: AuditOpts): Promise<void> {
 
       if (opts.deleteDangling) {
         if (!opts.yes) {
-          console.error(
-            "audit: --delete-dangling refused without --yes (destructive operation).",
-          );
+          console.error("audit: --delete-dangling refused without --yes (destructive operation).");
           process.exitCode = 1;
           return;
         }
-        const { deleted } = deleteDanglingEdges(store, orgId);
+        const { deleted, keptPlatformRefs } = deleteDanglingEdges(store, orgId);
         console.log(`audit: deleted ${deleted} dangling edge${deleted === 1 ? "" : "s"}.`);
+        if (keptPlatformRefs > 0) {
+          console.log(
+            `audit: kept ${keptPlatformRefs} platform-builtin reference${keptPlatformRefs === 1 ? "" : "s"} (standard tabs / standard-schema fields — real security data with no metadata source).`,
+          );
+        }
       }
     } finally {
       await store.close();

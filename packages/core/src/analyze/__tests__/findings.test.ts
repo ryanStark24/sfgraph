@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
+import type { AuditResult } from "../audit-graph.js";
 import {
+  RULE_CATALOG,
   collectFindings,
   danglingEdgesToFindings,
   deadCodeToFindings,
   governorRisksToFindings,
-  RULE_CATALOG,
   securityAuditToFindings,
 } from "../findings.js";
-import type { AuditResult } from "../audit-graph.js";
 import type { GovernorRisk } from "../governor.js";
 import type { SecurityAudit } from "../security.js";
 
@@ -15,18 +15,22 @@ describe("W3-01: Finding adapters", () => {
   it("RULE_CATALOG includes every ruleId the adapters can emit", () => {
     const referenced = new Set<string>();
     // Exercise every adapter on a representative input
-    governorRisksToFindings([
+    for (const f of governorRisksToFindings([
       { qualifiedName: "X", risk: "soql_in_loop", evidence: "" },
       { qualifiedName: "X", risk: "dml_in_loop", evidence: "" },
       { qualifiedName: "X", risk: "unbounded_query", evidence: "" },
       { qualifiedName: "X", risk: "no_bulk", evidence: "" },
-    ]).forEach((f) => referenced.add(f.ruleId));
-    securityAuditToFindings({
+    ])) {
+      referenced.add(f.ruleId);
+    }
+    for (const f of securityAuditToFindings({
       sharingFullAccess: ["CustomObject:X"],
       flsGaps: ["CustomField:X.Y"],
       fieldAccessMatrix: [],
-    }).forEach((f) => referenced.add(f.ruleId));
-    deadCodeToFindings([
+    })) {
+      referenced.add(f.ruleId);
+    }
+    for (const f of deadCodeToFindings([
       {
         orgId: "org" as never,
         qualifiedName: "X" as never,
@@ -37,14 +41,20 @@ describe("W3-01: Finding adapters", () => {
         lastSeenAt: 0,
         lastModifiedAt: 0,
       },
-    ]).forEach((f) => referenced.add(f.ruleId));
-    danglingEdgesToFindings({
+    ])) {
+      referenced.add(f.ruleId);
+    }
+    for (const f of danglingEdgesToFindings({
       totalEdges: 1,
       danglingCount: 1,
+      platformRefCount: 0,
+      unexpectedCount: 1,
       byRel: {},
       byDstPrefix: {},
       sample: [{ src: "X", rel: "CALLS", dst: "Y" }],
-    }).forEach((f) => referenced.add(f.ruleId));
+    })) {
+      referenced.add(f.ruleId);
+    }
 
     for (const id of referenced) {
       expect(RULE_CATALOG[id], `RULE_CATALOG should contain ${id}`).toBeDefined();
@@ -71,9 +81,7 @@ describe("W3-01: Finding adapters", () => {
     };
     const findings = securityAuditToFindings(audit);
     const byId = new Map(findings.map((f) => [f.ruleId, f]));
-    expect(byId.get("security.fls-gap")?.location.qualifiedName).toBe(
-      "CustomField:Account.SSN__c",
-    );
+    expect(byId.get("security.fls-gap")?.location.qualifiedName).toBe("CustomField:Account.SSN__c");
     expect(byId.get("security.sharing-full-access")?.location.qualifiedName).toBe(
       "CustomObject:Account",
     );
