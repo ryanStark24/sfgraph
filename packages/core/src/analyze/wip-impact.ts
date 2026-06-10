@@ -132,8 +132,18 @@ function adaptParserInput(
       return { type: "ApprovalProcess", input: { name: ref.memberName, xml: content } };
     case "DuplicateRule":
       return { type: "DuplicateRule", input: { name: ref.memberName, xml: content } };
-    default:
-      return null;
+    default: {
+      // Same long-tail fallback as live-ingest: route to a registered
+      // rule-based parser when one exists, else the opaque node parser —
+      // never drop a member silently.
+      if (parserRegistry.for(ref.memberType)) {
+        return { type: ref.memberType, input: { name: ref.memberName, xml: content } };
+      }
+      return {
+        type: "OpaqueMetadata",
+        input: { metadataType: ref.memberType, name: ref.memberName, raw: content },
+      };
+    }
   }
 }
 

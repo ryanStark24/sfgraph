@@ -1,29 +1,26 @@
 import { type OrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { Logger } from "@ryanstark24/sfgraph-shared";
-import type { ParseContext, ParseResult } from "../parsers/contract.js";
 import { resolveApexMethodArity } from "../parsers/apex/arity-resolver.js";
+import type { ParseContext, ParseResult } from "../parsers/contract.js";
 import { resolveCrossFlavor } from "../parsers/cross-flavor-resolver.js";
 import { resolveFlowApexMethods } from "../parsers/flow/invocable-resolver.js";
 import { parserRegistry } from "../parsers/registry.js";
 // Ensure all parsers are registered before we look them up.
 import "../parsers/index.js";
 import { auditDanglingEdges } from "../analyze/audit-graph.js";
-import { evaluateDeletionGuard, resolveMaxDropRatio } from "./detect-deletions-guard.js";
 import { populateAnalysisTables } from "../analyze/populate.js";
 import { EmbeddingQueue, type VectorSink } from "../embedding/index.js";
 import type { MemberRef, RawMember } from "../extractors/interfaces/metadata-source.js";
 import { type ResolveOrgDeps, type ResolvedOrg, resolveOrg } from "../extractors/live-org/auth.js";
 import { type IngestSkipReport, bulkRetrieve } from "../extractors/live-org/bulk-retrieve.js";
 import { type OrgCapabilities, probeCapabilities } from "../extractors/live-org/capabilities.js";
-import { iterChanges } from "../extractors/live-org/source-member.js";
-import {
-  type LivenessProbeHandle,
-  startLivenessProbe,
-} from "../extractors/live-org/liveness.js";
+import { type LivenessProbeHandle, startLivenessProbe } from "../extractors/live-org/liveness.js";
 import { dataPool, metadataPool, toolingPool } from "../extractors/live-org/rate-limit.js";
+import { iterChanges } from "../extractors/live-org/source-member.js";
 import { loadAllRules } from "../parsers/rules/_loader.js";
 import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
 import type { SnapshotStore } from "../storage/interfaces.js";
+import { evaluateDeletionGuard, resolveMaxDropRatio } from "./detect-deletions-guard.js";
 
 export type IngestMode = "full" | "incremental" | "auto";
 
@@ -263,7 +260,8 @@ function unwrapApexEnvelope(content: string): { body: string; metaXml?: string }
   return { body: content };
 }
 
-function adaptParserInput(
+/** Exported for tests — maps a RawMember to the registered parser's input shape. */
+export function adaptParserInput(
   ref: MemberRef,
   content: string,
 ): { type: string; input: unknown } | null {
@@ -334,9 +332,45 @@ function adaptParserInput(
       }
       return { type: ref.memberType, input: { name: ref.memberName, datapack } };
     }
-    default:
-      return null;
+    default: {
+      // Long-tail metadata types: route to a registered parser when one
+      // exists (the 21 rule-based YAML parsers register under their raw
+      // metadata type name, e.g. "Layout", "Dashboard"), otherwise fall
+      // back to the opaque node parser so the member still becomes a
+      // graph node. Before this fallback every generic-extractor member
+      // was silently dropped here — extracted, logged as ✓, and never
+      // merged — which left grant/reference edges dangling (e.g. 59k
+      // GRANTS_TAB_ACCESS edges pointing at CustomTab nodes that were
+      // never created).
+      if (parserRegistry.for(ref.memberType)) {
+        return { type: ref.memberType, input: genericRuleInput(ref.memberName, content) };
+      }
+      return {
+        type: "OpaqueMetadata",
+        input: { metadataType: ref.memberType, name: ref.memberName, raw: content },
+      };
+    }
   }
+}
+
+/**
+ * Build the `{ name, xml, ...siblings }` input shape the rule-based parsers'
+ * `xml-string` coercion expects. Filesystem sources hand us raw XML; the
+ * live generic extractor hands us the JSON-serialized `metadata.read()`
+ * object — whose keys mirror the parsed XML root, so they can be promoted
+ * to sibling keys directly (coerceInput merges siblings into the record).
+ */
+function genericRuleInput(name: string, content: string): Record<string, unknown> {
+  const s = (content ?? "").trimStart();
+  if (s.startsWith("<")) return { name, xml: content };
+  let parsed: Record<string, unknown> = {};
+  try {
+    const j: unknown = JSON.parse(s);
+    if (j && typeof j === "object" && !Array.isArray(j)) parsed = j as Record<string, unknown>;
+  } catch {
+    /* not JSON — leave record empty; the node still gets name + label */
+  }
+  return { xml: "", ...parsed, name };
 }
 
 export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult> {
@@ -382,717 +416,716 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
   // preserved — this wrapper only catches exceptions that escape *all* of
   // those inner handlers (i.e. genuinely fatal failures).
   try {
+    const caps = await probeCapabilities(resolved.conn);
+    logger.info("live-ingest: probed capabilities", { caps });
 
-  const caps = await probeCapabilities(resolved.conn);
-  logger.info("live-ingest: probed capabilities", { caps });
-
-  // Discovery is also invoked implicitly inside bulkRetrieve, but logging the
-  // type-count up-front gives operators a quick coverage signal.
-  try {
-    const { discoverMetadataTypes } = await import("../extractors/live-org/discovery.js");
-    const discovered = await discoverMetadataTypes(resolved.conn, apiVersion);
-    logger.info("live-ingest: discovered metadata types", { count: discovered.length });
-  } catch (e) {
-    logger.warn("live-ingest: metadata.describe failed", { err: (e as Error).message });
-  }
-
-  const existing = graph.getOrg(resolved.orgId);
-  const requestedMode = opts.mode ?? "auto";
-  let mode: IngestMode;
-  if (requestedMode === "auto") {
-    mode = existing?.lastSyncedAt && caps.sourceTracking ? "incremental" : "full";
-  } else {
-    mode = requestedMode;
-  }
-
-  if (!opts.skipSnapshot && opts.snapshotStore) {
+    // Discovery is also invoked implicitly inside bulkRetrieve, but logging the
+    // type-count up-front gives operators a quick coverage signal.
     try {
-      opts.snapshotStore.createSnapshot(
-        resolved.orgId,
-        `pre-sync-${new Date(now).toISOString()}`,
-        true,
-      );
+      const { discoverMetadataTypes } = await import("../extractors/live-org/discovery.js");
+      const discovered = await discoverMetadataTypes(resolved.conn, apiVersion);
+      logger.info("live-ingest: discovered metadata types", { count: discovered.length });
     } catch (e) {
-      logger.warn("live-ingest: snapshot failed", { err: (e as Error).message });
-    }
-  }
-
-  let membersProcessed = 0;
-  let parseErrors = 0;
-  let deletions = 0;
-  // Set in the full-sync branch if the bulkRetrieve stream itself throws.
-  // Detect-deletions reads it post-fan-out to bail out instead of mass-
-  // wiping nodes that were never visited due to the abort.
-  let streamAborted = false;
-  const touchedQnames = new Set<string>();
-  // W1.5-07: maintain per-label touched-qnames sets in parallel with the
-  // flat `touchedQnames` set so the deletion-sweep guard can compute
-  // priorCount/touchedCount per label without re-deriving labels later.
-  const touchedQnamesByLabel = new Map<string, Set<string>>();
-  // Skip/warning report collected across all branches. Populated by the
-  // full-sync fan-out via bulkRetrieve's onError callback; incremental mode
-  // currently emits no entries (single-stream iterChanges has no per-source
-  // failure surface). Returned on LiveIngestResult.warnings so MCP consumers
-  // can read what was skipped without parsing stdout.
-  const skipReport: IngestSkipReport = { skips: [] };
-  // Phase 1.5 W1.5-02: namespaced wedge warnings populated by bulkRetrieve's
-  // soft-isolate path (`wedge:<source>:<stage>:<detail>`). Concatenated with
-  // the legacy `${label}: ${reason}` strings from skipReport.skips into the
-  // final LiveIngestResult.warnings array. See bulk-retrieve.ts WedgeCoordinator.
-  const wedgeWarnings: string[] = [];
-
-  const parseCtxBase: Omit<ParseContext, "sourceUri"> = {
-    orgId: resolved.orgId,
-    parseTimestamp: new Date(now).toISOString(),
-    namespace: null,
-    logger,
-  };
-
-  const embedQueue = opts.vectorStore
-    ? new EmbeddingQueue({
-        vectorStore: opts.vectorStore,
-        onError: (err) => logger.warn("live-ingest: embedding batch failed", { err: err.message }),
-      })
-    : null;
-
-  const handleParsed = (parsed: ParseResult): void => {
-    if (parsed.nodes.length) {
-      graph.mergeNodes(parsed.nodes);
-      for (const n of parsed.nodes) {
-        const qn = String(n.qualifiedName);
-        touchedQnames.add(qn);
-        // W1.5-07: also bucket by label for the per-label deletion guard.
-        let bucket = touchedQnamesByLabel.get(n.label);
-        if (!bucket) {
-          bucket = new Set<string>();
-          touchedQnamesByLabel.set(n.label, bucket);
-        }
-        bucket.add(qn);
-      }
-    }
-    if (parsed.edges.length) graph.mergeEdges(parsed.edges);
-    if (parsed.snippets?.length) {
-      graph.transaction(() => {
-        for (const s of parsed.snippets ?? []) {
-          graph.upsertSnippet(s);
-        }
-      });
-    }
-    if (embedQueue) {
-      for (const n of parsed.nodes) {
-        const desc = (n.attributes as Record<string, unknown>)?.description;
-        const text = `${n.label}: ${n.qualifiedName}\n${typeof desc === "string" ? desc : ""}`;
-        embedQueue.push({
-          qname: String(n.qualifiedName),
-          text,
-          orgId: String(n.orgId),
-          label: n.label,
-        });
-      }
-    }
-  };
-
-  const debugProcess = process.env.SFGRAPH_DEBUG_INGEST === "1";
-  const processOne = async (ref: MemberRef, content: string): Promise<void> => {
-    const qnameForLog = `${ref.memberType}:${ref.memberName}`;
-    if (ref.obsolete) {
-      // Build the qualified name same way parsers would: best-effort by member name.
-      const qname = asQualifiedName(`${ref.memberType}:${ref.memberName}`);
-      if (debugProcess) console.log(`ingest: [trace] delete ← ${qnameForLog}`);
-      graph.deleteEdgesFor(resolved.orgId, qname);
-      graph.deleteNode(resolved.orgId, qname);
-      if (debugProcess) console.log(`ingest: [trace] delete ✓ ${qnameForLog}`);
-      deletions += 1;
-      return;
-    }
-    const adapted = adaptParserInput(ref, content);
-    if (!adapted) return;
-    const parser = parserRegistry.for(adapted.type);
-    if (!parser) return;
-    try {
-      const ctx: ParseContext = {
-        ...parseCtxBase,
-        sourceUri: ref.sourceUri,
-        namespace: ref.namespace ?? null,
-      };
-      if (debugProcess) console.log(`ingest: [trace] parse ← ${qnameForLog}`);
-      const result = await parser.parse(adapted.input, ctx);
-      if (debugProcess)
-        console.log(
-          `ingest: [trace] parse ✓ ${qnameForLog} (nodes=${result.nodes.length} edges=${result.edges.length})`,
-        );
-      if (debugProcess) console.log(`ingest: [trace] graph-merge ← ${qnameForLog}`);
-      handleParsed(result);
-      if (debugProcess) console.log(`ingest: [trace] graph-merge ✓ ${qnameForLog}`);
-      membersProcessed += 1;
-    } catch (e) {
-      parseErrors += 1;
-      logger.warn("live-ingest: parser failure", {
-        type: ref.memberType,
-        name: ref.memberName,
-        err: (e as Error).message,
-      });
-      if (debugProcess) {
-        console.error(
-          `ingest: [trace] FAILURE ${qnameForLog}: ${(e as Error).message}\n${(e as Error).stack}`,
-        );
-      }
-    }
-  };
-
-  if (mode === "incremental") {
-    const sinceIso = existing?.lastSyncedAt
-      ? new Date(existing.lastSyncedAt).toISOString()
-      : new Date(now - 24 * 3600 * 1000).toISOString();
-    for await (const ref of iterChanges(resolved.conn, resolved.orgId, sinceIso)) {
-      // For incremental, content is best fetched on-demand; for deletions we skip content.
-      await processOne(ref, "");
-    }
-  } else {
-    // The outer iteration is also wrapped: bulkRetrieve uses fail-soft per
-    // source, but a top-level catch protects against any iterator-protocol
-    // surprises (e.g. generator throws during `next()` before yielding).
-    // Read live pool caps so the log reflects --tooling-pool/--metadata-pool/
-    // --data-pool overrides or SFGRAPH_*_POOL env vars rather than hardcoded
-    // defaults.
-    const { toolingPool, metadataPool, dataPool } = await import(
-      "../extractors/live-org/rate-limit.js"
-    );
-    const tCap =
-      (toolingPool as unknown as { _store: { storeOptions: { maxConcurrent: number } } })._store
-        .storeOptions.maxConcurrent;
-    const mCap =
-      (metadataPool as unknown as { _store: { storeOptions: { maxConcurrent: number } } })._store
-        .storeOptions.maxConcurrent;
-    const dCap =
-      (dataPool as unknown as { _store: { storeOptions: { maxConcurrent: number } } })._store
-        .storeOptions.maxConcurrent;
-    console.log(
-      `ingest: starting full sync (Tooling pool ${tCap} / Metadata pool ${mCap} / Data pool ${dCap} concurrent)`,
-    );
-
-    // MCD baseline runs BEFORE the parser fan-out so any (src, dst, REFERENCES)
-    // edges it writes can be overwritten if a real parser produces the same
-    // shape later. The MCD path uses generic REFERENCES while parsers use
-    // specific rel-types — so in practice MCD and parsed coexist in
-    // different edge tables rather than competing for the same row, but
-    // the pre-fan-out ordering preserves the "parsed wins" guarantee for
-    // the (rare) case where a parser does emit REFERENCES.
-    if (!opts.disableMcdBaseline) {
-      try {
-        const { runMcdBaseline } = await import(
-          "../extractors/live-org/extractors/mcd-baseline.js"
-        );
-        const mcdCtx: ParseContext = {
-          ...parseCtxBase,
-          sourceUri: "mcd-baseline://tooling-soql",
-        };
-        const mcd = await runMcdBaseline(resolved.conn, {
-          orgId: resolved.orgId,
-          ctx: mcdCtx,
-          onError: (label, err) => {
-            skipReport.skips.push({
-              label,
-              reason: err.message,
-              category: "unknown",
-            });
-          },
-        });
-        if (mcd.edges.length > 0) {
-          graph.mergeEdges(mcd.edges);
-        }
-        logger.info("live-ingest: MCD baseline complete", {
-          edges: mcd.edges.length,
-          byType: mcd.byType,
-        });
-      } catch (e) {
-        logger.warn("live-ingest: MCD baseline failed", { err: (e as Error).message });
-      }
+      logger.warn("live-ingest: metadata.describe failed", { err: (e as Error).message });
     }
 
-    const fanOutStart = Date.now();
-    let progressCount = 0;
-    let lastTickAt = Date.now();
-    let lastActivityAt = Date.now();
-    let lastMemberLabel = "(none)";
-    const PROGRESS_TICK_MS = 5000; // emit a heartbeat at least every 5s
-    if (opts.onlyLabels && opts.onlyLabels.size > 0) {
-      console.log(
-        `ingest: --only filter active (${opts.onlyLabels.size} source${opts.onlyLabels.size === 1 ? "" : "s"}): ${[...opts.onlyLabels].join(", ")}`,
-      );
-    }
-    // Debug mode: SFGRAPH_DEBUG_INGEST=1 enables a heartbeat timer that
-    // prints heap usage + seconds-since-last-activity every 10s. Critical
-    // for diagnosing silent ingest deaths (OOM, native segfault, hung SF
-    // call) where the normal progress log just stops without an error.
-    const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
-    let heartbeatTimer: NodeJS.Timeout | null = null;
-    let keepAlive: NodeJS.Timeout | null = null;
-    let livenessProbe: LivenessProbeHandle | null = null;
-    // Track signal handlers we register so we can remove them in finally.
-    // Without this, every invocation of liveIngest in debug mode leaked one
-    // listener per signal (SIGTERM/SIGINT/SIGUSR2), eventually triggering
-    // MaxListenersExceededWarning and N-fold handler firing on first ^C in
-    // multi-org / programmatic flows. (Audit finding C2.)
-    const installedSignalHandlers: Array<{ sig: NodeJS.Signals; fn: () => void }> = [];
-    // streamAborted (hoisted at function scope) gates the post-fan-out
-    // detect-deletions block. If the bulkRetrieve stream itself throws
-    // (vs individual sources fail-softing), we've only seen a fraction of
-    // the org and the `touchedQnames` set is not safe to use for stale-
-    // qname computation — without this guard a transient SF error would
-    // mass-delete the untouched 70% of the graph. (Audit finding C1.)
-    try {
-      // Keep-alive sentinel: a ref'd timer that exists purely to prevent the
-      // event loop from draining while we're awaiting Bottleneck-scheduled
-      // work. Bottleneck's local-datastore reservoir-refresh timer is unref'd
-      // internally, jsforce's HTTP keep-alive sockets idle between requests,
-      // and Node will happily exit(0) on a perfectly healthy pending Promise
-      // if no ref'd handle is left.
-      keepAlive = setInterval(() => {}, 60_000);
-      // Background liveness probe. Polls conn.identity() every 30s with a
-      // 10s deadline; after two consecutive failures it logs a prominent
-      // "CONNECTION LOST" warning so the user knows why surviving
-      // extractors are about to time out one by one. We intentionally do
-      // NOT abort the ingest from here — per-call 60s timeouts (added in
-      // 1.1.3) already cap exposure, and aborting mid-flight would need
-      // an AbortSignal threaded through every extractor for marginal
-      // benefit. The probe's job is observability, not control flow.
-      // Disable via SFGRAPH_NO_LIVENESS_PROBE=1 for hermetic test runs
-      // where the mock connection has no identity() implementation.
-      if (process.env.SFGRAPH_NO_LIVENESS_PROBE !== "1") {
-        livenessProbe = startLivenessProbe(
-          resolved.conn as { identity: () => Promise<unknown> },
-        );
-      }
-      // Wall-clock heartbeat — always on. Without this, silent phases (where
-      // all in-window sources are awaiting Bottleneck-queued metadata reads
-      // without yielding) look indistinguishable from a hung process. The
-      // per-record progress tick at the bottom of the fan-out loop only
-      // fires when a record arrives; this fires on a real timer regardless.
-      // Debug mode adds heap/rss; baseline shows processed/lastSource/idle.
-      const showPoolCounters = debug || process.env.SFGRAPH_DEBUG_POOLS === "1";
-      heartbeatTimer = setInterval(() => {
-        const idleSec = Math.round((Date.now() - lastActivityAt) / 1000);
-        if (idleSec < 10) return; // suppress chatter when records are flowing
-        if (debug) {
-          const mem = process.memoryUsage();
-          const heapMb = Math.round(mem.heapUsed / 1024 / 1024);
-          const rssMb = Math.round(mem.rss / 1024 / 1024);
-          const externalMb = Math.round(mem.external / 1024 / 1024);
-          console.log(
-            `ingest: [heartbeat] processed=${progressCount} lastSource=${lastMemberLabel} idle=${idleSec}s heap=${heapMb}MB rss=${rssMb}MB ext=${externalMb}MB`,
-          );
-        } else {
-          console.log(
-            `ingest:   …still working — processed=${progressCount} idle=${idleSec}s lastSource=${lastMemberLabel}`,
-          );
-        }
-        // Pool diagnostics: snapshot Bottleneck state so a wedge can be
-        // attributed concretely to reservoir starvation vs. stuck-in-flight
-        // jobs vs. pre-yield iterator hangs. Counts are synchronous; the
-        // reservoir read is async but fire-and-forget — by the time it
-        // resolves we just log it.
-        if (showPoolCounters) {
-          const snapshot = [
-            ["tool", toolingPool],
-            ["meta", metadataPool],
-            ["data", dataPool],
-          ] as const;
-          for (const [name, p] of snapshot) {
-            const c = p.counts();
-            p.currentReservoir().then((reservoir) => {
-              console.log(
-                `ingest: [pool ${name}] running=${c.RUNNING} executing=${c.EXECUTING} queued=${c.QUEUED} received=${c.RECEIVED} reservoir=${reservoir}`,
-              );
-            }, () => {
-              /* swallow — never let a diag failure kill ingest */
-            });
-          }
-        }
-      }, 10_000);
-      if (debug) {
-        console.log("ingest: [debug] SFGRAPH_DEBUG_INGEST=1 active — heartbeat every 10s");
-        // Signal handlers — surface what was running when the user (or OS)
-        // sends a kill so silent terminations have at least one breadcrumb.
-        const onSig = (sig: string) => () => {
-          console.error(
-            `ingest: [debug] received ${sig} after ${Math.round((Date.now() - fanOutStart) / 1000)}s — processed=${progressCount} lastSource=${lastMemberLabel}`,
-          );
-          console.error(new Error(`signal:${sig}`).stack);
-          process.exitCode = 130;
-        };
-        const onUsr2 = () => {
-          const mem = process.memoryUsage();
-          console.error(
-            `ingest: [debug] SIGUSR2 — heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB rss=${Math.round(mem.rss / 1024 / 1024)}MB lastSource=${lastMemberLabel}`,
-          );
-        };
-        installedSignalHandlers.push({ sig: "SIGTERM", fn: onSig("SIGTERM") });
-        installedSignalHandlers.push({ sig: "SIGINT", fn: onSig("SIGINT") });
-        installedSignalHandlers.push({ sig: "SIGUSR2", fn: onUsr2 });
-        for (const h of installedSignalHandlers) process.on(h.sig, h.fn);
-      }
-      try {
-        for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, {
-          skipReport,
-          warnings: wedgeWarnings,
-          ...(opts.onlyLabels ? { onlyLabels: opts.onlyLabels } : {}),
-          // The bulk-retrieve flag name follows the same convention as
-          // the bulk-retrieve's other opts; semantically it's "do the
-          // retrieve()" which is now on by default. Caller-side disable
-          // routes through this same boolean inverted.
-          ...(opts.disableOmnistudioRetrieve ? {} : { enableOmnistudioRetrieve: true }),
-          // jsforce attaches the version it negotiated on conn.version; fall
-          // back to a sensible recent release if absent (mocks, etc.)
-          apiVersion: ((resolved.conn as { version?: string }).version) ?? "60.0",
-        })) {
-          try {
-            await processOne(member.ref, member.content);
-          } catch (e) {
-            parseErrors += 1;
-            logger.warn("live-ingest: processOne failed", {
-              qname: `${member.ref.memberType}:${member.ref.memberName}`,
-              error: (e as Error).message,
-            });
-          }
-          progressCount += 1;
-          lastActivityAt = Date.now();
-          lastMemberLabel = `${member.ref.memberType}:${member.ref.memberName}`;
-          if (progressCount % 200 === 0 || Date.now() - lastTickAt > PROGRESS_TICK_MS) {
-            const elapsedSec = Math.round((Date.now() - fanOutStart) / 1000);
-            const memSuffix = debug
-              ? ` heap=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
-              : "";
-            console.log(
-              `ingest:   …${progressCount} members processed so far (${elapsedSec}s elapsed)${memSuffix}`,
-            );
-            lastTickAt = Date.now();
-          }
-          if (progressCount % 500 === 0) {
-            const gs = graph as unknown as { checkpoint?: () => boolean };
-            if (typeof gs.checkpoint === "function") gs.checkpoint();
-          }
-        }
-        console.log(
-          `ingest: fan-out complete (${progressCount} members in ${Math.round((Date.now() - fanOutStart) / 1000)}s)`,
-        );
-        const gs = graph as unknown as { checkpoint?: () => boolean };
-        if (typeof gs.checkpoint === "function") gs.checkpoint();
-      } catch (e) {
-        // The stream itself threw (not an individual source — those are
-        // captured by failSoft). Mark so detect-deletions stays its hand.
-        streamAborted = true;
-        logger.warn("live-ingest: bulkRetrieve stream aborted", {
-          error: (e as Error).message,
-        });
-      }
-    } finally {
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      if (keepAlive) clearInterval(keepAlive);
-      livenessProbe?.stop();
-      for (const h of installedSignalHandlers) process.off(h.sig, h.fn);
-    }
-
-    // End-of-run skip summary. Grouped by category so the remediation is
-    // targeted to the specific class of failure.
-    if (skipReport.skips.length > 0) {
-      printSkipSummary(skipReport, resolved.alias);
-    }
-
-    // Persist the skip report so --retry-skipped can read it next run.
-    // Always written (even when empty) so users can tell whether the last
-    // run had skips or just hasn't recorded any yet.
-    if (opts.skipReportPath) {
-      try {
-        const { writeFileSync, mkdirSync } = await import("node:fs");
-        const { dirname } = await import("node:path");
-        mkdirSync(dirname(opts.skipReportPath), { recursive: true });
-        writeFileSync(
-          opts.skipReportPath,
-          JSON.stringify({ recordedAt: Date.now(), orgId: resolved.orgId, ...skipReport }, null, 2),
-          "utf8",
-        );
-      } catch (e) {
-        logger.warn("live-ingest: skip report write failed", { err: (e as Error).message });
-      }
-    }
-  }
-
-  if (embedQueue) {
-    try {
-      await embedQueue.drain();
-    } catch (e) {
-      logger.warn("live-ingest: embed drain failed", { err: (e as Error).message });
-    }
-  }
-
-  // Full-sync deletion detection: compute previously-known minus touched and
-  // delete the difference. Skipped on incremental (SourceMember handles it),
-  // skipped if any parse error occurred this run (avoid mass-wipe on
-  // transient SF errors).
-  if (opts.detectDeletions && mode === "full") {
-    if (streamAborted) {
-      logger.warn(
-        "live-ingest: detect-deletions skipped because bulkRetrieve stream aborted — touchedQnames is incomplete and a full deletion sweep would wrongly wipe untouched-but-still-present nodes",
-      );
-    } else if (parseErrors > 0) {
-      logger.warn("live-ingest: detect-deletions skipped due to parseErrors", { parseErrors });
+    const existing = graph.getOrg(resolved.orgId);
+    const requestedMode = opts.mode ?? "auto";
+    let mode: IngestMode;
+    if (requestedMode === "auto") {
+      mode = existing?.lastSyncedAt && caps.sourceTracking ? "incremental" : "full";
     } else {
-      try {
-        // W1.5-07: per-label drop-ratio guard. The sweep used to run as a
-        // single set-difference across ALL labels; a wedged source with
-        // streamAborted=false + touchedCount=0 for its label would silently
-        // wipe every node of that label (graph-extinction risk that
-        // compounds with the W1.5-01/02 wedge cascade). Now we evaluate the
-        // guard per label and refuse when the implied drop is suspicious.
-        const maxDropRatio = resolveMaxDropRatio(
-          process.env.SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO,
-        );
-        const labels = graph.listAllLabels();
-        for (const label of labels) {
-          const priorCount = graph.countNodesByLabel(resolved.orgId, label);
-          const touchedCount = touchedQnamesByLabel.get(label)?.size ?? 0;
-          const verdict = evaluateDeletionGuard(
-            label,
-            priorCount,
-            touchedCount,
-            maxDropRatio,
-          );
-          if (!verdict.proceed) {
-            if (verdict.warning) wedgeWarnings.push(verdict.warning);
-            logger.warn("live-ingest: detect-deletions refused", {
-              label,
-              priorCount,
-              touchedCount,
-              maxDropRatio,
-              warning: verdict.warning,
-            });
-            continue;
-          }
+      mode = requestedMode;
+    }
 
-          // Proceed with deletion for this label only. Scoped to this label's
-          // table via listNodesByLabel rather than the global listAllQnames
-          // walk, so a refusal for one label cannot accidentally affect
-          // sweeps for other labels.
-          const touchedSet = touchedQnamesByLabel.get(label);
-          const persisted = graph.listNodesByLabel(resolved.orgId, label);
-          let labelDeletions = 0;
-          for (const node of persisted) {
-            const q = String(node.qualifiedName);
-            if (touchedSet?.has(q)) continue;
-            graph.deleteEdgesFor(resolved.orgId, asQualifiedName(q));
-            graph.deleteNode(resolved.orgId, asQualifiedName(q));
-            deletions += 1;
-            labelDeletions += 1;
+    if (!opts.skipSnapshot && opts.snapshotStore) {
+      try {
+        opts.snapshotStore.createSnapshot(
+          resolved.orgId,
+          `pre-sync-${new Date(now).toISOString()}`,
+          true,
+        );
+      } catch (e) {
+        logger.warn("live-ingest: snapshot failed", { err: (e as Error).message });
+      }
+    }
+
+    let membersProcessed = 0;
+    let parseErrors = 0;
+    let deletions = 0;
+    // Set in the full-sync branch if the bulkRetrieve stream itself throws.
+    // Detect-deletions reads it post-fan-out to bail out instead of mass-
+    // wiping nodes that were never visited due to the abort.
+    let streamAborted = false;
+    const touchedQnames = new Set<string>();
+    // W1.5-07: maintain per-label touched-qnames sets in parallel with the
+    // flat `touchedQnames` set so the deletion-sweep guard can compute
+    // priorCount/touchedCount per label without re-deriving labels later.
+    const touchedQnamesByLabel = new Map<string, Set<string>>();
+    // Skip/warning report collected across all branches. Populated by the
+    // full-sync fan-out via bulkRetrieve's onError callback; incremental mode
+    // currently emits no entries (single-stream iterChanges has no per-source
+    // failure surface). Returned on LiveIngestResult.warnings so MCP consumers
+    // can read what was skipped without parsing stdout.
+    const skipReport: IngestSkipReport = { skips: [] };
+    // Phase 1.5 W1.5-02: namespaced wedge warnings populated by bulkRetrieve's
+    // soft-isolate path (`wedge:<source>:<stage>:<detail>`). Concatenated with
+    // the legacy `${label}: ${reason}` strings from skipReport.skips into the
+    // final LiveIngestResult.warnings array. See bulk-retrieve.ts WedgeCoordinator.
+    const wedgeWarnings: string[] = [];
+
+    const parseCtxBase: Omit<ParseContext, "sourceUri"> = {
+      orgId: resolved.orgId,
+      parseTimestamp: new Date(now).toISOString(),
+      namespace: null,
+      logger,
+    };
+
+    const embedQueue = opts.vectorStore
+      ? new EmbeddingQueue({
+          vectorStore: opts.vectorStore,
+          onError: (err) =>
+            logger.warn("live-ingest: embedding batch failed", { err: err.message }),
+        })
+      : null;
+
+    const handleParsed = (parsed: ParseResult): void => {
+      if (parsed.nodes.length) {
+        graph.mergeNodes(parsed.nodes);
+        for (const n of parsed.nodes) {
+          const qn = String(n.qualifiedName);
+          touchedQnames.add(qn);
+          // W1.5-07: also bucket by label for the per-label deletion guard.
+          let bucket = touchedQnamesByLabel.get(n.label);
+          if (!bucket) {
+            bucket = new Set<string>();
+            touchedQnamesByLabel.set(n.label, bucket);
           }
-          if (labelDeletions > 0) {
-            logger.info("live-ingest: detect-deletions removed stale qnames", {
-              label,
-              count: labelDeletions,
-            });
+          bucket.add(qn);
+        }
+      }
+      if (parsed.edges.length) graph.mergeEdges(parsed.edges);
+      if (parsed.snippets?.length) {
+        graph.transaction(() => {
+          for (const s of parsed.snippets ?? []) {
+            graph.upsertSnippet(s);
           }
+        });
+      }
+      if (embedQueue) {
+        for (const n of parsed.nodes) {
+          const desc = (n.attributes as Record<string, unknown>)?.description;
+          const text = `${n.label}: ${n.qualifiedName}\n${typeof desc === "string" ? desc : ""}`;
+          embedQueue.push({
+            qname: String(n.qualifiedName),
+            text,
+            orgId: String(n.orgId),
+            label: n.label,
+          });
+        }
+      }
+    };
+
+    const debugProcess = process.env.SFGRAPH_DEBUG_INGEST === "1";
+    const processOne = async (ref: MemberRef, content: string): Promise<void> => {
+      const qnameForLog = `${ref.memberType}:${ref.memberName}`;
+      if (ref.obsolete) {
+        // Build the qualified name same way parsers would: best-effort by member name.
+        const qname = asQualifiedName(`${ref.memberType}:${ref.memberName}`);
+        if (debugProcess) console.log(`ingest: [trace] delete ← ${qnameForLog}`);
+        graph.deleteEdgesFor(resolved.orgId, qname);
+        graph.deleteNode(resolved.orgId, qname);
+        if (debugProcess) console.log(`ingest: [trace] delete ✓ ${qnameForLog}`);
+        deletions += 1;
+        return;
+      }
+      const adapted = adaptParserInput(ref, content);
+      if (!adapted) return;
+      const parser = parserRegistry.for(adapted.type);
+      if (!parser) return;
+      try {
+        const ctx: ParseContext = {
+          ...parseCtxBase,
+          sourceUri: ref.sourceUri,
+          namespace: ref.namespace ?? null,
+        };
+        if (debugProcess) console.log(`ingest: [trace] parse ← ${qnameForLog}`);
+        const result = await parser.parse(adapted.input, ctx);
+        if (debugProcess)
+          console.log(
+            `ingest: [trace] parse ✓ ${qnameForLog} (nodes=${result.nodes.length} edges=${result.edges.length})`,
+          );
+        if (debugProcess) console.log(`ingest: [trace] graph-merge ← ${qnameForLog}`);
+        handleParsed(result);
+        if (debugProcess) console.log(`ingest: [trace] graph-merge ✓ ${qnameForLog}`);
+        membersProcessed += 1;
+      } catch (e) {
+        parseErrors += 1;
+        logger.warn("live-ingest: parser failure", {
+          type: ref.memberType,
+          name: ref.memberName,
+          err: (e as Error).message,
+        });
+        if (debugProcess) {
+          console.error(
+            `ingest: [trace] FAILURE ${qnameForLog}: ${(e as Error).message}\n${(e as Error).stack}`,
+          );
+        }
+      }
+    };
+
+    if (mode === "incremental") {
+      const sinceIso = existing?.lastSyncedAt
+        ? new Date(existing.lastSyncedAt).toISOString()
+        : new Date(now - 24 * 3600 * 1000).toISOString();
+      for await (const ref of iterChanges(resolved.conn, resolved.orgId, sinceIso)) {
+        // For incremental, content is best fetched on-demand; for deletions we skip content.
+        await processOne(ref, "");
+      }
+    } else {
+      // The outer iteration is also wrapped: bulkRetrieve uses fail-soft per
+      // source, but a top-level catch protects against any iterator-protocol
+      // surprises (e.g. generator throws during `next()` before yielding).
+      // Read live pool caps so the log reflects --tooling-pool/--metadata-pool/
+      // --data-pool overrides or SFGRAPH_*_POOL env vars rather than hardcoded
+      // defaults.
+      const { toolingPool, metadataPool, dataPool } = await import(
+        "../extractors/live-org/rate-limit.js"
+      );
+      const tCap = (
+        toolingPool as unknown as { _store: { storeOptions: { maxConcurrent: number } } }
+      )._store.storeOptions.maxConcurrent;
+      const mCap = (
+        metadataPool as unknown as { _store: { storeOptions: { maxConcurrent: number } } }
+      )._store.storeOptions.maxConcurrent;
+      const dCap = (dataPool as unknown as { _store: { storeOptions: { maxConcurrent: number } } })
+        ._store.storeOptions.maxConcurrent;
+      console.log(
+        `ingest: starting full sync (Tooling pool ${tCap} / Metadata pool ${mCap} / Data pool ${dCap} concurrent)`,
+      );
+
+      // MCD baseline runs BEFORE the parser fan-out so any (src, dst, REFERENCES)
+      // edges it writes can be overwritten if a real parser produces the same
+      // shape later. The MCD path uses generic REFERENCES while parsers use
+      // specific rel-types — so in practice MCD and parsed coexist in
+      // different edge tables rather than competing for the same row, but
+      // the pre-fan-out ordering preserves the "parsed wins" guarantee for
+      // the (rare) case where a parser does emit REFERENCES.
+      if (!opts.disableMcdBaseline) {
+        try {
+          const { runMcdBaseline } = await import(
+            "../extractors/live-org/extractors/mcd-baseline.js"
+          );
+          const mcdCtx: ParseContext = {
+            ...parseCtxBase,
+            sourceUri: "mcd-baseline://tooling-soql",
+          };
+          const mcd = await runMcdBaseline(resolved.conn, {
+            orgId: resolved.orgId,
+            ctx: mcdCtx,
+            onError: (label, err) => {
+              skipReport.skips.push({
+                label,
+                reason: err.message,
+                category: "unknown",
+              });
+            },
+          });
+          if (mcd.edges.length > 0) {
+            graph.mergeEdges(mcd.edges);
+          }
+          logger.info("live-ingest: MCD baseline complete", {
+            edges: mcd.edges.length,
+            byType: mcd.byType,
+          });
+        } catch (e) {
+          logger.warn("live-ingest: MCD baseline failed", { err: (e as Error).message });
+        }
+      }
+
+      const fanOutStart = Date.now();
+      let progressCount = 0;
+      let lastTickAt = Date.now();
+      let lastActivityAt = Date.now();
+      let lastMemberLabel = "(none)";
+      const PROGRESS_TICK_MS = 5000; // emit a heartbeat at least every 5s
+      if (opts.onlyLabels && opts.onlyLabels.size > 0) {
+        console.log(
+          `ingest: --only filter active (${opts.onlyLabels.size} source${opts.onlyLabels.size === 1 ? "" : "s"}): ${[...opts.onlyLabels].join(", ")}`,
+        );
+      }
+      // Debug mode: SFGRAPH_DEBUG_INGEST=1 enables a heartbeat timer that
+      // prints heap usage + seconds-since-last-activity every 10s. Critical
+      // for diagnosing silent ingest deaths (OOM, native segfault, hung SF
+      // call) where the normal progress log just stops without an error.
+      const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
+      let heartbeatTimer: NodeJS.Timeout | null = null;
+      let keepAlive: NodeJS.Timeout | null = null;
+      let livenessProbe: LivenessProbeHandle | null = null;
+      // Track signal handlers we register so we can remove them in finally.
+      // Without this, every invocation of liveIngest in debug mode leaked one
+      // listener per signal (SIGTERM/SIGINT/SIGUSR2), eventually triggering
+      // MaxListenersExceededWarning and N-fold handler firing on first ^C in
+      // multi-org / programmatic flows. (Audit finding C2.)
+      const installedSignalHandlers: Array<{ sig: NodeJS.Signals; fn: () => void }> = [];
+      // streamAborted (hoisted at function scope) gates the post-fan-out
+      // detect-deletions block. If the bulkRetrieve stream itself throws
+      // (vs individual sources fail-softing), we've only seen a fraction of
+      // the org and the `touchedQnames` set is not safe to use for stale-
+      // qname computation — without this guard a transient SF error would
+      // mass-delete the untouched 70% of the graph. (Audit finding C1.)
+      try {
+        // Keep-alive sentinel: a ref'd timer that exists purely to prevent the
+        // event loop from draining while we're awaiting Bottleneck-scheduled
+        // work. Bottleneck's local-datastore reservoir-refresh timer is unref'd
+        // internally, jsforce's HTTP keep-alive sockets idle between requests,
+        // and Node will happily exit(0) on a perfectly healthy pending Promise
+        // if no ref'd handle is left.
+        keepAlive = setInterval(() => {}, 60_000);
+        // Background liveness probe. Polls conn.identity() every 30s with a
+        // 10s deadline; after two consecutive failures it logs a prominent
+        // "CONNECTION LOST" warning so the user knows why surviving
+        // extractors are about to time out one by one. We intentionally do
+        // NOT abort the ingest from here — per-call 60s timeouts (added in
+        // 1.1.3) already cap exposure, and aborting mid-flight would need
+        // an AbortSignal threaded through every extractor for marginal
+        // benefit. The probe's job is observability, not control flow.
+        // Disable via SFGRAPH_NO_LIVENESS_PROBE=1 for hermetic test runs
+        // where the mock connection has no identity() implementation.
+        if (process.env.SFGRAPH_NO_LIVENESS_PROBE !== "1") {
+          livenessProbe = startLivenessProbe(resolved.conn as { identity: () => Promise<unknown> });
+        }
+        // Wall-clock heartbeat — always on. Without this, silent phases (where
+        // all in-window sources are awaiting Bottleneck-queued metadata reads
+        // without yielding) look indistinguishable from a hung process. The
+        // per-record progress tick at the bottom of the fan-out loop only
+        // fires when a record arrives; this fires on a real timer regardless.
+        // Debug mode adds heap/rss; baseline shows processed/lastSource/idle.
+        const showPoolCounters = debug || process.env.SFGRAPH_DEBUG_POOLS === "1";
+        heartbeatTimer = setInterval(() => {
+          const idleSec = Math.round((Date.now() - lastActivityAt) / 1000);
+          if (idleSec < 10) return; // suppress chatter when records are flowing
+          if (debug) {
+            const mem = process.memoryUsage();
+            const heapMb = Math.round(mem.heapUsed / 1024 / 1024);
+            const rssMb = Math.round(mem.rss / 1024 / 1024);
+            const externalMb = Math.round(mem.external / 1024 / 1024);
+            console.log(
+              `ingest: [heartbeat] processed=${progressCount} lastSource=${lastMemberLabel} idle=${idleSec}s heap=${heapMb}MB rss=${rssMb}MB ext=${externalMb}MB`,
+            );
+          } else {
+            console.log(
+              `ingest:   …still working — processed=${progressCount} idle=${idleSec}s lastSource=${lastMemberLabel}`,
+            );
+          }
+          // Pool diagnostics: snapshot Bottleneck state so a wedge can be
+          // attributed concretely to reservoir starvation vs. stuck-in-flight
+          // jobs vs. pre-yield iterator hangs. Counts are synchronous; the
+          // reservoir read is async but fire-and-forget — by the time it
+          // resolves we just log it.
+          if (showPoolCounters) {
+            const snapshot = [
+              ["tool", toolingPool],
+              ["meta", metadataPool],
+              ["data", dataPool],
+            ] as const;
+            for (const [name, p] of snapshot) {
+              const c = p.counts();
+              p.currentReservoir().then(
+                (reservoir) => {
+                  console.log(
+                    `ingest: [pool ${name}] running=${c.RUNNING} executing=${c.EXECUTING} queued=${c.QUEUED} received=${c.RECEIVED} reservoir=${reservoir}`,
+                  );
+                },
+                () => {
+                  /* swallow — never let a diag failure kill ingest */
+                },
+              );
+            }
+          }
+        }, 10_000);
+        if (debug) {
+          console.log("ingest: [debug] SFGRAPH_DEBUG_INGEST=1 active — heartbeat every 10s");
+          // Signal handlers — surface what was running when the user (or OS)
+          // sends a kill so silent terminations have at least one breadcrumb.
+          const onSig = (sig: string) => () => {
+            console.error(
+              `ingest: [debug] received ${sig} after ${Math.round((Date.now() - fanOutStart) / 1000)}s — processed=${progressCount} lastSource=${lastMemberLabel}`,
+            );
+            console.error(new Error(`signal:${sig}`).stack);
+            process.exitCode = 130;
+          };
+          const onUsr2 = () => {
+            const mem = process.memoryUsage();
+            console.error(
+              `ingest: [debug] SIGUSR2 — heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB rss=${Math.round(mem.rss / 1024 / 1024)}MB lastSource=${lastMemberLabel}`,
+            );
+          };
+          installedSignalHandlers.push({ sig: "SIGTERM", fn: onSig("SIGTERM") });
+          installedSignalHandlers.push({ sig: "SIGINT", fn: onSig("SIGINT") });
+          installedSignalHandlers.push({ sig: "SIGUSR2", fn: onUsr2 });
+          for (const h of installedSignalHandlers) process.on(h.sig, h.fn);
+        }
+        try {
+          for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, {
+            skipReport,
+            warnings: wedgeWarnings,
+            ...(opts.onlyLabels ? { onlyLabels: opts.onlyLabels } : {}),
+            // The bulk-retrieve flag name follows the same convention as
+            // the bulk-retrieve's other opts; semantically it's "do the
+            // retrieve()" which is now on by default. Caller-side disable
+            // routes through this same boolean inverted.
+            ...(opts.disableOmnistudioRetrieve ? {} : { enableOmnistudioRetrieve: true }),
+            // jsforce attaches the version it negotiated on conn.version; fall
+            // back to a sensible recent release if absent (mocks, etc.)
+            apiVersion: (resolved.conn as { version?: string }).version ?? "60.0",
+          })) {
+            try {
+              await processOne(member.ref, member.content);
+            } catch (e) {
+              parseErrors += 1;
+              logger.warn("live-ingest: processOne failed", {
+                qname: `${member.ref.memberType}:${member.ref.memberName}`,
+                error: (e as Error).message,
+              });
+            }
+            progressCount += 1;
+            lastActivityAt = Date.now();
+            lastMemberLabel = `${member.ref.memberType}:${member.ref.memberName}`;
+            if (progressCount % 200 === 0 || Date.now() - lastTickAt > PROGRESS_TICK_MS) {
+              const elapsedSec = Math.round((Date.now() - fanOutStart) / 1000);
+              const memSuffix = debug
+                ? ` heap=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+                : "";
+              console.log(
+                `ingest:   …${progressCount} members processed so far (${elapsedSec}s elapsed)${memSuffix}`,
+              );
+              lastTickAt = Date.now();
+            }
+            if (progressCount % 500 === 0) {
+              const gs = graph as unknown as { checkpoint?: () => boolean };
+              if (typeof gs.checkpoint === "function") gs.checkpoint();
+            }
+          }
+          console.log(
+            `ingest: fan-out complete (${progressCount} members in ${Math.round((Date.now() - fanOutStart) / 1000)}s)`,
+          );
+          const gs = graph as unknown as { checkpoint?: () => boolean };
+          if (typeof gs.checkpoint === "function") gs.checkpoint();
+        } catch (e) {
+          // The stream itself threw (not an individual source — those are
+          // captured by failSoft). Mark so detect-deletions stays its hand.
+          streamAborted = true;
+          logger.warn("live-ingest: bulkRetrieve stream aborted", {
+            error: (e as Error).message,
+          });
+        }
+      } finally {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        if (keepAlive) clearInterval(keepAlive);
+        livenessProbe?.stop();
+        for (const h of installedSignalHandlers) process.off(h.sig, h.fn);
+      }
+
+      // End-of-run skip summary. Grouped by category so the remediation is
+      // targeted to the specific class of failure.
+      if (skipReport.skips.length > 0) {
+        printSkipSummary(skipReport, resolved.alias);
+      }
+
+      // Persist the skip report so --retry-skipped can read it next run.
+      // Always written (even when empty) so users can tell whether the last
+      // run had skips or just hasn't recorded any yet.
+      if (opts.skipReportPath) {
+        try {
+          const { writeFileSync, mkdirSync } = await import("node:fs");
+          const { dirname } = await import("node:path");
+          mkdirSync(dirname(opts.skipReportPath), { recursive: true });
+          writeFileSync(
+            opts.skipReportPath,
+            JSON.stringify(
+              { recordedAt: Date.now(), orgId: resolved.orgId, ...skipReport },
+              null,
+              2,
+            ),
+            "utf8",
+          );
+        } catch (e) {
+          logger.warn("live-ingest: skip report write failed", { err: (e as Error).message });
+        }
+      }
+    }
+
+    if (embedQueue) {
+      try {
+        await embedQueue.drain();
+      } catch (e) {
+        logger.warn("live-ingest: embed drain failed", { err: (e as Error).message });
+      }
+    }
+
+    // Full-sync deletion detection: compute previously-known minus touched and
+    // delete the difference. Skipped on incremental (SourceMember handles it),
+    // skipped if any parse error occurred this run (avoid mass-wipe on
+    // transient SF errors).
+    if (opts.detectDeletions && mode === "full") {
+      if (streamAborted) {
+        logger.warn(
+          "live-ingest: detect-deletions skipped because bulkRetrieve stream aborted — touchedQnames is incomplete and a full deletion sweep would wrongly wipe untouched-but-still-present nodes",
+        );
+      } else if (parseErrors > 0) {
+        logger.warn("live-ingest: detect-deletions skipped due to parseErrors", { parseErrors });
+      } else {
+        try {
+          // W1.5-07: per-label drop-ratio guard. The sweep used to run as a
+          // single set-difference across ALL labels; a wedged source with
+          // streamAborted=false + touchedCount=0 for its label would silently
+          // wipe every node of that label (graph-extinction risk that
+          // compounds with the W1.5-01/02 wedge cascade). Now we evaluate the
+          // guard per label and refuse when the implied drop is suspicious.
+          const maxDropRatio = resolveMaxDropRatio(
+            process.env.SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO,
+          );
+          const labels = graph.listAllLabels();
+          for (const label of labels) {
+            const priorCount = graph.countNodesByLabel(resolved.orgId, label);
+            const touchedCount = touchedQnamesByLabel.get(label)?.size ?? 0;
+            const verdict = evaluateDeletionGuard(label, priorCount, touchedCount, maxDropRatio);
+            if (!verdict.proceed) {
+              if (verdict.warning) wedgeWarnings.push(verdict.warning);
+              logger.warn("live-ingest: detect-deletions refused", {
+                label,
+                priorCount,
+                touchedCount,
+                maxDropRatio,
+                warning: verdict.warning,
+              });
+              continue;
+            }
+
+            // Proceed with deletion for this label only. Scoped to this label's
+            // table via listNodesByLabel rather than the global listAllQnames
+            // walk, so a refusal for one label cannot accidentally affect
+            // sweeps for other labels.
+            const touchedSet = touchedQnamesByLabel.get(label);
+            const persisted = graph.listNodesByLabel(resolved.orgId, label);
+            let labelDeletions = 0;
+            for (const node of persisted) {
+              const q = String(node.qualifiedName);
+              if (touchedSet?.has(q)) continue;
+              graph.deleteEdgesFor(resolved.orgId, asQualifiedName(q));
+              graph.deleteNode(resolved.orgId, asQualifiedName(q));
+              deletions += 1;
+              labelDeletions += 1;
+            }
+            if (labelDeletions > 0) {
+              logger.info("live-ingest: detect-deletions removed stale qnames", {
+                label,
+                count: labelDeletions,
+              });
+            }
+          }
+        } catch (e) {
+          logger.warn("live-ingest: detect-deletions failed", { err: (e as Error).message });
+        }
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Post-merge resolver passes. Each step is isolated in try/catch so a
+    // single resolver bug never breaks ingest — it just reports zero work done.
+    // -----------------------------------------------------------------------
+    let crossFlavorEdges = 0;
+    let arityResolved = 0;
+    let flowMethodsResolved = 0;
+    let danglingEdges = 0;
+    let overlapResult = { matched: 0, diverged: 0, empty: 0, annotated: 0 };
+    let reflectionEdges = 0;
+
+    // Synth a ParseContext for post-passes that need to mint edges/nodes.
+    const postCtx: ParseContext = {
+      ...parseCtxBase,
+      sourceUri: "post-merge://resolver",
+    };
+
+    if (!opts.disableCrossFlavor) {
+      try {
+        crossFlavorEdges = resolveCrossFlavor(graph, {
+          orgId: resolved.orgId,
+          namespace: null,
+          ctx: postCtx,
+        });
+        if (crossFlavorEdges > 0) {
+          logger.info("live-ingest: cross-flavor resolver linked Vlocity↔OmniStudio", {
+            edges: crossFlavorEdges,
+          });
         }
       } catch (e) {
-        logger.warn("live-ingest: detect-deletions failed", { err: (e as Error).message });
+        logger.warn("live-ingest: cross-flavor resolver failed", { err: (e as Error).message });
       }
     }
-  }
 
-  // -----------------------------------------------------------------------
-  // Post-merge resolver passes. Each step is isolated in try/catch so a
-  // single resolver bug never breaks ingest — it just reports zero work done.
-  // -----------------------------------------------------------------------
-  let crossFlavorEdges = 0;
-  let arityResolved = 0;
-  let flowMethodsResolved = 0;
-  let danglingEdges = 0;
-  let overlapResult = { matched: 0, diverged: 0, empty: 0, annotated: 0 };
-  let reflectionEdges = 0;
-
-  // Synth a ParseContext for post-passes that need to mint edges/nodes.
-  const postCtx: ParseContext = {
-    ...parseCtxBase,
-    sourceUri: "post-merge://resolver",
-  };
-
-  if (!opts.disableCrossFlavor) {
-    try {
-      crossFlavorEdges = resolveCrossFlavor(graph, {
-        orgId: resolved.orgId,
-        namespace: null,
-        ctx: postCtx,
-      });
-      if (crossFlavorEdges > 0) {
-        logger.info("live-ingest: cross-flavor resolver linked Vlocity↔OmniStudio", {
-          edges: crossFlavorEdges,
+    // Overlap detector: opt-in (off by default) — annotates the CANONICAL_OF
+    // edges resolveCrossFlavor just emitted with signaturesMatch + divergence
+    // detail. Must run *after* cross-flavor and *before* the audit so the
+    // audit sees the annotated edges as the same edges (idempotent merge).
+    if (!opts.disableOverlapDetect) {
+      try {
+        const { detectOmnistudioOverlap } = await import(
+          "../parsers/omnistudio/overlap-detector.js"
+        );
+        overlapResult = detectOmnistudioOverlap(graph, {
+          orgId: resolved.orgId,
+          ctx: postCtx,
+        });
+        if (overlapResult.annotated > 0) {
+          logger.info("live-ingest: omnistudio overlap detector annotated CANONICAL_OF pairs", {
+            matched: overlapResult.matched,
+            diverged: overlapResult.diverged,
+            empty: overlapResult.empty,
+            annotated: overlapResult.annotated,
+          });
+        }
+      } catch (e) {
+        logger.warn("live-ingest: omnistudio overlap detector failed", {
+          err: (e as Error).message,
         });
       }
-    } catch (e) {
-      logger.warn("live-ingest: cross-flavor resolver failed", { err: (e as Error).message });
     }
-  }
 
-  // Overlap detector: opt-in (off by default) — annotates the CANONICAL_OF
-  // edges resolveCrossFlavor just emitted with signaturesMatch + divergence
-  // detail. Must run *after* cross-flavor and *before* the audit so the
-  // audit sees the annotated edges as the same edges (idempotent merge).
-  if (!opts.disableOverlapDetect) {
-    try {
-      const { detectOmnistudioOverlap } = await import(
-        "../parsers/omnistudio/overlap-detector.js"
-      );
-      overlapResult = detectOmnistudioOverlap(graph, {
-        orgId: resolved.orgId,
-        ctx: postCtx,
-      });
-      if (overlapResult.annotated > 0) {
-        logger.info("live-ingest: omnistudio overlap detector annotated CANONICAL_OF pairs", {
-          matched: overlapResult.matched,
-          diverged: overlapResult.diverged,
-          empty: overlapResult.empty,
-          annotated: overlapResult.annotated,
+    if (!opts.disableFlowInvocableResolve) {
+      try {
+        const flowResult = resolveFlowApexMethods(graph, resolved.orgId, postCtx);
+        flowMethodsResolved = flowResult.resolved;
+        if (flowResult.scanned > 0) {
+          logger.info("live-ingest: flow→apex invocable resolver", {
+            scanned: flowResult.scanned,
+            resolved: flowResult.resolved,
+            missing: flowResult.missing,
+            ambiguous: flowResult.ambiguous,
+          });
+        }
+      } catch (e) {
+        logger.warn("live-ingest: flow→apex resolver failed", { err: (e as Error).message });
+      }
+    }
+
+    if (!opts.disableArityResolve) {
+      try {
+        const arityResult = resolveApexMethodArity(graph, {
+          orgId: resolved.orgId,
+          ctx: postCtx,
+        });
+        arityResolved = arityResult.resolved;
+        if (arityResult.scanned > 0) {
+          logger.info("live-ingest: apex method arity resolver", {
+            scanned: arityResult.scanned,
+            resolved: arityResult.resolved,
+            ambiguous: arityResult.ambiguous,
+            unresolved: arityResult.unresolved,
+            edgesEmitted: arityResult.edgesEmitted,
+          });
+        }
+      } catch (e) {
+        logger.warn("live-ingest: apex arity resolver failed", { err: (e as Error).message });
+      }
+    }
+
+    // Reflection walker: runs BEFORE the dangling-edge audit so any
+    // REFERENCES edges it emits are validated by the audit alongside
+    // parser-emitted edges. Default on; disable via disableReflectionWalker.
+    if (!opts.disableReflectionWalker) {
+      try {
+        const { walkBlobsForReferences } = await import("../parsers/generic/reflection-walker.js");
+        const reflectionResult = walkBlobsForReferences(graph, {
+          orgId: resolved.orgId,
+          ctx: postCtx,
+        });
+        reflectionEdges = reflectionResult.edgesEmitted;
+        if (reflectionEdges > 0) {
+          logger.info("live-ingest: reflection walker emitted REFERENCES edges", {
+            scanned: reflectionResult.scanned,
+            edges: reflectionEdges,
+            truncated: reflectionResult.truncatedSources,
+            ambiguous: reflectionResult.ambiguousMatches,
+          });
+        }
+      } catch (e) {
+        logger.warn("live-ingest: reflection walker failed", {
+          err: (e as Error).message,
         });
       }
-    } catch (e) {
-      logger.warn("live-ingest: omnistudio overlap detector failed", {
-        err: (e as Error).message,
-      });
     }
-  }
 
-  if (!opts.disableFlowInvocableResolve) {
+    if (!opts.disableAudit) {
+      try {
+        const auditResult = auditDanglingEdges(graph, resolved.orgId, { sampleSize: 25 });
+        danglingEdges = auditResult.danglingCount;
+        if (auditResult.danglingCount > 0) {
+          logger.info("live-ingest: graph audit found dangling edges", {
+            totalEdges: auditResult.totalEdges,
+            danglingCount: auditResult.danglingCount,
+            platformRefs: auditResult.platformRefCount,
+            unexpected: auditResult.unexpectedCount,
+            byRel: auditResult.byRel,
+            byDstPrefix: auditResult.byDstPrefix,
+          });
+        }
+      } catch (e) {
+        logger.warn("live-ingest: graph audit failed", { err: (e as Error).message });
+      }
+    }
+
+    const completedIso = new Date().toISOString();
     try {
-      const flowResult = resolveFlowApexMethods(graph, resolved.orgId, postCtx);
-      flowMethodsResolved = flowResult.resolved;
-      if (flowResult.scanned > 0) {
-        logger.info("live-ingest: flow→apex invocable resolver", {
-          scanned: flowResult.scanned,
-          resolved: flowResult.resolved,
-          missing: flowResult.missing,
-          ambiguous: flowResult.ambiguous,
+      // W1.5-08: markSyncComplete subsumes the old touchSync — it updates
+      // last_synced_at AND increments sync_generation AND clears the
+      // in-progress flag, atomically in one transaction.
+      graph.markSyncComplete(resolved.orgId, completedIso);
+    } catch (e) {
+      logger.warn("live-ingest: markSyncComplete failed", { err: (e as Error).message });
+    }
+
+    if (opts.analysisDb) {
+      try {
+        await populateAnalysisTables(graph, resolved.orgId, opts.analysisDb);
+      } catch (e) {
+        logger.warn("live-ingest: populate analysis tables failed", {
+          err: (e as Error).message,
         });
       }
-    } catch (e) {
-      logger.warn("live-ingest: flow→apex resolver failed", { err: (e as Error).message });
     }
-  }
 
-  if (!opts.disableArityResolve) {
-    try {
-      const arityResult = resolveApexMethodArity(graph, {
-        orgId: resolved.orgId,
-        ctx: postCtx,
-      });
-      arityResolved = arityResult.resolved;
-      if (arityResult.scanned > 0) {
-        logger.info("live-ingest: apex method arity resolver", {
-          scanned: arityResult.scanned,
-          resolved: arityResult.resolved,
-          ambiguous: arityResult.ambiguous,
-          unresolved: arityResult.unresolved,
-          edgesEmitted: arityResult.edgesEmitted,
-        });
+    if (opts.snapshotStore) {
+      try {
+        opts.snapshotStore.prune(resolved.orgId, opts.snapshotRetentionDays ?? 30);
+      } catch (e) {
+        logger.warn("live-ingest: snapshot prune failed", { err: (e as Error).message });
       }
-    } catch (e) {
-      logger.warn("live-ingest: apex arity resolver failed", { err: (e as Error).message });
     }
-  }
 
-  // Reflection walker: runs BEFORE the dangling-edge audit so any
-  // REFERENCES edges it emits are validated by the audit alongside
-  // parser-emitted edges. Default on; disable via disableReflectionWalker.
-  if (!opts.disableReflectionWalker) {
-    try {
-      const { walkBlobsForReferences } = await import(
-        "../parsers/generic/reflection-walker.js"
-      );
-      const reflectionResult = walkBlobsForReferences(graph, {
-        orgId: resolved.orgId,
-        ctx: postCtx,
-      });
-      reflectionEdges = reflectionResult.edgesEmitted;
-      if (reflectionEdges > 0) {
-        logger.info("live-ingest: reflection walker emitted REFERENCES edges", {
-          scanned: reflectionResult.scanned,
-          edges: reflectionEdges,
-          truncated: reflectionResult.truncatedSources,
-          ambiguous: reflectionResult.ambiguousMatches,
-        });
-      }
-    } catch (e) {
-      logger.warn("live-ingest: reflection walker failed", {
-        err: (e as Error).message,
-      });
-    }
-  }
-
-  if (!opts.disableAudit) {
-    try {
-      const auditResult = auditDanglingEdges(graph, resolved.orgId, { sampleSize: 25 });
-      danglingEdges = auditResult.danglingCount;
-      if (auditResult.danglingCount > 0) {
-        logger.info("live-ingest: graph audit found dangling edges", {
-          totalEdges: auditResult.totalEdges,
-          danglingCount: auditResult.danglingCount,
-          byRel: auditResult.byRel,
-          byDstPrefix: auditResult.byDstPrefix,
-        });
-      }
-    } catch (e) {
-      logger.warn("live-ingest: graph audit failed", { err: (e as Error).message });
-    }
-  }
-
-  const completedIso = new Date().toISOString();
-  try {
-    // W1.5-08: markSyncComplete subsumes the old touchSync — it updates
-    // last_synced_at AND increments sync_generation AND clears the
-    // in-progress flag, atomically in one transaction.
-    graph.markSyncComplete(resolved.orgId, completedIso);
-  } catch (e) {
-    logger.warn("live-ingest: markSyncComplete failed", { err: (e as Error).message });
-  }
-
-  if (opts.analysisDb) {
-    try {
-      await populateAnalysisTables(graph, resolved.orgId, opts.analysisDb);
-    } catch (e) {
-      logger.warn("live-ingest: populate analysis tables failed", {
-        err: (e as Error).message,
-      });
-    }
-  }
-
-  if (opts.snapshotStore) {
-    try {
-      opts.snapshotStore.prune(resolved.orgId, opts.snapshotRetentionDays ?? 30);
-    } catch (e) {
-      logger.warn("live-ingest: snapshot prune failed", { err: (e as Error).message });
-    }
-  }
-
-  return {
-    orgId: resolved.orgId,
-    capabilities: caps,
-    mode,
-    membersProcessed,
-    parseErrors,
-    deletions,
-    durationMs: Date.now() - startedAt,
-    crossFlavorEdges,
-    arityResolved,
-    flowMethodsResolved,
-    danglingEdges,
-    reflectionEdges,
-    overlap: overlapResult,
-    warnings: [
-      ...skipReport.skips.map((s) => `${s.label}: ${s.reason}`),
-      // Phase 1.5 W1.5-02 namespaced wedge strings. Format documented in
-      // PLAN.md: `wedge:<source>:<stage>:<detail>`. Forward-compatible
-      // with Phase 1's structured-warnings refactor (W1-01).
-      ...wedgeWarnings,
-    ],
-  };
+    return {
+      orgId: resolved.orgId,
+      capabilities: caps,
+      mode,
+      membersProcessed,
+      parseErrors,
+      deletions,
+      durationMs: Date.now() - startedAt,
+      crossFlavorEdges,
+      arityResolved,
+      flowMethodsResolved,
+      danglingEdges,
+      reflectionEdges,
+      overlap: overlapResult,
+      warnings: [
+        ...skipReport.skips.map((s) => `${s.label}: ${s.reason}`),
+        // Phase 1.5 W1.5-02 namespaced wedge strings. Format documented in
+        // PLAN.md: `wedge:<source>:<stage>:<detail>`. Forward-compatible
+        // with Phase 1's structured-warnings refactor (W1-01).
+        ...wedgeWarnings,
+      ],
+    };
   } catch (e) {
     // W1.5-08: ingest threw before reaching markSyncComplete. Flip
     // sync_in_progress back to 0 (and clear sync_started_at) so concurrent
@@ -1110,4 +1143,3 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     throw e;
   }
 }
-

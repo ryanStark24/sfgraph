@@ -196,6 +196,12 @@ async function buildSingleIngestOpts(
     disableArityResolve: Boolean(opts.noArityResolve),
     disableFlowInvocableResolve: Boolean(opts.noFlowResolve),
     disableAudit: Boolean(opts.noAudit),
+    // Populate the _sfgraph_findings / dead-code / governor / test-coverage
+    // tables after merge. Without this the analysis MCP tools (dead_code_audit,
+    // security_audit, governor_risk_check, export_sarif) fall back to weak
+    // live scans or return empty results — the tables existed but nothing
+    // ever wrote to them.
+    analysisDb: graphStore.db,
   };
 }
 
@@ -368,8 +374,7 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
       Boolean(opts.noAutoRetry) || process.env.SFGRAPH_NO_AUTO_RETRY === "1";
     const wasTargetedRun = Boolean(opts.only || opts.retrySkipped);
     if (!autoRetryDisabled && !wasTargetedRun && built.skipReportPath) {
-      const threshold =
-        Number.parseInt(process.env.SFGRAPH_AUTO_RETRY_THRESHOLD ?? "10", 10) || 10;
+      const threshold = Number.parseInt(process.env.SFGRAPH_AUTO_RETRY_THRESHOLD ?? "10", 10) || 10;
       const { existsSync, readFileSync } = await import("node:fs");
       let retryable: Array<{ label: string; category: string }> = [];
       if (existsSync(built.skipReportPath)) {
@@ -377,9 +382,7 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
           const report = JSON.parse(readFileSync(built.skipReportPath, "utf8")) as {
             skips?: Array<{ label: string; category: string }>;
           };
-          retryable = (report.skips ?? []).filter((s) =>
-            RETRYABLE_SKIP_CATEGORIES.has(s.category),
-          );
+          retryable = (report.skips ?? []).filter((s) => RETRYABLE_SKIP_CATEGORIES.has(s.category));
         } catch {
           /* malformed skip report; skip auto-retry */
         }
@@ -393,9 +396,7 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
         console.log(
           `ingest: auto-retry — ${retryable.length} transient skip${retryable.length === 1 ? "" : "s"} (rate_limit/network/unknown). Waiting ${delayMs / 1000}s for conditions to clear, then re-ingesting just those sources.`,
         );
-        console.log(
-          "         Disable with --no-auto-retry-skipped or SFGRAPH_NO_AUTO_RETRY=1.",
-        );
+        console.log("         Disable with --no-auto-retry-skipped or SFGRAPH_NO_AUTO_RETRY=1.");
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         const retryStartedAt = Date.now();
         const retryResult = await liveIngest({ ...built, onlyLabels: labels });
