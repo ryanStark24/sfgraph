@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.4.0 — real-org correctness: Vlocity/OmniStudio lineage, config values, tool & skill hardening
+
+Driven by validating sfgraph against a large real Vlocity-CMT enterprise org (89k+ nodes). Every fix below was caught or confirmed by a real ingest, not just unit tests — several were "green tests, broken on a real org" seams. Packages bumped: core/server/cli/`sfgraph` → 1.4.0, skills → 1.2.0, web → 1.1.9.
+
+### Ingest correctness (the "green tests, broken org" class)
+
+- **Members no longer silently dropped.** `adaptParserInput` returned `null` for any metadata type outside a hardcoded switch, so ~250 generic-extractor types (Layout, CustomTab, Bot, GenAi…) were extracted, logged ✓, and never merged — leaving 59k+ grant edges dangling on nodes that were never created. Unknown types now route to their registered rule parser or an opaque node. Visible for months as `fan-out complete (963)` vs `complete members=503`.
+- **Vlocity lineage now actually populates.** The runner emits `memberType: "DataRaptor"` but the rich parsers register as `"VlocityDataRaptor"`; dispatch fell through to the opaque parser, so a full ingest produced **zero** DataRaptor/IP/OmniScript lineage edges (only `VlocityCard` happened to align). Added the member→parser-type mapping + an end-to-end runner→dispatch→parser test. Confirmed on PLDT: `dr_reads_field` 131, `ip_calls_dr` 185, `os_uses_dr` 31.
+- **DRMapItem children load by Name, not a non-existent FK.** The DataRaptor child query selected `Input/OutputFieldName__c` (absent on `DRMapItem__c`) and filtered on `DRBundleId__c` (also absent in `vlocity_cmt`). Both threw `INVALID_FIELD` → childless DataRaptors. Now selects the real mapping columns and correlates by `Name` (`linkBy`). Cleared the prior 8 DataRaptor skips.
+- **OmniDataTransform field mappings** captured structurally from `OmniDataTransformItem` (SOQL child fetch) + the Metadata-API retrieve XML shape; SOQL/retrieve dedup so a component isn't ingested twice.
+- **Apex paginates** (`queryMore`) — was capped at the first 200 of thousands of classes. **Rate-limiter deadlock fixed** (bottleneck@2.19.5 disarms `reservoirRefreshInterval` on any `updateSettings()`; replaced with a self-managed refill) — the cause of full-run hangs. **Full generic coverage** by default (opt-out `SFGRAPH_GENERIC_WHITELIST_ONLY=1`) + child types (ValidationRule/ListView on standard objects) dispatched.
+- **Embeddings no longer silently zero.** `sharp`/`sqlite-vec` added to pnpm `onlyBuiltDependencies`; the embedder now warns loudly (once) on the zero-vector fallback instead of swallowing it.
+
+### Config VALUES captured (config resolves to real values)
+
+- **Custom Metadata records** carry their field `values` (endpoints, matching keys, toggles); **Custom Labels** carry `value`/`language` (the redundant singular `CustomLabel` path is suppressed so it can't clobber them); **Custom Settings** get a new `CustomSetting:<obj>` node holding their org-default/hierarchy rows, linked to the schema object. All three are **folded into node embeddings**, so `find_similar("endpoint for product push")` reaches the record holding it.
+
+### Analysis & MCP tools — work on real data, denoised
+
+- **`governor_risk_check`** detects SOQL/DML-in-loop from the graph (the Apex AST and the **default regex** parser both stamp `inLoop`) — was returning 0 on every live org because it scanned an Apex body that live ingest discards.
+- **`analyze`/CLI now wires `analysisDb`** — the findings / dead-code / governor / test-coverage tables were never populated, so the analysis tools silently returned empty.
+- **`trace_upstream`/`trace_downstream`** hide security-grant and reflection-inferred edges by default (a class granted to 100+ profiles no longer buries its real callers); `include_security` / `include_inferred` / `rel_types` to opt in.
+- **`dead_code_audit`** summarizes by confidence/type with a capped list (was a multi-MB dump that blew the token budget). **`security_audit`** filters CMDT/system/audit fields from FLS gaps (was dominated by `__mdt` system-field noise). **Dangling-edge audit** classifies platform-builtin refs (standard tabs / standard-schema fields) separately from real gaps.
+
+### Skills — cohesion, routing, and a debugging spine (skills 1.2.0)
+
+- **`sf-graph-router`** — "start here": routes intent → the right skill+tool across dev/design/debug/quality, and enforces a **grounding-first** rule (query the org graph before generating/changing metadata — the antidote to hallucinated fields/classes).
+- **`sf-debug-root-cause`** (symptom → graph cause) and **`sf-debug-log-analysis`** (parse an Apex debug log → ground in the graph) round out the debugging pillar.
+- Grounding-first cross-links from the `sf-architect-*` design skills into the graph; playbooks aligned with real tool behavior; `explain_code` documents its method-level qname requirement.
+
+### Tooling
+
+- **`pnpm test:kit`** — one-command Tier-1 pre-publish gate (lint → typecheck → build → test → preflight pack/tarball scan) with a GO/NO-GO verdict, plus `TESTKIT.md` documenting the Tier-2 org-validation checklist.
+
 ## 1.3.0 — Phase 1.5: wedge isolation + ingest correctness
 
 A real-org ingest no longer reports a metadata type as "skipped" because of a wedge in an unrelated source. Seven atomic commits closed a cascade failure that, in a baseline run against a Vlocity-CMT org, caused **37 metadata types** (including `security`, `vlocity`, `object`, `flow`, `lwc`, `layout`, `customMetadata`, GenAi types, ExperienceBundle, ConnectedApp, and SamlSsoConfig) to be silently skipped after a single LWC bundle wedged the pool for 440 seconds. Also closed a latent **graph-extinction risk** where the `--detect-deletions` sweep could wipe an entire label on a wedge-induced empty stream.
