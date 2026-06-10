@@ -23,6 +23,9 @@ intent description, decision rubric, and a chain of MCP tool calls. After
 | `sf-wip-impact`                | Blast-radius for uncommitted working-tree changes.         |
 | `sf-web-explorer`              | Launch the local web visualiser for visual graph exploration. |
 | `sf-find-similar`              | Semantic neighbour search — find metadata similar to an existing node or a free-text concept via MiniLM-L6 embeddings. |
+| `sf-graph-router`              | **Start here.** Routes intent to the right skill + MCP tool across dev/design/debug/quality, and enforces grounding answers in the org graph before generating Salesforce code. |
+| `sf-debug-root-cause`          | Root-cause a specific failure (exception, failing test, flow fault, misbehaving field) by anchoring the symptom to a node and looking outward — callers, callees, competing automation, recent changes, coverage gaps. |
+| `sf-debug-log-analysis`        | Read an Apex debug log (exceptions, governor scorecard, SOQL/DML/CPU hotspots) and ground each finding in the org graph for the why. |
 
 ## How a skill is wired
 

@@ -52,7 +52,7 @@ After install, `sfgraph` is on your PATH.
 sfgraph install
 ```
 
-Idempotent. Copies 17 skill playbooks into `~/.claude/skills/` + `~/.cursor/rules/` and adds a `sfgraph` entry to your editor's MCP config. Existing MCP entries are preserved. Use `--target=claude|cursor|vscode` to wire only one, or `--dry-run` to preview.
+Idempotent. Copies 20 skill playbooks into `~/.claude/skills/` + `~/.cursor/rules/` and adds a `sfgraph` entry to your editor's MCP config. Existing MCP entries are preserved. Use `--target=claude|cursor|vscode` to wire only one, or `--dry-run` to preview. Start with **`sf-graph-router`** — it routes intent to the right skill and enforces grounding answers in the org graph before generating Salesforce code.
 
 #### Using a different IDE or LLM client?
 
@@ -318,7 +318,7 @@ See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the full status matrix: every typ
 |---|---|
 | [`docs/CLI.md`](docs/CLI.md) | Full CLI reference — every command, every flag |
 | [`docs/TOOLS.md`](docs/TOOLS.md) | The 28 MCP tools — schemas, examples, algorithms |
-| [`docs/SKILLS.md`](docs/SKILLS.md) | The 17 skill playbooks installed into your editor |
+| [`docs/SKILLS.md`](docs/SKILLS.md) | The 20 skill playbooks installed into your editor |
 | [`docs/SAMPLES.md`](docs/SAMPLES.md) | Worked agent-conversation examples |
 | [`docs/COVERAGE.md`](docs/COVERAGE.md) | Metadata coverage matrix and SObject classification logic |
 | [`docs/WEB.md`](docs/WEB.md) | Local web visualiser |
