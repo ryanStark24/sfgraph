@@ -26,6 +26,20 @@ export interface EmbedOptions {
 const DEFAULT_MODEL_ID = "Xenova/all-MiniLM-L6-v2";
 const DEFAULT_DIM = 384;
 
+/** Warn at most once per process when embedding falls back to zero-vectors.
+ *  A silent fallback means semantic search (find_similar) is dead but ingest
+ *  still "succeeds" — exactly how a missing `sharp`/transformers native build
+ *  went unnoticed until a real-org validation. Loud once, not per-batch. */
+let warnedZeroVectorFallback = false;
+function warnZeroVectorFallback(err: unknown): void {
+  if (warnedZeroVectorFallback) return;
+  warnedZeroVectorFallback = true;
+  const msg = err instanceof Error ? err.message : String(err);
+  console.warn(
+    `sfgraph: embedding model unavailable — falling back to ZERO VECTORS (semantic search will not work). Most common cause: the 'sharp' native dependency wasn't built (@xenova/transformers needs it). Ensure 'sharp' is in pnpm onlyBuiltDependencies and reinstall. Underlying error: ${msg}`,
+  );
+}
+
 export async function embedTexts(
   texts: string[],
   opts: EmbedOptions = {},
@@ -71,7 +85,8 @@ export async function embedTexts(
       results.push(new Float32Array(out.data.slice(i * dim, (i + 1) * dim)));
     }
     return results;
-  } catch {
+  } catch (err) {
+    warnZeroVectorFallback(err);
     return texts.map(() => new Float32Array(DEFAULT_DIM));
   }
 }

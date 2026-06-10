@@ -952,11 +952,17 @@ export async function* bulkRetrieve(
       });
     }
   }
-  // Log the generic-type filter summary once at fan-out start — makes the
-  // skip-vs-route decision visible without --debug.
+  // Log the generic-type routing summary once at fan-out start — makes the
+  // skip-vs-route decision visible without --debug. The default is FULL
+  // coverage (every discovered type routed); the opt-out is
+  // SFGRAPH_GENERIC_WHITELIST_ONLY=1 (restricts to the curated subset).
   if (types.length > 0) {
+    const whitelistOnly = process.env.SFGRAPH_GENERIC_WHITELIST_ONLY === "1";
+    const mode = whitelistOnly
+      ? "curated whitelist only (SFGRAPH_GENERIC_WHITELIST_ONLY=1) — unset to route all"
+      : "full coverage (all discovered types) — set SFGRAPH_GENERIC_WHITELIST_ONLY=1 to restrict";
     console.log(
-      `ingest: dispatch routed=${sources.length} sources (${types.length} discovered metadata types; generic-type whitelist active — set SFGRAPH_INCLUDE_ALL_GENERIC=1 to invoke all)`,
+      `ingest: dispatch routed=${sources.length} sources (${types.length} discovered metadata types; ${mode})`,
     );
   }
 
