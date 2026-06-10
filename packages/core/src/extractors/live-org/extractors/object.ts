@@ -366,9 +366,7 @@ interface EntityDefRow {
  * originally moved off this code path). Caller falls back to the static
  * whitelist when null.
  */
-async function fetchEntityDefinitionClassification(
-  conn: any,
-): Promise<Set<string> | null> {
+async function fetchEntityDefinitionClassification(conn: any): Promise<Set<string> | null> {
   const userRelevant = new Set<string>();
   const SOQL =
     "SELECT QualifiedApiName, IsCustomizable, IsApexTriggerable, IsDeprecatedAndHidden, IsCustomSetting FROM EntityDefinition";
@@ -426,50 +424,50 @@ function makeShouldIncludeSObject(
   entityDefRelevant: Set<string> | null,
 ): (s: SObjectGlobal) => boolean {
   return function shouldIncludeSObject(s: SObjectGlobal): boolean {
-  if (!s.name) return false;
-  if (s.deprecatedAndHidden) return false;
-  if (!s.queryable) return false;
-  // Filter out auto-generated companion tables — works for BOTH the custom
-  // form (`MyObj__c` → `MyObj__Feed`) AND the standard form (`Account` →
-  // `AccountFeed`).
-  if (isCompanionTable(s.name)) return false;
-  for (const re of LEGACY_SKIP_PATTERNS) {
-    if (re.test(s.name)) return false;
-  }
-  // Hardcoded skip list for known-useless / known-pathological system
-  // tables (kept as a hard ceiling — even if EntityDefinition says
-  // ApexLog is customizable, we still don't want it in the graph).
-  const includeSystem = process.env.SFGRAPH_INCLUDE_SYSTEM_SOBJECTS === "1";
-  if (!includeSystem && SYSTEM_SKIP_NAMES.has(s.name)) return false;
-  // Custom SObjects (user or managed-package). describeGlobal lists every
-  // SObject the managed-package metadata declared, including objects that
-  // SOQL doesn't actually expose (`omnistudio__TestResult__c` etc.) and
-  // whose describe() can wedge for minutes server-side. EntityDefinition
-  // is the authoritative "actually exists + reachable" list — gate
-  // namespaced custom SObjects through it. User-namespace custom SObjects
-  // (no `__` namespace prefix) are always included.
-  if (isCustomSObject(s.name)) {
-    const isNamespaced = s.name.includes("__") && s.name.split("__").length >= 3;
-    if (isNamespaced && entityDefRelevant && !entityDefRelevant.has(s.name)) {
-      return false;
+    if (!s.name) return false;
+    if (s.deprecatedAndHidden) return false;
+    if (!s.queryable) return false;
+    // Filter out auto-generated companion tables — works for BOTH the custom
+    // form (`MyObj__c` → `MyObj__Feed`) AND the standard form (`Account` →
+    // `AccountFeed`).
+    if (isCompanionTable(s.name)) return false;
+    for (const re of LEGACY_SKIP_PATTERNS) {
+      if (re.test(s.name)) return false;
     }
-    return true;
-  }
-  // Full-surface override.
-  if (process.env.SFGRAPH_INCLUDE_ALL_SOBJECTS === "1") return true;
-  // Primary path: ask Salesforce. EntityDefinition's IsCustomizable +
-  // IsApexTriggerable flags tell us which standard SObjects are
-  // user-relevant vs platform-internal. Industry-cloud SObjects
-  // (AuthorizationFormConsent, AuthorizedInsuranceLine, etc.) come back
-  // as customizable=true and get included; platform internals
-  // (AuthConfig, ApexLog, EntityParticle, etc.) come back as false and
-  // get skipped — exactly the right behavior, no hardcoded list needed.
-  if (entityDefRelevant) {
-    return entityDefRelevant.has(s.name);
-  }
-  // Fallback path: EntityDefinition unavailable / empty (some scratch
-  // orgs return 0 rows here). Use the curated whitelist.
-  return STANDARD_SOBJECT_WHITELIST.has(s.name);
+    // Hardcoded skip list for known-useless / known-pathological system
+    // tables (kept as a hard ceiling — even if EntityDefinition says
+    // ApexLog is customizable, we still don't want it in the graph).
+    const includeSystem = process.env.SFGRAPH_INCLUDE_SYSTEM_SOBJECTS === "1";
+    if (!includeSystem && SYSTEM_SKIP_NAMES.has(s.name)) return false;
+    // Custom SObjects (user or managed-package). describeGlobal lists every
+    // SObject the managed-package metadata declared, including objects that
+    // SOQL doesn't actually expose (`omnistudio__TestResult__c` etc.) and
+    // whose describe() can wedge for minutes server-side. EntityDefinition
+    // is the authoritative "actually exists + reachable" list — gate
+    // namespaced custom SObjects through it. User-namespace custom SObjects
+    // (no `__` namespace prefix) are always included.
+    if (isCustomSObject(s.name)) {
+      const isNamespaced = s.name.includes("__") && s.name.split("__").length >= 3;
+      if (isNamespaced && entityDefRelevant && !entityDefRelevant.has(s.name)) {
+        return false;
+      }
+      return true;
+    }
+    // Full-surface override.
+    if (process.env.SFGRAPH_INCLUDE_ALL_SOBJECTS === "1") return true;
+    // Primary path: ask Salesforce. EntityDefinition's IsCustomizable +
+    // IsApexTriggerable flags tell us which standard SObjects are
+    // user-relevant vs platform-internal. Industry-cloud SObjects
+    // (AuthorizationFormConsent, AuthorizedInsuranceLine, etc.) come back
+    // as customizable=true and get included; platform internals
+    // (AuthConfig, ApexLog, EntityParticle, etc.) come back as false and
+    // get skipped — exactly the right behavior, no hardcoded list needed.
+    if (entityDefRelevant) {
+      return entityDefRelevant.has(s.name);
+    }
+    // Fallback path: EntityDefinition unavailable / empty (some scratch
+    // orgs return 0 rows here). Use the curated whitelist.
+    return STANDARD_SOBJECT_WHITELIST.has(s.name);
   };
 }
 

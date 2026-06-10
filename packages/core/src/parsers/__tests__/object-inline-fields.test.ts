@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { CustomObjectParser } from "../object/index.js";
 import { asOrgId } from "@ryanstark24/sfgraph-shared";
+import { describe, expect, it } from "vitest";
 import { METADATA_CATEGORY } from "../../domain/index.js";
+import { CustomObjectParser } from "../object/index.js";
 
 /**
  * Regression test for the live-org ingest path. The extractor in

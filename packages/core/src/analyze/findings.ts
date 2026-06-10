@@ -136,8 +136,8 @@ export const RULE_CATALOG: Record<string, RuleDescriptor> = {
 
 import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import type { NodeFact } from "../domain/index.js";
-import { findDeadCode } from "./dead-code.js";
 import type { AuditResult } from "./audit-graph.js";
+import { findDeadCode } from "./dead-code.js";
 import type { GovernorRisk } from "./governor.js";
 import type { SecurityAudit } from "./security.js";
 
@@ -179,9 +179,7 @@ export function deadCodeToFindings(nodes: NodeFact[]): Finding[] {
     level: "note",
     location: {
       qualifiedName: String(n.qualifiedName),
-      ...(typeof n.attributes.sourceUri === "string"
-        ? { sourceUri: n.attributes.sourceUri }
-        : {}),
+      ...(typeof n.attributes.sourceUri === "string" ? { sourceUri: n.attributes.sourceUri } : {}),
     },
     properties: { label: n.label },
   }));

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { REL_TYPES } from "../../domain/rel-types.js";
-import type { ParseContext } from "../contract.js";
 import { makeEdge } from "../common.js";
+import type { ParseContext } from "../contract.js";
 
 const REL_TYPE = REL_TYPES;
 
@@ -46,13 +46,10 @@ describe("W1-02: edge provenance via makeEdge", () => {
     // Post-merge resolver passes set sourceUri='post-merge://resolver' on
     // their attribute payload to mark synthesised edges. Make sure the
     // explicit caller value isn't silently overwritten by ctx.sourceUri.
-    const e = makeEdge(
-      ctx(),
-      "A:B",
-      REL_TYPE.CANONICAL_OF,
-      "A:C",
-      { sourceUri: "post-merge://resolver", signaturesMatch: true },
-    );
+    const e = makeEdge(ctx(), "A:B", REL_TYPE.CANONICAL_OF, "A:C", {
+      sourceUri: "post-merge://resolver",
+      signaturesMatch: true,
+    });
     expect(e.attributes.sourceUri).toBe("post-merge://resolver");
     expect(e.attributes.signaturesMatch).toBe(true);
   });

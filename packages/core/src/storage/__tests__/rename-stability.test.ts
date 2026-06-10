@@ -59,13 +59,7 @@ function db(store: SqliteGraphStore) {
 describe("W3-05: service-id ↔ qname map", () => {
   it("first record() returns detected:false, recorded:true", async () => {
     const store = await setupStore();
-    const result = recordServiceId(
-      db(store),
-      ORG,
-      "01p000000001",
-      "ApexClass:Foo",
-      "ApexClass",
-    );
+    const result = recordServiceId(db(store), ORG, "01p000000001", "ApexClass:Foo", "ApexClass");
     expect(result).toEqual({ detected: false, recorded: true });
     const lookup = lookupServiceId(db(store), ORG, "01p000000001");
     expect(lookup?.qualifiedName).toBe("ApexClass:Foo");
@@ -75,13 +69,7 @@ describe("W3-05: service-id ↔ qname map", () => {
   it("same record() twice returns detected:false, recorded:false (just refreshes lastSeenAt)", async () => {
     const store = await setupStore();
     recordServiceId(db(store), ORG, "01p000000001", "ApexClass:Foo", "ApexClass");
-    const result = recordServiceId(
-      db(store),
-      ORG,
-      "01p000000001",
-      "ApexClass:Foo",
-      "ApexClass",
-    );
+    const result = recordServiceId(db(store), ORG, "01p000000001", "ApexClass:Foo", "ApexClass");
     expect(result).toEqual({ detected: false, recorded: false });
     await store.close();
   });

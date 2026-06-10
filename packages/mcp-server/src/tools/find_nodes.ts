@@ -30,9 +30,7 @@ defineTool({
     if (input.label) opts.label = input.label;
     if (input.limit) opts.limit = input.limit;
     const result = analyze.findNodesByGlob(ctx.graphStore, ctx.orgId, input.pattern, opts);
-    const lines = result.matches.map(
-      (n) => `- \`${n.qualifiedName}\` (${n.label})`,
-    );
+    const lines = result.matches.map((n) => `- \`${n.qualifiedName}\` (${n.label})`);
     const md = [
       `Pattern \`${input.pattern}\` matched ${result.total} node${result.total === 1 ? "" : "s"}${
         result.truncated ? ` (showing first ${result.matches.length})` : ""

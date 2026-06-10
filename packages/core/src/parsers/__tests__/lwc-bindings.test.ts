@@ -28,7 +28,10 @@ describe("LWC template binding resolution (Phase 5)", () => {
       makeTestCtx(),
     );
 
-    const fieldEdges = result.edges.filter((e) => e.relType === "LWC_BINDS_FIELD").map((e) => String(e.dstQualifiedName)).sort();
+    const fieldEdges = result.edges
+      .filter((e) => e.relType === "LWC_BINDS_FIELD")
+      .map((e) => String(e.dstQualifiedName))
+      .sort();
     expect(fieldEdges).toContain("CustomField:Account.Name");
     expect(fieldEdges).toContain("CustomField:Account.Phone");
 
@@ -51,7 +54,7 @@ describe("LWC template binding resolution (Phase 5)", () => {
         record;
       }
     `;
-    const html = `<template><span>{record.fields.Name.value}</span></template>`;
+    const html = "<template><span>{record.fields.Name.value}</span></template>";
     const parser = new LwcBundleParser();
     const result = await parser.parse(
       { bundleName: "v53", files: { "v53.js": js, "v53.html": html } },
@@ -108,7 +111,9 @@ describe("LWC template binding resolution (Phase 5)", () => {
 
     // De-dup check: the directive value should not also surface as a plain
     // property bind (would double-count the same binding).
-    const isShownEdges = propEdges.filter((e) => String(e.dstQualifiedName) === "LWCProperty:isShown");
+    const isShownEdges = propEdges.filter(
+      (e) => String(e.dstQualifiedName) === "LWCProperty:isShown",
+    );
     expect(isShownEdges).toHaveLength(1);
   });
 
@@ -143,7 +148,9 @@ describe("LWC template binding resolution (Phase 5)", () => {
     expect(ifTrue).toBeDefined();
     expect(String(ifTrue?.dstQualifiedName)).toBe("LWCProperty:isOpen");
     // De-dup: if:true and if:false bind the same `isOpen` — emitted once.
-    const isOpenEdges = propEdges.filter((e) => String(e.dstQualifiedName) === "LWCProperty:isOpen");
+    const isOpenEdges = propEdges.filter(
+      (e) => String(e.dstQualifiedName) === "LWCProperty:isOpen",
+    );
     expect(isOpenEdges).toHaveLength(1);
     expect(ifFalse).toBeUndefined(); // dropped by de-dup; isOpen already seen via if:true
     expect(forEach).toBeDefined();
@@ -158,7 +165,7 @@ describe("LWC template binding resolution (Phase 5)", () => {
         handleClick() {}
       }
     `;
-    const html = `<template><button onclick={handleClick}>{count}</button></template>`;
+    const html = "<template><button onclick={handleClick}>{count}</button></template>";
     const parser = new LwcBundleParser();
     const result = await parser.parse(
       { bundleName: "plain", files: { "plain.js": js, "plain.html": html } },

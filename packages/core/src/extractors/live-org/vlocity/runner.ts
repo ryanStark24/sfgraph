@@ -239,7 +239,12 @@ export async function* iterVlocityRecords(
     for (const typeDef of entries) tasks.push({ namespace, typeDef });
   }
 
-  type Settled = { idx: number; t: Task; records: VRow[]; childrenByParent: Map<string, Array<Record<string, unknown>>> };
+  type Settled = {
+    idx: number;
+    t: Task;
+    records: VRow[];
+    childrenByParent: Map<string, Array<Record<string, unknown>>>;
+  };
 
   const runTask = async (idx: number, t: Task): Promise<Settled> => {
     const baseSoql = t.typeDef.query.split("%vlocity_namespace%").join(t.namespace);

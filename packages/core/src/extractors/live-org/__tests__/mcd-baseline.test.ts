@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { makeTestCtx } from "../../../parsers/__tests__/_harness.js";
-import { limiter } from "../rate-limit.js";
 import { MCD_LONG_TAIL_TYPES, runMcdBaseline } from "../extractors/mcd-baseline.js";
+import { limiter } from "../rate-limit.js";
 
 interface McdRow {
   Id: string;
@@ -58,7 +58,13 @@ describe("W2-03: MCD baseline extractor", () => {
     const rows = new Map<string, McdRow[]>([
       [
         "MetadataComponentType = 'Layout'",
-        [row({ Id: "1", MetadataComponentName: "Account-Layout", RefMetadataComponentName: "Account.Phone" })],
+        [
+          row({
+            Id: "1",
+            MetadataComponentName: "Account-Layout",
+            RefMetadataComponentName: "Account.Phone",
+          }),
+        ],
       ],
     ]);
     const { conn } = connWithRows(rows);
@@ -87,10 +93,7 @@ describe("W2-03: MCD baseline extractor", () => {
           if (callIdx === 1) {
             // First page — returns LIMIT rows so paginator continues.
             return {
-              records: [
-                row({ Id: "01q001" }),
-                row({ Id: "01q002" }),
-              ],
+              records: [row({ Id: "01q001" }), row({ Id: "01q002" })],
             };
           }
           if (callIdx === 2) {
@@ -139,8 +142,7 @@ describe("W2-03: MCD baseline extractor", () => {
       types: ["Layout", "Group"],
     });
     const layoutToGroup = result.edges.filter(
-      (e) =>
-        String(e.srcQualifiedName) === "Layout:A" && String(e.dstQualifiedName) === "Group:B",
+      (e) => String(e.srcQualifiedName) === "Layout:A" && String(e.dstQualifiedName) === "Group:B",
     );
     expect(layoutToGroup.length).toBe(1);
   });
@@ -152,9 +154,7 @@ describe("W2-03: MCD baseline extractor", () => {
       MetadataComponentName: "00hABC", // Id == Name → dynamic
       RefMetadataComponentName: "Account.Phone",
     });
-    const conn = connWithRows(
-      new Map([["MetadataComponentType = 'Layout'", [dynamicRow]]]),
-    );
+    const conn = connWithRows(new Map([["MetadataComponentType = 'Layout'", [dynamicRow]]]));
     const result = await runMcdBaseline(conn.conn, {
       orgId: "00Dxx0000000001",
       ctx: makeTestCtx(),

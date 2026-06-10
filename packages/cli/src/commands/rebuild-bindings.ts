@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import path from "node:path";
 import { createRequire } from "node:module";
+import path from "node:path";
 
 /**
  * Rebuild the better-sqlite3 native binding against the *current* Node
@@ -99,7 +99,7 @@ export async function rebuildBindingsCmd(opts: RebuildBindingsOpts = {}): Promis
       ? ["rebuild", "better-sqlite3"]
       : ["rebuild", "better-sqlite3", "--build-from-source"];
 
-  console.log(`sfgraph rebuild-bindings:`);
+  console.log("sfgraph rebuild-bindings:");
   console.log(`  Node:           ${process.version} (ABI ${process.versions.modules})`);
   console.log(`  Package mgr:    ${pm}`);
   console.log(`  Workspace:      ${cwd}`);
@@ -128,9 +128,13 @@ export async function rebuildBindingsCmd(opts: RebuildBindingsOpts = {}): Promis
     console.error("  Common cause: no C++ toolchain. Install one for your platform:");
     console.error("    macOS:   xcode-select --install");
     console.error("    Linux:   apt install build-essential python3   # Debian/Ubuntu");
-    console.error("             dnf groupinstall 'Development Tools' && dnf install python3   # Fedora/RHEL");
+    console.error(
+      "             dnf groupinstall 'Development Tools' && dnf install python3   # Fedora/RHEL",
+    );
     console.error("             pacman -S base-devel python   # Arch");
-    console.error("             apk add build-base python3   # Alpine (musl always rebuilds from source)");
+    console.error(
+      "             apk add build-base python3   # Alpine (musl always rebuilds from source)",
+    );
     console.error(
       "    Windows: install Visual Studio Build Tools with the 'Desktop development with C++' workload,",
     );
@@ -146,9 +150,7 @@ export async function rebuildBindingsCmd(opts: RebuildBindingsOpts = {}): Promis
   try {
     const req = createRequire(import.meta.url);
     // Clear any cached failure from earlier in this process.
-    delete (req.cache as Record<string, unknown> | undefined)?.[
-      req.resolve("better-sqlite3")
-    ];
+    delete (req.cache as Record<string, unknown> | undefined)?.[req.resolve("better-sqlite3")];
     req("better-sqlite3");
     console.log("");
     console.log("✓ better-sqlite3 loads cleanly for the current Node runtime.");

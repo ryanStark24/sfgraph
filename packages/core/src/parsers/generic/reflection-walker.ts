@@ -128,10 +128,7 @@ function buildBareNameIndex(
 ): { exact: Map<string, string[]>; lower: Map<string, string[]> } {
   const exact = new Map<string, string[]>();
   const lower = new Map<string, string[]>();
-  const labels =
-    scopeToLabels && scopeToLabels.length > 0
-      ? scopeToLabels
-      : store.listAllLabels();
+  const labels = scopeToLabels && scopeToLabels.length > 0 ? scopeToLabels : store.listAllLabels();
   for (const label of labels) {
     // 50k cap matches what find-nodes uses; bigger orgs would benefit
     // from streaming but this index lives in memory by design.

@@ -24,7 +24,11 @@ defineTool({
           summary: "no baseline snapshot",
           markdown: "> no auto snapshot found; pass `since` explicitly",
           data: { atRisk: [], covered: [] },
-          follow_up_tools: ["point_in_time_diff", "impact_from_git_diff", "deployment_manifest_gen"],
+          follow_up_tools: [
+            "point_in_time_diff",
+            "impact_from_git_diff",
+            "deployment_manifest_gen",
+          ],
         };
       }
       fromId = auto.id;

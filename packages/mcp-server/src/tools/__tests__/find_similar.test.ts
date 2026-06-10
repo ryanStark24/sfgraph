@@ -1,11 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  SqliteGraphStore,
-  SqliteSnapshotStore,
-  type VectorStore,
-} from "@ryanstark24/sfgraph-core";
+import { SqliteGraphStore, SqliteSnapshotStore, type VectorStore } from "@ryanstark24/sfgraph-core";
 import { type OrgId, asOrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ToolContext, setToolContextFactory } from "../../context.js";
@@ -162,8 +158,8 @@ describe("find_similar", () => {
 
   it("rejects when neither qname nor text is provided", async () => {
     await makeCtx(makeStubVectorStore({ vectors: new Map() }));
-    await expect(
-      callTool("find_similar", { org: "00DFINDSIM00000XYZ" }),
-    ).rejects.toThrow(/Provide exactly one|Invalid input/);
+    await expect(callTool("find_similar", { org: "00DFINDSIM00000XYZ" })).rejects.toThrow(
+      /Provide exactly one|Invalid input/,
+    );
   });
 });

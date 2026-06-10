@@ -65,10 +65,9 @@ async function safeQuery(conn: any, soql: string): Promise<{ records?: unknown[]
 
 async function safeToolingQuery(conn: any, soql: string): Promise<{ records?: unknown[] } | null> {
   try {
-    return (await withCapsTimeout(
-      conn.tooling.query(soql),
-      `tooling ${soql.slice(0, 40)}`,
-    )) as { records?: unknown[] };
+    return (await withCapsTimeout(conn.tooling.query(soql), `tooling ${soql.slice(0, 40)}`)) as {
+      records?: unknown[];
+    };
   } catch {
     return null;
   }

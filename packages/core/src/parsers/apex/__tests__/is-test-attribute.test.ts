@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ApexClassParser } from "../index.js";
 import { makeTestCtx } from "../../__tests__/_harness.js";
+import { ApexClassParser } from "../index.js";
 
 async function parse(body: string) {
   return new ApexClassParser().parse(
@@ -24,7 +24,10 @@ describe("W1-05: IS_TEST attribute on Apex class / method nodes", () => {
 
     // Both methods inherit isTest from class @isTest + static
     const testOne = result.nodes.find(
-      (n) => String(n.qualifiedName).startsWith("ApexMethod:SampleTest.testOne") || String(n.qualifiedName).startsWith("ApexMethod:SampleTest.testOne") || String(n.qualifiedName).includes("SampleTest.testOne"),
+      (n) =>
+        String(n.qualifiedName).startsWith("ApexMethod:SampleTest.testOne") ||
+        String(n.qualifiedName).startsWith("ApexMethod:SampleTest.testOne") ||
+        String(n.qualifiedName).includes("SampleTest.testOne"),
     );
     expect(testOne?.label).toBe("TestMethod");
     expect(testOne?.attributes.isTest).toBe(true);
@@ -49,9 +52,7 @@ describe("W1-05: IS_TEST attribute on Apex class / method nodes", () => {
     expect(test?.label).toBe("TestMethod");
     expect(test?.attributes.isTest).toBe(true);
 
-    const normal = result.nodes.find((n) =>
-      String(n.qualifiedName).includes("Mixed.normalMethod"),
-    );
+    const normal = result.nodes.find((n) => String(n.qualifiedName).includes("Mixed.normalMethod"));
     expect(normal?.label).toBe("ApexMethod");
     expect(normal?.attributes.isTest).toBe(false);
   });

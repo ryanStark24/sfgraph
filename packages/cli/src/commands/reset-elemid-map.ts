@@ -57,12 +57,8 @@ export async function resetElemIdMap(opts: ResetElemIdMapOpts): Promise<void> {
   if (!opts.yes) {
     console.log(`Will clear the service-id map for org=${orgId}`);
     console.log(`  Database: ${dbPath}`);
-    console.log(
-      "  This does NOT touch nodes, edges, snippets, or snapshots — only the",
-    );
-    console.log(
-      "  rename-detection lookup table. The next ingest will re-populate it.",
-    );
+    console.log("  This does NOT touch nodes, edges, snippets, or snapshots — only the");
+    console.log("  rename-detection lookup table. The next ingest will re-populate it.");
     console.log("  Re-run with --yes to confirm.");
     return;
   }
@@ -78,9 +74,7 @@ export async function resetElemIdMap(opts: ResetElemIdMapOpts): Promise<void> {
       (store as unknown as { db: Parameters<typeof resetServiceIdMap>[0] }).db,
       orgId,
     );
-    console.log(
-      `reset-elemid-map: cleared ${result.cleared} entries for org=${orgId}`,
-    );
+    console.log(`reset-elemid-map: cleared ${result.cleared} entries for org=${orgId}`);
   } finally {
     await store.close();
   }

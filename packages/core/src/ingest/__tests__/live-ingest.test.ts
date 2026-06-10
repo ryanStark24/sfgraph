@@ -22,17 +22,18 @@ describe("liveIngest", () => {
   it("ingests apex members from a mocked org and writes nodes", async () => {
     const conn = buildJsforceMock({
       toolingQueryResults: {
-        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass": {
-          records: [
-            {
-              Id: "01p1",
-              Name: "Hello",
-              Body: "public class Hello { public void greet() {} }",
-              LastModifiedDate: "2025-01-01T00:00:00Z",
-            },
-          ],
-          done: true,
-        },
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass":
+          {
+            records: [
+              {
+                Id: "01p1",
+                Name: "Hello",
+                Body: "public class Hello { public void greet() {} }",
+                LastModifiedDate: "2025-01-01T00:00:00Z",
+              },
+            ],
+            done: true,
+          },
         "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger":
           {
             records: [],
@@ -75,10 +76,11 @@ describe("liveIngest", () => {
   it("creates a pre-sync auto snapshot when a snapshotStore is provided", async () => {
     const conn = buildJsforceMock({
       toolingQueryResults: {
-        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass": {
-          records: [],
-          done: true,
-        },
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass":
+          {
+            records: [],
+            done: true,
+          },
         "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger":
           {
             records: [],
@@ -128,17 +130,18 @@ describe("liveIngest", () => {
   it("upserts snippets from the apex parser", async () => {
     const conn = buildJsforceMock({
       toolingQueryResults: {
-        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass": {
-          records: [
-            {
-              Id: "01p1",
-              Name: "Hello",
-              Body: "public class Hello { public void greet() { return; } }",
-              LastModifiedDate: "2025-01-01T00:00:00Z",
-            },
-          ],
-          done: true,
-        },
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass":
+          {
+            records: [
+              {
+                Id: "01p1",
+                Name: "Hello",
+                Body: "public class Hello { public void greet() { return; } }",
+                LastModifiedDate: "2025-01-01T00:00:00Z",
+              },
+            ],
+            done: true,
+          },
         "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger":
           { records: [], done: true },
         "SELECT Id, DeveloperName, NamespacePrefix, LastModifiedDate FROM LightningComponentBundle":

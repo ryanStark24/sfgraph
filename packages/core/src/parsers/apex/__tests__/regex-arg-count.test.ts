@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ApexClassParser } from "../index.js";
 import { makeTestCtx } from "../../__tests__/_harness.js";
+import { ApexClassParser } from "../index.js";
 
 async function callsFromBody(body: string) {
   const result = await new ApexClassParser().parse(

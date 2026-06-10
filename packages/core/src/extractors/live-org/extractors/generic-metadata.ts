@@ -34,7 +34,11 @@ export async function* iterGenericMetadata(
   let list: any[] = [];
   try {
     const raw = await scheduleMetadata(() =>
-      withTimeout(conn.metadata.list([{ type }]), METADATA_LIST_TIMEOUT_MS, `metadata.list ${type}`),
+      withTimeout(
+        conn.metadata.list([{ type }]),
+        METADATA_LIST_TIMEOUT_MS,
+        `metadata.list ${type}`,
+      ),
     );
     list = Array.isArray(raw) ? raw : raw ? [raw] : [];
   } catch {

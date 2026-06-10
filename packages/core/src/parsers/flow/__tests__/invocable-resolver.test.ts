@@ -19,7 +19,12 @@ async function seed() {
   return { store, orgId };
 }
 
-function node(orgId: ReturnType<typeof asOrgId>, qn: string, label: string, attrs: Record<string, unknown> = {}) {
+function node(
+  orgId: ReturnType<typeof asOrgId>,
+  qn: string,
+  label: string,
+  attrs: Record<string, unknown> = {},
+) {
   const ts = Date.now();
   return {
     orgId,

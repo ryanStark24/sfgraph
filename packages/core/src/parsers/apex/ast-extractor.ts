@@ -197,11 +197,7 @@ interface MethodContext {
   vars: Map<string, string>;
 }
 
-function paramQname(
-  effectiveName: string,
-  methodName: string,
-  arity: number,
-): string {
+function paramQname(effectiveName: string, methodName: string, arity: number): string {
   return `ApexMethod:${effectiveName}.${methodName}(${arity})`;
 }
 
@@ -272,7 +268,7 @@ function extractSoqlEdges(
     for (const obj of fromObjects) {
       edges.push(
         makeEdge(ctx, scope.qname, REL_TYPES.EXECUTES_SOQL, `CustomObject:${obj}`, {
-          query: queryText.length > 500 ? queryText.slice(0, 500) + "…" : queryText,
+          query: queryText.length > 500 ? `${queryText.slice(0, 500)}…` : queryText,
         }),
       );
     }
@@ -295,7 +291,12 @@ function extractSoqlEdges(
       const target = parts.length > 1 ? parts.slice(0, -1).join(".") : primary;
       if (!fieldName) continue;
       edges.push(
-        makeEdge(ctx, scope.qname, REL_TYPES.READS_FIELD, `CustomField:${stripNs(target, ctx.namespace)}.${fieldName}`),
+        makeEdge(
+          ctx,
+          scope.qname,
+          REL_TYPES.READS_FIELD,
+          `CustomField:${stripNs(target, ctx.namespace)}.${fieldName}`,
+        ),
       );
     }
   }
@@ -335,9 +336,7 @@ function extractDmlEdges(
       }
       const attrs: Record<string, unknown> = { target: exprTxt };
       if (target) attrs.targetSObject = stripNs(target, ctx.namespace);
-      edges.push(
-        makeEdge(ctx, scope.qname, REL_TYPES.EXECUTES_DML, `DML:${op}`, attrs),
-      );
+      edges.push(makeEdge(ctx, scope.qname, REL_TYPES.EXECUTES_DML, `DML:${op}`, attrs));
       if (target) {
         edges.push(
           makeEdge(
@@ -436,10 +435,16 @@ function extractMethodCalls(
         })()
       : 0;
     edges.push(
-      makeEdge(ctx, scope.qname, REL_TYPES.INSTANCE_OF, `ApexClass:${stripNs(bare, ctx.namespace)}`, {
-        arity,
-        resolvedBy: "ast",
-      }),
+      makeEdge(
+        ctx,
+        scope.qname,
+        REL_TYPES.INSTANCE_OF,
+        `ApexClass:${stripNs(bare, ctx.namespace)}`,
+        {
+          arity,
+          resolvedBy: "ast",
+        },
+      ),
     );
   }
 }

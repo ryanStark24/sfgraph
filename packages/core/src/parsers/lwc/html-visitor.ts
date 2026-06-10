@@ -116,7 +116,9 @@ export function extractHtmlEdges(
     const dst = `LWCProperty:${expr}`;
     if (!seenProperty.has(dst)) {
       seenProperty.add(dst);
-      extraEdges.push(makeEdge(ctx, lwcQname, REL_TYPES.LWC_BINDS_PROPERTY, dst, { binding: expr }));
+      extraEdges.push(
+        makeEdge(ctx, lwcQname, REL_TYPES.LWC_BINDS_PROPERTY, dst, { binding: expr }),
+      );
     }
   };
 
@@ -193,7 +195,6 @@ export function extractHtmlEdges(
           if (forItemAlias) extra.forItem = forItemAlias;
           emitDirectiveBinding(expr, a.name, extra);
         }
-        continue;
       }
     }
 
@@ -203,7 +204,11 @@ export function extractHtmlEdges(
     // `seenProperty` set populated by emitDirectiveBinding.
     for (const a of attrs) {
       const name = a.name;
-      if (CONDITIONAL_DIRECTIVES.has(name) || FOR_EACH_DIRECTIVES.has(name) || FOR_ITEM_ATTRS.has(name)) {
+      if (
+        CONDITIONAL_DIRECTIVES.has(name) ||
+        FOR_EACH_DIRECTIVES.has(name) ||
+        FOR_ITEM_ATTRS.has(name)
+      ) {
         continue;
       }
       if (name.startsWith("on") && name.length > 2) {

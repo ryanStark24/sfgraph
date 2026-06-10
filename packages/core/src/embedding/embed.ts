@@ -41,8 +41,7 @@ export async function embedTexts(
     env.allowRemoteModels = false;
 
     const envPath = opts.modelPath ?? process.env.SFGRAPH_EMBED_MODEL_PATH;
-    const modelId =
-      opts.modelId ?? process.env.SFGRAPH_EMBED_MODEL_ID ?? DEFAULT_MODEL_ID;
+    const modelId = opts.modelId ?? process.env.SFGRAPH_EMBED_MODEL_ID ?? DEFAULT_MODEL_ID;
     const dim =
       opts.dim ??
       (process.env.SFGRAPH_EMBED_MODEL_DIM
@@ -53,9 +52,9 @@ export async function embedTexts(
       env.localModelPath = envPath;
     } else {
       try {
-        const models = (await import(
-          "@ryanstark24/sfgraph-models" as unknown as string
-        )) as { MODEL_DATA_DIR?: string };
+        const models = (await import("@ryanstark24/sfgraph-models" as unknown as string)) as {
+          MODEL_DATA_DIR?: string;
+        };
         if (models?.MODEL_DATA_DIR) env.localModelPath = models.MODEL_DATA_DIR;
       } catch {
         /* models package optional */

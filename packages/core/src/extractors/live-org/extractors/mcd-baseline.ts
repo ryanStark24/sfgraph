@@ -98,16 +98,14 @@ async function fetchPaginated(
   let lastId = "";
   for (let page = 0; page < maxPages; page += 1) {
     const idFilter = lastId ? ` AND Id > '${lastId.replace(/'/g, "\\'")}'` : "";
-    const soql =
-      "SELECT Id, MetadataComponentId, MetadataComponentType, MetadataComponentName, MetadataComponentNamespace, " +
-      "RefMetadataComponentId, RefMetadataComponentType, RefMetadataComponentName, RefMetadataComponentNamespace " +
-      `FROM MetadataComponentDependency WHERE ${baseWhereClause}${idFilter} ` +
-      `ORDER BY Id ASC LIMIT ${pageSize}`;
+    const MCD_FIELDS =
+      "Id, MetadataComponentId, MetadataComponentType, MetadataComponentName, MetadataComponentNamespace, RefMetadataComponentId, RefMetadataComponentType, RefMetadataComponentName, RefMetadataComponentNamespace";
+    const soql = `SELECT ${MCD_FIELDS} FROM MetadataComponentDependency WHERE ${baseWhereClause}${idFilter} ORDER BY Id ASC LIMIT ${pageSize}`;
     let res: { records?: McdRow[] } | null = null;
     try {
-      res = (await scheduleQuery(() =>
-        soqlWithTimeout(conn.tooling.query(soql), label),
-      )) as { records?: McdRow[] } | null;
+      res = (await scheduleQuery(() => soqlWithTimeout(conn.tooling.query(soql), label))) as {
+        records?: McdRow[];
+      } | null;
     } catch (e) {
       onError?.(label, e as Error);
       break;
@@ -123,10 +121,7 @@ async function fetchPaginated(
   return rows;
 }
 
-export async function runMcdBaseline(
-  conn: any,
-  opts: McdBaselineOpts,
-): Promise<McdBaselineResult> {
+export async function runMcdBaseline(conn: any, opts: McdBaselineOpts): Promise<McdBaselineResult> {
   const orgId = typeof opts.orgId === "string" ? asOrgId(opts.orgId) : opts.orgId;
   const types = opts.types ?? MCD_LONG_TAIL_TYPES;
   const pageSize = opts.pageSize ?? 2000;

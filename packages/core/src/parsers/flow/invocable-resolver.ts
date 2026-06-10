@@ -66,11 +66,7 @@ export function resolveFlowApexMethods(
   // Find every FLOW_INVOKES_APEX edge and try to resolve it.
   // listEdgesByDstLike("ApexClass:%") is cheap given how many ApexClass nodes
   // exist in a typical org.
-  const flowEdges = store.listEdgesByDstLike(
-    orgId,
-    "ApexClass:%",
-    REL_TYPES.FLOW_INVOKES_APEX,
-  );
+  const flowEdges = store.listEdgesByDstLike(orgId, "ApexClass:%", REL_TYPES.FLOW_INVOKES_APEX);
 
   const newEdges = [] as ReturnType<typeof makeEdge>[];
   for (const edge of flowEdges) {

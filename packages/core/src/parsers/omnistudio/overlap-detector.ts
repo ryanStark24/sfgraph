@@ -111,12 +111,7 @@ export function detectOmnistudioOverlap(
   // labels listed in cross-flavor-resolver.PAIRS, so we iterate those
   // and read each node's outgoing CANONICAL_OF edges to find the pair.
   // This avoids scanning the whole edge table.
-  const FLAVOR_LABELS = [
-    "DataRaptor",
-    "IntegrationProcedure",
-    "OmniScript",
-    "VlocityCard",
-  ];
+  const FLAVOR_LABELS = ["DataRaptor", "IntegrationProcedure", "OmniScript", "VlocityCard"];
 
   // Cache outgoing edges per node so we don't re-fetch them when a node
   // appears in multiple CANONICAL_OF pairs (rare but possible if a name
@@ -143,9 +138,7 @@ export function detectOmnistudioOverlap(
         .listEdgesFrom(orgId, n.qualifiedName, REL_TYPES.CANONICAL_OF)
         .filter((e) => e.relType === REL_TYPES.CANONICAL_OF);
       for (const ce of canonEdges) {
-        const pairKey = [String(ce.srcQualifiedName), String(ce.dstQualifiedName)]
-          .sort()
-          .join("|");
+        const pairKey = [String(ce.srcQualifiedName), String(ce.dstQualifiedName)].sort().join("|");
         const alreadySeen = seenPairs.has(pairKey);
 
         const sigA = buildSignature(outgoingOf(ce.srcQualifiedName));

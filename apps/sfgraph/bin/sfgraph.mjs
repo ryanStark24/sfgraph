@@ -63,8 +63,7 @@ function preflightNativeDeps() {
       return;
     }
     process.stderr.write(
-      `\nsfgraph: better-sqlite3 native binding doesn't match Node ${process.version} (ABI ${process.versions.modules}).\n` +
-        `Rebuilding from source — this takes ~20 seconds and only happens once per Node version.\n\n`,
+      `\nsfgraph: better-sqlite3 native binding doesn't match Node ${process.version} (ABI ${process.versions.modules}).\nRebuilding from source — this takes ~20 seconds and only happens once per Node version.\n\n`,
     );
     const dir = locateBetterSqlite3(req);
     if (!dir) {
@@ -85,7 +84,9 @@ function preflightNativeDeps() {
       },
     });
     if (r.status !== 0) {
-      process.stderr.write("\nsfgraph: auto-rebuild failed. Run `pnpm rebuild better-sqlite3` manually.\n");
+      process.stderr.write(
+        "\nsfgraph: auto-rebuild failed. Run `pnpm rebuild better-sqlite3` manually.\n",
+      );
       process.exit(1);
     }
     process.stderr.write("sfgraph: rebuild succeeded — continuing.\n\n");

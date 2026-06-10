@@ -26,8 +26,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // biome-ignore lint/performance/noDelete: assigning undefined to process.env coerces to the string "undefined"
   if (prevHome === undefined) delete process.env.SFGRAPH_HOME;
   else process.env.SFGRAPH_HOME = prevHome;
+  // biome-ignore lint/performance/noDelete: assigning undefined to process.env coerces to the string "undefined"
   if (prevXdg === undefined) delete process.env.XDG_DATA_HOME;
   else process.env.XDG_DATA_HOME = prevXdg;
   rmSync(tmpHome, { recursive: true, force: true });

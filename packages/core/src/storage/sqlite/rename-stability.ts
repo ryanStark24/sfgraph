@@ -1,5 +1,5 @@
-import type Database from "better-sqlite3";
 import type { OrgId } from "@ryanstark24/sfgraph-shared";
+import type Database from "better-sqlite3";
 
 /** Alias for better-sqlite3's Database handle — kept local rather than
  *  re-exported from load-better-sqlite3 so the dep graph stays one-way. */
@@ -151,22 +151,18 @@ export function rewriteEdgesForRename(
   newQname: string,
 ): { srcRewritten: number; dstRewritten: number } {
   const orgIdStr = String(orgId);
-  const edgeTables = db
-    .prepare("SELECT table_name FROM _sfgraph_edge_types")
-    .all() as Array<{ table_name: string }>;
+  const edgeTables = db.prepare("SELECT table_name FROM _sfgraph_edge_types").all() as Array<{
+    table_name: string;
+  }>;
   let srcRewritten = 0;
   let dstRewritten = 0;
   for (const { table_name } of edgeTables) {
     const srcResult = db
-      .prepare(
-        `UPDATE ${table_name} SET src_qname = ? WHERE org_id = ? AND src_qname = ?`,
-      )
+      .prepare(`UPDATE ${table_name} SET src_qname = ? WHERE org_id = ? AND src_qname = ?`)
       .run(newQname, orgIdStr, oldQname);
     srcRewritten += srcResult.changes;
     const dstResult = db
-      .prepare(
-        `UPDATE ${table_name} SET dst_qname = ? WHERE org_id = ? AND dst_qname = ?`,
-      )
+      .prepare(`UPDATE ${table_name} SET dst_qname = ? WHERE org_id = ? AND dst_qname = ?`)
       .run(newQname, orgIdStr, oldQname);
     dstRewritten += dstResult.changes;
   }
@@ -184,8 +180,6 @@ export function resetServiceIdMap(
   db: BetterSqlite3Database,
   orgId: OrgId | string,
 ): { cleared: number } {
-  const result = db
-    .prepare("DELETE FROM _sfgraph_service_ids WHERE org_id = ?")
-    .run(String(orgId));
+  const result = db.prepare("DELETE FROM _sfgraph_service_ids WHERE org_id = ?").run(String(orgId));
   return { cleared: result.changes };
 }

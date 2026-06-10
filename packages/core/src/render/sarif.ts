@@ -103,9 +103,7 @@ function findingToSarifResult(f: Finding): SarifResult {
   // Always include the graph node as a logicalLocation — SARIF allows
   // results without a physicalLocation as long as a logicalLocation
   // identifies the subject.
-  physical.logicalLocations = [
-    { fullyQualifiedName: f.location.qualifiedName, kind: "module" },
-  ];
+  physical.logicalLocations = [{ fullyQualifiedName: f.location.qualifiedName, kind: "module" }];
   locations.push(physical);
 
   const result: SarifResult = {

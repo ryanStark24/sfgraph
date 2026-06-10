@@ -1,10 +1,10 @@
 import Bottleneck from "bottleneck";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  DEFAULT_POOL_CONCURRENCY,
   configureDefaultPools,
   createRateLimitPools,
   dataPool,
-  DEFAULT_POOL_CONCURRENCY,
   metadataPool,
   scheduleData,
   scheduleMetadata,
@@ -41,8 +41,11 @@ describe("rate-limit pools", () => {
 describe("rate-limit pool overrides", () => {
   // Capture defaults so we can restore between tests.
   const restore = async () => {
+    // biome-ignore lint/performance/noDelete: assigning undefined to process.env coerces to the string "undefined"
     delete process.env.SFGRAPH_TOOLING_POOL;
+    // biome-ignore lint/performance/noDelete: assigning undefined to process.env coerces to the string "undefined"
     delete process.env.SFGRAPH_METADATA_POOL;
+    // biome-ignore lint/performance/noDelete: assigning undefined to process.env coerces to the string "undefined"
     delete process.env.SFGRAPH_DATA_POOL;
     await configureDefaultPools({
       tooling: DEFAULT_POOL_CONCURRENCY.tooling,

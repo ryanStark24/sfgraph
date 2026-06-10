@@ -33,12 +33,7 @@ describe("rate-limit", () => {
   });
 
   it("readMetadataBatchAdaptive bisects on timeout and resolves singletons", async () => {
-    const items = [
-      { fullName: "a" },
-      { fullName: "b" },
-      { fullName: "c" },
-      { fullName: "d" },
-    ];
+    const items = [{ fullName: "a" }, { fullName: "b" }, { fullName: "c" }, { fullName: "d" }];
     const POISON = "c";
     const conn = {
       metadata: {

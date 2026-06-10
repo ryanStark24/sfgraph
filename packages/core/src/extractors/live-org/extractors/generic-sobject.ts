@@ -15,9 +15,9 @@ export async function* iterGenericSObject(
   const soql = `SELECT ${fields.join(", ")} FROM ${sobject}`;
   let result: { records?: any[] } | null = null;
   try {
-    result = (await scheduleData(() =>
-      soqlWithTimeout(conn.query(soql), `data ${sobject}`),
-    )) as { records?: any[] } | null;
+    result = (await scheduleData(() => soqlWithTimeout(conn.query(soql), `data ${sobject}`))) as {
+      records?: any[];
+    } | null;
   } catch {
     return;
   }

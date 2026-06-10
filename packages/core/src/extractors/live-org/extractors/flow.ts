@@ -29,7 +29,11 @@ interface MdListItem {
  */
 export async function* iterFlow(conn: any): AsyncIterable<RawMember> {
   const list = (await scheduleMetadata(() =>
-    withTimeout(conn.metadata.list([{ type: "Flow" }]), METADATA_LIST_TIMEOUT_MS, "metadata.list Flow"),
+    withTimeout(
+      conn.metadata.list([{ type: "Flow" }]),
+      METADATA_LIST_TIMEOUT_MS,
+      "metadata.list Flow",
+    ),
   )) as MdListItem[] | null;
   const items = Array.isArray(list) ? list : [];
   const batches: MdListItem[][] = [];

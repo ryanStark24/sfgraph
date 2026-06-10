@@ -76,9 +76,7 @@ export interface StopSignal {
 export class StopWaitingError extends Error {
   readonly stopWaiting = true as const;
   constructor(label: string) {
-    super(
-      `stop-waiting: source "${label}" was instructed to stop awaiting an in-flight request`,
-    );
+    super(`stop-waiting: source "${label}" was instructed to stop awaiting an in-flight request`);
     this.name = "StopWaitingError";
   }
 }

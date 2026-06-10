@@ -29,10 +29,7 @@ describe("W3-01/W3-02: SARIF 2.1.0 emitter", () => {
     ];
     const report = emitSarif({ version: "1.1.8", findings });
     const rules = report.runs[0]?.tool.driver.rules ?? [];
-    expect(rules.map((r) => r.id).sort()).toEqual([
-      "governor.soql-in-loop",
-      "security.fls-gap",
-    ]);
+    expect(rules.map((r) => r.id).sort()).toEqual(["governor.soql-in-loop", "security.fls-gap"]);
     // Other rules in the catalog (e.g. dead-code.unreferenced) NOT emitted
     expect(rules.find((r) => r.id === "dead-code.unreferenced")).toBeUndefined();
   });

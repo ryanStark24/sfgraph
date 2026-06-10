@@ -518,9 +518,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
           const arity = countCallArgs(body, matchEnd);
           const dstArity = arity == null ? "?" : String(arity);
           const attrs: Record<string, unknown> =
-            arity == null
-              ? { unresolvedArity: true }
-              : { resolvedBy: "regex-arg-count", arity };
+            arity == null ? { unresolvedArity: true } : { resolvedBy: "regex-arg-count", arity };
           edges.push(
             makeEdge(
               ctx,

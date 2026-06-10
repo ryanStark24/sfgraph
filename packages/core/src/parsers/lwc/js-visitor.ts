@@ -133,13 +133,9 @@ export function extractJsEdges(
           bindings.schemaFieldImports.set(String(localDefault.local.name), { sObject, field });
         }
         extraEdges.push(
-          makeEdge(
-            ctx,
-            lwcQname,
-            REL_TYPES.READS_FIELD,
-            `CustomField:${sObject}.${field}`,
-            { via: "schema-import" },
-          ),
+          makeEdge(ctx, lwcQname, REL_TYPES.READS_FIELD, `CustomField:${sObject}.${field}`, {
+            via: "schema-import",
+          }),
         );
         return;
       }
@@ -154,13 +150,9 @@ export function extractJsEdges(
           bindings.schemaObjectImports.set(String(localDefault.local.name), sObject);
         }
         extraEdges.push(
-          makeEdge(
-            ctx,
-            lwcQname,
-            REL_TYPES.REFERENCES_OBJECT,
-            `CustomObject:${sObject}`,
-            { via: "schema-import" },
-          ),
+          makeEdge(ctx, lwcQname, REL_TYPES.REFERENCES_OBJECT, `CustomObject:${sObject}`, {
+            via: "schema-import",
+          }),
         );
       }
     },

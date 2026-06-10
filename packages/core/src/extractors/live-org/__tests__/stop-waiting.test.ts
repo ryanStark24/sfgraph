@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RawMember } from "../../interfaces/metadata-source.js";
 import { __testing as bulkRetrieveTesting } from "../bulk-retrieve.js";
 import {
+  type StopSignal,
+  StopWaitingError,
   scheduleQuery,
   soqlWithTimeout,
-  StopWaitingError,
   withTimeout,
-  type StopSignal,
 } from "../rate-limit.js";
 
 /**
@@ -253,18 +253,8 @@ describe("W1.5-03: integration with keystone (AsyncLocalStorage propagation)", (
       lateDrainBudgetMs: 0, // skip late-drain to keep test deterministic
     });
 
-    const wrappedA = bulkRetrieveTesting.failSoft(
-      "wedge:A",
-      wedgedFactory,
-      undefined,
-      coordinator,
-    );
-    const wrappedB = bulkRetrieveTesting.failSoft(
-      "wedge:B",
-      wedge2Factory,
-      undefined,
-      coordinator,
-    );
+    const wrappedA = bulkRetrieveTesting.failSoft("wedge:A", wedgedFactory, undefined, coordinator);
+    const wrappedB = bulkRetrieveTesting.failSoft("wedge:B", wedge2Factory, undefined, coordinator);
 
     // Drain through the parallel merger with concurrency=2 so both wedges
     // enter their bodies and trip the watchdog.

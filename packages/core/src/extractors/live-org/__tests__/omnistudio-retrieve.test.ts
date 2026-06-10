@@ -2,10 +2,7 @@ import { Buffer } from "node:buffer";
 import JSZip from "jszip";
 import { describe, expect, it } from "vitest";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import {
-  iterOmnistudioRetrieve,
-  shouldSkipForQuota,
-} from "../extractors/omnistudio-retrieve.js";
+import { iterOmnistudioRetrieve, shouldSkipForQuota } from "../extractors/omnistudio-retrieve.js";
 
 async function buildFixtureZip(files: Record<string, string>): Promise<string> {
   const zip = new JSZip();
@@ -68,7 +65,8 @@ describe("W2-02: shouldSkipForQuota", () => {
 describe("W2-02: iterOmnistudioRetrieve", () => {
   it("yields one RawMember per extracted file across all three types", async () => {
     const uiCardZip = await buildFixtureZip({
-      "unpackaged/omniUiCards/AccountCard.omniUiCard": "<OmniUiCard><name>AccountCard</name></OmniUiCard>",
+      "unpackaged/omniUiCards/AccountCard.omniUiCard":
+        "<OmniUiCard><name>AccountCard</name></OmniUiCard>",
       "unpackaged/package.xml": "<Package/>",
     });
     const ipZip = await buildFixtureZip({

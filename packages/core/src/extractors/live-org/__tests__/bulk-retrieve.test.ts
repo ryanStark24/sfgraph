@@ -19,21 +19,23 @@ const baseCaps: OrgCapabilities = {
 function mockConn() {
   return buildJsforceMock({
     toolingQueryResults: {
-      "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass": {
-        records: [
-          {
-            Id: "01p000001",
-            Name: "Hello",
-            Body: "public class Hello {}",
-            LastModifiedDate: "2025-01-01T00:00:00Z",
-          },
-        ],
-        done: true,
-      },
-      "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger": {
-        records: [],
-        done: true,
-      },
+      "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass":
+        {
+          records: [
+            {
+              Id: "01p000001",
+              Name: "Hello",
+              Body: "public class Hello {}",
+              LastModifiedDate: "2025-01-01T00:00:00Z",
+            },
+          ],
+          done: true,
+        },
+      "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger":
+        {
+          records: [],
+          done: true,
+        },
       "SELECT Id, DeveloperName, NamespacePrefix, LastModifiedDate FROM LightningComponentBundle": {
         records: [],
         done: true,

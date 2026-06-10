@@ -103,9 +103,7 @@ function checkMacosCodesign(requireFn?: (id: string) => unknown): Omit<DoctorChe
   let bindingPath: string | null = null;
   try {
     // The official entry point is index.js; the .node lives under build/Release.
-    const entry = (req as unknown as { resolve: (id: string) => string }).resolve(
-      "better-sqlite3",
-    );
+    const entry = (req as unknown as { resolve: (id: string) => string }).resolve("better-sqlite3");
     // entry ≈ <pkg>/lib/index.js — walk up to <pkg> then into build/Release.
     const pkgRoot = path.resolve(path.dirname(entry), "..");
     const candidate = path.join(pkgRoot, "build", "Release", "better_sqlite3.node");
@@ -174,7 +172,8 @@ function checkMacosCodesign(requireFn?: (id: string) => unknown): Omit<DoctorChe
 </dict></plist>`;
       return {
         status: "warn",
-        detail: `Node has Hardened Runtime with library validation; AMFI will SIGKILL on ad-hoc-signed bindings mid-ingest (silent death, no error). Re-sign Node with disable-library-validation entitlement.`,
+        detail:
+          "Node has Hardened Runtime with library validation; AMFI will SIGKILL on ad-hoc-signed bindings mid-ingest (silent death, no error). Re-sign Node with disable-library-validation entitlement.",
         fix: `cat > ${entitlementsPath} <<'EOF'\n${plistBody}\nEOF\ncodesign --force --sign - --entitlements ${entitlementsPath} ${process.execPath}`,
       };
     }

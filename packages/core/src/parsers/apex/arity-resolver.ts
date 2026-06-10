@@ -59,7 +59,9 @@ function parseStranded(qname: string): MethodKey | null {
   return { className: m[1] ?? "", methodName: m[2] ?? "" };
 }
 
-function parseResolved(qname: string): { className: string; methodName: string; arity: number } | null {
+function parseResolved(
+  qname: string,
+): { className: string; methodName: string; arity: number } | null {
   const m = REAL_QNAME_RE.exec(qname);
   if (!m) return null;
   return {
@@ -122,13 +124,19 @@ export function resolveApexMethodArity(
       if (candidates.length > 1) result.ambiguous += 1;
 
       const newEdges = candidates.map((cand) => {
-        const e = makeEdge(opts.ctx, String(edge.srcQualifiedName), edge.relType, String(cand.qualifiedName), {
-          ...edge.attributes,
-          unresolvedArity: undefined,
-          resolvedBy: "arity-resolver",
-          ambiguous: candidates.length > 1,
-          overloadCount: candidates.length,
-        });
+        const e = makeEdge(
+          opts.ctx,
+          String(edge.srcQualifiedName),
+          edge.relType,
+          String(cand.qualifiedName),
+          {
+            ...edge.attributes,
+            unresolvedArity: undefined,
+            resolvedBy: "arity-resolver",
+            ambiguous: candidates.length > 1,
+            overloadCount: candidates.length,
+          },
+        );
         // makeEdge stamps firstSeenAt = now; preserve the original to keep
         // freshness signals intact. Force orgId to match the stranded
         // edge in case the caller passed a ParseContext bound to a

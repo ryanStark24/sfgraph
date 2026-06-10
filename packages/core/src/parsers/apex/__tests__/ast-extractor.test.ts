@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { extractFromAst } from "../ast-extractor.js";
 import { makeTestCtx } from "../../__tests__/_harness.js";
+import { extractFromAst } from "../ast-extractor.js";
 
 async function parse(source: string): Promise<unknown> {
   const apex = await import("apex-parser");
@@ -44,8 +44,15 @@ describe("extractFromAst", () => {
       namespace: null,
     });
 
-    expect(out.edges.some((e: any) => e.relType === "EXECUTES_SOQL" && e.dstQualifiedName === "CustomObject:Account")).toBe(true);
-    const reads = out.edges.filter((e: any) => e.relType === "READS_FIELD").map((e: any) => String(e.dstQualifiedName)).sort();
+    expect(
+      out.edges.some(
+        (e: any) => e.relType === "EXECUTES_SOQL" && e.dstQualifiedName === "CustomObject:Account",
+      ),
+    ).toBe(true);
+    const reads = out.edges
+      .filter((e: any) => e.relType === "READS_FIELD")
+      .map((e: any) => String(e.dstQualifiedName))
+      .sort();
     expect(reads).toEqual([
       "CustomField:Account.Id",
       "CustomField:Account.Name",
@@ -70,11 +77,18 @@ describe("extractFromAst", () => {
       namespace: null,
     });
 
-    expect(out.edges.some((e: any) =>
-      e.relType === "READS_FIELD" && e.dstQualifiedName === "CustomField:Account.Name")).toBe(true);
+    expect(
+      out.edges.some(
+        (e: any) =>
+          e.relType === "READS_FIELD" && e.dstQualifiedName === "CustomField:Account.Name",
+      ),
+    ).toBe(true);
     // INSTANCE_OF for new Account()
-    expect(out.edges.some((e: any) =>
-      e.relType === "INSTANCE_OF" && e.dstQualifiedName === "ApexClass:Account")).toBe(true);
+    expect(
+      out.edges.some(
+        (e: any) => e.relType === "INSTANCE_OF" && e.dstQualifiedName === "ApexClass:Account",
+      ),
+    ).toBe(true);
   });
 
   it("captures method calls with real arity", async () => {
@@ -94,7 +108,10 @@ describe("extractFromAst", () => {
       namespace: null,
     });
 
-    const calls = out.edges.filter((e: any) => e.relType === "CALLS").map((e: any) => String(e.dstQualifiedName)).sort();
+    const calls = out.edges
+      .filter((e: any) => e.relType === "CALLS")
+      .map((e: any) => String(e.dstQualifiedName))
+      .sort();
     expect(calls).toContain("ApexMethod:MyService.doIt(0)");
     expect(calls).toContain("ApexMethod:MyService.doIt(3)");
     // None should still have the (?) arity placeholder.
@@ -146,8 +163,11 @@ describe("extractFromAst", () => {
     const dml = out.edges.filter((e: any) => e.relType === "EXECUTES_DML");
     expect(dml.length).toBe(1);
     expect((dml[0] as any).attributes.targetSObject).toBe("Account");
-    expect(out.edges.some((e: any) =>
-      e.relType === "WRITES_FIELD" && e.dstQualifiedName === "CustomObject:Account")).toBe(true);
+    expect(
+      out.edges.some(
+        (e: any) => e.relType === "WRITES_FIELD" && e.dstQualifiedName === "CustomObject:Account",
+      ),
+    ).toBe(true);
   });
 
   it("captures extends and implements declarations", async () => {
@@ -162,8 +182,15 @@ describe("extractFromAst", () => {
       namespace: null,
     });
 
-    expect(out.edges.some((e: any) => e.relType === "EXTENDS" && e.dstQualifiedName === "ApexClass:Parent")).toBe(true);
-    const impls = out.edges.filter((e: any) => e.relType === "IMPLEMENTS").map((e: any) => String(e.dstQualifiedName)).sort();
+    expect(
+      out.edges.some(
+        (e: any) => e.relType === "EXTENDS" && e.dstQualifiedName === "ApexClass:Parent",
+      ),
+    ).toBe(true);
+    const impls = out.edges
+      .filter((e: any) => e.relType === "IMPLEMENTS")
+      .map((e: any) => String(e.dstQualifiedName))
+      .sort();
     expect(impls).toEqual(["ApexInterface:MyIface", "ApexInterface:Other"]);
   });
 });

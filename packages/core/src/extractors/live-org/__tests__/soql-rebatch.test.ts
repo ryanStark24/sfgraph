@@ -23,9 +23,9 @@ describe("W2-05: isRebatchableSoqlError classifier", () => {
 
   it("falls back to message matching", () => {
     expect(isRebatchableSoqlError(new Error("Request URI Too Long"))).toBe(true);
-    expect(isRebatchableSoqlError(new Error("MALFORMED_QUERY: query body too many characters"))).toBe(
-      true,
-    );
+    expect(
+      isRebatchableSoqlError(new Error("MALFORMED_QUERY: query body too many characters")),
+    ).toBe(true);
   });
 
   it("rejects unrelated errors (auth, timeout, etc.)", () => {

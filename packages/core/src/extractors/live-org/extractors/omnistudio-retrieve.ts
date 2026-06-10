@@ -176,7 +176,10 @@ export async function* iterOmnistudioRetrieve(
         label,
       )) as RetrieveResultLite;
       if (result.status && result.status !== "Succeeded") {
-        opts.onError?.(label, new Error(`retrieve() status=${result.status} ${result.errorMessage ?? ""}`));
+        opts.onError?.(
+          label,
+          new Error(`retrieve() status=${result.status} ${result.errorMessage ?? ""}`),
+        );
         continue;
       }
       if (!result.zipFile) {

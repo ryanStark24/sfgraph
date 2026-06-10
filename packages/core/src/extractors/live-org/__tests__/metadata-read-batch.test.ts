@@ -1,9 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  METADATA_READ_BATCH_SIZE,
-  limiter,
-  readMetadataBatchAdaptive,
-} from "../rate-limit.js";
+import { METADATA_READ_BATCH_SIZE, limiter, readMetadataBatchAdaptive } from "../rate-limit.js";
 
 interface Item {
   fullName: string;
@@ -83,7 +79,9 @@ describe("W2-06: readMetadataBatchAdaptive pre-chunks to the Metadata API per-ca
     // while chunk 2 (Item10..Item19) bisected at least once.
     const chunk1Calls = calls.filter((c) => c.names[0] === "Item0");
     const chunk3Calls = calls.filter((c) => c.names[0] === "Item20");
-    const chunk2Calls = calls.filter((c) => c.names[0]?.startsWith("Item1") && c.names[0] !== "Item20");
+    const chunk2Calls = calls.filter(
+      (c) => c.names[0]?.startsWith("Item1") && c.names[0] !== "Item20",
+    );
     expect(chunk1Calls.length).toBe(1);
     expect(chunk3Calls.length).toBe(1);
     expect(chunk2Calls.length).toBeGreaterThan(1);

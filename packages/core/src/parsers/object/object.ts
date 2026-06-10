@@ -83,11 +83,7 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
     // a node with zero outgoing edges and zero CustomField children, which
     // breaks trace_downstream / analyze_field for standard objects like
     // Account / Contact / Opportunity.
-    const inlineFields = obj.fields
-      ? Array.isArray(obj.fields)
-        ? obj.fields
-        : [obj.fields]
-      : [];
+    const inlineFields = obj.fields ? (Array.isArray(obj.fields) ? obj.fields : [obj.fields]) : [];
     for (const f of inlineFields) {
       if (!f || typeof f !== "object") continue;
       const fieldApi = String(f.fullName ?? f.name ?? "");
