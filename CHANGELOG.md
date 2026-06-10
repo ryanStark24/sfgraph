@@ -1,5 +1,9 @@
 # Changelog
 
+## skills 1.2.0
+
+Shipped as part of the 1.4.0 release (the skills package is versioned independently). Adds the `sf-graph-router` start-here/grounding-first skill, `sf-debug-root-cause`, and `sf-debug-log-analysis`; grounding-first cross-links from the `sf-architect-*` design skills; and playbook corrections aligned with real tool behavior. See the **1.4.0 — Skills** section below for detail.
+
 ## 1.4.0 — real-org correctness: Vlocity/OmniStudio lineage, config values, tool & skill hardening
 
 Driven by validating sfgraph against a large real Vlocity-CMT enterprise org (89k+ nodes). Every fix below was caught or confirmed by a real ingest, not just unit tests — several were "green tests, broken on a real org" seams. Packages bumped: core/server/cli/`sfgraph` → 1.4.0, skills → 1.2.0, web → 1.1.9.
