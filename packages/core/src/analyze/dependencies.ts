@@ -1,7 +1,12 @@
 import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { EdgeFact, NodeFact } from "../domain/index.js";
 import type { GraphStore } from "../storage/interfaces.js";
-import { TRAVERSAL_NODE_CAP_DEFAULT, type TraversalResult } from "./dependents.js";
+import {
+  TRAVERSAL_NODE_CAP_DEFAULT,
+  type TraversalOpts,
+  type TraversalResult,
+} from "./dependents.js";
+import { keepEdge } from "./edge-filters.js";
 
 function nodeCap(): number {
   const raw = process.env.SFGRAPH_TRAVERSAL_NODE_CAP;
@@ -15,6 +20,7 @@ export function findDependencies(
   orgId: OrgId,
   qname: QualifiedName,
   depth = 3,
+  opts: TraversalOpts = {},
 ): TraversalResult {
   const cap = nodeCap();
   const visited = new Set<string>();
@@ -23,11 +29,16 @@ export function findDependencies(
   let frontier: QualifiedName[] = [qname];
   visited.add(qname);
   let truncated = false;
+  let filtered = 0;
   bfs: for (let d = 0; d < depth && frontier.length > 0; d++) {
     const next: QualifiedName[] = [];
     for (const cur of frontier) {
       const outgoing = store.listEdgesFrom(orgId, cur);
       for (const e of outgoing) {
+        if (!keepEdge(e, opts)) {
+          filtered += 1;
+          continue;
+        }
         edges.push(e);
         if (!visited.has(e.dstQualifiedName)) {
           visited.add(e.dstQualifiedName);
@@ -43,5 +54,5 @@ export function findDependencies(
     }
     frontier = next;
   }
-  return { nodes, edges, truncated };
+  return { nodes, edges, truncated, filtered };
 }
