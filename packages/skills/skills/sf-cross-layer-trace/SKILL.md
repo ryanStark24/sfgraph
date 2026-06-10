@@ -65,6 +65,10 @@ flowchart TD
 
 If the resolved trace has >30 nodes, ask the user to narrow to a single layer-pair before rendering — a sprawling layered diagram is more misleading than no diagram.
 
+## Trace-tool noise defaults
+
+If you drop down to `trace_upstream` / `trace_downstream` for a raw dependency walk, note they **hide security-grant and inferred edges by default**. A class granted to 100+ profiles, or a Vlocity node with reflection-walker string-name matches, would otherwise drown the real dependencies. The response tells you "N edges hidden". Only pass `include_security: true` for an access-centric question, or `include_inferred: true` when the user explicitly wants low-confidence reflection links. Use `rel_types: [...]` to pin a walk to specific relationships (e.g. `["CALLS","IS_TEST_FOR"]`). `cross_layer_flow_map` is unaffected — it already follows curated layer edges.
+
 ## Staleness check
 
 Before calling `cross_layer_flow_map`, invoke `staleness_check` for the target org. If the report says stale, surface a warning to the user:

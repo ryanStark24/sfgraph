@@ -20,8 +20,10 @@ Use when the user asks about who can read or write a field/object, what sharing 
 
 ## Playbook
 
-1. Resolve the target. Call `analyze_field` if the user gave `SObject.Field`; otherwise treat as SObject-level.
-2. Call `security_audit` with the resolved target. Capture profiles, permission sets, permission set groups, sharing rules (criteria + owner-based), OWD, and any `without sharing` Apex that touches the field.
+1. Resolve the target. Call `analyze_field` if the user gave `SObject.Field`; otherwise treat as SObject-level. `analyze_field` takes **separate `object` and `field`** params (not a single `Account.Status` string) — split before calling.
+2. Call `security_audit` with the resolved target (`object` / `field` to narrow; whole-org if neither). Capture full-access sharing rules and the FLS gap list.
+   - **FLS gaps are pre-filtered** to FLS-relevant fields: Custom Metadata Type (`__mdt`), platform-event (`__e`), big-object (`__b`), and standard system/audit fields (Id, CreatedById, SystemModstamp, …) are excluded as noise. The response notes `+N CMDT/system fields hidden`. Only pass `include_non_fls_fields: true` if the user explicitly wants that raw set — never lead with it.
+   - The inline gap list is capped (`limit`, default 30). Narrow with `object`, or raise `limit`, rather than dumping thousands of rows.
 3. Build the access matrix: Profile/PSet -> Read / Edit / Delete / View All / Modify All.
 4. Identify sharing exposure: OWD setting, sharing rules expanding access, role-hierarchy inheritance toggles.
 5. Flag risks: `without sharing` Apex selectors, missing `stripInaccessible` / `WITH SECURITY_ENFORCED`, guest user access, Experience Cloud profile reach.

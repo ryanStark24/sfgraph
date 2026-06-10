@@ -22,7 +22,7 @@ Use this skill when the user wants a plain-English explanation of a specific cod
 
 ## Playbook
 
-1. **Resolve the target qname.** Most users say "explain `AccountSvc.calculate`" — that maps to the qname `ApexMethod:AccountSvc.calculate(N)` where N is the arity. If the arity is unknown or the name is ambiguous, call `trace_upstream` with a partial match to enumerate candidates and confirm with the user.
+1. **Resolve the target qname — it must be METHOD-level.** Snippets are stored only for Apex methods, so `explain_code` needs `ApexMethod:AccountSvc.calculate(N)` (N = arity), **not** a class qname like `ApexClass:AccountSvc` (that returns "No snippet stored"). If the user names a class, first enumerate its methods with `find_nodes(pattern="ApexMethod:AccountSvc.*")` and either pick the method they meant or explain each in turn. For declarative metadata (fields, objects, Flows) there is no snippet — redirect to `analyze_field` / `sf-cross-layer-trace` instead. If the arity is unknown or the name is ambiguous, use `find_nodes` to enumerate candidates and confirm with the user.
 2. **`staleness_check`** for the linked org. If stale, surface a warning so the user knows the cached source may not reflect production.
 3. **`explain_code(qname=X)`** — pull the stored snippet and any prior cached explanation. The tool returns the source text in a fenced code block.
 4. **Generate the explanation**, structured as:
@@ -79,3 +79,4 @@ If the user says yes, hand off to `sf-find-similar` with mode=qname and the same
 - Don't write anything to Salesforce.
 - Always render the source inside a fenced code block tagged with the `sourceFormat` returned by `explain_code` (`apex`, `js`, `html`, etc.).
 - Don't fabricate behaviour — if the source is empty or stubbed, say so plainly.
+- Don't pass a class/trigger/field qname expecting source — only `ApexMethod:...(N)` has a snippet. On "No snippet stored", resolve to a method qname rather than reporting failure.
