@@ -14,11 +14,11 @@ afterEach(() => {
 });
 
 describe("skills installer", () => {
-  it("installs all 17 skills to the claude target", async () => {
+  it("installs all 19 skills to the claude target", async () => {
     const results = await install("claude", { homeOverride: home });
     const skillNames = await listSkillsBundled();
-    expect(skillNames.length).toBe(17);
-    expect(results.length).toBe(17);
+    expect(skillNames.length).toBe(19);
+    expect(results.length).toBe(19);
     for (const r of results) {
       expect(r.target).toBe("claude");
       expect(r.action).toBe("created");
@@ -30,11 +30,11 @@ describe("skills installer", () => {
 
   it("installs to the cursor target as .mdc files in Cursor's frontmatter shape", async () => {
     const results = await install("cursor", { homeOverride: home });
-    expect(results.length).toBe(17);
+    expect(results.length).toBe(19);
     const cursorDir = join(home, ".cursor", "rules");
     const files = readdirSync(cursorDir);
     expect(files.every((f) => f.endsWith(".mdc"))).toBe(true);
-    expect(files.length).toBe(17);
+    expect(files.length).toBe(19);
     // Cursor-shaped frontmatter (the three keys Cursor's rule loader reads).
     const sample = readFileSync(join(cursorDir, files[0] ?? ""), "utf8");
     expect(sample).toMatch(/^description:/m);
@@ -53,9 +53,9 @@ describe("skills installer", () => {
     const claudeCount = results.filter((r) => r.target === "claude").length;
     const cursorCount = results.filter((r) => r.target === "cursor").length;
     const vscodeCount = results.filter((r) => r.target === "vscode").length;
-    expect(claudeCount).toBe(17);
-    expect(cursorCount).toBe(17);
-    expect(vscodeCount).toBe(17);
+    expect(claudeCount).toBe(19);
+    expect(cursorCount).toBe(19);
+    expect(vscodeCount).toBe(19);
     expect(existsSync(join(home, ".claude", "skills"))).toBe(true);
     expect(existsSync(join(home, ".cursor", "rules"))).toBe(true);
   });

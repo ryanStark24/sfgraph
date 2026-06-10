@@ -42,7 +42,7 @@ not "the org is clean" — say so explicitly rather than reporting a false all-c
 
 1. Call `governor_risk_check` over the requested scope (single class, namespace, or full org). The tool returns risk records keyed on the **method** qname (`ApexMethod:Class.method(n)`) with `risk_type` (`soql_in_loop` / `dml_in_loop` / `no_bulk`) and evidence (the query text or DML target).
 2. Group findings by `risk_type`; within each group, sort by call-site fan-in (more callers = higher blast radius). Use `trace_upstream` on the owning class to get fan-in.
-3. For each finding, describe the canonical fix pattern (e.g. "extract the SOQL above the loop and key the result by `Id`") in one or two sentences — do not write the code.
+3. For each finding, describe the canonical fix pattern (e.g. "extract the SOQL above the loop and key the result by `Id`") in one or two sentences — do not write the code. To actually design the bulkified fix, hand off to **`sf-architect-apex`** (or **`sf-architect-performance`** for LDV/query-plan work) with these call sites as grounding, so the rewrite respects the org's real selectors and trigger framework rather than a generic template.
 4. Render the Mermaid heat-map (class-by-rule) from the tool response.
 5. Produce a checklist the user can copy into a ticket: `- [ ] ClassName.methodName:line — rule — recommended pattern`.
 6. Recommend `sf-impact-from-diff` after the user applies fixes, to verify nothing downstream regressed.
