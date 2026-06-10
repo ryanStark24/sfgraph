@@ -7,6 +7,10 @@ export interface SecurityAudit {
   sharingFullAccess: string[];
   fieldAccessMatrix: Array<{ field: string; grantedBy: string[] }>;
   flsGaps: string[];
+  /** FLS-gap rows suppressed as not-FLS-relevant (CMDT fields + standard
+   *  system/audit fields). Surfaced so "0 real gaps" is distinguishable from
+   *  "we hid everything". */
+  flsGapsExcluded?: number;
   /**
    * True when one of the underlying per-label scans hit
    * `SECURITY_PER_LABEL_CAP`. When set, results are incomplete and the
@@ -17,11 +21,60 @@ export interface SecurityAudit {
 
 export const SECURITY_PER_LABEL_CAP = 5000;
 
+/** Standard system / audit field API names. These are never subject to the
+ *  field-level security a developer cares about — flagging them as "FLS gaps"
+ *  is pure noise (they dominated the gap list on a real org). */
+const SYSTEM_FIELD_NAMES: ReadonlySet<string> = new Set([
+  "Id",
+  "Name",
+  "OwnerId",
+  "IsDeleted",
+  "CreatedById",
+  "CreatedDate",
+  "LastModifiedById",
+  "LastModifiedDate",
+  "SystemModstamp",
+  "LastViewedDate",
+  "LastReferencedDate",
+  "LastActivityDate",
+  "RecordTypeId",
+  "CurrencyIsoCode",
+  // Custom Metadata Type built-ins
+  "DeveloperName",
+  "MasterLabel",
+  "Language",
+  "NamespacePrefix",
+  "Label",
+  "QualifiedApiName",
+]);
+
+/**
+ * True when a `CustomField:<Object>.<Field>` qname names a field that real
+ * field-level security applies to. Excludes:
+ *  - Custom Metadata Type fields (`__mdt`) — CMDT has no per-field FLS.
+ *  - Custom Settings-ish / metadata objects and standard system/audit fields.
+ * Custom fields (`__c`) on real objects (standard or custom) stay in.
+ */
+export function isFlsRelevantField(qname: string): boolean {
+  const tail = (qname.includes(":") ? qname.split(":")[1] : qname) ?? qname;
+  const dot = tail.indexOf(".");
+  if (dot <= 0) return false;
+  const object = tail.slice(0, dot);
+  const field = tail.slice(dot + 1);
+  // CMDT and platform-event/big-object metadata don't use developer FLS.
+  if (/__(mdt|e|b)$/i.test(object)) return false;
+  if (SYSTEM_FIELD_NAMES.has(field)) return false;
+  return true;
+}
+
 export interface SecurityAuditOptions {
   /** Restrict the field-access matrix + FLS gaps to fields of this object (qualifiedName prefix, e.g. `CustomObject:Account`). */
   object?: string;
   /** Restrict to a single field qualifiedName (e.g. `CustomField:Account.Tier__c`). Implies `object`. */
   field?: string;
+  /** Include not-FLS-relevant fields (CMDT + system/audit) in the gap list.
+   *  Default false — those are noise for an FLS review. */
+  includeNonFlsFields?: boolean;
 }
 
 function matchesFilter(qname: string, opts: SecurityAuditOptions | undefined): boolean {
@@ -80,13 +133,21 @@ export function securityAudit(
     }
   }
 
-  // FLS gaps: fields with no grants. Honour the object/field filter.
+  // FLS gaps: fields with no grants. Honour the object/field filter, and skip
+  // not-FLS-relevant fields (CMDT + system/audit) unless explicitly requested
+  // — those dominated the raw list and are never a real FLS finding.
   const flsGaps: string[] = [];
+  let flsGapsExcluded = 0;
   const fields = store.listNodesByLabel(orgId, METADATA_CATEGORY.FIELD, SECURITY_PER_LABEL_CAP);
   if (fields.length >= SECURITY_PER_LABEL_CAP) truncated = true;
   for (const n of fields) {
     if (!matchesFilter(n.qualifiedName, opts)) continue;
-    if (!fieldAccessMatrix.has(n.qualifiedName)) flsGaps.push(n.qualifiedName);
+    if (fieldAccessMatrix.has(n.qualifiedName)) continue;
+    if (!opts?.includeNonFlsFields && !isFlsRelevantField(n.qualifiedName)) {
+      flsGapsExcluded += 1;
+      continue;
+    }
+    flsGaps.push(n.qualifiedName);
   }
 
   // Filter the matrix too so a narrowed audit returns a narrowed matrix.
@@ -98,6 +159,7 @@ export function securityAudit(
     sharingFullAccess,
     fieldAccessMatrix: filteredMatrix,
     flsGaps,
+    flsGapsExcluded,
     truncated,
   };
 }

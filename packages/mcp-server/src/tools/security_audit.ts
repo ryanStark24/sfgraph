@@ -8,6 +8,11 @@ const inputSchema = z.object({
   object: z.string().min(1).optional(),
   /** Narrow the audit to a single field. Accepts a full qname like `CustomField:Account.Tier__c`. */
   field: z.string().min(1).optional(),
+  /** Include not-FLS-relevant fields (Custom Metadata Type fields + standard
+   *  system/audit fields) in the gap list. Default false — they're noise. */
+  include_non_fls_fields: z.boolean().default(false),
+  /** Max FLS-gap rows to render inline (summary always covers 100%). */
+  limit: z.number().int().min(1).max(500).default(30),
 });
 
 defineTool({
@@ -17,7 +22,9 @@ defineTool({
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
-    const filter: { object?: string; field?: string } = {};
+    const filter: { object?: string; field?: string; includeNonFlsFields?: boolean } = {
+      includeNonFlsFields: input.include_non_fls_fields,
+    };
     if (input.object !== undefined) filter.object = input.object;
     if (input.field !== undefined) filter.field = input.field;
     const audit = analyze.securityAudit(ctx.graphStore, ctx.orgId, filter);
@@ -42,12 +49,21 @@ defineTool({
         /* table may not exist */
       }
     }
+    const excludedNote =
+      audit.flsGapsExcluded && audit.flsGapsExcluded > 0
+        ? ` _(+${audit.flsGapsExcluded} CMDT/system fields hidden — pass \`include_non_fls_fields: true\`)_`
+        : "";
     const md = [
       `**Full-access sharing rules:** ${audit.sharingFullAccess.length}`,
       ...audit.sharingFullAccess.slice(0, 20).map((q) => `- \`${q}\``),
       "",
-      `**FLS gaps (fields with no permission-set grant):** ${audit.flsGaps.length}`,
-      ...audit.flsGaps.slice(0, 20).map((q) => `- \`${q}\``),
+      `**FLS gaps (custom/standard fields with no permission-set grant):** ${audit.flsGaps.length}${excludedNote}`,
+      ...audit.flsGaps.slice(0, input.limit).map((q) => `- \`${q}\``),
+      ...(audit.flsGaps.length > input.limit
+        ? [
+            `- _…${audit.flsGaps.length - input.limit} more (raise \`limit\` or filter by \`object\`)_`,
+          ]
+        : []),
     ].join("\n");
     const truncationNote = audit.truncated
       ? ` — results capped at ${analyze.SECURITY_PER_LABEL_CAP}/label; narrow with object/field`
