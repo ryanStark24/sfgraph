@@ -74,6 +74,7 @@ write the code. Ground → design → verify. Never design → hope.
 | Intent | Skill |
 |---|---|
 | "This Apex/test fails / this error — why" | `sf-debug-root-cause` |
+| "Read/interpret this debug log / stack trace / 'Too many SOQL' / CPU-time log" | `sf-debug-log-analysis` |
 | "What broke after the last deploy" | `sf-what-broke` |
 | "Will my uncommitted change break anything" | `sf-wip-impact` |
 | "Blast radius + test gaps of this PR/branch" | `sf-impact-from-diff` |

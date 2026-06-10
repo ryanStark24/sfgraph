@@ -33,6 +33,11 @@ never by pattern-matching the error message to a generic fix.
 
 ## Method (scientific, evidence-first)
 
+0. **If a debug log is available, start there.** A debug log is the strongest anchor — it
+   has the exact `FATAL_ERROR` stack frame and the real governor scorecard. Hand the log to
+   **`sf-debug-log-analysis`** to extract the anchor + limit evidence, then continue this
+   playbook from step 2 with that anchor. Without a log, anchor from the error text/symptom:
+
 1. **Anchor the symptom to a node.** Parse the error / test name / symptom for the failing
    unit and resolve its qname:
    - Apex class/method in the trace → `find_nodes ApexClass:<Name>` / `ApexMethod:<Name>.*`.
