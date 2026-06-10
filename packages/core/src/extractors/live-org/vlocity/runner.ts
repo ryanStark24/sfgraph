@@ -131,10 +131,22 @@ const CHILD_FETCHES: Record<string, ChildFetchSpec> = {
     attachAs: "elements",
   },
   DataRaptor: {
+    // DRMapItem stores field mappings structurally, NOT as Input/OutputField:
+    // one side names a real SObject + field (Interface* for Extract, Domain*
+    // for Load, Lookup* for lookups), the other is a JSON/XML path. The old
+    // query selected `InputFieldName__c`/`OutputFieldName__c` — fields that do
+    // NOT exist on DRMapItem__c in any shipped vlocity_cmt version — so the
+    // whole child query threw INVALID_FIELD and every DataRaptor came back
+    // childless (zero DR_READS_FIELD/DR_WRITES_FIELD edges). These are the
+    // real columns, confirmed against live DRMapItem records; they map 1:1 to
+    // what DataRaptorParser reads after namespace/suffix normalisation.
     soql: (ns, ids) =>
-      `SELECT Id, Name, ${ns}__InputFieldName__c, ${ns}__OutputFieldName__c, ${ns}__DRBundleId__c FROM ${ns}__DRMapItem__c WHERE ${ns}__DRBundleId__c IN (${ids})`,
+      `SELECT Id, Name, ${ns}__DRBundleId__c, ${ns}__InterfaceObjectName__c, ${ns}__InterfaceFieldAPIName__c, ${ns}__DomainObjectAPIName__c, ${ns}__DomainObjectFieldAPIName__c, ${ns}__LookupDomainObjectName__c, ${ns}__LookupDomainObjectFieldName__c, ${ns}__Formula__c, ${ns}__FormulaConverted__c, ${ns}__TransformValuesMap__c FROM ${ns}__DRMapItem__c WHERE ${ns}__DRBundleId__c IN (${ids})`,
     parentField: "DRBundleId",
-    attachAs: "mapItems",
+    // DataRaptorParser reads dp.elements (shared shape with the OmniScript /
+    // IntegrationProcedure element walk); attaching under any other key left
+    // the parser looking at an empty array.
+    attachAs: "elements",
   },
 };
 

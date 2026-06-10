@@ -260,6 +260,20 @@ function unwrapApexEnvelope(content: string): { body: string; metaXml?: string }
   return { body: content };
 }
 
+/** Maps the Vlocity runner's emitted memberType (the bare VlocityDataPackType)
+ *  to the parser-registry key the four rich Vlocity parsers register under.
+ *  Only these four DataPack types have dedicated parsers; the other ~44 fall
+ *  through to the opaque node parser (node-only, by design). */
+const VLOCITY_MEMBER_TO_PARSER: Record<string, string> = {
+  DataRaptor: "VlocityDataRaptor",
+  VlocityDataRaptor: "VlocityDataRaptor",
+  IntegrationProcedure: "VlocityIntegrationProcedure",
+  VlocityIntegrationProcedure: "VlocityIntegrationProcedure",
+  OmniScript: "VlocityOmniScript",
+  VlocityOmniScript: "VlocityOmniScript",
+  VlocityCard: "VlocityCard",
+};
+
 /** Exported for tests — maps a RawMember to the registered parser's input shape. */
 export function adaptParserInput(
   ref: MemberRef,
@@ -320,17 +334,34 @@ export function adaptParserInput(
       }
       return { type: ref.memberType, input: { name: ref.memberName, metadata } };
     }
+    // The Vlocity runner emits the bare VlocityDataPackType as memberType
+    // ("DataRaptor", "IntegrationProcedure", "OmniScript", "VlocityCard"),
+    // but the four rich parsers register under "Vlocity"-prefixed type names
+    // ("VlocityDataRaptor", …). Without this mapping the runner's members
+    // never matched a case here and fell through to the opaque fallback —
+    // shallow nodes with zero DR_/IP_/OS_ edges. Only "VlocityCard" happened
+    // to align on both sides, which is why a real ingest produced VC edges
+    // but no DataRaptor/IP/OmniScript lineage. The golden tests call the
+    // parsers directly, so this runner→dispatch seam was never covered.
+    // The legacy "Vlocity*"-prefixed keys are kept too in case any caller
+    // (or a future filesystem source) emits them.
+    case "DataRaptor":
     case "VlocityDataRaptor":
+    case "IntegrationProcedure":
     case "VlocityIntegrationProcedure":
-    case "VlocityCard":
-    case "VlocityOmniScript": {
+    case "OmniScript":
+    case "VlocityOmniScript":
+    case "VlocityCard": {
       let datapack: unknown = content;
       try {
         datapack = JSON.parse(content);
       } catch {
         /* keep raw */
       }
-      return { type: ref.memberType, input: { name: ref.memberName, datapack } };
+      return {
+        type: VLOCITY_MEMBER_TO_PARSER[ref.memberType] ?? ref.memberType,
+        input: { name: ref.memberName, datapack },
+      };
     }
     default: {
       // Long-tail metadata types: route to a registered parser when one

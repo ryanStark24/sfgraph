@@ -321,9 +321,10 @@ describe("vlocity runner — content blob + element children", () => {
   );
 
   it(
-    "fetches DRMapItem__c children for DataRaptor and attaches as mapItems",
+    "fetches DRMapItem__c children for DataRaptor and attaches as elements with real mapping columns",
     { timeout: 15_000 },
     async () => {
+      let drMapItemSoql = "";
       const conn = {
         query: async (soql: string) => {
           if (soql.includes("__DRBundle__c")) {
@@ -333,13 +334,19 @@ describe("vlocity runner — content blob + element children", () => {
             };
           }
           if (soql.includes("__DRMapItem__c")) {
+            drMapItemSoql = soql;
+            // Real DRMapItem field shape (Interface/Domain sides), NOT the
+            // non-existent Input/OutputFieldName columns the query used to ask
+            // for. One Salesforce side (Account.Name) + a JSON payload side.
             return {
               records: [
                 {
                   Id: "a0M1",
                   Name: "Map1",
-                  vlocity_cmt__InputFieldName__c: "Account.Name",
-                  vlocity_cmt__OutputFieldName__c: "Customer.FullName",
+                  vlocity_cmt__InterfaceObjectName__c: "Account",
+                  vlocity_cmt__InterfaceFieldAPIName__c: "Name",
+                  vlocity_cmt__DomainObjectAPIName__c: "json",
+                  vlocity_cmt__DomainObjectFieldAPIName__c: "Details:FullName",
                   vlocity_cmt__DRBundleId__c: "a0D1",
                 },
               ],
@@ -352,12 +359,18 @@ describe("vlocity runner — content blob + element children", () => {
       const members = await collect(iterVlocityRecords(conn, caps, "00DTestVloc"));
       const dr = members.find((m) => m.ref.memberType === "DataRaptor");
       expect(dr).toBeDefined();
+      // The query must ask for the real mapping columns, never Input/OutputField.
+      expect(drMapItemSoql).toContain("DomainObjectFieldAPIName__c");
+      expect(drMapItemSoql).toContain("InterfaceFieldAPIName__c");
+      expect(drMapItemSoql).not.toContain("InputFieldName__c");
+      // Children attach under `elements` (what DataRaptorParser reads) with the
+      // namespace/suffix stripped by normaliseRow.
       const parsed = JSON.parse(dr!.content) as {
-        mapItems?: Array<{ InputFieldName?: string; OutputFieldName?: string }>;
+        elements?: Array<{ InterfaceObjectName?: string; DomainObjectFieldAPIName?: string }>;
       };
-      expect(parsed.mapItems).toHaveLength(1);
-      expect(parsed.mapItems?.[0]?.InputFieldName).toBe("Account.Name");
-      expect(parsed.mapItems?.[0]?.OutputFieldName).toBe("Customer.FullName");
+      expect(parsed.elements).toHaveLength(1);
+      expect(parsed.elements?.[0]?.InterfaceObjectName).toBe("Account");
+      expect(parsed.elements?.[0]?.DomainObjectFieldAPIName).toBe("Details:FullName");
     },
   );
 
