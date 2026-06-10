@@ -670,9 +670,25 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       const sinceIso = existing?.lastSyncedAt
         ? new Date(existing.lastSyncedAt).toISOString()
         : new Date(now - 24 * 3600 * 1000).toISOString();
+      // Incremental applies DELETIONS (obsolete members need no content) but
+      // does NOT re-parse changed/added members: their content is not fetched
+      // here, and calling processOne(ref, "") would overwrite real node
+      // attributes with empty-parse garbage and emit no edges — actively
+      // degrading the graph. Until per-member content fetch lands, changed
+      // members are counted and the user is told to run a full ingest to
+      // refresh them. (Deletions are still valuable and safe.)
+      let changedNotApplied = 0;
       for await (const ref of iterChanges(resolved.conn, resolved.orgId, sinceIso)) {
-        // For incremental, content is best fetched on-demand; for deletions we skip content.
-        await processOne(ref, "");
+        if (ref.obsolete) {
+          await processOne(ref, "");
+        } else {
+          changedNotApplied += 1;
+        }
+      }
+      if (changedNotApplied > 0) {
+        const msg = `incremental: ${changedNotApplied} changed/added member(s) detected but NOT refreshed (content fetch not implemented for incremental). Run \`sfgraph ingest --org ${resolved.alias} --rebuild\` (or --mode full) to capture them.`;
+        logger.warn(msg);
+        wedgeWarnings.push(`incremental:contentNotFetched:count=${changedNotApplied}`);
       }
     } else {
       // The outer iteration is also wrapped: bulkRetrieve uses fail-soft per

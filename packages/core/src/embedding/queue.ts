@@ -1,5 +1,23 @@
+import { createHash } from "node:crypto";
 import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import { asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
+
+/** Real SHA-256 of the embedded text. The vector store dedups on this hash
+ *  (skips re-embedding when it matches), so it MUST reflect the actual text —
+ *  otherwise re-ingest never refreshes a vector. Previously this was
+ *  `asSha256("rule:" + qname)`, but asSha256 is a branded-type CAST, not a
+ *  hash, so the value was constant per node and every vector was write-once
+ *  (config-value enrichment, description changes, etc. never re-embedded). */
+function hashEmbedText(text: string): Sha256 {
+  return asSha256(createHash("sha256").update(text).digest("hex"));
+}
+
+/** True when every component is 0 — the embedder's zero-vector failure
+ *  fallback. Such vectors must not enter the index (they outrank real matches). */
+function isAllZero(v: Float32Array): boolean {
+  for (let i = 0; i < v.length; i++) if (v[i] !== 0) return false;
+  return true;
+}
 
 export interface EmbeddingItem {
   qname: string;
@@ -86,13 +104,18 @@ export class EmbeddingQueue {
       for (let i = 0; i < batch.length; i++) {
         const v = vectors[i];
         if (!v) continue;
+        // Skip all-zero vectors (the embedder's failure fallback). Inserting
+        // them poisons find_similar — a zero vector sits at a fixed mid-range
+        // similarity and outranks genuine weak matches. Better no vector than
+        // a misleading one; the node is simply absent from semantic search.
+        if (isAllZero(v)) continue;
         const b = batch[i] as EmbeddingItem;
         this.opts.vectorStore.upsertNodeVector(
           b.orgId as unknown as OrgId,
           asQualifiedName(b.qname),
           b.label,
           v,
-          asSha256(`rule:${b.qname}`),
+          hashEmbedText(b.text),
         );
       }
     } catch (e) {
