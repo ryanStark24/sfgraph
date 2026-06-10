@@ -13,6 +13,7 @@
     "clean": "pnpm -r clean",
     "models:refresh": "tsx scripts/refresh-vendored-model.ts",
     "vlocity:refresh": "tsx scripts/refresh-vlocity-registry.ts",
+    "test:kit": "node scripts/test-kit.mjs",
     "preflight:publish": "node scripts/preflight-publish.mjs",
     "release:publish": "pnpm preflight:publish && pnpm -r publish --access public --no-git-checks"
   },
