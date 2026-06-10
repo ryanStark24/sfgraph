@@ -4,6 +4,7 @@ import type { OrgCapabilities } from "./capabilities.js";
 import { discoverMetadataTypes } from "./discovery.js";
 import { buildDispatchTable } from "./dispatch.js";
 import { iterApex } from "./extractors/apex.js";
+import { iterCustomSettings } from "./extractors/custom-settings.js";
 import { iterFlow } from "./extractors/flow.js";
 import { iterGenericMetadata } from "./extractors/generic-metadata.js";
 import { iterIntegration } from "./extractors/integration.js";
@@ -755,7 +756,19 @@ const GENERIC_TYPE_WHITELIST = new Set([
   "OmniProcess",
 ]);
 
+/**
+ * Types whose data is fully captured by a CONTAINER type, so routing them
+ * individually only produces value-less opaque duplicates that clobber the
+ * container's richer nodes. `CustomLabel` (singular) is covered by the
+ * `CustomLabels` container — whose rule extracts each label's value/language;
+ * the singular path would emit `CustomLabel:Name` nodes with no value and,
+ * depending on merge order, overwrite the real ones. Skip them.
+ */
+const CONTAINER_COVERED_TYPES: ReadonlySet<string> = new Set(["CustomLabel"]);
+
 function shouldRouteGeneric(type: string): boolean {
+  // Never route a type a container already covers with richer data.
+  if (CONTAINER_COVERED_TYPES.has(type)) return false;
   // Default: route EVERY long-tail metadata type through the generic
   // extractor so the graph — and therefore semantic search — covers the org
   // completely. Anything without a dedicated extractor still becomes a typed
@@ -920,6 +933,7 @@ export async function* bulkRetrieve(
       for (const t of types) for (const c of t.childXmlNames) childTypes.add(c);
       for (const child of childTypes) {
         if (dispatch.has(child) || typedOwned.has(child)) continue;
+        if (CONTAINER_COVERED_TYPES.has(child)) continue; // CustomLabel ⊂ CustomLabels
         invoke(`generic:${child}`, () => iterGenericMetadata(conn, String(orgId), child));
       }
     }
@@ -928,6 +942,9 @@ export async function* bulkRetrieve(
   if (caps.vlocityLegacy) {
     invoke("vlocity", () => iterVlocity(conn, caps, String(orgId), onSkip));
   }
+  // Custom Setting ROW capture — self-guards (yields nothing if the org has no
+  // custom settings or EntityDefinition is unavailable), so invoke always.
+  invoke("custom-settings", () => iterCustomSettings(conn, String(orgId)));
   if (caps.omnistudioOncore) {
     // When the Metadata-API retrieve path is enabled it covers
     // OmniDataTransform and OmniUiCard with higher fidelity — skip them on

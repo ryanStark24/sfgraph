@@ -4,7 +4,8 @@
       "qualifiedName": "CustomMetadataRecord:Config__mdt.Default",
       "label": "CustomMetadataRecord",
       "attributes": {
-        "name": "Config__mdt.Default"
+        "name": "Config__mdt.Default",
+        "values": null
       }
     }
   ],

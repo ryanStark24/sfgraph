@@ -274,6 +274,69 @@ const VLOCITY_MEMBER_TO_PARSER: Record<string, string> = {
   VlocityCard: "VlocityCard",
 };
 
+/**
+ * Build the text embedded for a node's semantic vector. Beyond the
+ * label/qname/description baseline, this folds in CONFIG VALUES so
+ * `find_similar` matches on what a config artifact actually resolves to —
+ * a Custom Metadata record's field values, a Custom Label's text, a Custom
+ * Setting's rows. Without this, searching "endpoint for product push" can't
+ * reach `End_Point_Urls.ProductPush_PLDT` because only its name was embedded.
+ * Exported for tests.
+ */
+export function buildEmbedText(
+  label: string,
+  qname: string,
+  attributes: Record<string, unknown> | undefined,
+): string {
+  const a = attributes ?? {};
+  const parts = [`${label}: ${qname}`];
+  if (typeof a.description === "string" && a.description) parts.push(a.description);
+
+  // Custom Metadata record field values: [{field,value}] | {field:value} | object.
+  const values = a.values;
+  if (Array.isArray(values)) {
+    for (const v of values) {
+      const f = (v as { field?: unknown }).field;
+      const val = (v as { value?: unknown }).value;
+      if (f != null && val != null) parts.push(`${String(f)} = ${stringifyConfigVal(val)}`);
+    }
+  } else if (values && typeof values === "object") {
+    for (const [k, v] of Object.entries(values as Record<string, unknown>)) {
+      if (v != null && v !== "") parts.push(`${k} = ${stringifyConfigVal(v)}`);
+    }
+  }
+
+  // Custom Label text value.
+  if (typeof a.value === "string" && a.value) parts.push(a.value);
+
+  // Custom Setting rows: array of row objects (field=value per row).
+  const rows = a.customSettingRows;
+  if (Array.isArray(rows)) {
+    for (const row of rows) {
+      if (row && typeof row === "object") {
+        const kv = Object.entries(row as Record<string, unknown>)
+          .filter(([, v]) => v != null && v !== "")
+          .map(([k, v]) => `${k}=${stringifyConfigVal(v)}`)
+          .join(", ");
+        if (kv) parts.push(kv);
+      }
+    }
+  }
+  return parts.join("\n");
+}
+
+function stringifyConfigVal(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "object") {
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return String(v);
+    }
+  }
+  return String(v);
+}
+
 /** Exported for tests — maps a RawMember to the registered parser's input shape. */
 export function adaptParserInput(
   ref: MemberRef,
@@ -545,11 +608,9 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       }
       if (embedQueue) {
         for (const n of parsed.nodes) {
-          const desc = (n.attributes as Record<string, unknown>)?.description;
-          const text = `${n.label}: ${n.qualifiedName}\n${typeof desc === "string" ? desc : ""}`;
           embedQueue.push({
             qname: String(n.qualifiedName),
-            text,
+            text: buildEmbedText(n.label, String(n.qualifiedName), n.attributes),
             orgId: String(n.orgId),
             label: n.label,
           });

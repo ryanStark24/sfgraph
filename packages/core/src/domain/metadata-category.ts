@@ -18,6 +18,7 @@ export const METADATA_CATEGORY = {
   PLATFORM_EVENT: "PlatformEventChannel",
   CUSTOM_METADATA: "CustomMetadata",
   CUSTOM_LABEL: "CustomLabel",
+  CUSTOM_SETTING: "CustomSetting",
   STATIC_RESOURCE: "StaticResource",
   LAYOUT: "Layout",
   RECORD_TYPE: "RecordType",

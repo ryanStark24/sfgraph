@@ -11,6 +11,13 @@ nodes:
     qname: "CustomMetadataRecord:${record.name}"
     props:
       name: "${record.name}"
+      # Capture the record's field VALUES (metadata.read returns a <values>
+      # array of {field,value}) so the graph shows what the config resolves to
+      # — endpoints, matching keys, toggles — not just that the record exists.
+      # buildEmbedText (live-ingest) folds these into the node's embedding so
+      # find_similar matches on the values, and they're inspectable via
+      # find_nodes/analyze. `| raw` returns the array unmodified.
+      values: "${record.values | raw}"
 
   - label: CustomMetadataType
     when: "${record.kind != 'record' && !split(toString(record.name),'.')[1]}"

@@ -1,0 +1,24 @@
+type: CustomSetting
+category: CustomSetting
+input: json
+applies_when:
+  always: true
+
+nodes:
+  - label: CustomSetting
+    when: "${record.name}"
+    qname: "CustomSetting:${record.name}"
+    props:
+      name: "${record.name}"
+      rowCount: "${record.rowCount | raw}"
+      # The actual setting ROWS (org-default + hierarchy values). buildEmbedText
+      # folds these into the node embedding so find_similar matches on setting
+      # values (e.g. "integration endpoint setting"); inspectable via find_nodes.
+      customSettingRows: "${record.rows | raw}"
+
+edges:
+  # Link the setting's data node to its schema (CustomObject) node.
+  - relType: INSTANCE_OF
+    when: "${record.name}"
+    src: "CustomSetting:${record.name}"
+    dst: "CustomObject:${record.name}"
