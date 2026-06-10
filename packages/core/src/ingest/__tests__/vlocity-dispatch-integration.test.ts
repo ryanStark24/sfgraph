@@ -62,16 +62,16 @@ describe("Vlocity runner → dispatch → parser integration", () => {
           };
         }
         if (soql.includes("__DRMapItem__c")) {
+          // DRMapItem correlates to its bundle by Name (no DRBundleId field).
           return {
             records: [
               {
                 Id: "a0M1",
-                Name: "m1",
+                Name: "AccountExtract",
                 vlocity_cmt__InterfaceObjectName__c: "Account",
                 vlocity_cmt__InterfaceFieldAPIName__c: "Name",
                 vlocity_cmt__DomainObjectAPIName__c: "json",
                 vlocity_cmt__DomainObjectFieldAPIName__c: "Details:Name",
-                vlocity_cmt__DRBundleId__c: "a0D1",
               },
             ],
             done: true,

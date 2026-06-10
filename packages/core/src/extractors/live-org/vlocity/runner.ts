@@ -102,12 +102,19 @@ function normaliseRow(row: Record<string, unknown>, namespace: string): Record<s
 }
 
 interface ChildFetchSpec {
-  /** Per-namespace SOQL fragment selecting the child rows. Use `%PARENT_IDS%`
-   *  as placeholder for the IN-list of parent Ids. */
-  soql: (namespace: string, parentIdList: string) => string;
-  /** Field on the child row pointing back at the parent. Stripped of
-   *  namespace + __c when grouping. */
+  /** Per-namespace SOQL fragment selecting the child rows. The second arg is
+   *  the quoted IN-list of parent keys (Ids or Names per `linkBy`). */
+  soql: (namespace: string, parentKeyList: string) => string;
+  /** Normalised child field (namespace + __c stripped) used to GROUP children
+   *  back to a parent. Its values must equal the parent's `linkBy` property. */
   parentField: string;
+  /** Which parent property the children correlate to. Default "Id" (master-
+   *  detail FK like Element.OmniScriptId). Some objects have NO such FK in
+   *  certain managed-package versions — notably DRMapItem in vlocity_cmt has
+   *  no DRBundleId field at all; it correlates to its DRBundle purely by
+   *  Name (DRMapItem.Name === DRBundle.Name, the same correlation the Vlocity
+   *  build tool uses). Set "Name" for those. */
+  linkBy?: "Id" | "Name";
   /** Key under which children get attached to the parent. */
   attachAs: string;
 }
@@ -130,19 +137,24 @@ const CHILD_FETCHES: Record<string, ChildFetchSpec> = {
     parentField: "OmniScriptId",
     attachAs: "elements",
   },
+  // DRMapItem stores field mappings structurally, NOT as Input/OutputField:
+  // one side names a real SObject + field (Interface* for Extract, Domain*
+  // for Load, Lookup* for lookups), the other is a JSON/XML path. Two bugs
+  // here, both only surfaced by real DRMapItem data:
+  //   1. The old query selected `InputFieldName__c`/`OutputFieldName__c` —
+  //      fields that do NOT exist on DRMapItem__c — so it threw INVALID_FIELD
+  //      and every DataRaptor came back childless. These are the real columns.
+  //   2. DRMapItem__c has NO `DRBundleId__c` field in vlocity_cmt; the old
+  //      `WHERE DRBundleId__c IN (...)` ALSO threw INVALID_FIELD. The child
+  //      correlates to its parent by NAME (DRMapItem.Name === DRBundle.Name),
+  //      so we filter and group by Name (linkBy: "Name").
   DataRaptor: {
-    // DRMapItem stores field mappings structurally, NOT as Input/OutputField:
-    // one side names a real SObject + field (Interface* for Extract, Domain*
-    // for Load, Lookup* for lookups), the other is a JSON/XML path. The old
-    // query selected `InputFieldName__c`/`OutputFieldName__c` — fields that do
-    // NOT exist on DRMapItem__c in any shipped vlocity_cmt version — so the
-    // whole child query threw INVALID_FIELD and every DataRaptor came back
-    // childless (zero DR_READS_FIELD/DR_WRITES_FIELD edges). These are the
-    // real columns, confirmed against live DRMapItem records; they map 1:1 to
-    // what DataRaptorParser reads after namespace/suffix normalisation.
-    soql: (ns, ids) =>
-      `SELECT Id, Name, ${ns}__DRBundleId__c, ${ns}__InterfaceObjectName__c, ${ns}__InterfaceFieldAPIName__c, ${ns}__DomainObjectAPIName__c, ${ns}__DomainObjectFieldAPIName__c, ${ns}__LookupDomainObjectName__c, ${ns}__LookupDomainObjectFieldName__c, ${ns}__Formula__c, ${ns}__FormulaConverted__c, ${ns}__TransformValuesMap__c FROM ${ns}__DRMapItem__c WHERE ${ns}__DRBundleId__c IN (${ids})`,
-    parentField: "DRBundleId",
+    soql: (ns, names) =>
+      `SELECT Id, Name, ${ns}__InterfaceObjectName__c, ${ns}__InterfaceFieldAPIName__c, ${ns}__DomainObjectAPIName__c, ${ns}__DomainObjectFieldAPIName__c, ${ns}__LookupDomainObjectName__c, ${ns}__LookupDomainObjectFieldName__c, ${ns}__Formula__c, ${ns}__FormulaConverted__c, ${ns}__TransformValuesMap__c FROM ${ns}__DRMapItem__c WHERE Name IN (${names})`,
+    // Children carry the bundle name in their own `Name`; group on it and
+    // attach to the parent whose Name matches.
+    parentField: "Name",
+    linkBy: "Name",
     // DataRaptorParser reads dp.elements (shared shape with the OmniScript /
     // IntegrationProcedure element walk); attaching under any other key left
     // the parser looking at an empty array.
@@ -282,12 +294,17 @@ export async function* iterVlocityRecords(
     }
     const records = res?.records ?? [];
     const childSpec = CHILD_FETCHES[t.typeDef.vlocityDataPackType];
+    // Collect the parent keys the children correlate to — Id for FK-linked
+    // children (Element.OmniScriptId), Name for name-linked ones (DRMapItem).
+    const linkBy = childSpec?.linkBy ?? "Id";
     const childrenByParent = childSpec
       ? await fetchChildrenByParent(
           conn,
           t.typeDef.vlocityDataPackType,
           t.namespace,
-          records.map((r) => String(r.Id ?? "")).filter((id) => id.length > 0),
+          records
+            .map((r) => String((linkBy === "Name" ? r.Name : r.Id) ?? ""))
+            .filter((k) => k.length > 0),
           onError,
         )
       : new Map<string, Array<Record<string, unknown>>>();
@@ -321,8 +338,10 @@ export async function* iterVlocityRecords(
     for (const r of records) {
       const name = String(r.Name ?? r.Id ?? "");
       const normalised = normaliseRow(r as Record<string, unknown>, t.namespace);
-      if (childSpec && r.Id) {
-        const kids = childrenByParent.get(String(r.Id));
+      if (childSpec) {
+        // Match children by the same key the fetch grouped on (Id or Name).
+        const parentKey = String((childSpec.linkBy === "Name" ? r.Name : r.Id) ?? "");
+        const kids = parentKey ? childrenByParent.get(parentKey) : undefined;
         if (kids && kids.length > 0) normalised[childSpec.attachAs] = kids;
       }
       yield {

@@ -337,17 +337,17 @@ describe("vlocity runner — content blob + element children", () => {
             drMapItemSoql = soql;
             // Real DRMapItem field shape (Interface/Domain sides), NOT the
             // non-existent Input/OutputFieldName columns the query used to ask
-            // for. One Salesforce side (Account.Name) + a JSON payload side.
+            // for. DRMapItem correlates to its DRBundle by Name (no DRBundleId
+            // field exists), so the child's Name carries the bundle name.
             return {
               records: [
                 {
                   Id: "a0M1",
-                  Name: "Map1",
+                  Name: "DR_Test",
                   vlocity_cmt__InterfaceObjectName__c: "Account",
                   vlocity_cmt__InterfaceFieldAPIName__c: "Name",
                   vlocity_cmt__DomainObjectAPIName__c: "json",
                   vlocity_cmt__DomainObjectFieldAPIName__c: "Details:FullName",
-                  vlocity_cmt__DRBundleId__c: "a0D1",
                 },
               ],
               done: true,
@@ -359,10 +359,13 @@ describe("vlocity runner — content blob + element children", () => {
       const members = await collect(iterVlocityRecords(conn, caps, "00DTestVloc"));
       const dr = members.find((m) => m.ref.memberType === "DataRaptor");
       expect(dr).toBeDefined();
-      // The query must ask for the real mapping columns, never Input/OutputField.
+      // The query must ask for the real mapping columns and correlate by Name,
+      // never the non-existent Input/OutputFieldName or DRBundleId columns.
       expect(drMapItemSoql).toContain("DomainObjectFieldAPIName__c");
       expect(drMapItemSoql).toContain("InterfaceFieldAPIName__c");
+      expect(drMapItemSoql).toContain("WHERE Name IN");
       expect(drMapItemSoql).not.toContain("InputFieldName__c");
+      expect(drMapItemSoql).not.toContain("DRBundleId__c");
       // Children attach under `elements` (what DataRaptorParser reads) with the
       // namespace/suffix stripped by normaliseRow.
       const parsed = JSON.parse(dr!.content) as {
