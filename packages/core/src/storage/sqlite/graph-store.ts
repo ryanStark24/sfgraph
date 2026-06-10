@@ -411,6 +411,22 @@ export class SqliteGraphStore implements GraphStore {
     let updated = 0;
     let unchanged = 0;
     const apply = this.db.transaction(() => {
+      // Look up a node's currently-recorded label (across all per-label tables)
+      // so we can detect a label TRANSITION (e.g. ApexMethod → TestMethod when a
+      // method gains @isTest, class ↔ interface). On transition the node moves
+      // to a new per-label table; the stale old-label row must be deleted, or
+      // the detect-deletions sweep sees it as unreferenced and deletes the LIVE
+      // node + its edges (deleteNode resolves the table via the index, which now
+      // points at the new label). Edges are NOT touched — the qname is unchanged.
+      const indexLabelStmt = this.db.prepare(
+        "SELECT label FROM _sfgraph_node_index WHERE org_id = ? AND qualified_name = ?",
+      );
+      const deleteOldRow = (oldLabel: string, orgId: string, qname: string): void => {
+        const oldTbl = this.ensureNodeTable(oldLabel);
+        this.db
+          .prepare(`DELETE FROM ${oldTbl} WHERE org_id = ? AND qualified_name = ?`)
+          .run(orgId, qname);
+      };
       for (const [label, bucket] of buckets) {
         const tbl = this.ensureNodeTable(label);
         const selectStmt = this.db.prepare(
@@ -436,6 +452,15 @@ export class SqliteGraphStore implements GraphStore {
             | undefined;
           const attrsJson = JSON.stringify(fact.attributes);
           if (!existing) {
+            // Not present under THIS label. If the index has it under a
+            // DIFFERENT label, it's a label transition — purge the stale old row
+            // before inserting the new one (see the transaction-level comment).
+            const prior = indexLabelStmt.get(fact.orgId, fact.qualifiedName) as
+              | { label: string }
+              | undefined;
+            if (prior && prior.label !== label) {
+              deleteOldRow(prior.label, String(fact.orgId), String(fact.qualifiedName));
+            }
             insertStmt.run(
               fact.orgId,
               fact.qualifiedName,

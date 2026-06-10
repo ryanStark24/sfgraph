@@ -176,3 +176,36 @@ describe("SqliteGraphStore", () => {
     expect(store.countNodes(asOrgId("org1"))).toBe(1);
   });
 });
+
+describe("label transition (audit critical #1 — silent live-node deletion)", () => {
+  const ORG = asOrgId("org1");
+
+  it("moving a qname to a new label deletes the stale old-label row (no ghost)", () => {
+    // Sync 1: node exists as ApexMethod with an edge.
+    store.mergeNodes([n("ApexMethod", "ApexMethod:Foo.bar(0)", "h1", 1)]);
+    store.mergeEdges([e("CONTAINS_METHOD", "ApexClass:Foo", "ApexMethod:Foo.bar(0)")]);
+    expect(store.listNodesByLabel(ORG, "ApexMethod").length).toBe(1);
+
+    // Sync 2: bar() gains @isTest → same qname, new label TestMethod.
+    store.mergeNodes([n("TestMethod", "ApexMethod:Foo.bar(0)", "h2", 2)]);
+
+    // The node now lives ONLY under TestMethod; the stale ApexMethod row is gone.
+    expect(store.listNodesByLabel(ORG, "TestMethod").length).toBe(1);
+    expect(store.listNodesByLabel(ORG, "ApexMethod").length).toBe(0);
+    // The live node still resolves, under the new label.
+    const live = store.getNode(ORG, asQualifiedName("ApexMethod:Foo.bar(0)"));
+    expect(live?.label).toBe("TestMethod");
+    // Edges to the qname are preserved (qname unchanged across the relabel).
+    expect(store.listEdgesTo(ORG, asQualifiedName("ApexMethod:Foo.bar(0)")).length).toBe(1);
+  });
+
+  it("a stale-under-old-label sweep can no longer delete the live relabeled node", () => {
+    store.mergeNodes([n("ApexInterface", "ApexClass:Shape", "h1", 1)]);
+    store.mergeNodes([n("ApexClass", "ApexClass:Shape", "h2", 2)]); // interface → class flip
+    // Simulate the detect-deletions sweep over the OLD label: there are no rows
+    // left under "ApexInterface", so nothing to (wrongly) delete.
+    expect(store.listNodesByLabel(ORG, "ApexInterface").length).toBe(0);
+    // The live node survives.
+    expect(store.getNode(ORG, asQualifiedName("ApexClass:Shape"))?.label).toBe("ApexClass");
+  });
+});
