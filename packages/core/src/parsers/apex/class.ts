@@ -150,6 +150,46 @@ function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
 }
 
+/**
+ * Compute the character ranges of loop BODIES (`{ … }` opened by for/while/
+ * do) within a method body. Used to stamp `inLoop: true` on SOQL/DML edges in
+ * the regex extraction path so governor-risk detection works on the DEFAULT
+ * parser mode — not only under SFGRAPH_APEX_PARSER=ast (the AST extractor
+ * stamps inLoop separately). The body passed here has strings/comments
+ * stripped, so brace counting is reliable.
+ *
+ * A for-EACH header query — `for (Account a : [SELECT …]) {…}` — runs once and
+ * is correctly EXCLUDED: its index falls before the loop body's opening brace,
+ * not inside the recorded range. Known limitation (shared with the populate
+ * body-scan): a braceless single-statement loop body isn't tracked.
+ */
+function computeLoopRanges(body: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  const stack: Array<{ openIdx: number; isLoop: boolean }> = [];
+  const wordBefore = (i: number) => /\W/.test(body[i - 1] ?? " ");
+  const boundaryAt = (i: number) => /\W/.test(body[i] ?? " ");
+  let pendingLoop = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (
+      (ch === "f" && body.startsWith("for", i) && wordBefore(i) && boundaryAt(i + 3)) ||
+      (ch === "w" && body.startsWith("while", i) && wordBefore(i) && boundaryAt(i + 5)) ||
+      (ch === "d" && body.startsWith("do", i) && wordBefore(i) && boundaryAt(i + 2))
+    ) {
+      pendingLoop = true;
+      continue;
+    }
+    if (ch === "{") {
+      stack.push({ openIdx: i, isLoop: pendingLoop });
+      pendingLoop = false;
+    } else if (ch === "}") {
+      const top = stack.pop();
+      if (top?.isLoop) ranges.push({ start: top.openIdx, end: i });
+    }
+  }
+  return ranges;
+}
+
 const SOQL_RE = /\[\s*SELECT\b([^\]]*?)\bFROM\s+([A-Za-z_][\w.]*)/gi;
 const SOSL_RE = /\[\s*FIND\b/gi;
 const DML_RE = /\b(insert|update|delete|upsert|undelete|merge)\s+([A-Za-z_][\w.]*)/gi;
@@ -458,6 +498,13 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         continue;
       }
 
+      // Loop-body ranges for governor in-loop detection (regex path). The AST
+      // extractor stamps inLoop itself; this gives the DEFAULT (regex) path the
+      // same signal so governor_risk_check works without SFGRAPH_APEX_PARSER=ast.
+      const loopRanges = computeLoopRanges(body);
+      const inLoopAt = (idx: number): boolean =>
+        loopRanges.some((r) => idx > r.start && idx < r.end);
+
       // SOQL
       const soqlRe = new RegExp(SOQL_RE.source, "gi");
       let sq: RegExpExecArray | null = soqlRe.exec(body);
@@ -466,6 +513,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         edges.push(
           makeEdge(ctx, methodQname, REL_TYPES.EXECUTES_SOQL, `CustomObject:${obj}`, {
             query: sq[0]?.trim(),
+            ...(inLoopAt(sq.index) ? { inLoop: true } : {}),
           }),
         );
         // READS_FIELD for SELECT clause fields
@@ -498,6 +546,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         edges.push(
           makeEdge(ctx, methodQname, REL_TYPES.EXECUTES_DML, `DML:${op}`, {
             target: dm[2],
+            ...(inLoopAt(dm.index) ? { inLoop: true } : {}),
           }),
         );
         dm = dmlRe.exec(body);
