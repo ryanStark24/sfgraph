@@ -2,6 +2,7 @@ import path from "node:path";
 import {
   SqliteGraphStore,
   SqliteSnapshotStore,
+  SqliteVectorStore,
   listAllAuthenticatedOrgs,
   liveIngest,
   multiOrgIngest,
@@ -137,6 +138,28 @@ async function buildSingleIngestOpts(
   });
   await snapshotStore.init();
 
+  // Wire a vector store so ingest GENERATES MiniLM embeddings — without this
+  // `opts.vectorStore` is undefined, live-ingest never builds its embedding
+  // queue, and the vec0 tables stay empty (semantic find_similar returns
+  // "vector index unavailable"). Reuses the graph store's SQLite handle and
+  // loads sqlite-vec on it. If the native vec extension or the embedding model
+  // is unavailable, degrade gracefully (null → structural ingest still works,
+  // just no vectors) instead of failing the whole ingest.
+  let vectorStore: SqliteVectorStore | undefined;
+  try {
+    const vs = new SqliteVectorStore({
+      dbPath,
+      db: graphStore.db,
+      skipMigrations: true,
+    });
+    await vs.init();
+    vectorStore = vs;
+  } catch (e) {
+    logger.warn("ingest: vector store unavailable — embeddings disabled", {
+      err: (e as Error).message,
+    });
+  }
+
   // --rebuild and --only and --retry-skipped all force a full sync because
   // incremental wouldn't pick up newly-permitted/unblocked types.
   const forceFull = Boolean(opts.rebuild || opts.only || opts.retrySkipped);
@@ -187,6 +210,7 @@ async function buildSingleIngestOpts(
     mode,
     graphStore,
     snapshotStore,
+    ...(vectorStore ? { vectorStore } : {}),
     logger,
     preResolved: resolved,
     detectDeletions: Boolean(opts.detectDeletions),

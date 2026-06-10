@@ -90,9 +90,18 @@ function createWedgeCoordinator(
   overrides?: Partial<Pick<WedgeCoordinator, "maxBackgroundWedges" | "lateDrainBudgetMs">>,
 ): WedgeCoordinator {
   const capEnv = Number.parseInt(process.env.SFGRAPH_MAX_BACKGROUND_WEDGES ?? "", 10);
-  const cap = Number.isFinite(capEnv) && capEnv > 0 ? capEnv : 4;
+  // Default 32 (was 4): a full --rebuild on a large org wedges many slow/empty
+  // generic-metadata sources at the 90s first-yield watchdog AND the heavy Apex
+  // source; a cap of 4 evicted most of them (their data lost). The drain loop
+  // skips already-resolved entries cheaply, so a high cap costs little.
+  const cap = Number.isFinite(capEnv) && capEnv > 0 ? capEnv : 32;
   const drainEnv = Number.parseInt(process.env.SFGRAPH_LATE_DRAIN_BUDGET_MS ?? "", 10);
-  const drain = Number.isFinite(drainEnv) && drainEnv >= 0 ? drainEnv : 60_000;
+  // Default 300s (was 60s): the per-entry budget is TOTAL drain wall-clock.
+  // Apex needs ~75s to stream all classes once the Tooling pool frees up after
+  // the main loop; 60s clipped it mid-drain. Empty/fast entries still return
+  // `done` immediately and cost nothing, so the larger budget only helps the
+  // genuinely-heavy entries finish.
+  const drain = Number.isFinite(drainEnv) && drainEnv >= 0 ? drainEnv : 300_000;
   return {
     warnings,
     backgroundWedges: [],
@@ -260,15 +269,48 @@ async function* mergeAsyncIterablesParallelImpl<T>(
 const WATCHDOG_INACTIVITY_MS_DEFAULT = 5 * 60_000;
 const WATCHDOG_FIRST_YIELD_MS_DEFAULT = 90_000;
 
+/**
+ * Per-source watchdog overrides (the "per-source override" the anti-feature
+ * note above points to). Some sources legitimately need far longer than the
+ * 90s default to produce their FIRST record — most notably the Vlocity runner,
+ * which executes a long sequence of `vlocity_cmt` SObject queries and assembles
+ * DataPacks before yielding member #1, and can have multi-minute gaps between
+ * DataPack types once streaming. Raising the GLOBAL budget to accommodate it is
+ * wrong: it makes every other slow/empty source hold its merger slot 10x longer
+ * and starves the pool (observed: a 600s global first-yield stalled the whole
+ * fan-out behind a few empty generic sources). So scope the larger budget to
+ * the specific label only. Explicit env vars still win (debug/tests).
+ */
+const SOURCE_WATCHDOG_OVERRIDES: Record<string, { firstYieldMs?: number; inactivityMs?: number }> =
+  {
+    // Vlocity must stay INLINE: the post-merger background-drain cannot reliably
+    // recover it (it needs minutes to first-yield, longer than any sane drain
+    // budget, and competes for drain slots). Giving it a long inline budget lets
+    // it hold its DATA-pool slot and stream once the pool frees up. NB: do NOT
+    // do this for Tooling-pool sources like Apex — holding a scarce Tooling slot
+    // that long starves every other Tooling source and stalls the whole fan-out.
+    // Apex instead wedges fast (releasing its slot) and is recovered by the
+    // background-drain pass, which is sized generously in createWedgeCoordinator.
+    vlocity: { firstYieldMs: 20 * 60_000, inactivityMs: 10 * 60_000 },
+  };
+
 /** Read watchdog budgets per-call so unit tests can override via env vars
- *  without restarting the process. Production env should leave these unset
- *  (they default to the documented 90s first-yield / 5min inactivity). */
-function readWatchdogBudgets(): { firstYieldMs: number; inactivityMs: number } {
+ *  without restarting the process. Production env should leave these unset:
+ *  ordinary sources get the documented 90s first-yield / 5min inactivity;
+ *  a source in SOURCE_WATCHDOG_OVERRIDES gets its scoped budget instead. */
+function readWatchdogBudgets(label?: string): { firstYieldMs: number; inactivityMs: number } {
   const fy = Number.parseInt(process.env.SFGRAPH_WATCHDOG_FIRST_YIELD_MS ?? "", 10);
   const inact = Number.parseInt(process.env.SFGRAPH_WATCHDOG_INACTIVITY_MS ?? "", 10);
+  const override = label ? SOURCE_WATCHDOG_OVERRIDES[label] : undefined;
   return {
-    firstYieldMs: Number.isFinite(fy) && fy > 0 ? fy : WATCHDOG_FIRST_YIELD_MS_DEFAULT,
-    inactivityMs: Number.isFinite(inact) && inact > 0 ? inact : WATCHDOG_INACTIVITY_MS_DEFAULT,
+    firstYieldMs:
+      Number.isFinite(fy) && fy > 0
+        ? fy
+        : (override?.firstYieldMs ?? WATCHDOG_FIRST_YIELD_MS_DEFAULT),
+    inactivityMs:
+      Number.isFinite(inact) && inact > 0
+        ? inact
+        : (override?.inactivityMs ?? WATCHDOG_INACTIVITY_MS_DEFAULT),
   };
 }
 
@@ -451,7 +493,7 @@ async function* failSoft<T extends RawMember>(
   // Track last-yielded qualifiedName for diagnostic warnings — the smoking-
   // gun field that names WHICH record was in flight when the wedge fired.
   let lastYieldedQName = "<none>";
-  const { firstYieldMs, inactivityMs } = readWatchdogBudgets();
+  const { firstYieldMs, inactivityMs } = readWatchdogBudgets(label);
 
   // W1.5-03: pre-allocate the per-source stop-signal at body entry and
   // publish it into AsyncLocalStorage so any downstream rate-limit wrapper
@@ -714,8 +756,15 @@ const GENERIC_TYPE_WHITELIST = new Set([
 ]);
 
 function shouldRouteGeneric(type: string): boolean {
-  if (process.env.SFGRAPH_INCLUDE_ALL_GENERIC === "1") return true;
-  return GENERIC_TYPE_WHITELIST.has(type);
+  // Default: route EVERY long-tail metadata type through the generic
+  // extractor so the graph — and therefore semantic search — covers the org
+  // completely. Anything without a dedicated extractor still becomes a typed
+  // node (the rule parsers key off the type name) or an opaque node, which is
+  // what search needs. The old curated whitelist silently dropped ~250
+  // discovered types (search returned nothing for them). Set
+  // SFGRAPH_GENERIC_WHITELIST_ONLY=1 to restore the restricted subset.
+  if (process.env.SFGRAPH_GENERIC_WHITELIST_ONLY === "1") return GENERIC_TYPE_WHITELIST.has(type);
+  return true;
 }
 
 export interface BulkRetrieveOpts {
@@ -846,6 +895,34 @@ export async function* bulkRetrieve(
           break;
       }
     }
+
+    // Child metadata types (ValidationRule, ListView, CompactLayout, FieldSet,
+    // WebLink, BusinessProcess, ...) are returned by describe() only as
+    // `childXmlNames` of a parent (mostly CustomObject), never as top-level
+    // types — so the dispatch loop above never fetches them. Most ARE
+    // independently listable via metadata.list, so route each through the
+    // generic extractor. This is how validation rules / list views on STANDARD
+    // objects get captured — iterObject only sees children embedded in the
+    // custom objects it reads, missing the bulk that live on Account/Case/etc.
+    // Children that aren't independently listable fail-soft to nothing. Skip
+    // children already owned by a dedicated extractor or dispatched above.
+    if (process.env.SFGRAPH_GENERIC_WHITELIST_ONLY !== "1") {
+      const typedOwned = new Set<string>([
+        ...APEX_TYPES,
+        ...LWC_TYPES,
+        ...FLOW_TYPES,
+        ...OBJECT_TYPES,
+        ...SECURITY_TYPES,
+        ...INTEGRATION_TYPES,
+        "CustomField", // fetched in bulk by iterObject; re-listing is wasteful
+      ]);
+      const childTypes = new Set<string>();
+      for (const t of types) for (const c of t.childXmlNames) childTypes.add(c);
+      for (const child of childTypes) {
+        if (dispatch.has(child) || typedOwned.has(child)) continue;
+        invoke(`generic:${child}`, () => iterGenericMetadata(conn, String(orgId), child));
+      }
+    }
   }
 
   if (caps.vlocityLegacy) {
@@ -934,6 +1011,7 @@ export const __testing = {
   createWedgeCoordinator,
   drainBackgroundWedge,
   mergeAsyncIterablesParallel,
+  readWatchdogBudgets,
   setTestWatchdogBudgets(opts: { firstYieldMs: number; inactivityMs: number }): void {
     process.env.SFGRAPH_WATCHDOG_FIRST_YIELD_MS = String(opts.firstYieldMs);
     process.env.SFGRAPH_WATCHDOG_INACTIVITY_MS = String(opts.inactivityMs);

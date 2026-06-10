@@ -474,6 +474,25 @@ function envOverrides(): PoolConcurrencyOverrides {
  * Concurrency resolution order: explicit `overrides` arg > `SFGRAPH_*_POOL`
  * env vars > {@link DEFAULT_POOL_CONCURRENCY}.
  */
+/** Per-pool reservoir budget and refill cadence (200 calls / 10s ≈ 20 req/s). */
+const RESERVOIR_SIZE = 200;
+const RESERVOIR_REFILL_MS = 10_000;
+
+/**
+ * Refill a pool's reservoir to {@link RESERVOIR_SIZE} on a self-managed timer.
+ * Replaces Bottleneck's built-in `reservoirRefreshInterval`, which is
+ * permanently disarmed by any `updateSettings()` call in bottleneck@2.19.5
+ * (the cause of a full-run deadlock: reservoir stuck at 0, all API calls
+ * queued forever). Setting the absolute reservoir value mirrors refresh
+ * semantics; the timer is unref'd so it never keeps the process alive.
+ */
+function startReservoirRefill(pool: Bottleneck): void {
+  const timer = setInterval(() => {
+    void pool.updateSettings({ reservoir: RESERVOIR_SIZE });
+  }, RESERVOIR_REFILL_MS);
+  (timer as unknown as { unref?: () => void }).unref?.();
+}
+
 export function createRateLimitPools(overrides: PoolConcurrencyOverrides = {}): RateLimitPools {
   const env = envOverrides();
   const toolingConc = overrides.tooling ?? env.tooling ?? DEFAULT_POOL_CONCURRENCY.tooling;
@@ -488,28 +507,34 @@ export function createRateLimitPools(overrides: PoolConcurrencyOverrides = {}): 
   // 200/10s = 20 req/sec aligns the reservoir with maxConcurrent + typical
   // 0.5–2s call latency. minTime: 0 lets maxConcurrent be the sole
   // parallelism bound (it was the binding constraint anyway).
+  //
+  // NB: we do NOT use Bottleneck's built-in `reservoirRefreshAmount/Interval`.
+  // In bottleneck@2.19.5 any later `updateSettings()` call (e.g. the
+  // maxConcurrent override applied by configureDefaultPools at ingest start)
+  // PERMANENTLY disarms the built-in refresh timer — the reservoir drains to 0
+  // and never refills, deadlocking the whole fan-out (every queued API call
+  // waits forever; sources then wedge on first-yield/inactivity). We instead
+  // refill the reservoir on our own interval (see startReservoirRefill), which
+  // is immune to updateSettings. Verified against the live PLDT org.
   const toolingPool = new Bottleneck({
     maxConcurrent: toolingConc,
     minTime: 0,
-    reservoir: 200,
-    reservoirRefreshAmount: 200,
-    reservoirRefreshInterval: 10_000,
+    reservoir: RESERVOIR_SIZE,
   });
   const metadataPool = new Bottleneck({
     maxConcurrent: metadataConc,
     minTime: 0,
-    reservoir: 200,
-    reservoirRefreshAmount: 200,
-    reservoirRefreshInterval: 10_000,
+    reservoir: RESERVOIR_SIZE,
   });
   const dataPool = new Bottleneck({
     maxConcurrent: dataConc,
     minTime: 0,
-    reservoir: 200,
-    reservoirRefreshAmount: 200,
-    reservoirRefreshInterval: 10_000,
+    reservoir: RESERVOIR_SIZE,
   });
-  for (const p of [toolingPool, metadataPool, dataPool]) attachRetryHandler(p);
+  for (const p of [toolingPool, metadataPool, dataPool]) {
+    attachRetryHandler(p);
+    startReservoirRefill(p);
+  }
 
   return {
     toolingPool,

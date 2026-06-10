@@ -42,70 +42,97 @@ function buildApexMetaXml(
   return parts.join("\n");
 }
 
+/**
+ * Drain a Tooling SOQL query across ALL pages. `conn.tooling.query` returns at
+ * most one page (200 rows); without following `nextRecordsUrl` via `queryMore`
+ * the extractor silently capped Apex at the first 200 members — on a large org
+ * (7k+ classes) that dropped ~97% of the source, and that first page is
+ * dominated by managed-package classes whose body is stubbed, so almost
+ * nothing parsed. Streams rows so we never hold the whole (body-heavy) result
+ * set in memory at once.
+ */
+async function* drainToolingQuery<T>(conn: any, soql: string, label: string): AsyncIterable<T> {
+  let result: any = await scheduleQuery(() => soqlWithTimeout(conn.tooling.query(soql), label));
+  while (result) {
+    for (const r of (result.records ?? []) as T[]) yield r;
+    if (result.done || !result.nextRecordsUrl || typeof conn.tooling.queryMore !== "function") {
+      break;
+    }
+    result = await scheduleQuery(() =>
+      soqlWithTimeout(conn.tooling.queryMore(result.nextRecordsUrl), `${label} more`),
+    );
+  }
+}
+
 export async function* iterApex(conn: any): AsyncIterable<RawMember> {
-  // Fire both Tooling queries in parallel — allSettled so one rejection
-  // doesn't poison the other's promise into an unhandled rejection (which
-  // crashes node 24+).
-  const [classesS, triggersS] = await Promise.allSettled([
-    scheduleQuery(() =>
-      soqlWithTimeout(conn.tooling.query(APEX_CLASS_SOQL), "tooling ApexClass"),
-    ) as Promise<{
-      records?: ToolingClassRow[];
-    } | null>,
-    scheduleQuery(() =>
-      soqlWithTimeout(conn.tooling.query(APEX_TRIGGER_SOQL), "tooling ApexTrigger"),
-    ) as Promise<{
-      records?: ToolingTriggerRow[];
-    } | null>,
-  ]);
-  const classes = classesS.status === "fulfilled" ? classesS.value : null;
-  const triggers = triggersS.status === "fulfilled" ? triggersS.value : null;
-  // For managed-package Apex, Body comes back as the literal string
-  // "(hidden)" — parsing it produces nothing useful. We still emit the
-  // node (so calling code's edges resolve to a real target) but skip
-  // the body. Set SFGRAPH_INCLUDE_MANAGED=1 to keep the redacted Body.
+  // For managed-package Apex, Body comes back redacted (empty / "(hidden)") —
+  // parsing it produces nothing useful. We still emit the node (so calling
+  // code's edges resolve to a real target) with an empty body, which the
+  // parser turns into a bare node. Set SFGRAPH_INCLUDE_MANAGED=1 to keep the
+  // redacted Body instead.
   const includeManaged = process.env.SFGRAPH_INCLUDE_MANAGED === "1";
   const stubBody = (r: ToolingClassRow): string =>
     r.NamespacePrefix && !includeManaged ? "" : (r.Body ?? "");
-  for (const r of classes?.records ?? []) {
-    const metaXml = buildApexMetaXml("ApexClass", r);
-    yield {
-      ref: {
-        category: METADATA_CATEGORY.APEX_CLASS,
-        memberType: "ApexClass",
-        memberName: r.Name,
-        lastModifiedAt: r.LastModifiedDate ?? null,
-        sourceUri: `sf://tooling/ApexClass/${r.Name}`,
-        namespace: r.NamespacePrefix ?? null,
-      },
-      // JSON envelope so adaptParserInput can forward metaXml (containing
-      // apiVersion + Status) alongside the body. Plain-body content from
-      // the filesystem path still parses correctly via the adapter's
-      // shape detection.
-      content: JSON.stringify({
-        body: stubBody(r),
-        metaXml,
-        ...(r.NamespacePrefix && !includeManaged ? { managed: true } : {}),
-      }),
-    };
+
+  // Classes and triggers are drained independently and fail-soft: a failure
+  // fetching one must not drop the other (an unhandled jsforce rejection also
+  // crashes node 24+, hence the per-stream try/catch).
+  try {
+    for await (const r of drainToolingQuery<ToolingClassRow>(
+      conn,
+      APEX_CLASS_SOQL,
+      "tooling ApexClass",
+    )) {
+      const metaXml = buildApexMetaXml("ApexClass", r);
+      yield {
+        ref: {
+          category: METADATA_CATEGORY.APEX_CLASS,
+          memberType: "ApexClass",
+          memberName: r.Name,
+          lastModifiedAt: r.LastModifiedDate ?? null,
+          sourceUri: `sf://tooling/ApexClass/${r.Name}`,
+          namespace: r.NamespacePrefix ?? null,
+        },
+        // JSON envelope so adaptParserInput can forward metaXml (containing
+        // apiVersion + Status) alongside the body. Plain-body content from
+        // the filesystem path still parses correctly via the adapter's
+        // shape detection.
+        content: JSON.stringify({
+          body: stubBody(r),
+          metaXml,
+          ...(r.NamespacePrefix && !includeManaged ? { managed: true } : {}),
+        }),
+      };
+    }
+  } catch {
+    /* fail-soft: skip ApexClass on fetch failure, still try triggers */
   }
-  for (const r of triggers?.records ?? []) {
-    const metaXml = buildApexMetaXml("ApexTrigger", r);
-    yield {
-      ref: {
-        category: METADATA_CATEGORY.APEX_TRIGGER,
-        memberType: "ApexTrigger",
-        memberName: r.Name,
-        lastModifiedAt: r.LastModifiedDate ?? null,
-        sourceUri: `sf://tooling/ApexTrigger/${r.Name}`,
-        namespace: r.NamespacePrefix ?? null,
-      },
-      content: JSON.stringify({
-        body: stubBody(r),
-        metaXml,
-        ...(r.NamespacePrefix && !includeManaged ? { managed: true } : {}),
-      }),
-    };
+
+  try {
+    for await (const r of drainToolingQuery<ToolingTriggerRow>(
+      conn,
+      APEX_TRIGGER_SOQL,
+      "tooling ApexTrigger",
+    )) {
+      const metaXml = buildApexMetaXml("ApexTrigger", r);
+      yield {
+        ref: {
+          category: METADATA_CATEGORY.APEX_TRIGGER,
+          memberType: "ApexTrigger",
+          memberName: r.Name,
+          lastModifiedAt: r.LastModifiedDate ?? null,
+          sourceUri: `sf://tooling/ApexTrigger/${r.Name}`,
+          namespace: r.NamespacePrefix ?? null,
+        },
+        content: JSON.stringify({
+          body: stubBody(r),
+          metaXml,
+          ...(r.NamespacePrefix && !includeManaged ? { managed: true } : {}),
+        }),
+      };
+    }
+  } catch {
+    /* fail-soft: skip ApexTrigger on fetch failure */
   }
 }
 

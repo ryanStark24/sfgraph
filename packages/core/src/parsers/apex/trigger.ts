@@ -25,6 +25,25 @@ export class ApexTriggerParser implements Parser<ApexTriggerInput> {
     const cleaned = stripCommentsAndStrings(input.body);
     const triggerQname = `ApexTrigger:${name}`;
 
+    // Managed-package triggers (and any member whose Body the extractor couldn't
+    // fetch) arrive with an empty body. That is NOT a parse failure — emit a
+    // bare node so referencing edges resolve to a real target, instead of the
+    // misleading "could not parse trigger header" ParseError. The triggering
+    // object is unknown without a body, so no TRIGGERS_ON edge is emitted.
+    if (cleaned.trim() === "") {
+      const av = input.metaXml?.match(/<apiVersion>([^<]+)<\/apiVersion>/)?.[1]?.trim();
+      nodes.push(
+        makeNode(
+          ctx,
+          "ApexTrigger",
+          triggerQname,
+          { name, object: null, events: [], apiVersion: av ?? null },
+          sha256(input.body),
+        ),
+      );
+      return { nodes, edges };
+    }
+
     // Parse header: trigger <Name> on <Object>(after insert, before update, ...) {
     const m = cleaned.match(/trigger\s+([A-Za-z_]\w*)\s+on\s+([A-Za-z_][\w.]*)\s*\(([^)]*)\)/i);
     if (!m) {

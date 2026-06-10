@@ -262,6 +262,30 @@ export class ApexClassParser implements Parser<ApexClassInput> {
     const className = stripNs(input.className, ctx.namespace);
     const fileHash = sha256(input.body);
 
+    // Managed-package Apex (and any member whose Body the extractor couldn't
+    // fetch) arrives with an empty body. That is NOT a parse failure — the
+    // class exists, we just can't see its source. Emit a bare node so
+    // referencing edges resolve to a real target, instead of a misleading
+    // ParseError (the apex-parser throws a non-Error on empty input, which the
+    // catch below would record as the useless message "[object Object]").
+    if (input.body.trim() === "") {
+      nodes.push(
+        makeNode(
+          ctx,
+          "ApexClass",
+          `ApexClass:${className}`,
+          {
+            name: className,
+            modifiers: [],
+            isTest: false,
+            apiVersion: extractApiVersion(input.metaXml),
+          },
+          fileHash,
+        ),
+      );
+      return { nodes, edges, snippets };
+    }
+
     // Read parser mode once per parse — env var lets us flip between
     // regex (the legacy path), ast (the new precise extractor), and both
     // (regex authoritative; ast diff logged for shadow validation).
