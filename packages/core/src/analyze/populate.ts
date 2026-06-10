@@ -1,4 +1,4 @@
-import type { OrgId } from "@ryanstark24/sfgraph-shared";
+import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import { REL_TYPES } from "../domain/rel-types.js";
 import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
@@ -99,27 +99,79 @@ export function populateGovernorRisks(
     }
     return out;
   };
+  /**
+   * Edge-based detection — the primary path for live-org ingests, where the
+   * Apex body is parsed then discarded (node attrs carry no `body`/`source`,
+   * so the char-scan above finds nothing). The Apex AST extractor stamps
+   * EXECUTES_SOQL / EXECUTES_DML edges with `inLoop: true` when the
+   * query/DML sits inside a for/while/do-while body, and records the query
+   * text — enough to flag soql_in_loop, dml_in_loop, and unbounded_query
+   * straight off the graph. These edges hang off ApexMethod nodes.
+   */
+  const detectFromEdges = (
+    qname: QualifiedName,
+  ): Array<{ type: string; evidence: string; line: number }> => {
+    const out: Array<{ type: string; evidence: string; line: number }> = [];
+    for (const e of store.listEdgesFrom(orgId, qname, REL_TYPES.EXECUTES_SOQL)) {
+      const ea = (e.attributes ?? {}) as { inLoop?: unknown; query?: unknown };
+      const query = typeof ea.query === "string" ? ea.query : "";
+      if (ea.inLoop === true) {
+        out.push({ type: "soql_in_loop", evidence: query || "SOQL in loop", line: -1 });
+      }
+      // NB: we deliberately do NOT flag "unbounded_query" (no WHERE/LIMIT)
+      // from edges. Calibrated against a real org: ~100% of SOQL has no
+      // WHERE/LIMIT in the captured query head (legit full reads of small
+      // config objects like RecordType / CallCenter), so the heuristic
+      // fires on every query and is pure noise. The body-scan path keeps it
+      // for filesystem ingests where the full query text is available, but
+      // SOQL/DML-in-loop is the high-signal governor risk we surface here.
+    }
+    for (const e of store.listEdgesFrom(orgId, qname, REL_TYPES.EXECUTES_DML)) {
+      const ea = (e.attributes ?? {}) as { inLoop?: unknown };
+      if (ea.inLoop === true) {
+        out.push({ type: "dml_in_loop", evidence: String(e.dstQualifiedName), line: -1 });
+      }
+    }
+    return out;
+  };
+
+  const writeRisks = (
+    qname: QualifiedName,
+    risks: Array<{ type: string; evidence: string; line: number }>,
+  ): void => {
+    const seen = new Set<string>();
+    for (const r of risks) {
+      const k = `${r.type}|${r.line}|${r.evidence.slice(0, 40)}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      stmt.run(orgId, qname, r.type, r.evidence, r.line, now);
+      n += 1;
+    }
+  };
+
+  // Class / trigger: body char-scan (filesystem ingest) + attribute hints.
   for (const lbl of [METADATA_CATEGORY.APEX_CLASS, METADATA_CATEGORY.APEX_TRIGGER]) {
     for (const node of store.listNodesByLabel(orgId, lbl, 10000)) {
       const a = node.attributes as Record<string, unknown>;
       const body = String(a.source ?? a.body ?? "");
       const risks = detect(body);
-      // Attribute hints from earlier phases
       if (a.hasSoqlInLoop === true) {
         risks.push({ type: "soql_in_loop", evidence: "attribute hint", line: -1 });
       }
       if (a.hasDmlInLoop === true) {
         risks.push({ type: "dml_in_loop", evidence: "attribute hint", line: -1 });
       }
-      const seen = new Set<string>();
-      for (const r of risks) {
-        const k = `${r.type}|${r.line}`;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        stmt.run(orgId, node.qualifiedName, r.type, r.evidence, r.line, now);
-        n += 1;
-      }
+      // Edge-based detection on the class/trigger node itself (regex-mode
+      // parser emits SOQL/DML edges at the trigger/class qname).
+      risks.push(...detectFromEdges(node.qualifiedName));
+      writeRisks(node.qualifiedName, risks);
     }
+  }
+  // Method-level edge detection — the live-ingest path (AST parser emits
+  // EXECUTES_SOQL/DML edges per method). "ApexMethod" is a raw node label,
+  // not a METADATA_CATEGORY member.
+  for (const node of store.listNodesByLabel(orgId, "ApexMethod", 50000)) {
+    writeRisks(node.qualifiedName, detectFromEdges(node.qualifiedName));
   }
   return n;
 }

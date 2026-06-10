@@ -194,3 +194,56 @@ describe("extractFromAst", () => {
     expect(impls).toEqual(["ApexInterface:MyIface", "ApexInterface:Other"]);
   });
 });
+
+describe("extractFromAst — governor inLoop stamping", () => {
+  it("stamps inLoop on SOQL inside a for-loop, not on SOQL outside", async () => {
+    const src = `
+      public class Loopy {
+        public void run() {
+          List<Account> bad = new List<Account>();
+          for (Integer i = 0; i < 10; i++) {
+            Account a = [SELECT Id FROM Account WHERE Id = :i LIMIT 1];
+            bad.add(a);
+          }
+          List<Contact> ok = [SELECT Id FROM Contact LIMIT 1];
+        }
+      }
+    `;
+    const tree = await parse(src);
+    const out: any = extractFromAst(tree, {
+      ctx: makeTestCtx(),
+      classQname: "ApexClass:Loopy",
+      effectiveName: "Loopy",
+      namespace: null,
+    });
+    const soql = out.edges.filter((e: any) => e.relType === "EXECUTES_SOQL");
+    const acct = soql.find((e: any) => e.dstQualifiedName === "CustomObject:Account");
+    const cont = soql.find((e: any) => e.dstQualifiedName === "CustomObject:Contact");
+    expect(acct?.attributes?.inLoop).toBe(true);
+    expect(cont?.attributes?.inLoop).toBeUndefined();
+  });
+
+  it("stamps inLoop on DML inside a while-loop", async () => {
+    const src = `
+      public class DmlLoop {
+        public void run() {
+          Integer i = 0;
+          while (i < 5) {
+            Account a = new Account();
+            update a;
+            i++;
+          }
+        }
+      }
+    `;
+    const tree = await parse(src);
+    const out: any = extractFromAst(tree, {
+      ctx: makeTestCtx(),
+      classQname: "ApexClass:DmlLoop",
+      effectiveName: "DmlLoop",
+      namespace: null,
+    });
+    const dml = out.edges.find((e: any) => e.relType === "EXECUTES_DML");
+    expect(dml?.attributes?.inLoop).toBe(true);
+  });
+});

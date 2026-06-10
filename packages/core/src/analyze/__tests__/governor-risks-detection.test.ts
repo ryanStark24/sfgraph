@@ -91,3 +91,98 @@ describe("governor risk detection heuristics", () => {
     expect(r.c).toBeGreaterThan(0);
   });
 });
+
+describe("governor risk detection — edge-based (live ingest, no body)", () => {
+  function methodNode(qname: string): NodeFact {
+    return {
+      orgId: ORG,
+      label: "ApexMethod",
+      qualifiedName: asQualifiedName(qname),
+      // Live-ingest reality: NO body/source on the node.
+      attributes: { sourceUri: "x" },
+      sourceHash: asSha256("h"),
+      firstSeenAt: 1,
+      lastSeenAt: 1,
+      lastModifiedAt: Date.now(),
+    };
+  }
+
+  it("flags soql_in_loop from an inLoop EXECUTES_SOQL edge", () => {
+    store.mergeNodes([methodNode("ApexMethod:Acme.run(0)")]);
+    store.mergeEdges([
+      {
+        orgId: ORG,
+        srcQualifiedName: asQualifiedName("ApexMethod:Acme.run(0)"),
+        dstQualifiedName: asQualifiedName("CustomObject:Account"),
+        relType: "EXECUTES_SOQL" as never,
+        attributes: { inLoop: true, query: "[SELECT Id FROM Account]" },
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      },
+    ]);
+    const count = populateGovernorRisks(store, ORG, db);
+    expect(count).toBeGreaterThanOrEqual(1);
+    const rows = db
+      .prepare("SELECT risk_type FROM _sfgraph_governor_risks WHERE org_id = ?")
+      .all(ORG)
+      .map((r) => (r as { risk_type: string }).risk_type);
+    expect(rows).toContain("soql_in_loop");
+    // unbounded_query is intentionally NOT emitted from edges (too noisy on
+    // real orgs — every WHERE-less query would flag).
+    expect(rows).not.toContain("unbounded_query");
+  });
+
+  it("does NOT flag a WHERE-less SOQL edge that is outside any loop", () => {
+    store.mergeNodes([methodNode("ApexMethod:Acme.list(0)")]);
+    store.mergeEdges([
+      {
+        orgId: ORG,
+        srcQualifiedName: asQualifiedName("ApexMethod:Acme.list(0)"),
+        dstQualifiedName: asQualifiedName("CustomObject:RecordType"),
+        relType: "EXECUTES_SOQL" as never,
+        attributes: { query: "[SELECT Id FROM RecordType]" },
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      },
+    ]);
+    expect(populateGovernorRisks(store, ORG, db)).toBe(0);
+  });
+
+  it("flags dml_in_loop from EXECUTES_DML edge attrs", () => {
+    store.mergeNodes([methodNode("ApexMethod:Acme.save(0)")]);
+    store.mergeEdges([
+      {
+        orgId: ORG,
+        srcQualifiedName: asQualifiedName("ApexMethod:Acme.save(0)"),
+        dstQualifiedName: asQualifiedName("DML:update"),
+        relType: "EXECUTES_DML" as never,
+        attributes: { inLoop: true },
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      },
+    ]);
+    populateGovernorRisks(store, ORG, db);
+    const rows = db
+      .prepare("SELECT risk_type FROM _sfgraph_governor_risks WHERE org_id = ?")
+      .all(ORG)
+      .map((r) => (r as { risk_type: string }).risk_type);
+    expect(rows).toContain("dml_in_loop");
+  });
+
+  it("does NOT flag a bounded query outside a loop", () => {
+    store.mergeNodes([methodNode("ApexMethod:Acme.safe(0)")]);
+    store.mergeEdges([
+      {
+        orgId: ORG,
+        srcQualifiedName: asQualifiedName("ApexMethod:Acme.safe(0)"),
+        dstQualifiedName: asQualifiedName("CustomObject:Account"),
+        relType: "EXECUTES_SOQL" as never,
+        attributes: { query: "[SELECT Id FROM Account WHERE Id = :x LIMIT 1]" },
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      },
+    ]);
+    const count = populateGovernorRisks(store, ORG, db);
+    expect(count).toBe(0);
+  });
+});

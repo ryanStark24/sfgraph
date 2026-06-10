@@ -232,6 +232,33 @@ function indexLocalsAndParams(methodDecl: Node, scope: MethodContext): void {
   }
 }
 
+/** ANTLR statement contexts that introduce a loop body. A SOQL query or DML
+ *  statement that is a descendant of one of these is a governor-limit risk
+ *  (query/DML inside a loop). */
+const LOOP_CTX_RULES = [
+  "ForStatementContext",
+  "WhileStatementContext",
+  "DoWhileStatementContext",
+] as const;
+
+/**
+ * Collect — by object identity — every node of the given rule types that sits
+ * inside a loop body within this method. Used to stamp `inLoop: true` on
+ * EXECUTES_SOQL / EXECUTES_DML edges so governor-risk detection works straight
+ * off the graph (the Apex body is not persisted on the node after ingest).
+ */
+function nodesInsideLoops(methodDecl: Node, ruleNames: string[]): Set<Node> {
+  const out = new Set<Node>();
+  for (const loopRule of LOOP_CTX_RULES) {
+    for (const loop of findDescendants(methodDecl, loopRule)) {
+      for (const rn of ruleNames) {
+        for (const d of findDescendants(loop, rn)) out.add(d);
+      }
+    }
+  }
+  return out;
+}
+
 function extractSoqlEdges(
   methodDecl: Node,
   scope: MethodContext,
@@ -239,6 +266,7 @@ function extractSoqlEdges(
   edges: EdgeFact[],
   diag: string[],
 ): void {
+  const queriesInLoop = nodesInsideLoops(methodDecl, ["QueryContext"]);
   // SoqlLiteral wraps Query; both surface FromNameList. Use Query to get
   // selectList + fromNameList in one place.
   for (const q of findDescendants(methodDecl, "QueryContext")) {
@@ -265,10 +293,12 @@ function extractSoqlEdges(
     }
 
     const queryText = nodeText(q).trim();
+    const inLoop = queriesInLoop.has(q);
     for (const obj of fromObjects) {
       edges.push(
         makeEdge(ctx, scope.qname, REL_TYPES.EXECUTES_SOQL, `CustomObject:${obj}`, {
           query: queryText.length > 500 ? `${queryText.slice(0, 500)}…` : queryText,
+          ...(inLoop ? { inLoop: true } : {}),
         }),
       );
     }
@@ -321,6 +351,10 @@ function extractDmlEdges(
     ["UpsertStatementContext", "upsert"],
     ["MergeStatementContext", "merge"],
   ];
+  const dmlInLoop = nodesInsideLoops(
+    methodDecl,
+    dmlRules.map(([rule]) => rule),
+  );
   for (const [rule, op] of dmlRules) {
     for (const dml of findDescendants(methodDecl, rule)) {
       const expr = (dml as any).expression?.();
@@ -336,6 +370,7 @@ function extractDmlEdges(
       }
       const attrs: Record<string, unknown> = { target: exprTxt };
       if (target) attrs.targetSObject = stripNs(target, ctx.namespace);
+      if (dmlInLoop.has(dml)) attrs.inLoop = true;
       edges.push(makeEdge(ctx, scope.qname, REL_TYPES.EXECUTES_DML, `DML:${op}`, attrs));
       if (target) {
         edges.push(
