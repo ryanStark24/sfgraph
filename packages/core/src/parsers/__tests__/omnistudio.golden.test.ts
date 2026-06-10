@@ -33,12 +33,11 @@ function loadFixture(file: string): unknown {
  *   remote/REST action types embedded in the script. Exercises the walk() +
  *   propertySet recognition path of the OmniProcess parser.
  *
- * - OmniDataTransform: 0 edges. The parser's extractFieldRefs() uses a
- *   regex matching `Object.Field` patterns; on-core DataRaptor stores field
- *   references as `Step:Field` (colon-separated), which the regex skips.
- *   This is a known parser limitation; the golden documents it so future
- *   parser changes that fix this case will surface as a diff requiring a
- *   golden refresh.
+ * - OmniDataTransform: 2 edges — DR_READS_FIELD on
+ *   CustomField:Travel_Request__c.Id (from the one OmniDataTransformItem
+ *   row whose input side names a real SObject) plus REFERENCES_OBJECT on
+ *   CustomObject:Travel_Request__c. The four json-to-json mapping rows
+ *   correctly emit nothing.
  *
  * - OmniUiCard: 0 edges. The sample FlexCard has no nested IP / DataTransform
  *   / Remote references, so all three of the parser's edge branches

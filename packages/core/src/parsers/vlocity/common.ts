@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { EdgeFact, NodeFact, RelType } from "../../domain/index.js";
 import { REL_TYPES } from "../../domain/index.js";
+import { xmlParser } from "../_xml-helpers.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext } from "../contract.js";
 
@@ -17,6 +18,65 @@ export function asJson(input: unknown): any {
     }
   }
   return input ?? {};
+}
+
+/**
+ * Like asJson but also accepts Metadata-API XML payloads (the OmniStudio
+ * retrieve path yields raw XML strings; the SOQL path yields JSON). For XML
+ * the single root element is unwrapped so callers see the same top-level
+ * shape regardless of source.
+ */
+export function asStructured(input: unknown): any {
+  if (typeof input === "string") {
+    const s = input.trim();
+    if (s.startsWith("{") || s.startsWith("[")) {
+      try {
+        return JSON.parse(s);
+      } catch {
+        return {};
+      }
+    }
+    if (s.startsWith("<")) {
+      try {
+        const doc = xmlParser.parse(s);
+        const roots = Object.keys(doc).filter((k) => k !== "?xml");
+        if (roots.length === 1) return doc[roots[0] as string] ?? {};
+        return doc;
+      } catch {
+        return {};
+      }
+    }
+    return {};
+  }
+  return input ?? {};
+}
+
+const NON_SOBJECT_SIDES = new Set(["", "json", "xml", "custom", "none", "null"]);
+const SOBJECT_NAME_RE = /^[A-Za-z][A-Za-z0-9_]*(?:__(?:c|mdt|e|b|x))?$/;
+
+/** True when a DataRaptor / DataTransform mapping side names a real
+ *  Salesforce SObject rather than the JSON/XML/custom payload side. */
+export function isSObjectName(name: unknown): name is string {
+  if (typeof name !== "string") return false;
+  const n = name.trim();
+  return !NON_SOBJECT_SIDES.has(n.toLowerCase()) && SOBJECT_NAME_RE.test(n);
+}
+
+/** True when a mapping-side field name is a plain field API name (JSON-path
+ *  sides use colon-separated paths like `Details:AccountNumber`). */
+export function isPlainFieldName(name: unknown): name is string {
+  if (typeof name !== "string") return false;
+  const n = name.trim();
+  return n.length > 0 && SOBJECT_NAME_RE.test(n);
+}
+
+/** Case-tolerant property lookup: SOQL rows use UpperCamel field names
+ *  (`InputFieldName`), Metadata-API XML uses lowerCamel (`inputFieldName`). */
+export function pickProp(obj: any, name: string): unknown {
+  if (!obj || typeof obj !== "object") return undefined;
+  if (name in obj) return obj[name];
+  const lower = name.charAt(0).toLowerCase() + name.slice(1);
+  return obj[lower];
 }
 
 /**

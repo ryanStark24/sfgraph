@@ -9,5 +9,18 @@
       }
     }
   ],
-  "edges": []
+  "edges": [
+    {
+      "srcQualifiedName": "DataRaptor:AccountSearch",
+      "dstQualifiedName": "CustomField:Account.Name",
+      "relType": "DR_READS_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "DataRaptor:AccountSearch",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "REFERENCES_OBJECT",
+      "attributes": {}
+    }
+  ]
 }

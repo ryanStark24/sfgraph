@@ -109,17 +109,24 @@ Coverage delivered via a vendored copy of `vlocity_build`'s `QueryDefinitions.ya
 
 | Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
 |---|---|---|---|---|
-| Vlocity DataPacks (48 types) | Full | `EMBEDS_VLOCITY`, `REFERENCES_DATA_RAPTOR`, `INVOKES_VLOCITY_PROCEDURE` | Capability-gated — only runs when the `vlocityLegacy` capability probe fires. | `packages/core/src/extractors/live-org/extractors/vlocity.ts` |
+| `DataRaptor` (DRBundle + DRMapItem children) | Full | `DR_READS_FIELD`, `DR_WRITES_FIELD`, `DR_TRANSFORMS`, `REFERENCES_OBJECT` | Field edges come from structured DRMapItem rows (Interface/Domain/Lookup sides) plus `Object.Field` regex over formula expressions. JSON-path sides (`Step:Field`) correctly emit nothing. | `packages/core/src/parsers/vlocity/data-raptor.ts` |
+| `IntegrationProcedure` (Element__c children) | Full | `IP_CALLS_DR`, `IP_CALLS_IP`, `IP_INVOKES_REMOTE` | Remote elements without `remoteClass`/`endpointURL` in PropertySet resolve to `Remote:unknown`. | `packages/core/src/parsers/vlocity/integration-procedure.ts` |
+| `OmniScript` (Element__c children) | Full | `OS_USES_DR`, `OS_CALLS_IP`, `OS_EMBEDS_VC`, `OS_INVOKES_REMOTE` | — | `packages/core/src/parsers/vlocity/omni-script.ts` |
+| `VlocityCard` | Full | `VC_USES_DR`, `VC_CALLS_IP`, `VC_EMBEDS_LWC`, `VC_INVOKES_REMOTE`, `EMBEDS_VC` | — | `packages/core/src/parsers/vlocity/vlocity-card.ts` |
+| Other DataPack types (44 of 48) | Node-Only | — | Ingested as nodes (CalculationMatrix, CalculationProcedure, DocumentTemplate, …) without dedicated edge parsers or child fetches. | `packages/core/src/extractors/live-org/vlocity/runner.ts` |
+
+All Vlocity ingestion is capability-gated — it only runs when the `vlocityLegacy` capability probe fires.
 
 ### OmniStudio on-Core
 
 | Metadata Type | Status | Edges Emitted | Known Limitations | Source File |
 |---|---|---|---|---|
-| `OmniProcess` | Full | `INVOKES_IP`, `READS_DATA_RAPTOR`, `EMBEDS_OMNISCRIPT` | Storage SObject is `OmniProcess`; metadata access via `metadata.list/read`. | `packages/core/src/extractors/live-org/extractors/omnistudio.ts` |
-| `OmniScript` | Generic-Only | `REFERENCES` (opaque) | OmniStudio retrieve path (`omnistudio-retrieve.ts`) hydrates richer content when enabled. | `bulk-retrieve.ts:GENERIC_TYPE_WHITELIST` |
-| `OmniIntegrationProcedure` | Partial | `REFERENCES`, retrieve-path attributes | Retrieved as opaque from `metadata.list`, hydrated via `metadata.retrieve()` async polling when `enableOmnistudioRetrieve` is set. | `packages/core/src/extractors/live-org/extractors/omnistudio-retrieve.ts` |
-| `OmniDataTransform` | Partial | `REFERENCES`, retrieve-path attributes | Same retrieve-path behavior as `OmniIntegrationProcedure`. | `packages/core/src/extractors/live-org/extractors/omnistudio-retrieve.ts` |
-| `OmniUiCard` | Partial | `REFERENCES`, retrieve-path attributes | Same retrieve-path behavior. | `packages/core/src/extractors/live-org/extractors/omnistudio-retrieve.ts` |
+| `OmniProcess` (+ OmniProcessElement children) | Full | `OMNI_CALLS_DATA_TRANSFORM`, `OMNI_CALLS_INTEGRATION_PROCEDURE`, `OMNI_EMBEDS_UI_CARD`, `OMNI_INVOKES_REMOTE` | SOQL on the standard `OmniProcess`/`OmniProcessElement` SObjects. Covers both on-core OmniScripts and on-core Integration Procedures (both are stored as OmniProcess rows). | `packages/core/src/extractors/live-org/extractors/omnistudio.ts`, `packages/core/src/parsers/omnistudio/process.ts` |
+| `OmniDataTransform` (+ OmniDataTransformItem children) | Full | `DR_READS_FIELD`, `DR_WRITES_FIELD`, `REFERENCES_OBJECT` | Field edges come from structured OmniDataTransformItem rows (Input/Output/Lookup sides), fetched via SOQL child query. Uses the same edge vocabulary as Vlocity DataRaptor so cross-flavor overlap signatures can match. | `packages/core/src/parsers/omnistudio/data-transform.ts` |
+| `OmniUiCard` | Partial | `OMNI_CALLS_INTEGRATION_PROCEDURE`, `OMNI_CALLS_DATA_TRANSFORM`, `OMNI_INVOKES_REMOTE` | Edge emission depends on nested references present in the card definition payload. | `packages/core/src/parsers/omnistudio/ui-card.ts` |
+| `OmniIntegrationProcedure` | Partial | `OMNI_CALLS_DATA_TRANSFORM`, `OMNI_CALLS_INTEGRATION_PROCEDURE`, `OMNI_INVOKES_REMOTE` | Only available via the Metadata-API retrieve path (`enableOmnistudioRetrieve`); not part of the SOQL pass. | `packages/core/src/extractors/live-org/extractors/omnistudio-retrieve.ts`, `packages/core/src/parsers/omnistudio/integration-procedure.ts` |
+
+Retrieve path (`enableOmnistudioRetrieve`): hydrates `OmniDataTransform`, `OmniUiCard`, and `OmniIntegrationProcedure` from Metadata-API XML (parsers accept both JSON and XML payloads). When enabled, the SOQL pass skips `OmniDataTransform` and `OmniUiCard` so the same component is not ingested twice. `OmniScript` has no separate on-core type — on-core OmniScripts are `OmniProcess` rows and are covered by the `OmniProcess` row above. Vlocity↔on-core duplicates are linked via `CANONICAL_OF` edges by the cross-flavor resolver, with divergence annotations from the overlap detector.
 
 ### Communities / Networks
 

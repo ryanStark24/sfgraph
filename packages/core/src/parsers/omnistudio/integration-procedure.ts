@@ -1,7 +1,7 @@
 import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../../domain/index.js";
 import { makeEdge, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
-import { asJson, buildBaseNode, sha256, walk } from "../vlocity/common.js";
+import { asStructured, buildBaseNode, sha256, walk } from "../vlocity/common.js";
 
 export interface OmniIntegrationProcedureInput {
   name: string;
@@ -15,7 +15,8 @@ export class OmniIntegrationProcedureParser implements Parser<OmniIntegrationPro
   async parse(input: OmniIntegrationProcedureInput, ctx: ParseContext): Promise<ParseResult> {
     const nodes: NodeFact[] = [];
     const edges: EdgeFact[] = [];
-    const md = asJson(input.metadata);
+    // SOQL path yields JSON; Metadata-API retrieve path yields raw XML.
+    const md = asStructured(input.metadata);
     const hash = sha256(JSON.stringify(md));
     const node = buildBaseNode({
       ctx,

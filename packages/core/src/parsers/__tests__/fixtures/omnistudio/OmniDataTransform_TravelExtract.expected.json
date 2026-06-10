@@ -9,5 +9,18 @@
       }
     }
   ],
-  "edges": []
+  "edges": [
+    {
+      "srcQualifiedName": "OmniDataTransform:extractTravelRequestInformation",
+      "dstQualifiedName": "CustomField:Travel_Request__c.Id",
+      "relType": "DR_READS_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniDataTransform:extractTravelRequestInformation",
+      "dstQualifiedName": "CustomObject:Travel_Request__c",
+      "relType": "REFERENCES_OBJECT",
+      "attributes": {}
+    }
+  ]
 }

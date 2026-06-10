@@ -70,19 +70,15 @@ const cardParser = new VlocityCardParser();
  * What each golden currently captures (regenerate via UPDATE_GOLDENS=1
  * after intentional parser changes):
  *
- * - DataRaptor (AccountSearch Extract, 4 DRMapItem children): 0 edges.
- *   The DRMapItem field references use colon-separated paths
- *   (`Details:AccountNumber`) but the parser's extractFieldRefs regex
- *   matches `Object.Field`. Same known limitation as the on-core
- *   OmniDataTransform parser — file as parser bug, golden documents
- *   current behavior so the future fix surfaces as a needed refresh.
- * - IntegrationProcedure (AddQGToSalesQLIs, 3 elements): 5
- *   IP_INVOKES_REMOTE edges — one with a real target name
- *   (`vlocity_cmt.B2BCmexAppHandler`), the others fall through to
- *   `Remote:unknown`. The Integration Procedure Action element
- *   (integrationProcedureKey: CloneModifyTo_SalesQLIs) currently routes
- *   to IP_INVOKES_REMOTE rather than a distinct IP_CALLS_IP — also
- *   worth investigating.
+ * - DataRaptor (AccountSearch Extract, 4 DRMapItem children): 2 edges —
+ *   DR_READS_FIELD on CustomField:Account.Name plus REFERENCES_OBJECT on
+ *   CustomObject:Account. The parser reads the DRMapItem rows structurally
+ *   (InterfaceObjectName/InterfaceFieldAPIName vs DomainObject* sides);
+ *   JSON-path sides (`Details:AccountNumber`) correctly emit nothing.
+ * - IntegrationProcedure (AddQGToSalesQLIs, 3 elements): IP_CALLS_IP to
+ *   IntegrationProcedure:CloneModifyTo_SalesQLIs and one resolved
+ *   IP_INVOKES_REMOTE (`Remote:vlocity_cmt.B2BCmexAppHandler`); the
+ *   Response Action element emits nothing.
  * - OmniScript (AccountSearch, 8 elements): 15 edges — 14
  *   OS_INVOKES_REMOTE + 1 OS_USES_DR (the DataRaptor Extract Action
  *   with bundle=AccountSearch). The OS_USES_DR edge is the high-value
