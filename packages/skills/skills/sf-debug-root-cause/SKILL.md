@@ -60,6 +60,11 @@ never by pattern-matching the error message to a generic fix.
    - For an object symptom: `sf-flow-impact` / `analyze_field` — every trigger, Flow,
      Process Builder, and validation rule that fires on the object. "Trigger isn't firing"
      and "field reverts" are almost always a competing automation.
+   - **If the cause depends on actual data** (a field's real value, a CMDT/setting the code
+     reads, a record-type/picklist value, data skew) and the graph doesn't hold it, pull it
+     from the org — config/metadata records freely (`sf data query … FROM <Type>__mdt`), live
+     business records only as a small bounded `LIMIT` sample (real/PII data — see
+     `sf-graph-router` → "When the graph doesn't hold what the analysis needs").
    - Governor `LimitException` → hand to `sf-governor-risk-fix` scoped to the class to find
      the SOQL/DML-in-loop.
 

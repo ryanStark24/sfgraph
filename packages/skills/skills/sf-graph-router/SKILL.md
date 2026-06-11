@@ -51,6 +51,36 @@ grounding step is unavailable and proceed with explicit low-confidence caveats.
 Only after grounding do you hand off to a design/knowledge skill (`sf-architect-*`) to
 write the code. Ground → design → verify. Never design → hope.
 
+## When the graph doesn't hold what the analysis needs — pull it from the org
+
+The graph is **metadata structure**, not source code or record data. When an analysis
+genuinely needs something the graph doesn't store, fetch it — don't guess and don't analyse
+a stub. Two cases, with very different guardrails:
+
+- **Source code & metadata definitions (fetch freely).** The graph stores source only for
+  Apex methods — no trigger bodies, no Flow logic, nothing for managed/`(hidden)` code, no
+  whole-class snippet. And some metadata isn't ingested. Get the real definition: read the
+  **local sfdx file** (`force-app/main/default/{classes,triggers,flows,objects}/…`) first, else
+  retrieve from the org (`sf project retrieve start -m "ApexTrigger:<Name>"` / `Flow:<Name>` /
+  `CustomObject:<Name>`, or Tooling `SELECT Body FROM ApexClass WHERE Name='…'`).
+- **CONFIG / metadata RECORDS (fetch when needed).** Custom Metadata records, Custom Setting
+  rows, picklist/record-type values, Named Credential config — these are deploy-time config,
+  not customer data. Pull them with `sf data query -q "SELECT … FROM <Type>__mdt"` (or the
+  setting `__c`, or Tooling for record types/picklists) when a trace/debug needs the value the
+  config resolves to. (1.4.0+ ingests CMDT/label/setting values into the graph, but older
+  graphs or un-ingested types may lack them — fetch then.)
+- **BUSINESS SObject records (the bounded EXCEPTION — pull minimally, with care).** sfgraph is
+  deliberately **local-first and metadata-only**; actual records (Account/Contact/Opportunity
+  rows, etc.) are out of the graph by design, and they are **real, possibly-PII customer data**.
+  Only when analysis truly requires it — e.g. to see a misbehaving field's real value shape or
+  confirm a data-skew assumption — pull a **small bounded sample**: always `LIMIT` (≤ a handful
+  of rows), prefer `COUNT()`/aggregates over raw rows, never bulk-dump, and **tell the user
+  you're stepping outside the local-first boundary to read live records**. If aggregates answer
+  the question, don't pull rows at all.
+
+State which source you used (graph / local file / org metadata / live records) so the reader
+knows the provenance and whether it left the local-only guarantee.
+
 ## Route by intent
 
 ### DEVELOPMENT — writing or changing code
