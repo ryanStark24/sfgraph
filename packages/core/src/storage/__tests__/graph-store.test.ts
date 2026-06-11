@@ -80,6 +80,71 @@ describe("SqliteGraphStore", () => {
     expect(store.countNodes(asOrgId("org1"))).toBe(2);
   });
 
+  describe("mergeEdges reconcileSources (immortal-edge fix)", () => {
+    const ORG = asOrgId("org1");
+
+    it("prunes an outgoing edge the source no longer emits, keeps the rest", () => {
+      // First ingest: method does two SOQL.
+      store.mergeEdges(
+        [
+          e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Account"),
+          e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Contact"),
+        ],
+        { reconcileSources: true },
+      );
+      expect(store.listEdgesFrom(ORG, asQualifiedName("ApexMethod:Svc.run")).length).toBe(2);
+
+      // Re-ingest: the Contact SOQL was deleted from the method body.
+      const r = store.mergeEdges(
+        [e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Account", {}, 9)],
+        { reconcileSources: true },
+      );
+      expect(r.deleted).toBe(1);
+      const remaining = store.listEdgesFrom(ORG, asQualifiedName("ApexMethod:Svc.run"));
+      expect(remaining.map((x) => String(x.dstQualifiedName))).toEqual(["CustomObject:Account"]);
+    });
+
+    it("prunes a source's LAST edge of a relType (scans all tables, not just buckets)", () => {
+      store.mergeEdges(
+        [
+          e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Account"),
+          e("EXECUTES_DML", "ApexMethod:Svc.run", "DML:insert"),
+        ],
+        { reconcileSources: true },
+      );
+      // Re-ingest emits only the SOQL — the DML is gone entirely.
+      const r = store.mergeEdges(
+        [e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Account", {}, 9)],
+        { reconcileSources: true },
+      );
+      expect(r.deleted).toBe(1);
+      const remaining = store.listEdgesFrom(ORG, asQualifiedName("ApexMethod:Svc.run"));
+      expect(remaining.map((x) => x.relType)).toEqual(["EXECUTES_SOQL"]);
+    });
+
+    it("never touches inbound edges from a not-reparsed caller", () => {
+      // Caller A → Svc.run (inbound to the source we'll reconcile).
+      store.mergeEdges([e("CALLS", "ApexMethod:A.go", "ApexMethod:Svc.run")]);
+      store.mergeEdges([e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Account")], {
+        reconcileSources: true,
+      });
+      // Reconcile Svc.run again — A.go was NOT in this batch; its inbound CALLS must survive.
+      store.mergeEdges([e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Account", {}, 9)], {
+        reconcileSources: true,
+      });
+      expect(store.listEdgesTo(ORG, asQualifiedName("ApexMethod:Svc.run")).length).toBe(1);
+    });
+
+    it("without reconcileSources, edges are additive (legacy resolver behaviour)", () => {
+      store.mergeEdges([e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Account")]);
+      const r = store.mergeEdges([
+        e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Contact"),
+      ]);
+      expect(r.deleted).toBeUndefined();
+      expect(store.listEdgesFrom(ORG, asQualifiedName("ApexMethod:Svc.run")).length).toBe(2);
+    });
+  });
+
   it("mergeNodes dedups by source_hash", () => {
     store.mergeNodes([n("ApexClass", "Foo", "h1")]);
     const r = store.mergeNodes([n("ApexClass", "Foo", "h1", 5)]);

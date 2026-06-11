@@ -14,6 +14,30 @@ export interface MergeResult {
   inserted: number;
   updated: number;
   unchanged: number;
+  /**
+   * Outgoing edges pruned by source reconciliation (see
+   * {@link MergeEdgesOptions.reconcileSources}). Absent/0 when reconciliation
+   * was not requested.
+   */
+  deleted?: number;
+}
+
+export interface MergeEdgesOptions {
+  /**
+   * Treat this batch as the COMPLETE authoritative set of OUTGOING edges for
+   * every source qname it contains. After upserting, any pre-existing outgoing
+   * edge from one of those sources that is NOT in this batch is pruned —
+   * fixing "immortal edges" (a SOQL/DML/CALLS edge that lingers forever after
+   * the source method stops emitting it on re-ingest).
+   *
+   * Only safe when the caller passes a source's FULL outgoing edge set (e.g. a
+   * single parser's per-member ParseResult). Additive callers (arity / overlap
+   * / reflection resolvers, which contribute partial edges for already-ingested
+   * sources) must leave this off, or they would delete each other's edges.
+   * Inbound edges (dst = one of these sources) are never touched, so edges from
+   * other not-yet-reparsed callers survive.
+   */
+  reconcileSources?: boolean;
 }
 
 export type SnippetSourceFormat = "apex" | "js" | "html" | "xml" | "json" | "flow" | "soql";
@@ -99,7 +123,7 @@ export interface GraphStore {
   deleteNode(orgId: OrgId, qname: QualifiedName): void;
   deleteEdgesFor(orgId: OrgId, qname: QualifiedName): void;
   mergeNodes(facts: NodeFact[]): MergeResult;
-  mergeEdges(facts: EdgeFact[]): MergeResult;
+  mergeEdges(facts: EdgeFact[], opts?: MergeEdgesOptions): MergeResult;
   getNode(orgId: OrgId, qname: QualifiedName): NodeFact | null;
   listNodesByLabel(orgId: OrgId, label: string, limit?: number): NodeFact[];
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[];

@@ -598,7 +598,13 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           bucket.add(qn);
         }
       }
-      if (parsed.edges.length) graph.mergeEdges(parsed.edges);
+      // A parser's ParseResult is the COMPLETE authoritative outgoing-edge set
+      // for the member it parsed, so reconcile: prune any prior outgoing edge
+      // from these sources that the member no longer emits (fixes "immortal
+      // edges" — a SOQL/DML/CALLS that lingered after the code dropped it on a
+      // non-rebuild re-sync). Resolver post-passes (arity / overlap / reflection)
+      // re-add their cross-cutting edges afterward, so this is safe.
+      if (parsed.edges.length) graph.mergeEdges(parsed.edges, { reconcileSources: true });
       if (parsed.snippets?.length) {
         graph.transaction(() => {
           for (const s of parsed.snippets ?? []) {

@@ -8,6 +8,7 @@ import { edgeTableName, nodeTableName, validateLabel, validateRelType } from "..
 import type {
   BetterSqlite3Database,
   GraphStore,
+  MergeEdgesOptions,
   MergeResult,
   SnippetRecord,
   SnippetSourceFormat,
@@ -493,7 +494,7 @@ export class SqliteGraphStore implements GraphStore {
     return { inserted, updated, unchanged };
   }
 
-  mergeEdges(facts: EdgeFact[]): MergeResult {
+  mergeEdges(facts: EdgeFact[], opts?: MergeEdgesOptions): MergeResult {
     if (facts.length === 0) return { inserted: 0, updated: 0, unchanged: 0 };
     const buckets = new Map<string, EdgeFact[]>();
     for (const f of facts) {
@@ -502,9 +503,26 @@ export class SqliteGraphStore implements GraphStore {
       arr.push(f);
       buckets.set(f.relType, arr);
     }
+    // Reconciliation bookkeeping: the set of source qnames this batch is
+    // authoritative for, plus the exact (org|src|dst|rel) edges it carries, so
+    // we can prune any prior outgoing edge from those sources that is no longer
+    // emitted. The delimiter is a unit-separator that cannot occur in a qname.
+    const reconcile = opts?.reconcileSources === true;
+    const RSEP = String.fromCharCode(31);
+    const sourceKeys = new Set<string>();
+    const batchEdgeKeys = new Set<string>();
+    if (reconcile) {
+      for (const f of facts) {
+        sourceKeys.add(`${f.orgId}${RSEP}${f.srcQualifiedName}`);
+        batchEdgeKeys.add(
+          `${f.orgId}${RSEP}${f.srcQualifiedName}${RSEP}${f.dstQualifiedName}${RSEP}${f.relType}`,
+        );
+      }
+    }
     let inserted = 0;
     let updated = 0;
     let unchanged = 0;
+    let deleted = 0;
     const apply = this.db.transaction(() => {
       for (const [relType, bucket] of buckets) {
         const tbl = this.ensureEdgeTable(relType);
@@ -557,9 +575,32 @@ export class SqliteGraphStore implements GraphStore {
           }
         }
       }
+
+      // Prune immortal edges: for every source this batch owns, drop any
+      // OUTGOING edge across ALL edge tables that the batch did not re-emit.
+      // Scanning every table (not just buckets present) catches a source that
+      // dropped its LAST edge of a relType. Inbound edges (dst = source) are
+      // left intact so callers not re-parsed this run keep their links.
+      if (reconcile && sourceKeys.size > 0) {
+        for (const [relType, tbl] of this.edgeRelCache) {
+          const rows = this.db
+            .prepare(`SELECT org_id, src_qname, dst_qname FROM ${tbl}`)
+            .all() as Array<{ org_id: string; src_qname: string; dst_qname: string }>;
+          const delStmt = this.db.prepare(
+            `DELETE FROM ${tbl} WHERE org_id = ? AND src_qname = ? AND dst_qname = ?`,
+          );
+          for (const r of rows) {
+            if (!sourceKeys.has(`${r.org_id}${RSEP}${r.src_qname}`)) continue;
+            const k = `${r.org_id}${RSEP}${r.src_qname}${RSEP}${r.dst_qname}${RSEP}${relType}`;
+            if (batchEdgeKeys.has(k)) continue;
+            delStmt.run(r.org_id, r.src_qname, r.dst_qname);
+            deleted += 1;
+          }
+        }
+      }
     });
     apply();
-    return { inserted, updated, unchanged };
+    return { inserted, updated, unchanged, ...(reconcile ? { deleted } : {}) };
   }
 
   getNode(orgId: OrgId, qname: QualifiedName): NodeFact | null {
