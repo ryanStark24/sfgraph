@@ -59,6 +59,13 @@ describe("buildEmbedText — config values fold into the embedding", () => {
     expect(text).toContain("on Account before insert after update");
   });
 
+  it("does NOT leak 'on <object>' onto a CustomField (only triggers act 'on' an object)", () => {
+    const text = buildEmbedText("CustomField", "CustomField:Account.Tier__c", {
+      object: "Account",
+    });
+    expect(text).not.toContain("on Account");
+  });
+
   it("folds a Flow's process type", () => {
     const text = buildEmbedText("Flow", "Flow:MyFlow", { processType: "AutoLaunchedFlow" });
     expect(text).toContain("AutoLaunchedFlow");

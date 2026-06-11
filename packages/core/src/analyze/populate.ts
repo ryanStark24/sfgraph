@@ -270,14 +270,33 @@ export function populateSecurityFindings(
   return n;
 }
 
+const ANALYSIS_TABLES = [
+  "_sfgraph_findings",
+  "_sfgraph_dead_code_scores",
+  "_sfgraph_governor_risks",
+  "_sfgraph_test_coverage",
+];
+
 export async function populateAnalysisTables(
   store: GraphStore,
   orgId: OrgId,
   db: BetterSqlite3Database,
 ): Promise<PopulateCounts> {
-  const findings = populateSecurityFindings(store, orgId, db);
-  const deadCode = populateDeadCodeScores(store, orgId, db);
-  const governor = populateGovernorRisks(store, orgId, db);
-  const testCov = populateTestCoverage(store, orgId, db);
-  return { findings, deadCode, governor, testCov };
+  // One transaction for the whole repopulate: (1) atomic — a crash mid-run
+  // can't leave half-populated analysis; (2) fast — collapses thousands of
+  // per-node INSERTs (the old N+1 autocommit-per-row pattern) into a single
+  // commit. First DELETE this org's prior rows so a node that no longer has a
+  // risk/finding/dead-code score doesn't keep a stale row forever (these tables
+  // used INSERT OR REPLACE, which only ever touches still-present nodes).
+  const run = db.transaction((): PopulateCounts => {
+    for (const t of ANALYSIS_TABLES) {
+      db.prepare(`DELETE FROM ${t} WHERE org_id = ?`).run(orgId);
+    }
+    const findings = populateSecurityFindings(store, orgId, db);
+    const deadCode = populateDeadCodeScores(store, orgId, db);
+    const governor = populateGovernorRisks(store, orgId, db);
+    const testCov = populateTestCoverage(store, orgId, db);
+    return { findings, deadCode, governor, testCov };
+  });
+  return run();
 }

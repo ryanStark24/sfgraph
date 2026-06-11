@@ -4,7 +4,7 @@ import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../.
 import type { SnippetRecord } from "../../storage/interfaces.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
-import { DML_RE, SOQL_RE, computeLoopRanges } from "./class.js";
+import { DML_RE, SOQL_RE, computeLoopRanges, parseSoql } from "./class.js";
 import { stripCommentsAndStrings } from "./common.js";
 
 export interface ApexTriggerInput {
@@ -36,7 +36,7 @@ function extractTriggerBodyEdges(
   const soqlRe = new RegExp(SOQL_RE.source, "gi");
   let sq: RegExpExecArray | null = soqlRe.exec(body);
   while (sq !== null) {
-    const obj = stripNs(sq[2] ?? "", ctx.namespace);
+    const obj = stripNs(parseSoql(sq[1] ?? "").object ?? "", ctx.namespace);
     edges.push(
       makeEdge(ctx, triggerQname, REL_TYPES.EXECUTES_SOQL, `CustomObject:${obj}`, {
         query: sq[0]?.trim(),

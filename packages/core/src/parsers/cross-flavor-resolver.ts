@@ -79,8 +79,14 @@ function mergeFlavors(node: NodeFact, self: string, other: string): NodeFact {
     ? ((node.attributes as any).flavors as string[])
     : [];
   const next = Array.from(new Set([...existing, self, other])).sort();
-  // Bump sourceHash so the GraphStore picks up the attribute mutation.
-  const bumped = `${node.sourceHash}+canonical:${next.join(",")}` as typeof node.sourceHash;
+  // Derive the canonical hash from the BASE source hash (strip any prior
+  // `+canonical:` suffix first). Appending to the already-suffixed hash made it
+  // grow every sync (base+canonical:X+canonical:X…), so the node's sourceHash
+  // never matched the stored value and it showed up as "modified" on every
+  // sync. Stripping first makes the same (base, flavors) produce the SAME hash,
+  // so a re-run is a no-op. lastModifiedAt is preserved via the spread.
+  const base = String(node.sourceHash).split("+canonical:")[0];
+  const bumped = `${base}+canonical:${next.join(",")}` as typeof node.sourceHash;
   return {
     ...node,
     attributes: { ...node.attributes, flavors: next },

@@ -21,12 +21,10 @@ describe("start_ingest_job", () => {
     expect(d.run_this_command).toContain("--mode incremental");
   });
 
-  it("renders filesystem source with shell-quoted path", async () => {
-    const r = await callTool("start_ingest_job", {
-      source: { type: "filesystem", path: "/tmp/x" },
-    });
-    const d = r.data as { run_this_command: string };
-    expect(d.run_this_command).toContain("sfgraph ingest --from-fs '/tmp/x'");
+  it("rejects a filesystem source — there is no CLI filesystem ingest", async () => {
+    await expect(
+      callTool("start_ingest_job", { source: { type: "filesystem", path: "/tmp/x" } }),
+    ).rejects.toThrow();
   });
 
   it("rejects invalid source", async () => {
@@ -45,23 +43,6 @@ describe("start_ingest_job", () => {
     await expect(
       callTool("start_ingest_job", {
         source: { type: "live-org", alias: "myorg/../etc" },
-      }),
-    ).rejects.toThrow();
-  });
-
-  it("shell-escapes embedded single quotes in filesystem path", async () => {
-    const r = await callTool("start_ingest_job", {
-      source: { type: "filesystem", path: "/tmp/it's a path" },
-    });
-    const d = r.data as { run_this_command: string };
-    // POSIX escape: split single-quoted segments and concatenate the escaped quote.
-    expect(d.run_this_command).toContain("'/tmp/it'\\''s a path'");
-  });
-
-  it("rejects filesystem path containing a newline (command-injection guard)", async () => {
-    await expect(
-      callTool("start_ingest_job", {
-        source: { type: "filesystem", path: "/tmp/x\nrm -rf ~" },
       }),
     ).rejects.toThrow();
   });

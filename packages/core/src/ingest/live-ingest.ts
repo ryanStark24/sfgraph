@@ -9,6 +9,7 @@ import { parserRegistry } from "../parsers/registry.js";
 import "../parsers/index.js";
 import { auditDanglingEdges } from "../analyze/audit-graph.js";
 import { populateAnalysisTables } from "../analyze/populate.js";
+import { REL_TYPES } from "../domain/rel-types.js";
 import { EmbeddingQueue, type VectorSink } from "../embedding/index.js";
 import type { MemberRef, RawMember } from "../extractors/interfaces/metadata-source.js";
 import { type ResolveOrgDeps, type ResolvedOrg, resolveOrg } from "../extractors/live-org/auth.js";
@@ -17,6 +18,16 @@ import { type OrgCapabilities, probeCapabilities } from "../extractors/live-org/
 import { type LivenessProbeHandle, startLivenessProbe } from "../extractors/live-org/liveness.js";
 import { dataPool, metadataPool, toolingPool } from "../extractors/live-org/rate-limit.js";
 import { iterChanges } from "../extractors/live-org/source-member.js";
+
+// SourceMember MemberType -> the node LABEL the parsers actually store under,
+// for the (rare) types whose label differs from the member type. The LWC parser
+// labels nodes "LWC", not "LightningComponentBundle", so an obsolete-LWC delete
+// keyed by the raw member type was a silent no-op. METADATA_CATEGORY is NOT
+// usable here: its LWC/AURA values ARE the member-type strings, not the labels.
+const MEMBER_TYPE_TO_NODE_LABEL: Record<string, string> = {
+  LightningComponentBundle: "LWC",
+  AuraDefinitionBundle: "AuraComponent",
+};
 import { loadAllRules } from "../parsers/rules/_loader.js";
 import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
 import type { SnapshotStore } from "../storage/interfaces.js";
@@ -325,15 +336,18 @@ export function buildEmbedText(
 
   // Structural attributes that make automation findable by WHAT it acts on:
   // a trigger's object + DML events ("on Account before insert"), a Flow's
-  // process type ("AutoLaunchedFlow"/"Flow"). Only appended when present, so
-  // nodes without them embed exactly as before.
-  if (typeof a.object === "string" && a.object) {
+  // process type ("AutoLaunchedFlow"/"Flow"). Gated by label — CustomField (and
+  // other nodes) also carry an `object` attribute (their parent SObject), and
+  // appending "on Account" to every field was pure noise in the embedding.
+  if (label === "ApexTrigger" && typeof a.object === "string" && a.object) {
     const ev = Array.isArray(a.events)
       ? (a.events as unknown[]).filter((x): x is string => typeof x === "string").join(" ")
       : "";
     parts.push(`on ${a.object}${ev ? ` ${ev}` : ""}`);
   }
-  if (typeof a.processType === "string" && a.processType) parts.push(a.processType);
+  if (label === "Flow" && typeof a.processType === "string" && a.processType) {
+    parts.push(a.processType);
+  }
 
   return parts.join("\n");
 }
@@ -663,9 +677,22 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     const processOne = async (ref: MemberRef, content: string): Promise<void> => {
       const qnameForLog = `${ref.memberType}:${ref.memberName}`;
       if (ref.obsolete) {
-        // Build the qualified name same way parsers would: best-effort by member name.
-        const qname = asQualifiedName(`${ref.memberType}:${ref.memberName}`);
+        // Build the qname with the node's LABEL, not the raw SourceMember type:
+        // e.g. LightningComponentBundle is stored as `LWC:<name>`, so the old
+        // `${memberType}:${name}` never matched and LWC deletes were silent
+        // no-ops. Fall back to memberType when no mapping exists.
+        const label = MEMBER_TYPE_TO_NODE_LABEL[ref.memberType] ?? ref.memberType;
+        const qname = asQualifiedName(`${label}:${ref.memberName}`);
         if (debugProcess) console.log(`ingest: [trace] delete ← ${qnameForLog}`);
+        // Cascade to contained children (a class/trigger owns ApexMethod /
+        // TestMethod nodes via CONTAINS_METHOD). Deleting only the parent left
+        // the method nodes — and their edges/snippets/vectors — orphaned.
+        for (const e of graph.listEdgesFrom(resolved.orgId, qname, REL_TYPES.CONTAINS_METHOD)) {
+          const child = e.dstQualifiedName;
+          graph.deleteEdgesFor(resolved.orgId, child);
+          graph.deleteNode(resolved.orgId, child);
+          purgeNodeVector(child);
+        }
         graph.deleteEdgesFor(resolved.orgId, qname);
         graph.deleteNode(resolved.orgId, qname);
         purgeNodeVector(qname);

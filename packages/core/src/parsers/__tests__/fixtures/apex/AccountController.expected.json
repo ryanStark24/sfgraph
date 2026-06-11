@@ -106,7 +106,7 @@
       "dstQualifiedName": "CustomObject:Account",
       "relType": "EXECUTES_SOQL",
       "attributes": {
-        "query": "[SELECT Id, Name, Status__c FROM Account"
+        "query": "[SELECT Id, Name, Status__c FROM Account WHERE Id = :accountId LIMIT 1]"
       }
     },
     {

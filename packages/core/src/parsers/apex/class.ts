@@ -229,22 +229,67 @@ function sha256(s: string): string {
 export function computeLoopRanges(body: string): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
   const stack: Array<{ openIdx: number; isLoop: boolean }> = [];
+  // Brace positions known to open a loop body. Marking the SPECIFIC `{` (rather
+  // than a sticky `pendingLoop` flag) is what fixes braceless loops: a
+  // `for (...) doIt();` or `do x(); while(y);` has no brace, so the next
+  // UNRELATED `{` is no longer mis-marked as a loop body (the old flag bled into
+  // it, producing false SOQL/DML-in-loop governor findings).
+  const loopBraces = new Set<number>();
   const wordBefore = (i: number) => /\W/.test(body[i - 1] ?? " ");
   const boundaryAt = (i: number) => /\W/.test(body[i] ?? " ");
-  let pendingLoop = false;
+  const skipWs = (i: number) => {
+    let j = i;
+    while (j < body.length && /\s/.test(body[j] ?? "")) j += 1;
+    return j;
+  };
+  // Index of the `)` matching the `(` at `open`, or -1.
+  const matchParen = (open: number): number => {
+    let d = 0;
+    for (let j = open; j < body.length; j++) {
+      if (body[j] === "(") d += 1;
+      else if (body[j] === ")" && --d === 0) return j;
+    }
+    return -1;
+  };
+  // End (`;` at depth 0) of the single statement starting at `from`.
+  const stmtEnd = (from: number): number => {
+    let d = 0;
+    for (let j = from; j < body.length; j++) {
+      const c = body[j];
+      if (c === "(" || c === "{" || c === "[") d += 1;
+      else if (c === ")" || c === "}" || c === "]") d -= 1;
+      else if (c === ";" && d === 0) return j;
+    }
+    return body.length - 1;
+  };
   for (let i = 0; i < body.length; i++) {
     const ch = body[i];
-    if (
-      (ch === "f" && body.startsWith("for", i) && wordBefore(i) && boundaryAt(i + 3)) ||
-      (ch === "w" && body.startsWith("while", i) && wordBefore(i) && boundaryAt(i + 5)) ||
-      (ch === "d" && body.startsWith("do", i) && wordBefore(i) && boundaryAt(i + 2))
-    ) {
-      pendingLoop = true;
+    let kwLen = 0;
+    if (ch === "f" && body.startsWith("for", i) && wordBefore(i) && boundaryAt(i + 3)) kwLen = 3;
+    else if (ch === "w" && body.startsWith("while", i) && wordBefore(i) && boundaryAt(i + 5))
+      kwLen = 5;
+    else if (ch === "d" && body.startsWith("do", i) && wordBefore(i) && boundaryAt(i + 2))
+      kwLen = 2;
+    if (kwLen > 0) {
+      let j = skipWs(i + kwLen);
+      // for/while carry a `(condition)` before the body; `do` does not. Skip the
+      // condition so its inner `;`s (e.g. `for (i=0; i<n; i++)`) aren't read as a
+      // braceless body terminator.
+      if ((kwLen === 3 || kwLen === 5) && body[j] === "(") {
+        const close = matchParen(j);
+        if (close < 0) continue;
+        j = skipWs(close + 1);
+      }
+      if (body[j] === "{") {
+        loopBraces.add(j); // braced body — recorded when the stack pops it
+      } else {
+        ranges.push({ start: j - 1, end: stmtEnd(j) }); // braceless single statement
+      }
+      i = j - 1;
       continue;
     }
     if (ch === "{") {
-      stack.push({ openIdx: i, isLoop: pendingLoop });
-      pendingLoop = false;
+      stack.push({ openIdx: i, isLoop: loopBraces.has(i) });
     } else if (ch === "}") {
       const top = stack.pop();
       if (top?.isLoop) ranges.push({ start: top.openIdx, end: i });
@@ -253,8 +298,39 @@ export function computeLoopRanges(body: string): Array<{ start: number; end: num
   return ranges;
 }
 
-export const SOQL_RE = /\[\s*SELECT\b([^\]]*?)\bFROM\s+([A-Za-z_][\w.]*)/gi;
+// Matches a whole inline SOQL query and captures its FULL inner text (group 1),
+// from `[SELECT` to the closing `]`. The object is NOT taken from a regex group
+// — see parseSoql, which finds the FROM at paren-depth 0 so a child subquery
+// (`(SELECT … FROM Contacts)`) or a semi-join (`WHERE Id IN (SELECT … FROM
+// Contact)`) doesn't get mistaken for the outer object.
+export const SOQL_RE = /\[\s*SELECT\b([^\]]*)\]/gi;
 export const SOSL_RE = /\[\s*FIND\b/gi;
+
+/**
+ * Extract the outer object + SELECT clause from a SOQL query's inner text (the
+ * part after `[SELECT`). The object is the identifier after the first `FROM`
+ * encountered at parenthesis depth 0; subquery/semi-join FROMs (depth > 0) are
+ * skipped. Returns object=null for a malformed query.
+ */
+export function parseSoql(inner: string): { object: string | null; selectClause: string } {
+  let depth = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === "(") depth += 1;
+    else if (c === ")") {
+      if (depth > 0) depth -= 1;
+    } else if (
+      depth === 0 &&
+      (c === "f" || c === "F") &&
+      /^from\b/i.test(inner.slice(i)) &&
+      /\W/.test(inner[i - 1] ?? " ")
+    ) {
+      const m = inner.slice(i + 4).match(/^\s+([A-Za-z_][\w.]*)/);
+      if (m?.[1]) return { object: m[1], selectClause: inner.slice(0, i) };
+    }
+  }
+  return { object: null, selectClause: inner };
+}
 export const DML_RE = /\b(insert|update|delete|upsert|undelete|merge)\s+([A-Za-z_][\w.]*)/gi;
 const FIELD_ACCESS_RE = /\b([A-Z][A-Za-z0-9_]*(?:__r)?)\.([A-Za-z_][\w]*?)(?:__c)?\b/g;
 const NEW_INSTANCE_RE = /\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\(/g;
@@ -572,15 +648,17 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       const soqlRe = new RegExp(SOQL_RE.source, "gi");
       let sq: RegExpExecArray | null = soqlRe.exec(body);
       while (sq !== null) {
-        const obj = stripNs(sq[2] ?? "", ctx.namespace);
+        const { object, selectClause } = parseSoql(sq[1] ?? "");
+        const obj = stripNs(object ?? "", ctx.namespace);
         edges.push(
           makeEdge(ctx, methodQname, REL_TYPES.EXECUTES_SOQL, `CustomObject:${obj}`, {
             query: sq[0]?.trim(),
             ...(inLoopAt(sq.index) ? { inLoop: true } : {}),
           }),
         );
-        // READS_FIELD for SELECT clause fields
-        const selectFields = (sq[1] ?? "")
+        // READS_FIELD for the OUTER query's SELECT clause fields only (subquery
+        // SELECTs sit inside parens and are dropped by the `[()*]` filter).
+        const selectFields = selectClause
           .split(",")
           .map((s) => s.trim())
           .filter((s) => s.length > 0 && !/[()*]/.test(s));
@@ -635,7 +713,10 @@ export class ApexClassParser implements Parser<ApexClassInput> {
             `NamedCredential:${stripNs(nc[1] ?? "", ctx.namespace)}`,
           ),
         );
-        nc = ncRe.exec(body);
+        // Continue over the SAME source we started on (ncSource). Re-executing a
+        // stateful /g regex against a different string (`body`) reset its
+        // lastIndex semantics and dropped every named credential after the first.
+        nc = ncRe.exec(ncSource);
       }
 
       // Calls to other static methods (best-effort)
