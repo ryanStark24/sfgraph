@@ -154,4 +154,33 @@ describe("SqliteVectorStore", () => {
     expect(store.countNodeVectors(asOrgId("orgA"))).toBe(2);
     expect(store.countNodeVectors(asOrgId("orgB"))).toBe(1);
   });
+
+  it("deleteNodeVector removes the vector + meta so it stops being a phantom hit", () => {
+    store.upsertNodeVector(
+      asOrgId("orgA"),
+      asQualifiedName("Foo"),
+      "ApexClass",
+      vec(1),
+      asSha256("h1"),
+    );
+    store.upsertNodeVector(
+      asOrgId("orgA"),
+      asQualifiedName("Bar"),
+      "ApexClass",
+      vec(2),
+      asSha256("h2"),
+    );
+    expect(store.countNodeVectors(asOrgId("orgA"))).toBe(2);
+
+    const removed = store.deleteNodeVector(asOrgId("orgA"), asQualifiedName("Foo"));
+    expect(removed).toBe(true);
+    expect(store.countNodeVectors(asOrgId("orgA"))).toBe(1);
+    expect(store.getNodeVector(asOrgId("orgA"), asQualifiedName("Foo"))).toBeNull();
+    const hits = store.searchNodes(asOrgId("orgA"), vec(1), 5);
+    expect(hits.some((h) => h.qname === "Foo")).toBe(false);
+  });
+
+  it("deleteNodeVector returns false when no vector exists", () => {
+    expect(store.deleteNodeVector(asOrgId("orgA"), asQualifiedName("Nope"))).toBe(false);
+  });
 });

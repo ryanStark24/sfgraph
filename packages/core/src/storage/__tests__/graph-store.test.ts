@@ -240,6 +240,26 @@ describe("SqliteGraphStore", () => {
     expect(result).toBe(42);
     expect(store.countNodes(asOrgId("org1"))).toBe(1);
   });
+
+  it("deleteNode purges the derived snippet (no orphan rows)", () => {
+    const ORG = asOrgId("org1");
+    const qn = asQualifiedName("ApexClass:Gone");
+    store.mergeNodes([n("ApexClass", "ApexClass:Gone", "h1")]);
+    store.upsertSnippet({
+      orgId: ORG,
+      qualifiedName: qn,
+      sourceFormat: "apex",
+      sourceText: "public class Gone {}",
+      sourceHash: asSha256("h1"),
+    });
+    expect(store.getSnippet(ORG, qn)).not.toBeNull();
+
+    store.deleteNode(ORG, qn);
+    expect(store.getNode(ORG, qn)).toBeNull();
+    // The snippet (derived data) is gone too — not left as an orphan that
+    // explain_code would still surface for a deleted class.
+    expect(store.getSnippet(ORG, qn)).toBeNull();
+  });
 });
 
 describe("label transition (audit critical #1 — silent live-node deletion)", () => {

@@ -1,4 +1,4 @@
-import { type OrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
+import { type OrgId, type QualifiedName, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { Logger } from "@ryanstark24/sfgraph-shared";
 import { resolveApexMethodArity } from "../parsers/apex/arity-resolver.js";
 import type { ParseContext, ParseResult } from "../parsers/contract.js";
@@ -624,6 +624,23 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       }
     };
 
+    // Purge a deleted node's vector so it stops surfacing as a phantom
+    // find_similar hit. The vec0 table lives in the VectorStore (not the graph
+    // store); feature-detect since lightweight sinks may not implement delete.
+    const purgeNodeVector = (qname: QualifiedName): void => {
+      const sink = opts.vectorStore;
+      if (sink && typeof sink.deleteNodeVector === "function") {
+        try {
+          sink.deleteNodeVector(resolved.orgId, qname);
+        } catch (e) {
+          logger.warn("live-ingest: vector purge failed", {
+            qname: String(qname),
+            err: (e as Error).message,
+          });
+        }
+      }
+    };
+
     const debugProcess = process.env.SFGRAPH_DEBUG_INGEST === "1";
     const processOne = async (ref: MemberRef, content: string): Promise<void> => {
       const qnameForLog = `${ref.memberType}:${ref.memberName}`;
@@ -633,6 +650,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         if (debugProcess) console.log(`ingest: [trace] delete ← ${qnameForLog}`);
         graph.deleteEdgesFor(resolved.orgId, qname);
         graph.deleteNode(resolved.orgId, qname);
+        purgeNodeVector(qname);
         if (debugProcess) console.log(`ingest: [trace] delete ✓ ${qnameForLog}`);
         deletions += 1;
         return;
@@ -1029,6 +1047,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
               if (touchedSet?.has(q)) continue;
               graph.deleteEdgesFor(resolved.orgId, asQualifiedName(q));
               graph.deleteNode(resolved.orgId, asQualifiedName(q));
+              purgeNodeVector(asQualifiedName(q));
               deletions += 1;
               labelDeletions += 1;
             }

@@ -247,4 +247,21 @@ export class SqliteVectorStore implements VectorStore {
     const buf = row.blob instanceof Buffer ? row.blob : Buffer.from(row.blob);
     return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
   }
+
+  deleteNodeVector(orgId: OrgId, qname: QualifiedName): boolean {
+    const meta = this.db
+      .prepare(
+        "SELECT vec_rowid FROM _sfgraph_node_vector_meta WHERE org_id = ? AND qualified_name = ?",
+      )
+      .get(orgId, qname) as { vec_rowid: number } | undefined;
+    if (!meta) return false;
+    const apply = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM _sfgraph_node_vectors WHERE rowid = ?").run(meta.vec_rowid);
+      this.db
+        .prepare("DELETE FROM _sfgraph_node_vector_meta WHERE org_id = ? AND qualified_name = ?")
+        .run(orgId, qname);
+    });
+    apply();
+    return true;
+  }
 }

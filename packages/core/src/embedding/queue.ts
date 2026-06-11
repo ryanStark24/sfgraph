@@ -34,6 +34,12 @@ export interface VectorSink {
     vector: Float32Array,
     contentHash: Sha256,
   ): unknown;
+  /**
+   * Remove a node's stored vector (+ meta) when the node is deleted, so it
+   * stops surfacing as a phantom find_similar hit. Optional: lightweight test
+   * sinks may omit it; callers must feature-detect before invoking.
+   */
+  deleteNodeVector?(orgId: OrgId, qname: QualifiedName): unknown;
 }
 
 export interface EmbeddingQueueOpts {

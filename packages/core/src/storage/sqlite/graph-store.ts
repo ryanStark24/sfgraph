@@ -18,6 +18,21 @@ import type {
 import { wrapAbiError } from "./load-better-sqlite3.js";
 import { MIGRATIONS, MigrationRunner } from "./migrations.js";
 
+/**
+ * Plain (non-vec0) tables holding derived data keyed by (org_id, qualified_name).
+ * Purged in deleteNode so a removed node leaves no orphan rows. The vec0 vector
+ * table is NOT here — it needs the sqlite-vec extension and is purged via the
+ * VectorStore. Snapshot tables are intentionally excluded (point-in-time
+ * history must survive a node's deletion).
+ */
+const DERIVED_QNAME_TABLES = [
+  "_sfgraph_snippets",
+  "_sfgraph_governor_risks",
+  "_sfgraph_findings",
+  "_sfgraph_dead_code_scores",
+  "_sfgraph_test_coverage",
+] as const;
+
 export interface SqliteGraphStoreOptions {
   dbPath: string;
   backupDir?: string;
@@ -382,6 +397,17 @@ export class SqliteGraphStore implements GraphStore {
         }
         this.db
           .prepare("DELETE FROM _sfgraph_node_index WHERE org_id = ? AND qualified_name = ?")
+          .run(orgId, qname);
+      }
+      // Purge derived per-qname rows so a deleted node leaves no orphans that
+      // would surface in explain_code (snippet) or the audits (findings /
+      // governor risks / dead-code / coverage). Run unconditionally — derived
+      // rows can outlive a missing index entry. The vec0 vector lives in a
+      // separate extension-loaded connection and is purged by the caller via
+      // VectorStore.deleteNodeVector. Each table is keyed (org_id, qualified_name, …).
+      for (const t of DERIVED_QNAME_TABLES) {
+        this.db
+          .prepare(`DELETE FROM ${t} WHERE org_id = ? AND qualified_name = ?`)
           .run(orgId, qname);
       }
     });

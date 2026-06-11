@@ -35,6 +35,7 @@ function makeStubVectorStore(opts: {
     countNodeVectors: () => opts.vectors?.size ?? 0,
     searchBundles: () => [],
     getNodeVector: (_orgId, qname) => opts.vectors?.get(qname) ?? null,
+    deleteNodeVector: (_orgId, qname) => opts.vectors?.delete(qname) ?? false,
     searchNodes: () =>
       (opts.results ?? []).map((r) => ({
         qname: asQualifiedName(r.qname),

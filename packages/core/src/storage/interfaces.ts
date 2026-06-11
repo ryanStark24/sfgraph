@@ -203,6 +203,10 @@ export interface VectorStore {
    *  for this (orgId, qname). Used by tools that find "more like this"
    *  starting from an existing graph node rather than a free-text query. */
   getNodeVector(orgId: OrgId, qname: QualifiedName): Float32Array | null;
+  /** Delete a node's vector + meta row. Returns true if a vector existed.
+   *  Called when a node is removed from the graph so it stops appearing as a
+   *  phantom "similar" result. */
+  deleteNodeVector(orgId: OrgId, qname: QualifiedName): boolean;
 }
 
 export interface NodeDiff {
