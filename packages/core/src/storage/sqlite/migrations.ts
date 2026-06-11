@@ -252,6 +252,28 @@ export const MIGRATIONS: Migration[] = [
       addNocaseCollation(db);
     },
   },
+  {
+    version: 10,
+    description:
+      "FTS5 keyword index over node embed-text, for the keyword leg of hybrid search (fused with vectors via RRF in find_similar). Gives exact-name recall the ANN leg can miss, and a fallback when the embedder is unavailable. unicode61 tokenizer is case-folding, so no NOCASE needed here.",
+    up(db) {
+      // FTS5 is compiled into better-sqlite3's bundled SQLite. Guard anyway so a
+      // build without FTS5 degrades (no keyword leg) instead of failing init.
+      try {
+        db.exec(`
+          CREATE VIRTUAL TABLE IF NOT EXISTS _sfgraph_node_fts USING fts5(
+            qualified_name UNINDEXED,
+            org_id UNINDEXED,
+            label UNINDEXED,
+            body,
+            tokenize = 'unicode61 remove_diacritics 2'
+          );
+        `);
+      } catch {
+        /* FTS5 unavailable — keyword leg silently no-ops; vector search still works. */
+      }
+    },
+  },
 ];
 
 /**

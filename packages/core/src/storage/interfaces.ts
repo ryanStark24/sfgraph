@@ -157,6 +157,12 @@ export interface GraphStore {
     explainedAt: number,
   ): boolean;
   listSnippetsMissingExplanation(orgId: OrgId, limit?: number): SnippetRecord[];
+  /** Upsert a node's FTS keyword document (the embed-text body). No-op if FTS5
+   *  is unavailable. Keyed by (orgId, qname). */
+  upsertNodeFts(orgId: OrgId, qname: QualifiedName, label: string, body: string): void;
+  /** Keyword search over node FTS docs, ranked best-first (bm25). Returns up to
+   *  `k` hits; [] if FTS5 is unavailable or the query is empty. */
+  searchNodesFts(orgId: OrgId, query: string, k: number): Array<{ qname: string; label: string }>;
 }
 
 export interface VectorUpsertResult {

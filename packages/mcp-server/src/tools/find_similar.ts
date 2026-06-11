@@ -20,152 +20,244 @@ const inputSchema = z
     /** Restrict matches to a single node label (e.g. 'ApexClass', 'LWC',
      *  'Flow'). When omitted, all labels are searched. */
     label: z.string().min(1).optional(),
-    /** Minimum cosine similarity (0–1) a match must clear to be returned.
-     *  KNN always returns *k* nearest by distance, including near-irrelevant
-     *  tail matches; this floor turns "k nearest" into "the relevant ones, up
-     *  to k". Default 0.3 (conservative for MiniLM-L6 on this corpus). Lower it
-     *  to widen recall, raise it to tighten precision. */
+    /** Minimum cosine similarity (0–1) a VECTOR-leg match must clear to be
+     *  returned. KNN always returns *k* nearest by distance, including
+     *  near-irrelevant tail matches; this floor turns "k nearest" into "the
+     *  relevant ones, up to k". Default 0.3 (conservative for MiniLM-L6 on this
+     *  corpus). Keyword (exact-name) matches bypass the floor. Lower it to widen
+     *  recall, raise it to tighten precision. */
     min_similarity: z.number().min(0).max(1).default(0.3),
   })
   .refine((v) => Boolean(v.qname) !== Boolean(v.text), {
     message: "Provide exactly one of `qname` or `text`",
   });
 
+interface VecHit {
+  qname: string;
+  label: string;
+  similarity: number;
+  distance: number;
+}
+interface FusedHit {
+  qname: string;
+  label: string;
+  similarity: number | null; // vector cosine, or null for keyword-only hits
+  distance: number | null;
+  via: "vector" | "keyword" | "both";
+  rrf: number;
+}
+
+/**
+ * Reciprocal Rank Fusion of the vector and keyword legs. Scale-free: needs only
+ * each leg's ordering and one constant K (60, the literature default), so it
+ * avoids summing incommensurate cosine and BM25 scores. A hit found by both legs
+ * accumulates both terms and rises.
+ */
+function rrfFuse(
+  vec: VecHit[],
+  kw: Array<{ qname: string; label: string }>,
+  k: number,
+): FusedHit[] {
+  const K = 60;
+  const byQ = new Map<string, FusedHit>();
+  vec.forEach((h, i) => {
+    byQ.set(h.qname, {
+      qname: h.qname,
+      label: h.label,
+      similarity: h.similarity,
+      distance: h.distance,
+      via: "vector",
+      rrf: 1 / (K + i + 1),
+    });
+  });
+  kw.forEach((h, i) => {
+    const existing = byQ.get(h.qname);
+    if (existing) {
+      existing.rrf += 1 / (K + i + 1);
+      existing.via = "both";
+    } else {
+      byQ.set(h.qname, {
+        qname: h.qname,
+        label: h.label,
+        similarity: null,
+        distance: null,
+        via: "keyword",
+        rrf: 1 / (K + i + 1),
+      });
+    }
+  });
+  return [...byQ.values()].sort((a, b) => b.rrf - a.rrf).slice(0, k);
+}
+
 defineTool({
   name: "find_similar",
   description:
-    "USE THIS to find Salesforce metadata semantically similar to a given node OR a free-text concept. Powered by the in-process MiniLM-L6 embeddings produced during ingest. Two modes: (1) pass `qname` for 'show me other Apex methods like BillingSvc.run' / 'what LWCs are similar to accountTile' — uses an existing node's stored vector; (2) pass `text` for 'find code that handles order cancellation' / 'where do we compute compliance fees' — embeds your text on the fly and runs KNN. Filter by label to restrict to one node type. Use this when exact-name search misses or no qname names the concept you're after.",
+    "USE THIS to find Salesforce metadata similar to a given node OR a free-text concept. Hybrid search: fuses MiniLM-L6 vector similarity (semantic) with an FTS5 keyword leg (exact-name recall) via reciprocal rank fusion. Two modes: (1) pass `qname` for 'show me other Apex methods like BillingSvc.run'; (2) pass `text` for 'find code that handles order cancellation'. Filter by label to restrict to one node type. The keyword leg also answers when the embedder is unavailable.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
 
-    // No vec0 / no embeddings table — degrade gracefully with a clear
-    // message so the agent can fall back to structural traversal.
+    // For unit vectors (the embedder normalizes), L2 distance d satisfies
+    // |a-b|² = 2(1 - cos) ⇒ cosine similarity = 1 - d²/2.
+    const l2ToCosine = (d: number): number => Math.max(0, Math.min(1, 1 - (d * d) / 2));
+    // Over-fetch so the relevance floor, focal-strip, and fusion have headroom.
+    const candidateK = Math.max(input.k * 4, input.k + 1);
+    const focalLabel = input.qname ? input.qname : `"${input.text}"`;
+
+    // --- keyword leg (always available; [] if FTS empty/unavailable). The query
+    // is the focal node's name (qname mode) or the free text; searchNodesFts
+    // camelCase-splits it to match the indexed word-split body. ---
+    const namePart =
+      input.qname && input.qname.includes(":")
+        ? input.qname.slice(input.qname.indexOf(":") + 1)
+        : (input.qname ?? input.text ?? "");
+    const kwQuery = input.text ?? namePart;
+    let kw = ctx.graphStore
+      .searchNodesFts(ctx.orgId, kwQuery, candidateK)
+      .filter((h) => !input.qname || h.qname !== String(asQualifiedName(input.qname)));
+    if (input.label) kw = kw.filter((h) => h.label === input.label);
+
+    // --- vector leg ---
+    let vec: VecHit[] = [];
+    let cutByFloor = 0;
+    let vectorCandidates = 0;
+    let vectorTopSim = 0;
+    let vectorReason:
+      | "vector_index_unavailable"
+      | "no_focal_vector"
+      | "embedder_unavailable"
+      | null = null;
     if (!ctx.vectorStore) {
-      return {
-        summary: "vector index unavailable for this org",
-        markdown: [
-          `> Vector search isn't available on this org's graph.`,
-          "",
-          "Causes (most common first):",
-          `- The org was ingested before \`@ryanstark24/sfgraph-models\` was wired up; embeddings weren't generated. Re-run \`sfgraph ingest --org ${input.org} --rebuild\` to populate the vector index.`,
-          "- The optional `@ryanstark24/sfgraph-models` install was skipped (e.g. on slow connections). The model is ~30 MB; install it with `npm install -g @ryanstark24/sfgraph-models` and re-ingest.",
-          "- The `sqlite-vec` extension failed to load on this Node ABI.",
-          "",
-          "_follow_up_tools: `trace_downstream`, `trace_upstream`, `analyze_field`_",
-        ].join("\n"),
-        data: { hits: [], reason: "vector_index_unavailable" },
-      };
+      vectorReason = "vector_index_unavailable";
+    } else {
+      let focal: Float32Array | null = null;
+      if (input.qname) {
+        focal = ctx.vectorStore.getNodeVector(ctx.orgId, asQualifiedName(input.qname));
+        if (!focal) vectorReason = "no_focal_vector";
+      } else {
+        // Lazy-import via the public re-export so core consumers needn't ship the
+        // embedder runtime when they don't use this path.
+        const { embedSingle } = await import("@ryanstark24/sfgraph-core");
+        focal = await embedSingle(input.text ?? "");
+        if (!focal) vectorReason = "embedder_unavailable";
+      }
+      if (focal) {
+        const raw = ctx.vectorStore.searchNodes(
+          ctx.orgId,
+          focal,
+          candidateK,
+          input.label ? { label: input.label } : undefined,
+        );
+        const candidates = raw
+          .filter((h) => !input.qname || h.qname !== asQualifiedName(input.qname))
+          .map((h) => ({
+            qname: String(h.qname),
+            label: h.label,
+            similarity: l2ToCosine(h.distance),
+            distance: h.distance,
+          }));
+        vectorCandidates = candidates.length;
+        vectorTopSim = candidates.reduce((m, c) => Math.max(m, c.similarity), 0);
+        const above = candidates.filter((h) => h.similarity >= input.min_similarity);
+        cutByFloor = candidates.length - above.length;
+        vec = above;
+      }
     }
 
-    // Resolve the focal vector — either looking it up by qname or
-    // embedding the free-text query through the same MiniLM pipeline.
-    let focal: Float32Array | null = null;
-    let focalLabel: string;
-    if (input.qname) {
-      focalLabel = input.qname;
-      focal = ctx.vectorStore.getNodeVector(ctx.orgId, asQualifiedName(input.qname));
-      if (!focal) {
+    const fused = rrfFuse(vec, kw, input.k);
+
+    // Nothing to return — explain why, preferring the most specific cause. Note
+    // these only fire when BOTH legs are empty; a populated keyword leg means the
+    // tool still answers even when the vector leg was unavailable.
+    if (fused.length === 0) {
+      if (vectorReason === "vector_index_unavailable") {
+        return {
+          summary: "vector index unavailable for this org",
+          markdown: [
+            `> Neither vector search nor keyword search returned anything for this org.`,
+            "",
+            "Vector search isn't available (no embeddings), and the keyword index had no match. Causes (most common first):",
+            `- The org was ingested before embeddings/FTS were wired up. Re-run \`sfgraph ingest --org ${input.org} --rebuild\`.`,
+            "- The optional `@ryanstark24/sfgraph-models` install was skipped (~30 MB); install it and re-ingest.",
+            "- The `sqlite-vec` extension failed to load on this Node ABI.",
+            "",
+            "_follow_up_tools: `trace_downstream`, `trace_upstream`, `analyze_field`_",
+          ].join("\n"),
+          data: { hits: [], reason: "vector_index_unavailable" },
+        };
+      }
+      if (vectorReason === "no_focal_vector") {
         return {
           summary: `no embedding stored for ${input.qname}`,
           markdown: [
-            `> No vector exists for \`${input.qname}\`.`,
+            `> No vector exists for \`${input.qname}\` and the keyword leg found nothing.`,
             "",
             "Likely causes:",
-            "- The qname is wrong (typo / wrong casing / wrong member type prefix). The graph keys are `<Label>:<Name>` (e.g. `ApexClass:BillingSvc`).",
-            `- The node exists but its label doesn't get embedded (only code-bearing nodes — Apex, LWC, Flow, OmniStudio — are vectorised by default).`,
-            "- The org was last ingested before this label started producing embeddings; re-ingest with `--rebuild` to backfill.",
+            "- The qname is wrong (typo / wrong member-type prefix). Graph keys are `<Label>:<Name>` (e.g. `ApexClass:BillingSvc`). (Case no longer matters — lookups are case-insensitive.)",
+            "- The node exists but its label isn't embedded (only code-bearing nodes are vectorised by default).",
+            "- The org was last ingested before this label produced embeddings; re-ingest with `--rebuild`.",
             "",
-            `_Tip:_ if no node names the concept you're after, retry with \`text\` instead of \`qname\`.`,
+            "_Tip:_ retry with `text` to search by concept instead of an exact node.",
             "",
             "_follow_up_tools: `analyze_field`, `trace_upstream`_",
           ].join("\n"),
           data: { hits: [], reason: "no_focal_vector" },
         };
       }
-    } else {
-      // Free-text mode. Lazy-import via the public re-export so we don't
-      // require core consumers to ship the embedder runtime when they
-      // don't use this path.
-      focalLabel = `"${input.text}"`;
-      const { embedSingle } = await import("@ryanstark24/sfgraph-core");
-      focal = await embedSingle(input.text ?? "");
-      if (!focal) {
+      if (vectorReason === "embedder_unavailable") {
         return {
           summary: "embedder unavailable",
           markdown: [
-            `> Couldn't embed the query text \`"${input.text}"\`.`,
+            `> Couldn't embed the query text \`"${input.text}"\`, and the keyword leg found no match.`,
             "",
-            `Either the \`@xenova/transformers\` runtime isn't installed on this machine, or the MiniLM model files (\`@ryanstark24/sfgraph-models\`) aren't reachable. Both are optionalDependencies of \`@ryanstark24/sfgraph-core\`; reinstall with \`npm install -g @ryanstark24/sfgraph\` to pull them.`,
+            "The `@xenova/transformers` runtime or the MiniLM model files (`@ryanstark24/sfgraph-models`) aren't reachable. Both are optionalDependencies of `@ryanstark24/sfgraph-core`; reinstall to pull them.",
             "",
             "_Fallback:_ retry with `qname` pointing at the closest existing node.",
           ].join("\n"),
           data: { hits: [], reason: "embedder_unavailable" },
         };
       }
-    }
-
-    // The vec0 tables use the DEFAULT L2 (Euclidean) distance — declared
-    // `float[384]` with no distance_metric. The embedder normalizes every
-    // vector (pipeline `normalize: true`), so for unit vectors
-    // |a-b|² = 2(1 - cos) ⇒ cosine similarity = 1 - d²/2. Raw L2 stays in `data`.
-    const l2ToCosine = (d: number): number => Math.max(0, Math.min(1, 1 - (d * d) / 2));
-
-    // Over-fetch so the relevance floor + focal-strip have headroom (KNN returns
-    // by distance; some of the k nearest may fall below the floor).
-    const candidateK = Math.max(input.k * 4, input.k + 1);
-    const raw = ctx.vectorStore.searchNodes(
-      ctx.orgId,
-      focal,
-      candidateK,
-      input.label ? { label: input.label } : undefined,
-    );
-    const candidates = raw
-      .filter((h) => !input.qname || h.qname !== asQualifiedName(input.qname))
-      .map((h) => ({ ...h, similarity: l2ToCosine(h.distance) }));
-    const aboveFloor = candidates.filter((h) => h.similarity >= input.min_similarity);
-    const hits = aboveFloor.slice(0, input.k);
-    const cutByFloor = candidates.length - aboveFloor.length;
-
-    if (hits.length === 0) {
-      // Distinguish "nothing nearby" from "matches existed but all below the floor".
-      const allBelow = candidates.length > 0;
+      // Vector leg ran. Distinguish "all below the floor" from "nothing nearby".
+      const allBelow = vectorCandidates > 0;
       return {
         summary: allBelow
-          ? `no neighbours of ${focalLabel} above the ${input.min_similarity} similarity floor`
+          ? `no matches for ${focalLabel} above the ${input.min_similarity} similarity floor`
           : `no neighbours found for ${focalLabel}`,
         markdown: allBelow
-          ? `> ${candidates.length} match(es) for ${focalLabel} were all below the relevance floor (\`min_similarity\`=${input.min_similarity}). Lower \`min_similarity\` to see weaker matches; the closest was ${Math.max(...candidates.map((c) => c.similarity)).toFixed(3)}.`
-          : `> Vector index has no nearby neighbours for ${focalLabel}${
+          ? `> ${vectorCandidates} vector match(es) for ${focalLabel} were all below the relevance floor (\`min_similarity\`=${input.min_similarity}; closest ${vectorTopSim.toFixed(3)}), and the keyword leg found nothing. Lower \`min_similarity\` to see weaker matches.`
+          : `> No vector neighbours or keyword matches for ${focalLabel}${
               input.label ? ` within label \`${input.label}\`` : ""
-            }. The org may be sparsely populated for this label, or the focal may genuinely be isolated.`,
+            }. The org may be sparsely populated, or the focal may genuinely be isolated.`,
         data: { hits: [], reason: allBelow ? "below_similarity_floor" : "no_neighbours" },
       };
     }
 
+    const keywordOnly = fused.filter((h) => h.via === "keyword").length;
     const md: string[] = [
-      `**Top ${hits.length} nearest neighbour${hits.length === 1 ? "" : "s"} to ${focalLabel}${
+      `**Top ${fused.length} nearest neighbour${fused.length === 1 ? "" : "s"} to ${focalLabel}${
         input.label ? ` (label: \`${input.label}\`)` : ""
       }:**`,
       "",
-      "| # | qname | label | similarity | distance |",
-      "| - | ----- | ----- | ---------- | -------- |",
+      "| # | qname | label | similarity | via |",
+      "| - | ----- | ----- | ---------- | --- |",
     ];
-    hits.forEach((h, i) => {
-      md.push(
-        `| ${i + 1} | \`${h.qname}\` | \`${h.label}\` | ${h.similarity.toFixed(3)} | ${h.distance.toFixed(4)} |`,
-      );
+    fused.forEach((h, i) => {
+      const sim = h.similarity == null ? "—" : h.similarity.toFixed(3);
+      md.push(`| ${i + 1} | \`${h.qname}\` | \`${h.label}\` | ${sim} | ${h.via} |`);
     });
     if (cutByFloor > 0) {
       md.push(
         "",
-        `_${cutByFloor} weaker match(es) hidden below the ${input.min_similarity} similarity floor — lower \`min_similarity\` to include them._`,
+        `_${cutByFloor} weaker vector match(es) hidden below the ${input.min_similarity} similarity floor — lower \`min_similarity\` to include them._`,
       );
+    }
+    if (keywordOnly > 0) {
+      md.push(`_${keywordOnly} match(es) surfaced by the keyword leg (exact-name) only._`);
     }
     md.push("", "_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_");
 
     return {
-      summary: `${hits.length} neighbour${hits.length === 1 ? "" : "s"} of ${focalLabel}`,
+      summary: `${fused.length} neighbour${fused.length === 1 ? "" : "s"} of ${focalLabel}`,
       markdown: md.join("\n"),
       data: {
         focalQname: input.qname ?? null,
@@ -174,11 +266,12 @@ defineTool({
         k: input.k,
         minSimilarity: input.min_similarity,
         cutByFloor,
-        hits: hits.map((h) => ({
+        hits: fused.map((h) => ({
           qname: h.qname,
           label: h.label,
           distance: h.distance,
           similarity: h.similarity,
+          via: h.via,
         })),
       },
     };

@@ -4,6 +4,7 @@ import { StorageError, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/s
 import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, Org, RelType } from "../../domain/index.js";
+import { splitIdentifierWords } from "../../embedding/tokenize.js";
 import { edgeTableName, nodeTableName, validateLabel, validateRelType } from "../identifier.js";
 import type {
   BetterSqlite3Database,
@@ -31,6 +32,7 @@ const DERIVED_QNAME_TABLES = [
   "_sfgraph_findings",
   "_sfgraph_dead_code_scores",
   "_sfgraph_test_coverage",
+  "_sfgraph_node_fts",
 ] as const;
 
 export interface SqliteGraphStoreOptions {
@@ -983,6 +985,52 @@ export class SqliteGraphStore implements GraphStore {
       if (row.end_line != null) rec.endLine = row.end_line;
       return rec;
     });
+  }
+
+  upsertNodeFts(orgId: OrgId, qname: QualifiedName, label: string, body: string): void {
+    try {
+      const apply = this.db.transaction(() => {
+        this.db
+          .prepare("DELETE FROM _sfgraph_node_fts WHERE org_id = ? AND qualified_name = ?")
+          .run(orgId, qname);
+        this.db
+          .prepare(
+            "INSERT INTO _sfgraph_node_fts(qualified_name, org_id, label, body) VALUES (?, ?, ?, ?)",
+          )
+          .run(qname, orgId, label, body);
+      });
+      apply();
+    } catch {
+      /* FTS5 unavailable — keyword leg degrades to empty. */
+    }
+  }
+
+  searchNodesFts(orgId: OrgId, query: string, k: number): Array<{ qname: string; label: string }> {
+    if (k <= 0) return [];
+    // Build an OR of the query's word tokens (recall-oriented). splitIdentifierWords
+    // applies the SAME camelCase/snake_case splitting the index body uses, so
+    // `AccountController` matches the indexed "account controller". Each token is
+    // a quoted FTS5 string literal so punctuation/operators can't be injected
+    // into the MATCH grammar.
+    const tokens = Array.from(
+      new Set(splitIdentifierWords(query).map((t) => t.toLowerCase())),
+    ).slice(0, 32);
+    if (tokens.length === 0) return [];
+    const match = tokens.map((t) => `"${t}"`).join(" OR ");
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT qualified_name AS qname, label
+             FROM _sfgraph_node_fts
+            WHERE org_id = ? AND body MATCH ?
+            ORDER BY bm25(_sfgraph_node_fts)
+            LIMIT ?`,
+        )
+        .all(orgId, match, k) as Array<{ qname: string; label: string }>;
+      return rows;
+    } catch {
+      return [];
+    }
   }
 
   // Helpers for shared usage

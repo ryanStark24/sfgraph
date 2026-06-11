@@ -211,6 +211,36 @@ describe("find_similar", () => {
     ]);
   });
 
+  it("fuses a keyword-only hit (in FTS, not in the vector results) via RRF", async () => {
+    const focal = new Float32Array(384);
+    focal[0] = 1;
+    const ctx = await makeCtx(
+      makeStubVectorStore({
+        vectors: new Map([[asQualifiedName("ApexClass:OrderHandler"), focal]]),
+        results: [
+          { qname: "ApexClass:OrderHandler", label: "ApexClass", distance: 0 },
+          { qname: "ApexClass:NearVec", label: "ApexClass", distance: 0.2 },
+        ],
+      }),
+    );
+    // A node the vector leg never returns, but whose FTS body matches the focal
+    // name's words ("order"). The keyword leg should surface it.
+    ctx.graphStore.upsertNodeFts(
+      ctx.orgId,
+      asQualifiedName("ApexClass:OrderKeywordOnly"),
+      "ApexClass",
+      "ApexClass: ApexClass:OrderKeywordOnly\norder keyword only",
+    );
+    const res = await callTool("find_similar", {
+      org: "00DFINDSIM00000XYZ",
+      qname: "ApexClass:OrderHandler",
+    });
+    const data = res.data as { hits: Array<{ qname: string; via: string }> };
+    const byQ = new Map(data.hits.map((h) => [h.qname, h.via]));
+    expect(byQ.get("ApexClass:NearVec")).toBe("vector");
+    expect(byQ.get("ApexClass:OrderKeywordOnly")).toBe("keyword");
+  });
+
   it("returns reason=below_similarity_floor when every match is below the floor", async () => {
     const focal = new Float32Array(384);
     focal[0] = 1;

@@ -651,12 +651,15 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           }
         });
       }
-      if (embedQueue) {
-        // Fold the stored source snippet into the embed input for code nodes so
-        // find_similar matches on what the code DOES, not just its name/attrs.
-        // (The snippet text lives in parsed.snippets, not on the node.) Bounded
-        // to a few KB — MiniLM truncates to its token window anyway, and we keep
-        // the structured buildEmbedText prefix first so identity stays dominant.
+      // Fold the stored source snippet into the search text for code nodes so
+      // search matches on what the code DOES, not just its name/attrs. (The
+      // snippet text lives in parsed.snippets, not on the node.) Bounded to a
+      // few KB — MiniLM truncates to its token window anyway, and we keep the
+      // structured buildEmbedText prefix first so identity stays dominant. The
+      // SAME text feeds both the vector index and the FTS keyword index; FTS is
+      // populated regardless of embedQueue so it works as the embedder-down
+      // fallback leg of hybrid search.
+      if (parsed.nodes.length) {
         const snippetByQname = new Map<string, string>();
         for (const s of parsed.snippets ?? []) {
           snippetByQname.set(String(s.qualifiedName), s.sourceText);
@@ -666,7 +669,10 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           let text = buildEmbedText(n.label, qn, n.attributes);
           const snippet = snippetByQname.get(qn);
           if (snippet) text += `\n${snippet.slice(0, 4000)}`;
-          embedQueue.push({ qname: qn, text, orgId: String(n.orgId), label: n.label });
+          graph.upsertNodeFts(n.orgId, n.qualifiedName, n.label, text);
+          if (embedQueue) {
+            embedQueue.push({ qname: qn, text, orgId: String(n.orgId), label: n.label });
+          }
         }
       }
     };
