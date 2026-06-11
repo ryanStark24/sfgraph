@@ -163,7 +163,7 @@ function sha256(s: string): string {
  * not inside the recorded range. Known limitation (shared with the populate
  * body-scan): a braceless single-statement loop body isn't tracked.
  */
-function computeLoopRanges(body: string): Array<{ start: number; end: number }> {
+export function computeLoopRanges(body: string): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
   const stack: Array<{ openIdx: number; isLoop: boolean }> = [];
   const wordBefore = (i: number) => /\W/.test(body[i - 1] ?? " ");
@@ -190,9 +190,9 @@ function computeLoopRanges(body: string): Array<{ start: number; end: number }> 
   return ranges;
 }
 
-const SOQL_RE = /\[\s*SELECT\b([^\]]*?)\bFROM\s+([A-Za-z_][\w.]*)/gi;
-const SOSL_RE = /\[\s*FIND\b/gi;
-const DML_RE = /\b(insert|update|delete|upsert|undelete|merge)\s+([A-Za-z_][\w.]*)/gi;
+export const SOQL_RE = /\[\s*SELECT\b([^\]]*?)\bFROM\s+([A-Za-z_][\w.]*)/gi;
+export const SOSL_RE = /\[\s*FIND\b/gi;
+export const DML_RE = /\b(insert|update|delete|upsert|undelete|merge)\s+([A-Za-z_][\w.]*)/gi;
 const FIELD_ACCESS_RE = /\b([A-Z][A-Za-z0-9_]*(?:__r)?)\.([A-Za-z_][\w]*?)(?:__c)?\b/g;
 const NEW_INSTANCE_RE = /\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\(/g;
 const STATIC_CALL_RE = /\b([A-Z][A-Za-z0-9_]*)\.([a-z][A-Za-z0-9_]*)\s*\(/g;
