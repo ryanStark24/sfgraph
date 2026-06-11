@@ -143,6 +143,57 @@ describe("SqliteGraphStore", () => {
       expect(r.deleted).toBeUndefined();
       expect(store.listEdgesFrom(ORG, asQualifiedName("ApexMethod:Svc.run")).length).toBe(2);
     });
+
+    it("N1: reconcile is scoped to its own org — never prunes another org's edges", () => {
+      const e2 = (rel: string, src: string, dst: string): EdgeFact => ({
+        orgId: asOrgId("org2"),
+        srcQualifiedName: asQualifiedName(src),
+        dstQualifiedName: asQualifiedName(dst),
+        relType: rel as EdgeFact["relType"],
+        attributes: {},
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      });
+      // Same src qname lives in two orgs with different dsts.
+      store.mergeEdges([e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Account")], {
+        reconcileSources: true,
+      });
+      store.mergeEdges([e2("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Contact")], {
+        reconcileSources: true,
+      });
+      // Re-ingest org1's Svc.run with a different dst. org2's edge must be untouched.
+      store.mergeEdges([e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Lead", {}, 9)], {
+        reconcileSources: true,
+      });
+      expect(
+        store
+          .listEdgesFrom(asOrgId("org2"), asQualifiedName("ApexMethod:Svc.run"))
+          .map((x) => String(x.dstQualifiedName)),
+      ).toEqual(["CustomObject:Contact"]);
+    });
+
+    it("N2: reconcile keeps foreign-pass edges (attributes.source / resolvedBy)", () => {
+      // MCD baseline writes a REFERENCES edge tagged source:'mcd' from the class,
+      // BEFORE the parser fan-out. The parser re-parse must not delete it.
+      store.mergeEdges([
+        e("REFERENCES", "ApexClass:Acct", "Layout:Account-Layout", { source: "mcd" }),
+      ]);
+      // The parser also emitted a plain CALLS edge from the same source last run.
+      store.mergeEdges([e("CALLS", "ApexClass:Acct", "ApexClass:Old")], { reconcileSources: true });
+
+      // Re-parse the class: it emits a different CALLS edge, no REFERENCES.
+      store.mergeEdges([e("CALLS", "ApexClass:Acct", "ApexClass:New", {}, 9)], {
+        reconcileSources: true,
+      });
+
+      const dsts = store
+        .listEdgesFrom(ORG, asQualifiedName("ApexClass:Acct"))
+        .map((x) => String(x.dstQualifiedName));
+      // Stale parser CALLS pruned, new one kept, MCD REFERENCES survived.
+      expect(dsts).toContain("Layout:Account-Layout");
+      expect(dsts).toContain("ApexClass:New");
+      expect(dsts).not.toContain("ApexClass:Old");
+    });
   });
 
   it("mergeNodes dedups by source_hash", () => {

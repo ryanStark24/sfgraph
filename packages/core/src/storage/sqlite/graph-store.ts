@@ -535,13 +535,22 @@ export class SqliteGraphStore implements GraphStore {
     // emitted. The delimiter is a unit-separator that cannot occur in a qname.
     const reconcile = opts?.reconcileSources === true;
     const RSEP = String.fromCharCode(31);
-    const sourceKeys = new Set<string>();
+    // org -> set of source qnames this batch is authoritative for, plus the
+    // exact (org|src|dst|rel) edges it carries. Reconciliation prunes prior
+    // outgoing edges from those sources that the batch no longer emits.
+    const srcByOrg = new Map<string, Set<string>>();
     const batchEdgeKeys = new Set<string>();
     if (reconcile) {
       for (const f of facts) {
-        sourceKeys.add(`${f.orgId}${RSEP}${f.srcQualifiedName}`);
+        const org = String(f.orgId);
+        let set = srcByOrg.get(org);
+        if (!set) {
+          set = new Set<string>();
+          srcByOrg.set(org, set);
+        }
+        set.add(String(f.srcQualifiedName));
         batchEdgeKeys.add(
-          `${f.orgId}${RSEP}${f.srcQualifiedName}${RSEP}${f.dstQualifiedName}${RSEP}${f.relType}`,
+          `${org}${RSEP}${f.srcQualifiedName}${RSEP}${f.dstQualifiedName}${RSEP}${f.relType}`,
         );
       }
     }
@@ -603,24 +612,50 @@ export class SqliteGraphStore implements GraphStore {
       }
 
       // Prune immortal edges: for every source this batch owns, drop any
-      // OUTGOING edge across ALL edge tables that the batch did not re-emit.
-      // Scanning every table (not just buckets present) catches a source that
-      // dropped its LAST edge of a relType. Inbound edges (dst = source) are
-      // left intact so callers not re-parsed this run keep their links.
-      if (reconcile && sourceKeys.size > 0) {
+      // OUTGOING edge it no longer emits. Scoped to (org_id, src_qname) so it's
+      // an index-served point lookup on each edge table's PK — NOT a full-table
+      // scan (which would be O(members×edges) per ingest and would read other
+      // orgs' rows). Edges produced by a different pass — MCD baseline / the
+      // reflection walker (attributes.source) and the arity resolver
+      // (attributes.resolvedBy) — are NOT touched: the parser batch never
+      // contains them, and the pre-fan-out MCD pass never re-adds them, so
+      // pruning them would silently destroy long-tail dependency coverage.
+      // Inbound edges (dst = source) are left intact regardless.
+      if (reconcile && srcByOrg.size > 0) {
+        const CHUNK = 400; // keep the IN(...) list under SQLite's variable cap
         for (const [relType, tbl] of this.edgeRelCache) {
-          const rows = this.db
-            .prepare(`SELECT org_id, src_qname, dst_qname FROM ${tbl}`)
-            .all() as Array<{ org_id: string; src_qname: string; dst_qname: string }>;
           const delStmt = this.db.prepare(
             `DELETE FROM ${tbl} WHERE org_id = ? AND src_qname = ? AND dst_qname = ?`,
           );
-          for (const r of rows) {
-            if (!sourceKeys.has(`${r.org_id}${RSEP}${r.src_qname}`)) continue;
-            const k = `${r.org_id}${RSEP}${r.src_qname}${RSEP}${r.dst_qname}${RSEP}${relType}`;
-            if (batchEdgeKeys.has(k)) continue;
-            delStmt.run(r.org_id, r.src_qname, r.dst_qname);
-            deleted += 1;
+          for (const [org, srcSet] of srcByOrg) {
+            const srcs = [...srcSet];
+            for (let i = 0; i < srcs.length; i += CHUNK) {
+              const slice = srcs.slice(i, i + CHUNK);
+              const placeholders = slice.map(() => "?").join(",");
+              const rows = this.db
+                .prepare(
+                  `SELECT src_qname, dst_qname, attributes FROM ${tbl} WHERE org_id = ? AND src_qname IN (${placeholders})`,
+                )
+                .all(org, ...slice) as Array<{
+                src_qname: string;
+                dst_qname: string;
+                attributes: string;
+              }>;
+              for (const r of rows) {
+                const k = `${org}${RSEP}${r.src_qname}${RSEP}${r.dst_qname}${RSEP}${relType}`;
+                if (batchEdgeKeys.has(k)) continue; // re-emitted this batch — keep
+                let attrs: Record<string, unknown> = {};
+                try {
+                  attrs = r.attributes ? (JSON.parse(r.attributes) as Record<string, unknown>) : {};
+                } catch {
+                  attrs = {};
+                }
+                // Foreign-pass edge (MCD/reflection/arity) — not this parser's to prune.
+                if (attrs.source != null || attrs.resolvedBy != null) continue;
+                delStmt.run(org, r.src_qname, r.dst_qname);
+                deleted += 1;
+              }
+            }
           }
         }
       }
