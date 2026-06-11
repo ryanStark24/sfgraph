@@ -32,6 +32,27 @@ describe("ApexClassParser — implicit-private methods", () => {
     expect(names).toContain("ApexMethod:Svc.run(0)");
   });
 
+  it("does not capture a constructor as a phantom method (N3 regression)", async () => {
+    const body = `public class Account_Service {
+      public Account_Service(String a, Integer b) {
+        this.a = a;
+      }
+      private Account_Service() {}
+      String realHelper() { return 'x'; }
+    }`;
+    const result = await new ApexClassParser().parse(
+      { className: "Account_Service", body },
+      makeTestCtx(),
+    );
+    const names = result.nodes
+      .filter((n) => n.label === "ApexMethod" || n.label === "TestMethod")
+      .map((n) => String(n.qualifiedName));
+    // No phantom ApexMethod:Account_Service.Account_Service(...) from the ctors.
+    expect(names.some((n) => /\.Account_Service\(/.test(n))).toBe(false);
+    // The real implicit-private method is still captured.
+    expect(names).toContain("ApexMethod:Account_Service.realHelper(0)");
+  });
+
   it("does not invent a method from `else if (x) {` control flow", async () => {
     const body = `public class Svc {
       public void run(Integer x) {

@@ -52,6 +52,29 @@ const NON_METHOD_KEYWORDS = new Set([
   "when",
 ]);
 
+// Access/sharing/definition modifiers. When the regex makes modifiers optional,
+// a CONSTRUCTOR `public Foo(...) {` backtracks to returnType="public", name="Foo"
+// (the class name) — a phantom method. A real method's return type is a TYPE,
+// never a modifier, so a modifier captured AS the return type means we matched a
+// constructor (or other non-method) and must drop it.
+const MODIFIER_KEYWORDS = new Set([
+  "public",
+  "private",
+  "protected",
+  "global",
+  "virtual",
+  "override",
+  "abstract",
+  "static",
+  "webservice",
+  "with",
+  "without",
+  "inherited",
+  "sharing",
+  "testmethod",
+  "final",
+]);
+
 function findMatchingBrace(src: string, openIdx: number): number {
   let depth = 0;
   for (let i = openIdx; i < src.length; i++) {
@@ -118,7 +141,7 @@ function extractClassHeader(src: string): {
   return { name, extendsClass, implementsList, isInterface, isTest, modifiers: mods };
 }
 
-function findMethods(src: string): MethodInfo[] {
+function findMethods(src: string, className?: string): MethodInfo[] {
   const out: MethodInfo[] = [];
   const re = new RegExp(METHOD_RE.source, "gi");
   let m: RegExpExecArray | null = re.exec(src);
@@ -126,12 +149,16 @@ function findMethods(src: string): MethodInfo[] {
     const returnType = (m[2] ?? "").trim();
     const name = m[3] ?? "";
     const params = parseParams(m[4] ?? "");
-    // Reject control-flow that looks like a method header (e.g. `else if (x) {`
-    // → returnType="else", name="if"). Without an explicit modifier the regex
-    // would otherwise treat these as implicitly-private methods.
+    // Reject non-methods that share the `<word> <word>(...) {` shape:
+    //  - control flow: `else if (x) {` → returnType="else", name="if".
+    //  - a CONSTRUCTOR: `public Foo(...) {` backtracks to returnType="public"
+    //    (a modifier) / name=<class name>. A real method's return type is a
+    //    type, never a modifier, and its name is never the class name.
     if (
       NON_METHOD_KEYWORDS.has(returnType.toLowerCase()) ||
-      NON_METHOD_KEYWORDS.has(name.toLowerCase())
+      NON_METHOD_KEYWORDS.has(name.toLowerCase()) ||
+      MODIFIER_KEYWORDS.has(returnType.toLowerCase()) ||
+      (className !== undefined && name === className)
     ) {
       re.lastIndex = (m.index ?? 0) + 1;
       m = re.exec(src);
@@ -453,7 +480,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
     }
 
     // Methods
-    const methods = findMethods(cleaned);
+    const methods = findMethods(cleaned, effectiveName);
     for (const m of methods) {
       const methodQname = `ApexMethod:${effectiveName}.${m.name}(${m.params.length})`;
       const annotationsLower = m.annotations.map((a) => a.toLowerCase());
