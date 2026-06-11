@@ -253,14 +253,53 @@ export async function* iterVlocityRecords(
   const registry = loadVlocityRegistry();
   const entries = Object.values(registry);
 
+  // The vendored registry lists ~48 DataPack types, but a given vlocity_cmt
+  // package version only installs SOME of their backing SObjects (e.g.
+  // `QueryBuilder__c` is absent in many versions). Querying a non-existent
+  // object throws INVALID_TYPE — caught per-type below, but it's a wasted
+  // round-trip and a noisy skip. Describe the org ONCE up-front and skip any
+  // type whose FROM object isn't actually present. If describeGlobal fails,
+  // fall back to attempting all (the per-type catch still protects us).
+  let knownObjects: Set<string> | null = null;
+  try {
+    const dg = (await conn.describeGlobal()) as { sobjects?: Array<{ name?: string }> } | null;
+    const names = (dg?.sobjects ?? []).map((s) => String(s.name ?? "").toLowerCase());
+    if (names.length > 0) knownObjects = new Set(names);
+  } catch {
+    /* describeGlobal unavailable — don't pre-filter; rely on per-type catch */
+  }
+  // Extract the FROM object of a registry query with the namespace substituted.
+  const fromObject = (query: string, ns: string): string | null => {
+    const m = query
+      .split("%vlocity_namespace%")
+      .join(ns)
+      .match(/\bfrom\s+([A-Za-z0-9_]+)/i);
+    return m?.[1] ? m[1].toLowerCase() : null;
+  };
+
   // Flatten (namespace, typeDef) into one task list. Each task does its
   // own SOQL (with per-call timeout, no longer can hang forever on a
   // dead socket) + optional child fetch. Yields are NOT order-preserving
   // across tasks — that's fine, downstream merge is order-independent.
   type Task = { namespace: string; typeDef: (typeof entries)[number] };
   const tasks: Task[] = [];
+  let skippedAbsent = 0;
   for (const namespace of namespaces) {
-    for (const typeDef of entries) tasks.push({ namespace, typeDef });
+    for (const typeDef of entries) {
+      if (knownObjects) {
+        const obj = fromObject(typeDef.query, namespace);
+        if (obj && !knownObjects.has(obj)) {
+          skippedAbsent += 1;
+          continue; // SObject not installed in this package version — don't query it
+        }
+      }
+      tasks.push({ namespace, typeDef });
+    }
+  }
+  if (skippedAbsent > 0) {
+    console.log(
+      `ingest:   vlocity: skipped ${skippedAbsent} DataPack type(s) whose SObject is not present in this org (e.g. QueryBuilder)`,
+    );
   }
 
   type Settled = {

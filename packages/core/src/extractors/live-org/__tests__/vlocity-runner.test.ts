@@ -127,3 +127,37 @@ describe("iterVlocityRecords", () => {
     },
   );
 });
+
+describe("iterVlocityRecords — describe-driven type filtering (skips absent SObjects)", () => {
+  const caps: OrgCapabilities = { ...baseCaps, vlocityNamespaces: ["vlocity_cmt"] };
+
+  it("does NOT query a type whose SObject is absent (e.g. QueryBuilder)", async () => {
+    const soqls: string[] = [];
+    // describeGlobal reports DataRaptor present but NOT QueryBuilder.
+    const conn = {
+      describeGlobal: async () => ({
+        sobjects: [
+          { name: "vlocity_cmt__DRBundle__c" },
+          { name: "vlocity_cmt__OmniScript__c" },
+          { name: "vlocity_cmt__Element__c" },
+        ],
+      }),
+      query: async (soql: string) => {
+        soqls.push(soql);
+        return { records: [], done: true };
+      },
+    };
+    await collect(iterVlocityRecords(conn, caps, "00Dtest"));
+    // QueryBuilder's object isn't in describeGlobal → its query must never fire.
+    expect(soqls.some((s) => s.includes("QueryBuilder__c"))).toBe(false);
+    // A present type (DRBundle) is still queried.
+    expect(soqls.some((s) => s.includes("DRBundle__c"))).toBe(true);
+  });
+
+  it("falls back to querying all types when describeGlobal is unavailable", async () => {
+    const { conn, soqls } = recordingConn();
+    await collect(iterVlocityRecords(conn, caps, "00Dtest"));
+    // No describeGlobal → no pre-filter → QueryBuilder is attempted (and caught).
+    expect(soqls.some((s) => s.includes("QueryBuilder__c"))).toBe(true);
+  });
+});
