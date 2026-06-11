@@ -1,5 +1,97 @@
 # Changelog
 
+## 1.4.1 — post-1.4.0 audit hardening (two re-audit waves)
+
+Driven by two independent re-audits of the 1.4.0 fix wave. The first found four
+regressions the 1.4.0 changes themselves introduced; the second swept the
+remaining correctness/cohesion backlog. Every fix below ships with a regression
+test that would have caught it (the recurring lesson: the green suite covered
+none of these). Packages bumped: core/server/cli/`sfgraph` → 1.4.1, skills → 1.2.1.
+
+### Regressions introduced by 1.4.0 (fixed)
+
+- **Edge reconcile no longer full-table-scans.** `reconcileSources` ran
+  `SELECT * FROM <every edge table>` per parsed member (O(members×edges), and it
+  read other orgs' rows) — now scoped to `WHERE org_id=? AND src_qname IN (…)`,
+  chunked and index-served on the PK.
+- **Reconcile no longer deletes MCD/foreign-pass edges.** It now skips edges
+  carrying a provenance marker (`attributes.source` = mcd/reflection, or
+  `attributes.resolvedBy` = arity), so the pre-fan-out MCD baseline's long-tail
+  dependency edges survive a re-parse.
+- **Constructors are no longer captured as phantom methods.** Making the method
+  modifier optional (for implicit-private methods) let `public Foo(...) {`
+  backtrack to a fake `ApexMethod:Foo.Foo`; `findMethods` now rejects a match
+  whose return-type is a modifier or whose name equals the class name.
+- **Incremental holds its watermark.** When incremental detects changed members
+  it can't fetch yet, it no longer advances `last_synced_at` past them (which
+  made two consecutive incrementals lose those changes permanently).
+
+### Tool correctness
+
+- **Governor detection is real.** `findGovernorRisks` read a `hasSoqlInLoop`
+  attribute no parser ever set → empty SARIF and a fabricated "no risks
+  detected" on the no-cache path. It now reads the real `EXECUTES_SOQL/DML`
+  edges stamped `inLoop` by the Apex + trigger parsers. `governor_risk_check`
+  also gained a `limit`.
+- **dead_code_audit** no longer counts permission grants (`GRANTS_*`) or
+  reflection-sourced references as "usage" (kept dead code alive).
+- **snapshot_create** honors its `kind` argument (was hardcoded `is_auto=false`).
+- **test_gap** no longer reports test methods/`@isTest` classes as coverage gaps.
+- **deployment_manifest_gen** surfaces an `incomplete` block (diff truncated +
+  dropped unmapped labels) instead of silently emitting a partial package.xml.
+
+### Parser / ingest
+
+- **SOQL subquery object** taken from the `FROM` at parenthesis depth 0 — a
+  child subquery or `WHERE … IN (SELECT … FROM X)` no longer misattributes the
+  query; the stored `query` is now the full bracketed text.
+- **All named credentials** captured (the loop re-scanned the wrong string and
+  dropped every credential after the first).
+- **Braceless loops** (`for (…) doIt();`, `do x(); while(y);`) no longer bleed a
+  loop range onto the next unrelated block → no false SOQL/DML-in-loop findings.
+- **Incremental deletes resolve + cascade.** Obsolete members are keyed by the
+  node label (LWC was a silent no-op under the raw member type); deleting a
+  class/trigger cascades to its `CONTAINS_METHOD` children instead of orphaning
+  them.
+- **Cross-flavor hash churn fixed** — the `+canonical:` suffix no longer
+  accumulates, so matched Vlocity/OmniStudio nodes stop reading as "modified"
+  every sync.
+- **Analysis tables purge stale rows** and repopulate in one transaction
+  (also removes the per-node N+1 write storm).
+- **start_ingest_job** dropped the bogus `--from-fs` command (the CLI has no
+  such flag); live-org only.
+
+### Embeddings / search
+
+- **Unchanged nodes skip the model.** The content-hash is now checked BEFORE
+  MiniLM runs (`VectorStore.getContentHash`), so an unchanged org no longer
+  re-pays embedding inference every full sync — only the write was skipped before.
+- **Descriptions are embedded.** Object/field `description` was extracted then
+  dropped by the parser; it's now carried on the node and folded into the
+  embedding. Apex/trigger/Flow **snippet source** is folded into the embed input
+  too, so `find_similar` matches on what code does.
+- **Label-filtered search no longer starves** — `searchNodes` over-fetches then
+  slices to `k` (the label filter was applied after the KNN bound, often
+  returning < k or zero).
+
+### Skills
+
+- Corrected the now-false "graph stores source only for Apex methods" wording in
+  `sf-graph-router`, `sf-debug-root-cause`, `sf-debug-log-analysis`, and the
+  `explain_code` description (triggers + Flows now store source).
+- Fixed Mermaid claims: `sf-what-broke` embeds the diagram the tool emits;
+  `sf-governor-risk-fix` / `sf-deployment-manifest` build their own from tool
+  data (those tools return tables/XML, not diagrams).
+- Added an **Evidence rule** ("say it only if something backs it") to all 20
+  skills, and a CI contract test validating every SKILL.md `tools_used` against
+  the live tool registry.
+
+## skills 1.2.1
+
+Shipped with 1.4.1 (skills versioned independently). The Evidence-rule guardrail
+across all 20 skills, the source-storage + Mermaid wording corrections, and the
+SKILL.md↔registry contract test. See the **1.4.1 — Skills** section above.
+
 ## skills 1.2.0
 
 Shipped as part of the 1.4.0 release (the skills package is versioned independently). Adds the `sf-graph-router` start-here/grounding-first skill, `sf-debug-root-cause`, and `sf-debug-log-analysis`; grounding-first cross-links from the `sf-architect-*` design skills; and playbook corrections aligned with real tool behavior. See the **1.4.0 — Skills** section below for detail.
