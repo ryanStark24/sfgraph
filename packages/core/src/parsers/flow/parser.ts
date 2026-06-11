@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { XMLParser } from "fast-xml-parser";
 import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../../domain/index.js";
+import type { SnippetRecord } from "../../storage/interfaces.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
 
@@ -27,6 +29,7 @@ export class FlowParser implements Parser<FlowInput> {
   async parse(input: FlowInput, ctx: ParseContext): Promise<ParseResult> {
     const nodes: NodeFact[] = [];
     const edges: EdgeFact[] = [];
+    const snippets: SnippetRecord[] = [];
     const fullName = stripNs(input.fullName, ctx.namespace);
     const hash = sha256(input.xml);
 
@@ -75,6 +78,22 @@ export class FlowParser implements Parser<FlowInput> {
       ),
     );
     edges.push(makeEdge(ctx, flowQname, REL_TYPES.CONTAINS, versionQname));
+
+    // Store the Flow definition XML so explain_code / find_similar can read and
+    // reason about the Flow's logic — Flows previously stored NO source, leaving
+    // them as opaque nodes that explain/search couldn't open. Keyed by the Flow
+    // qname (the unit a user explains), formatted as "flow".
+    if (input.xml.trim() !== "") {
+      snippets.push({
+        orgId: asOrgId(ctx.orgId),
+        qualifiedName: asQualifiedName(flowQname),
+        sourceFormat: "flow",
+        sourceText: input.xml,
+        sourceHash: asSha256(hash),
+        startLine: 1,
+        endLine: input.xml.split("\n").length,
+      });
+    }
 
     // start element references an object (record-triggered flows)
     const start = flow.start;
@@ -145,6 +164,6 @@ export class FlowParser implements Parser<FlowInput> {
       }
     }
 
-    return { nodes, edges };
+    return { nodes, edges, snippets };
   }
 }
