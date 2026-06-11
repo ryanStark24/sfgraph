@@ -5,6 +5,7 @@ import {
   SfgraphError,
   StorageError,
   asQualifiedName,
+  asSha256,
 } from "@ryanstark24/sfgraph-shared";
 import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
@@ -182,11 +183,16 @@ export class SqliteVectorStore implements VectorStore {
   ): NodeSearchHit[] {
     if (k <= 0) return [];
     const blob = this.toBlob(query);
+    // vec0 requires an explicit KNN bound (`k = ?`). A label filter is applied
+    // to the JOINed meta rows AFTER that bound, so fetching exactly k then
+    // filtering returns far fewer than k (often 0) when the nearest neighbours
+    // are other labels. Over-fetch when filtering, then slice back to k.
+    const fetchK = opts?.label ? Math.min(k * 10, 1000) : k;
     let sql = `SELECT meta.qualified_name AS qname, meta.label AS label, vec.distance AS distance
                FROM _sfgraph_node_vectors AS vec
                JOIN _sfgraph_node_vector_meta AS meta ON meta.vec_rowid = vec.rowid
                WHERE vec.org_id = ? AND vec.embedding MATCH ? AND k = ?`;
-    const params: unknown[] = [orgId, blob, k];
+    const params: unknown[] = [orgId, blob, fetchK];
     if (opts?.label) {
       validateLabel(opts.label);
       sql += " AND meta.label = ?";
@@ -198,11 +204,20 @@ export class SqliteVectorStore implements VectorStore {
       label: string;
       distance: number;
     }>;
-    return rows.map((r) => ({
+    return rows.slice(0, k).map((r) => ({
       qname: asQualifiedName(r.qname),
       label: r.label,
       distance: r.distance,
     }));
+  }
+
+  getContentHash(orgId: OrgId, qname: QualifiedName): Sha256 | null {
+    const row = this.db
+      .prepare(
+        "SELECT content_hash FROM _sfgraph_node_vector_meta WHERE org_id = ? AND qualified_name = ?",
+      )
+      .get(orgId, qname) as { content_hash: string } | undefined;
+    return row ? asSha256(row.content_hash) : null;
   }
 
   searchBundles(orgId: OrgId, query: Float32Array, k: number): BundleSearchHit[] {

@@ -52,6 +52,10 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
           label: obj.label ?? null,
           sharingModel: obj.sharingModel ?? null,
           isPlatformEvent,
+          // Description is extracted from the org but was dropped here, leaving
+          // buildEmbedText's `description` branch permanently empty. Carry it so
+          // object descriptions become semantically searchable.
+          description: obj.description ?? null,
         },
         sha256(input.objectXml),
       ),
@@ -116,8 +120,13 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
             object: apiName,
             referenceTo,
             relationshipName,
+            // Field description / inline help — extracted but previously dropped,
+            // so the embedding's `description` branch never fired for fields.
+            description: f.description ? String(f.description) : null,
           },
-          sha256(`${fieldQname}|${fieldType ?? ""}|${formula ?? ""}|${referenceTo.join(",")}`),
+          sha256(
+            `${fieldQname}|${fieldType ?? ""}|${formula ?? ""}|${referenceTo.join(",")}|${f.description ?? ""}`,
+          ),
         ),
       );
       edges.push(makeEdge(ctx, objQname, REL_TYPES.DEFINES_FIELD, fieldQname));

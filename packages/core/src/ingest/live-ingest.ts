@@ -645,13 +645,21 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         });
       }
       if (embedQueue) {
+        // Fold the stored source snippet into the embed input for code nodes so
+        // find_similar matches on what the code DOES, not just its name/attrs.
+        // (The snippet text lives in parsed.snippets, not on the node.) Bounded
+        // to a few KB — MiniLM truncates to its token window anyway, and we keep
+        // the structured buildEmbedText prefix first so identity stays dominant.
+        const snippetByQname = new Map<string, string>();
+        for (const s of parsed.snippets ?? []) {
+          snippetByQname.set(String(s.qualifiedName), s.sourceText);
+        }
         for (const n of parsed.nodes) {
-          embedQueue.push({
-            qname: String(n.qualifiedName),
-            text: buildEmbedText(n.label, String(n.qualifiedName), n.attributes),
-            orgId: String(n.orgId),
-            label: n.label,
-          });
+          const qn = String(n.qualifiedName);
+          let text = buildEmbedText(n.label, qn, n.attributes);
+          const snippet = snippetByQname.get(qn);
+          if (snippet) text += `\n${snippet.slice(0, 4000)}`;
+          embedQueue.push({ qname: qn, text, orgId: String(n.orgId), label: n.label });
         }
       }
     };

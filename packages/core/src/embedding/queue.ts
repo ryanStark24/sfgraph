@@ -40,6 +40,13 @@ export interface VectorSink {
    * sinks may omit it; callers must feature-detect before invoking.
    */
   deleteNodeVector?(orgId: OrgId, qname: QualifiedName): unknown;
+  /**
+   * The content_hash of the node's stored vector, or null if none. Used to skip
+   * the (expensive) embedding model entirely when the text is unchanged — not
+   * just the DB write. Optional: sinks that don't implement it fall back to
+   * always embedding.
+   */
+  getContentHash?(orgId: OrgId, qname: QualifiedName): Sha256 | null;
 }
 
 export interface EmbeddingQueueOpts {
@@ -105,9 +112,25 @@ export class EmbeddingQueue {
   private async flushBatch(): Promise<void> {
     const batch = this.buffer.splice(0, this.batchSize);
     if (batch.length === 0) return;
+    const sink = this.opts.vectorStore;
+    const getHash =
+      typeof sink.getContentHash === "function" ? sink.getContentHash.bind(sink) : null;
+    // Pre-embed dedup: skip the MiniLM model for items whose stored vector hash
+    // already matches the new text hash (unchanged on re-ingest). Previously the
+    // hash was only checked at write time, so an unchanged org re-paid 100% of
+    // embedding inference every full sync. Compute the hash once here and reuse.
+    const toEmbed: Array<{ item: EmbeddingItem; hash: Sha256 }> = [];
+    for (const b of batch) {
+      const hash = hashEmbedText(b.text);
+      if (getHash && getHash(b.orgId as unknown as OrgId, asQualifiedName(b.qname)) === hash) {
+        continue;
+      }
+      toEmbed.push({ item: b, hash });
+    }
+    if (toEmbed.length === 0) return;
     try {
-      const vectors = await this.embedFn(batch.map((b) => b.text));
-      for (let i = 0; i < batch.length; i++) {
+      const vectors = await this.embedFn(toEmbed.map((t) => t.item.text));
+      for (let i = 0; i < toEmbed.length; i++) {
         const v = vectors[i];
         if (!v) continue;
         // Skip all-zero vectors (the embedder's failure fallback). Inserting
@@ -115,13 +138,13 @@ export class EmbeddingQueue {
         // similarity and outranks genuine weak matches. Better no vector than
         // a misleading one; the node is simply absent from semantic search.
         if (isAllZero(v)) continue;
-        const b = batch[i] as EmbeddingItem;
-        this.opts.vectorStore.upsertNodeVector(
-          b.orgId as unknown as OrgId,
-          asQualifiedName(b.qname),
-          b.label,
+        const { item, hash } = toEmbed[i] as { item: EmbeddingItem; hash: Sha256 };
+        sink.upsertNodeVector(
+          item.orgId as unknown as OrgId,
+          asQualifiedName(item.qname),
+          item.label,
           v,
-          hashEmbedText(b.text),
+          hash,
         );
       }
     } catch (e) {

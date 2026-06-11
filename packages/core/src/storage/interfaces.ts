@@ -207,6 +207,9 @@ export interface VectorStore {
    *  Called when a node is removed from the graph so it stops appearing as a
    *  phantom "similar" result. */
   deleteNodeVector(orgId: OrgId, qname: QualifiedName): boolean;
+  /** content_hash of the node's stored vector, or null. Lets the embedding
+   *  queue skip re-running the model when the text is unchanged. */
+  getContentHash(orgId: OrgId, qname: QualifiedName): Sha256 | null;
 }
 
 export interface NodeDiff {

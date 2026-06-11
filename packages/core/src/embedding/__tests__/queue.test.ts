@@ -105,4 +105,31 @@ describe("EmbeddingQueue — content hash + zero-vector guard (audit fixes)", ()
     await q.drain();
     expect(sink.calls.length).toBe(0);
   });
+
+  it("skips the embedding model for items whose stored hash matches (pre-embed dedup)", async () => {
+    const { createHash } = await import("node:crypto");
+    const hashOf = (t: string) => createHash("sha256").update(t).digest("hex");
+    const sink = makeSink();
+    // Pretend A:1's stored vector already matches its text hash → must be skipped.
+    sink.getContentHash = (_o, qname) =>
+      (String(qname) === "A:1" ? hashOf("unchanged") : null) as ReturnType<
+        NonNullable<VectorSink["getContentHash"]>
+      >;
+    const embedded: string[] = [];
+    const embed = async (texts: string[]) => {
+      embedded.push(...texts);
+      return texts.map(() => {
+        const v = new Float32Array(384);
+        v[0] = 1;
+        return v;
+      });
+    };
+    const q = new EmbeddingQueue({ vectorStore: sink, batchSize: 16, embed });
+    q.push({ qname: "A:1", text: "unchanged", orgId: "o", label: "A" });
+    q.push({ qname: "A:2", text: "changed", orgId: "o", label: "A" });
+    await q.drain();
+    // A:1 never reached the model; only A:2 was embedded + upserted.
+    expect(embedded).toEqual(["changed"]);
+    expect(sink.calls.map((c) => (c as { qname: string }).qname)).toEqual(["A:2"]);
+  });
 });

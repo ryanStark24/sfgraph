@@ -29,7 +29,8 @@
         "apiName": "Account",
         "label": "Account",
         "sharingModel": "Private",
-        "isPlatformEvent": false
+        "isPlatformEvent": false,
+        "description": null
       }
     },
     {
