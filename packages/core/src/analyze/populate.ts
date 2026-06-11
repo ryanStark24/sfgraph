@@ -2,6 +2,7 @@ import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import { REL_TYPES } from "../domain/rel-types.js";
 import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
+import { realIncomingRefCount } from "./dead-code.js";
 import { freshnessScore } from "./freshness.js";
 
 export interface PopulateCounts {
@@ -197,7 +198,7 @@ export function populateDeadCodeScores(
   ];
   for (const lbl of labels) {
     for (const node of store.listNodesByLabel(orgId, lbl, 10000)) {
-      const incoming = store.listEdgesTo(orgId, node.qualifiedName).length;
+      const incoming = realIncomingRefCount(store, orgId, node.qualifiedName);
       const fresh = freshnessScore(node, now);
       const reasons: string[] = [];
       // Score formula: lower = more dead. weight 0.6 freshness + 0.4 incoming.

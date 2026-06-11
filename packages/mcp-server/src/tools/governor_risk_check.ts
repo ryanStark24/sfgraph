@@ -2,7 +2,12 @@ import { analyze } from "@ryanstark24/sfgraph-core";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 
-const inputSchema = z.object({ org: z.string().min(1) });
+const inputSchema = z.object({
+  org: z.string().min(1),
+  // Cap the rendered/returned risks so a large org can't blow the MCP token
+  // budget (mirrors dead_code_audit). The summary still reports the true total.
+  limit: z.number().int().min(1).max(500).default(50),
+});
 
 interface CachedRisk {
   qualifiedName: string;
@@ -54,15 +59,20 @@ defineTool({
         follow_up_tools: ["explain_code", "trace_downstream"],
       };
     }
+    const shown = risks.slice(0, input.limit);
+    const truncated = risks.length > shown.length;
     const md = [
       "| qname | risk | evidence |",
       "|---|---|---|",
-      ...risks.map((r) => `| \`${r.qualifiedName}\` | ${r.risk} | ${r.evidence} |`),
+      ...shown.map((r) => `| \`${r.qualifiedName}\` | ${r.risk} | ${r.evidence} |`),
+      ...(truncated
+        ? ["", `_+${risks.length - shown.length} more — raise \`limit\` or use export_sarif._`]
+        : []),
     ].join("\n");
     return {
-      summary: `${risks.length} governor risks${cached ? " (cached)" : ""}`,
+      summary: `${risks.length} governor risks${cached ? " (cached)" : ""}${truncated ? ` (showing ${shown.length})` : ""}`,
       markdown: md,
-      data: { risks, cached: cached !== null },
+      data: { risks: shown, total: risks.length, truncated, cached: cached !== null },
       follow_up_tools: ["explain_code", "trace_downstream"],
     };
   },

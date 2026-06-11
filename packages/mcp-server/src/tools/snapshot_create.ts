@@ -14,7 +14,9 @@ defineTool({
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
     const label = input.name ?? `${input.kind}-${new Date().toISOString()}`;
-    const snap = ctx.snapshotStore.createSnapshot(ctx.orgId, label, false);
+    // Honour the caller's `kind`: "scheduled" → auto snapshot, "manual" → not.
+    // (Was hardcoded `false`, silently discarding the argument.)
+    const snap = ctx.snapshotStore.createSnapshot(ctx.orgId, label, input.kind === "scheduled");
     return {
       summary: `snapshot ${snap.id} created`,
       markdown: `Snapshot \`${snap.id}\` (\"${label}\") created for org \`${ctx.orgId}\`.`,

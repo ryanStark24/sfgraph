@@ -28,6 +28,14 @@ defineTool({
       for (const n of dep.nodes) {
         if (seen.has(n.qualifiedName)) continue;
         seen.add(n.qualifiedName);
+        // A test is not a coverage gap in itself — don't report TestMethods or
+        // @isTest classes as "lacking tests".
+        if (
+          n.label === "TestMethod" ||
+          (n.attributes as Record<string, unknown> | undefined)?.isTest === true
+        ) {
+          continue;
+        }
         const hasTest = analyze.hasTestCoverage(
           ctx.graphStore,
           ctx.orgId,

@@ -25,8 +25,30 @@ defineTool({
       orgB: ctxB.orgId,
       category: input.category ?? "all",
     });
+    const unmapped = Object.entries(manifest.incomplete.unmappedLabels);
+    const incompleteNote =
+      manifest.incomplete.diffTruncated || unmapped.length > 0
+        ? [
+            "",
+            "> ⚠️ **This manifest is INCOMPLETE — do not treat it as the full change set.**",
+            ...(manifest.incomplete.diffTruncated
+              ? [
+                  "> - The cross-org diff hit its per-label cap; some changed members were not considered.",
+                ]
+              : []),
+            ...(unmapped.length > 0
+              ? [
+                  `> - ${unmapped.reduce((s, [, c]) => s + c, 0)} changed component(s) have no package.xml type mapping and were dropped: ${unmapped
+                    .map(([l, c]) => `${l}×${c}`)
+                    .join(", ")}.`,
+                ]
+              : []),
+          ]
+        : [];
     return {
-      summary: `${manifest.summary.addedOrChanged} added/changed, ${manifest.summary.removed} removed`,
+      summary: `${manifest.summary.addedOrChanged} added/changed, ${manifest.summary.removed} removed${
+        incompleteNote.length ? " (INCOMPLETE)" : ""
+      }`,
       markdown: [
         "### package.xml",
         "```xml",
@@ -37,6 +59,7 @@ defineTool({
         "```xml",
         manifest.destructiveXml.trimEnd(),
         "```",
+        ...incompleteNote,
       ].join("\n"),
       data: manifest,
       follow_up_tools: ["cross_org_diff"],

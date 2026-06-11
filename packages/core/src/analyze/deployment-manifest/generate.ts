@@ -13,6 +13,18 @@ export interface DeploymentManifest {
     removed: number;
     byType: Record<string, number>;
   };
+  /**
+   * The package.xml is INCOMPLETE when this is set — surfaced so the caller
+   * never treats a partial manifest as the full change set.
+   *  - `diffTruncated`: the cross-org diff hit its per-label cap, so some
+   *    changed members were never considered.
+   *  - `unmappedLabels`: changed nodes whose label has no Metadata API type
+   *    mapping (or no formattable member name); they were dropped from the XML.
+   */
+  incomplete: {
+    diffTruncated: boolean;
+    unmappedLabels: Record<string, number>;
+  };
 }
 
 function escapeXml(s: string): string {
@@ -95,11 +107,17 @@ export function generateManifest(
   const destMembers = new Map<string, Set<string>>();
   const byType: Record<string, number> = {};
 
+  const unmappedLabels: Record<string, number> = {};
   const add = (target: Map<string, Set<string>>, label: string, qname: string): void => {
     const type = LABEL_TO_METADATA_TYPE[label];
-    if (!type) return;
-    const name = formatMemberName(label, qname);
-    if (!name) return;
+    const name = type ? formatMemberName(label, qname) : null;
+    if (!type || !name) {
+      // No Metadata API type mapping (or no formattable member name): this
+      // changed component cannot go in package.xml. Record it instead of
+      // silently dropping it, so the manifest can flag itself incomplete.
+      unmappedLabels[label] = (unmappedLabels[label] ?? 0) + 1;
+      return;
+    }
     let set = target.get(type);
     if (!set) {
       set = new Set();
@@ -121,6 +139,10 @@ export function generateManifest(
       addedOrChanged: diff.onlyInA.length + diff.changed.length,
       removed: diff.onlyInB.length,
       byType,
+    },
+    incomplete: {
+      diffTruncated: diff.truncated === true,
+      unmappedLabels,
     },
   };
 }

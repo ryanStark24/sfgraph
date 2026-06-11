@@ -25,6 +25,13 @@ describe("snapshot_create", () => {
     expect((r.data as { label: string }).label).toBe("checkpoint-A");
   });
 
+  it("honours kind: scheduled → isAuto, manual → not (was hardcoded false)", async () => {
+    const auto = await callTool("snapshot_create", { org: fix.orgId, kind: "scheduled" });
+    expect((auto.data as { isAuto: boolean }).isAuto).toBe(true);
+    const manual = await callTool("snapshot_create", { org: fix.orgId, kind: "manual" });
+    expect((manual.data as { isAuto: boolean }).isAuto).toBe(false);
+  });
+
   it("rejects empty org", async () => {
     await expect(callTool("snapshot_create", { org: "" })).rejects.toThrow();
   });

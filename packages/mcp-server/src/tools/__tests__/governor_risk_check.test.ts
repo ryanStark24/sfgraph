@@ -13,21 +13,42 @@ afterEach(async () => {
 });
 
 describe("governor_risk_check", () => {
-  it("empty when no attributes hint", async () => {
-    fix.addNode({ qualifiedName: "ApexClass:Clean", label: "ApexClass" });
+  // Detection reads real EXECUTES_SOQL / EXECUTES_DML edges stamped inLoop:true
+  // by the Apex/trigger parsers — NOT a `hasSoqlInLoop` attribute (which no
+  // parser ever set; the old placeholder made this tool fabricate "no risks").
+  const addLoopMethod = (cls: string, rel: string): string => {
+    const m = `ApexMethod:${cls}.run(0)`;
+    fix.addNode({ qualifiedName: m, label: "ApexMethod" });
+    fix.addEdge({
+      srcQualifiedName: m,
+      dstQualifiedName: rel === "EXECUTES_SOQL" ? "CustomObject:Account" : "DML:update",
+      relType: rel,
+      attributes: {
+        inLoop: true,
+        ...(rel === "EXECUTES_SOQL" ? { query: "[SELECT Id FROM Account]" } : { target: "acc" }),
+      },
+    });
+    return m;
+  };
+
+  it("empty when a method has SOQL but NOT in a loop", async () => {
+    const m = "ApexMethod:Clean.run(0)";
+    fix.addNode({ qualifiedName: m, label: "ApexMethod" });
+    fix.addEdge({
+      srcQualifiedName: m,
+      dstQualifiedName: "CustomObject:Account",
+      relType: "EXECUTES_SOQL",
+      attributes: { query: "[SELECT Id FROM Account]" }, // no inLoop
+    });
     const r = await callTool("governor_risk_check", { org: fix.orgId });
     expect((r.data as { risks: unknown[] }).risks.length).toBe(0);
   });
 
-  it("flags soql_in_loop attribute", async () => {
-    fix.addNode({
-      qualifiedName: "ApexClass:Risky",
-      label: "ApexClass",
-      attributes: { hasSoqlInLoop: true },
-    });
+  it("flags soql_in_loop from an inLoop EXECUTES_SOQL edge", async () => {
+    const m = addLoopMethod("Risky", "EXECUTES_SOQL");
     const r = await callTool("governor_risk_check", { org: fix.orgId });
-    const risks = (r.data as { risks: Array<{ qualifiedName: string }> }).risks;
-    expect(risks.some((x) => x.qualifiedName === "ApexClass:Risky")).toBe(true);
+    const risks = (r.data as { risks: Array<{ qualifiedName: string; risk: string }> }).risks;
+    expect(risks.some((x) => x.qualifiedName === m && x.risk === "soql_in_loop")).toBe(true);
   });
 
   it("returns no-risks summary for empty graph", async () => {
@@ -36,28 +57,16 @@ describe("governor_risk_check", () => {
     expect((r.data as { risks: unknown[] }).risks).toEqual([]);
   });
 
-  it("flags dml_in_loop attribute", async () => {
-    fix.addNode({
-      qualifiedName: "ApexClass:DmlLoop",
-      label: "ApexClass",
-      attributes: { hasDmlInLoop: true },
-    });
+  it("flags dml_in_loop from an inLoop EXECUTES_DML edge", async () => {
+    const m = addLoopMethod("DmlLoop", "EXECUTES_DML");
     const r = await callTool("governor_risk_check", { org: fix.orgId });
-    const risks = (r.data as { risks: Array<{ qualifiedName: string }> }).risks;
-    expect(risks.some((x) => x.qualifiedName === "ApexClass:DmlLoop")).toBe(true);
+    const risks = (r.data as { risks: Array<{ qualifiedName: string; risk: string }> }).risks;
+    expect(risks.some((x) => x.qualifiedName === m && x.risk === "dml_in_loop")).toBe(true);
   });
 
-  it("flags multiple classes independently", async () => {
-    fix.addNode({
-      qualifiedName: "ApexClass:R1",
-      label: "ApexClass",
-      attributes: { hasSoqlInLoop: true },
-    });
-    fix.addNode({
-      qualifiedName: "ApexClass:R2",
-      label: "ApexClass",
-      attributes: { hasDmlInLoop: true },
-    });
+  it("flags multiple methods independently", async () => {
+    addLoopMethod("R1", "EXECUTES_SOQL");
+    addLoopMethod("R2", "EXECUTES_DML");
     const r = await callTool("governor_risk_check", { org: fix.orgId });
     const risks = (r.data as { risks: Array<{ qualifiedName: string }> }).risks;
     expect(risks.length).toBeGreaterThanOrEqual(2);
