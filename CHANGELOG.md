@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.5.0 — case-insensitive qnames + hybrid search
+
+Two features that subsume the unreleased 1.4.1 line (the audit hardening below
+ships as part of 1.5.0). Packages bumped: core/server/cli/`sfgraph` → 1.5.0,
+skills → 1.2.1. Two schema migrations run automatically on next open (existing
+graphs are upgraded in place; `--rebuild` also works).
+
+### Case-insensitive qnames (migration 9)
+
+Salesforce API names are case-insensitive (`Account` == `account`), but qnames
+were stored/looked-up case-sensitively, so a SOQL `from account` produced a
+`CustomObject:account` edge that never matched the `CustomObject:Account` node —
+dangling edges, duplicate rows, missed joins, case-sensitive lookups. Every
+qname-keyed column now uses `COLLATE NOCASE`, so `=`, PK uniqueness, and JOINs
+fold case while the original display string is preserved (no data rewrite).
+Migration 9 upgrades existing tables (rewriting each table's own CREATE SQL,
+collapsing case-duplicate rows); `find_nodes`/`explain_code`/`analyze_field` now
+resolve regardless of the case queried. See `docs/design/case-sensitivity.md`.
+
+### Hybrid search: FTS5 keyword leg + relevance floor + identifier word-split (migration 10)
+
+`find_similar` now fuses two legs via Reciprocal Rank Fusion:
+
+- **Vector leg** (MiniLM cosine KNN) with a new `min_similarity` floor (default
+  0.3) so it returns the *relevant* matches up to k, not always k including
+  irrelevant tail — and reports how many weaker ones were hidden.
+- **Keyword leg**: a new FTS5 index (`_sfgraph_node_fts`) over each node's
+  embed-text, queried with bm25. Gives exact-name recall the ANN leg misses, and
+  answers even when the embedder/vector index is unavailable.
+- **Identifier word-split**: `AccountController` → "account controller",
+  `Customer_Tier__c` → "customer tier", folded into both the embedding input and
+  the FTS body so word queries match camelCase/snake_case identifiers.
+- **Label-filtered search** no longer starves (over-fetch then slice to k).
+
+See `docs/design/hybrid-search.md`.
+
 ## 1.4.1 — post-1.4.0 audit hardening (two re-audit waves)
 
 Driven by two independent re-audits of the 1.4.0 fix wave. The first found four
