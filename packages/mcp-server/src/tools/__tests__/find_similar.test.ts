@@ -139,9 +139,10 @@ describe("find_similar", () => {
       "ApexClass:NearB",
       "ApexClass:FarC",
     ]);
-    // similarity = 1 - distance/2
-    expect(data.hits[0]?.similarity).toBeCloseTo(0.95, 2);
-    expect(data.hits[2]?.similarity).toBeCloseTo(0.55, 2);
+    // L2 distance → cosine similarity for normalized vectors: 1 - d²/2.
+    // (Tables use default L2; embedder normalizes, so this is the true cosine.)
+    expect(data.hits[0]?.similarity).toBeCloseTo(1 - (0.1 * 0.1) / 2, 4); // d=0.1 → 0.995
+    expect(data.hits[2]?.similarity).toBeCloseTo(1 - (0.9 * 0.9) / 2, 4); // d=0.9 → 0.595
     expect(res.markdown).toContain("Top 3 nearest neighbours");
   });
 

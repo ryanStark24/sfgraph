@@ -15,30 +15,30 @@ tools_used:
 
 # sf-what-broke
 
-Use when the user is triaging a regression and wants to know which metadata changed between two points in time and which of those changes plausibly explains a reported failure.
+Use when the user is triaging a regression and wants to know which metadata changed since a recent deploy/sync, and which of those changes have **untested dependents** (the likely break surface).
+
+**What the tool actually does (and doesn't):** `what_broke(org, since?)` compares the current graph against the latest pre-sync snapshot (or the `since` you pass), finds the changed nodes, and buckets their dependents as **at-risk** (no test coverage) vs **covered**. It does NOT take a failing-test/stack "failure signal", does NOT rank by reachability to a specific failure, and does NOT emit a path-to-failure diagram. If the user has a concrete failure (a specific exception or failing test), route that to **`sf-debug-root-cause`** (symptom → graph cause) or **`sf-debug-log-analysis`** — then come back here for the "what changed in the window" picture.
 
 ## Playbook
 
-1. Establish the two anchors: the "good" snapshot (pre-deploy, last green build, or named checkpoint) and the "bad" anchor (now, post-deploy, or a specific snapshot id). Ask if neither is obvious.
-2. Call `point_in_time_diff` between the two anchors. Note added / removed / modified nodes and edge churn per layer.
-3. Call `what_broke` with the same window plus the user's failure signal (failing test name, error stack, broken UI route). The tool ranks suspect changes by reachability to the failure signal.
-4. Triage in descending suspicion order. For each suspect, summarise the change (what attribute moved) and the dependency path to the failure surface.
-5. Render the Mermaid path-to-failure diagram returned by `what_broke`.
-6. Recommend the smallest revert or follow-up investigation (e.g. "inspect `AccountTrigger.handleInsert` — its SOQL selector lost a filter between snapshot X and Y").
+1. **`staleness_check`** first (see below).
+2. Call **`what_broke`** with the org (and `since` if the user has a specific baseline; otherwise it uses the latest pre-sync snapshot). If it reports no baseline snapshot, tell the user and fall back to `point_in_time_diff` / `sf-snapshot-compare` with an explicit anchor.
+3. Read the result: the changed nodes, and their dependents split into **at-risk** (no tests — highest priority) and **covered**.
+4. Triage at-risk first: for each, summarise what changed and what depends on it. To see the full dependency chain to a UI/test surface, hand the node to `sf-cross-layer-trace` or `trace_upstream`.
+5. For a deeper field-level diff between two points, call **`point_in_time_diff`** (or `sf-snapshot-compare`) — that's where the detailed add/remove/modify per layer lives.
+6. Recommend the smallest next step (revert a specific change, or add a test to an at-risk dependent before re-deploying).
 
 ## Visualization
 
-Render a **`flowchart LR`** path-to-failure diagram. Each suspect change is a node on the left; intermediate dependency hops are middle nodes; the failure surface (test, route, error) is the rightmost node. Highlight the top-suspect path with a thicker edge.
+`what_broke` returns tables, not a diagram. If a visual helps, build a simple **`flowchart LR`** yourself from the at-risk set: changed node → its untested dependents. Don't claim the tool emitted it.
 
 ```
 flowchart LR
-  S1[ApexClass:AccountTrigger]:::suspect --> H1[Service:AccountSvc] --> F1[Test:AccountTriggerTest]:::fail
-  S2[Flow:AccountAfterUpdate] --> H1
-  classDef suspect fill:#fee,stroke:#c00
-  classDef fail fill:#fcc,stroke:#900,stroke-width:2px
+  C1[ApexClass:AccountTrigger]:::changed --> D1[ApexClass:AccountSvc]:::atrisk
+  C1 --> D2[Flow:AccountAfterUpdate]:::atrisk
+  classDef changed fill:#fee,stroke:#c00
+  classDef atrisk fill:#fcc,stroke:#900,stroke-width:2px
 ```
-
-If the suspect set is large (>15 nodes) collapse non-top suspects into a single "other changes" node — readability beats completeness.
 
 ## Staleness check
 
@@ -50,15 +50,15 @@ Then continue with the playbook.
 
 ## Response Shape
 
-- **Window** — from `<snapshot/anchor>` to `<snapshot/anchor>`.
-- **Top suspects** — ordered list with confidence, change summary, and the edge path linking them to the failure.
-- **Other changes in window** — collapsed bullet list, not the focus.
-- **Mermaid path-to-failure** — embedded from tool output.
-- **Next step** — single concrete recommendation.
+- **Window** — current vs the baseline snapshot `what_broke` used (or the `since` anchor).
+- **At-risk changes** — changed nodes whose dependents have no test coverage, first.
+- **Covered changes** — changed nodes whose dependents are tested, briefly.
+- **Next step** — single concrete recommendation (revert, or add coverage to an at-risk dependent).
 
 ## Don't
 
-- Do not propose a code fix without first inspecting the suspect change in detail via `sf-cross-layer-trace`.
+- Do not tell the user you passed a failing test / stack to `what_broke` — it has no such parameter. Route concrete failures to `sf-debug-root-cause`.
+- Do not claim `what_broke` returned a Mermaid path-to-failure — it returns tables.
+- Do not propose a code fix without first inspecting the suspect change via `sf-cross-layer-trace`.
 - Do not run write operations against the org. This skill only reads the local graph + snapshots.
-- Do not bury the lead — top suspect goes first, not last.
-- Do not invent snapshots that don't exist; if the "good" anchor is unavailable, say so.
+- Do not invent snapshots that don't exist; if no baseline is available, say so and use an explicit anchor.

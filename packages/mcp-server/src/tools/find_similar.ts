@@ -123,9 +123,14 @@ defineTool({
       };
     }
 
-    // Cosine distance from sqlite-vec is in [0, 2]; lower = more similar.
-    // Convert to a 0–1 similarity score for the agent's UX (higher = more
-    // similar) — but keep the raw distance in `data` for programmatic use.
+    // The vec0 tables use the DEFAULT L2 (Euclidean) distance — declared
+    // `float[384]` with no distance_metric. The embedder normalizes every
+    // vector (pipeline `normalize: true`), so for unit vectors
+    // |a-b|² = 2(1 - cos) ⇒ cosine similarity = 1 - d²/2. (The previous
+    // `1 - d/2` applied a cosine-distance formula to an L2 distance, reporting
+    // systematically wrong scores; ranking was unaffected since L2 and cosine
+    // are monotonic on the unit sphere.) Raw L2 distance stays in `data`.
+    const l2ToCosine = (d: number): number => Math.max(0, Math.min(1, 1 - (d * d) / 2));
     const md: string[] = [
       `**Top ${hits.length} nearest neighbour${hits.length === 1 ? "" : "s"} to ${focalLabel}${
         input.label ? ` (label: \`${input.label}\`)` : ""
@@ -135,7 +140,7 @@ defineTool({
       "| - | ----- | ----- | ---------- | -------- |",
     ];
     hits.forEach((h, i) => {
-      const sim = (1 - h.distance / 2).toFixed(3);
+      const sim = l2ToCosine(h.distance).toFixed(3);
       md.push(`| ${i + 1} | \`${h.qname}\` | \`${h.label}\` | ${sim} | ${h.distance.toFixed(4)} |`);
     });
     md.push("", "_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_");
@@ -152,7 +157,7 @@ defineTool({
           qname: h.qname,
           label: h.label,
           distance: h.distance,
-          similarity: 1 - h.distance / 2,
+          similarity: l2ToCosine(h.distance),
         })),
       },
     };
