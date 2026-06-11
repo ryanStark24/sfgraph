@@ -200,10 +200,13 @@ export class SqliteGraphStore implements GraphStore {
     const cached = this.nodeLabelCache.get(label);
     if (cached) return cached;
     const tbl = nodeTableName(label);
+    // qualified_name is COLLATE NOCASE: Salesforce API names are case-insensitive
+    // (Account == account), so the PK dedups and all `= ?` lookups fold case while
+    // the original display string is preserved. See migration 9.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS ${tbl} (
         org_id TEXT NOT NULL,
-        qualified_name TEXT NOT NULL,
+        qualified_name TEXT NOT NULL COLLATE NOCASE,
         attributes TEXT NOT NULL,
         source_hash TEXT NOT NULL,
         first_seen_at INTEGER NOT NULL,
@@ -226,11 +229,14 @@ export class SqliteGraphStore implements GraphStore {
     const cached = this.edgeRelCache.get(relType);
     if (cached) return cached;
     const tbl = edgeTableName(relType);
+    // src/dst qnames COLLATE NOCASE so a reference's case (e.g. SOQL `from
+    // account`) matches the definition node's qname and edges dedup/join
+    // case-insensitively. See migration 9.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS ${tbl} (
         org_id TEXT NOT NULL,
-        src_qname TEXT NOT NULL,
-        dst_qname TEXT NOT NULL,
+        src_qname TEXT NOT NULL COLLATE NOCASE,
+        dst_qname TEXT NOT NULL COLLATE NOCASE,
         attributes TEXT NOT NULL,
         first_seen_at INTEGER NOT NULL,
         last_seen_at INTEGER NOT NULL,

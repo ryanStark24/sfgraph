@@ -244,7 +244,87 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    description:
+      "Case-insensitive qnames: rebuild every qname-keyed table with COLLATE NOCASE on its qname columns. Salesforce API names are case-insensitive (Account == account), but qnames were stored/looked-up case-sensitively, so a SOQL `from account` produced a CustomObject:account edge that never matched the CustomObject:Account node (dangling edges, duplicate rows, missed joins). NOCASE makes =, PK uniqueness, and JOINs fold case while preserving the original display string. Stored values are unchanged → zero golden churn.",
+    up(db) {
+      addNocaseCollation(db);
+    },
+  },
 ];
+
+/**
+ * Rebuild a table so the named columns use `COLLATE NOCASE`, by rewriting the
+ * table's OWN `CREATE` SQL (read from sqlite_master) rather than hardcoding each
+ * schema — robust against schema drift. Preserves rows (case-duplicate PK
+ * collisions collapse via INSERT OR IGNORE — first-seen row wins) and secondary
+ * indexes. No-op if the table is absent or already NOCASE on those columns.
+ */
+export function rebuildWithNocase(
+  db: BetterSqlite3Database,
+  table: string,
+  qnameCols: string[],
+): void {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table) as { sql: string } | undefined;
+  if (!row?.sql) return;
+  let createSql = row.sql;
+  let changed = false;
+  for (const col of qnameCols) {
+    // Match `<col> TEXT …` up to the next comma/newline; add COLLATE NOCASE if absent.
+    const re = new RegExp(`(\\b${col}\\b\\s+TEXT\\b[^,\\n]*)`, "i");
+    createSql = createSql.replace(re, (def) => {
+      if (/COLLATE\s+NOCASE/i.test(def)) return def;
+      changed = true;
+      return `${def} COLLATE NOCASE`;
+    });
+  }
+  if (!changed) return; // already NOCASE
+  const tmp = `${table}__nocase_tmp`;
+  // The table name appears right after CREATE TABLE [IF NOT EXISTS]; rename only that.
+  const tmpCreate = createSql.replace(
+    /CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?("?)([^\s("]+)\2/i,
+    (_m, ifne, q, _name) => `CREATE TABLE ${ifne ?? ""}${q}${tmp}${q}`,
+  );
+  const indexes = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL",
+    )
+    .all(table) as Array<{ sql: string }>;
+  db.exec(tmpCreate);
+  db.exec(`INSERT OR IGNORE INTO ${tmp} SELECT * FROM ${table};`);
+  db.exec(`DROP TABLE ${table};`);
+  db.exec(`ALTER TABLE ${tmp} RENAME TO ${table};`);
+  // Secondary indexes were dropped with the old table; recreate them (their SQL
+  // names the original table, which now exists again under the same name).
+  for (const idx of indexes) db.exec(idx.sql);
+}
+
+/** Apply NOCASE to every table whose primary/foreign key is a qname. */
+function addNocaseCollation(db: BetterSqlite3Database): void {
+  // Dynamic per-label node tables + per-rel edge tables (from the registries).
+  const nodeTables = db.prepare("SELECT table_name FROM _sfgraph_node_labels").all() as Array<{
+    table_name: string;
+  }>;
+  for (const { table_name } of nodeTables) rebuildWithNocase(db, table_name, ["qualified_name"]);
+  const edgeTables = db.prepare("SELECT table_name FROM _sfgraph_edge_types").all() as Array<{
+    table_name: string;
+  }>;
+  for (const { table_name } of edgeTables)
+    rebuildWithNocase(db, table_name, ["src_qname", "dst_qname"]);
+  // Static qname-keyed tables (lookups + derived data). Snapshot tables are left
+  // case-sensitive on purpose — they are point-in-time history.
+  rebuildWithNocase(db, "_sfgraph_node_index", ["qualified_name"]);
+  rebuildWithNocase(db, "_sfgraph_snippets", ["qualified_name"]);
+  rebuildWithNocase(db, "_sfgraph_governor_risks", ["qualified_name"]);
+  rebuildWithNocase(db, "_sfgraph_findings", ["qualified_name"]);
+  rebuildWithNocase(db, "_sfgraph_dead_code_scores", ["qualified_name"]);
+  rebuildWithNocase(db, "_sfgraph_test_coverage", ["qualified_name"]);
+  rebuildWithNocase(db, "_sfgraph_node_vector_meta", ["qualified_name"]);
+  rebuildWithNocase(db, "_sfgraph_service_ids", ["qualified_name"]);
+}
 
 export interface MigrationRunnerOpts {
   backupDir: string;
