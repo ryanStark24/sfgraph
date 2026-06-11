@@ -165,4 +165,68 @@ describe("find_similar", () => {
       /Provide exactly one|Invalid input/,
     );
   });
+
+  it("drops matches below the similarity floor and reports how many were hidden", async () => {
+    const focal = new Float32Array(384);
+    focal[0] = 1;
+    await makeCtx(
+      makeStubVectorStore({
+        vectors: new Map([[asQualifiedName("ApexClass:Focal"), focal]]),
+        results: [
+          { qname: "ApexClass:Focal", label: "ApexClass", distance: 0 },
+          { qname: "ApexClass:Near", label: "ApexClass", distance: 0.2 }, // cos ≈ 0.98
+          { qname: "ApexClass:Far", label: "ApexClass", distance: 1.5 }, // cos clamps to 0 < 0.3
+        ],
+      }),
+    );
+    const res = await callTool("find_similar", {
+      org: "00DFINDSIM00000XYZ",
+      qname: "ApexClass:Focal",
+    });
+    const data = res.data as { hits: Array<{ qname: string }>; cutByFloor: number };
+    expect(data.hits.map((h) => h.qname)).toEqual(["ApexClass:Near"]);
+    expect(data.cutByFloor).toBe(1);
+    expect(res.markdown).toMatch(/hidden below the .* similarity floor/);
+  });
+
+  it("min_similarity:0 disables the floor and returns the far match too", async () => {
+    const focal = new Float32Array(384);
+    focal[0] = 1;
+    await makeCtx(
+      makeStubVectorStore({
+        vectors: new Map([[asQualifiedName("ApexClass:Focal"), focal]]),
+        results: [
+          { qname: "ApexClass:Focal", label: "ApexClass", distance: 0 },
+          { qname: "ApexClass:Far", label: "ApexClass", distance: 1.5 },
+        ],
+      }),
+    );
+    const res = await callTool("find_similar", {
+      org: "00DFINDSIM00000XYZ",
+      qname: "ApexClass:Focal",
+      min_similarity: 0,
+    });
+    expect((res.data as { hits: Array<{ qname: string }> }).hits.map((h) => h.qname)).toEqual([
+      "ApexClass:Far",
+    ]);
+  });
+
+  it("returns reason=below_similarity_floor when every match is below the floor", async () => {
+    const focal = new Float32Array(384);
+    focal[0] = 1;
+    await makeCtx(
+      makeStubVectorStore({
+        vectors: new Map([[asQualifiedName("ApexClass:Focal"), focal]]),
+        results: [
+          { qname: "ApexClass:Focal", label: "ApexClass", distance: 0 },
+          { qname: "ApexClass:Far", label: "ApexClass", distance: 1.5 },
+        ],
+      }),
+    );
+    const res = await callTool("find_similar", {
+      org: "00DFINDSIM00000XYZ",
+      qname: "ApexClass:Focal",
+    });
+    expect((res.data as { reason: string }).reason).toBe("below_similarity_floor");
+  });
 });

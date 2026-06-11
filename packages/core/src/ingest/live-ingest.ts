@@ -11,6 +11,7 @@ import { auditDanglingEdges } from "../analyze/audit-graph.js";
 import { populateAnalysisTables } from "../analyze/populate.js";
 import { REL_TYPES } from "../domain/rel-types.js";
 import { EmbeddingQueue, type VectorSink } from "../embedding/index.js";
+import { tokenizeIdentifier } from "../embedding/tokenize.js";
 import type { MemberRef, RawMember } from "../extractors/interfaces/metadata-source.js";
 import { type ResolveOrgDeps, type ResolvedOrg, resolveOrg } from "../extractors/live-org/auth.js";
 import { type IngestSkipReport, bulkRetrieve } from "../extractors/live-org/bulk-retrieve.js";
@@ -301,6 +302,12 @@ export function buildEmbedText(
 ): string {
   const a = attributes ?? {};
   const parts = [`${label}: ${qname}`];
+  // Word-split the identifier so semantic search matches on word boundaries
+  // (`account controller` → AccountController, `customer tier` → Customer_Tier__c).
+  // Only the name part after the label prefix; skip if it adds nothing.
+  const namePart = qname.includes(":") ? qname.slice(qname.indexOf(":") + 1) : qname;
+  const words = tokenizeIdentifier(namePart);
+  if (words && words !== namePart.toLowerCase()) parts.push(words);
   if (typeof a.description === "string" && a.description) parts.push(a.description);
 
   // Custom Metadata record field values: [{field,value}] | {field:value} | object.

@@ -47,8 +47,13 @@ describe("buildEmbedText — config values fold into the embedding", () => {
     expect(text).toContain("Page_URL__c=/lightning/checklist");
   });
 
-  it("no config attrs → just the baseline (no crash on missing fields)", () => {
-    expect(buildEmbedText("Flow", "Flow:MyFlow", undefined)).toBe("Flow: Flow:MyFlow");
+  it("no config attrs → baseline + word-split identifier (no crash on missing fields)", () => {
+    // The identifier is word-split for search: MyFlow -> "my flow".
+    expect(buildEmbedText("Flow", "Flow:MyFlow", undefined)).toBe("Flow: Flow:MyFlow\nmy flow");
+  });
+
+  it("does not append word-split when it adds nothing (single lowercase token)", () => {
+    expect(buildEmbedText("Flow", "Flow:orders", undefined)).toBe("Flow: Flow:orders");
   });
 
   it("folds a trigger's object + events so it's findable by what it acts on", () => {

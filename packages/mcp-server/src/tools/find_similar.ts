@@ -20,6 +20,12 @@ const inputSchema = z
     /** Restrict matches to a single node label (e.g. 'ApexClass', 'LWC',
      *  'Flow'). When omitted, all labels are searched. */
     label: z.string().min(1).optional(),
+    /** Minimum cosine similarity (0–1) a match must clear to be returned.
+     *  KNN always returns *k* nearest by distance, including near-irrelevant
+     *  tail matches; this floor turns "k nearest" into "the relevant ones, up
+     *  to k". Default 0.3 (conservative for MiniLM-L6 on this corpus). Lower it
+     *  to widen recall, raise it to tighten precision. */
+    min_similarity: z.number().min(0).max(1).default(0.3),
   })
   .refine((v) => Boolean(v.qname) !== Boolean(v.text), {
     message: "Provide exactly one of `qname` or `text`",
@@ -99,38 +105,44 @@ defineTool({
       }
     }
 
-    // For qname mode, fetch k+1 because the focal node will be in its
-    // own neighbourhood (distance 0); strip it below. For text mode the
-    // focal isn't a graph node, so k results is exact.
-    const fetchK = input.qname ? input.k + 1 : input.k;
-    const raw = ctx.vectorStore.searchNodes(
-      ctx.orgId,
-      focal,
-      fetchK,
-      input.label ? { label: input.label } : undefined,
-    );
-    const hits = input.qname
-      ? raw.filter((h) => h.qname !== asQualifiedName(input.qname ?? "")).slice(0, input.k)
-      : raw.slice(0, input.k);
-
-    if (hits.length === 0) {
-      return {
-        summary: `no neighbours found for ${focalLabel}`,
-        markdown: `> Vector index has no nearby neighbours for ${focalLabel}${
-          input.label ? ` within label \`${input.label}\`` : ""
-        }. The org may be sparsely populated for this label, or the focal may genuinely be isolated.`,
-        data: { hits: [], reason: "no_neighbours" },
-      };
-    }
-
     // The vec0 tables use the DEFAULT L2 (Euclidean) distance — declared
     // `float[384]` with no distance_metric. The embedder normalizes every
     // vector (pipeline `normalize: true`), so for unit vectors
-    // |a-b|² = 2(1 - cos) ⇒ cosine similarity = 1 - d²/2. (The previous
-    // `1 - d/2` applied a cosine-distance formula to an L2 distance, reporting
-    // systematically wrong scores; ranking was unaffected since L2 and cosine
-    // are monotonic on the unit sphere.) Raw L2 distance stays in `data`.
+    // |a-b|² = 2(1 - cos) ⇒ cosine similarity = 1 - d²/2. Raw L2 stays in `data`.
     const l2ToCosine = (d: number): number => Math.max(0, Math.min(1, 1 - (d * d) / 2));
+
+    // Over-fetch so the relevance floor + focal-strip have headroom (KNN returns
+    // by distance; some of the k nearest may fall below the floor).
+    const candidateK = Math.max(input.k * 4, input.k + 1);
+    const raw = ctx.vectorStore.searchNodes(
+      ctx.orgId,
+      focal,
+      candidateK,
+      input.label ? { label: input.label } : undefined,
+    );
+    const candidates = raw
+      .filter((h) => !input.qname || h.qname !== asQualifiedName(input.qname))
+      .map((h) => ({ ...h, similarity: l2ToCosine(h.distance) }));
+    const aboveFloor = candidates.filter((h) => h.similarity >= input.min_similarity);
+    const hits = aboveFloor.slice(0, input.k);
+    const cutByFloor = candidates.length - aboveFloor.length;
+
+    if (hits.length === 0) {
+      // Distinguish "nothing nearby" from "matches existed but all below the floor".
+      const allBelow = candidates.length > 0;
+      return {
+        summary: allBelow
+          ? `no neighbours of ${focalLabel} above the ${input.min_similarity} similarity floor`
+          : `no neighbours found for ${focalLabel}`,
+        markdown: allBelow
+          ? `> ${candidates.length} match(es) for ${focalLabel} were all below the relevance floor (\`min_similarity\`=${input.min_similarity}). Lower \`min_similarity\` to see weaker matches; the closest was ${Math.max(...candidates.map((c) => c.similarity)).toFixed(3)}.`
+          : `> Vector index has no nearby neighbours for ${focalLabel}${
+              input.label ? ` within label \`${input.label}\`` : ""
+            }. The org may be sparsely populated for this label, or the focal may genuinely be isolated.`,
+        data: { hits: [], reason: allBelow ? "below_similarity_floor" : "no_neighbours" },
+      };
+    }
+
     const md: string[] = [
       `**Top ${hits.length} nearest neighbour${hits.length === 1 ? "" : "s"} to ${focalLabel}${
         input.label ? ` (label: \`${input.label}\`)` : ""
@@ -140,9 +152,16 @@ defineTool({
       "| - | ----- | ----- | ---------- | -------- |",
     ];
     hits.forEach((h, i) => {
-      const sim = l2ToCosine(h.distance).toFixed(3);
-      md.push(`| ${i + 1} | \`${h.qname}\` | \`${h.label}\` | ${sim} | ${h.distance.toFixed(4)} |`);
+      md.push(
+        `| ${i + 1} | \`${h.qname}\` | \`${h.label}\` | ${h.similarity.toFixed(3)} | ${h.distance.toFixed(4)} |`,
+      );
     });
+    if (cutByFloor > 0) {
+      md.push(
+        "",
+        `_${cutByFloor} weaker match(es) hidden below the ${input.min_similarity} similarity floor — lower \`min_similarity\` to include them._`,
+      );
+    }
     md.push("", "_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_");
 
     return {
@@ -153,11 +172,13 @@ defineTool({
         focalText: input.text ?? null,
         label: input.label ?? null,
         k: input.k,
+        minSimilarity: input.min_similarity,
+        cutByFloor,
         hits: hits.map((h) => ({
           qname: h.qname,
           label: h.label,
           distance: h.distance,
-          similarity: l2ToCosine(h.distance),
+          similarity: h.similarity,
         })),
       },
     };
