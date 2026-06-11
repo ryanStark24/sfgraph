@@ -45,8 +45,12 @@ never by pattern-matching the error message to a generic fix.
    - "Field X isn't updating" → `analyze_field` on `<Object>.<Field>`.
    If you can't anchor it, ask the user for the class/object name — don't guess.
 
-2. **Read the failing unit.** `explain_code(qname=<ApexMethod>)` — get the source + branch
-   annotation. Confirm the line in the trace maps to a real branch (SOQL, DML, deref).
+2. **Read the failing unit.** `explain_code(qname=<ApexMethod>)` for Apex methods. The graph
+   stores source only for Apex methods — for a **trigger body, Flow logic, a whole class, or
+   managed/`(hidden)` code, fetch the real source** (the graph can't show it): read the local
+   sfdx file (`force-app/main/default/{classes,triggers,flows}/<Name>.{cls,trigger,flow-meta.xml}`)
+   or `sf project retrieve start -m "ApexTrigger:<Name>"`. See `sf-explain-code` for the full
+   fallback. Confirm the trace's line maps to a real branch (SOQL, DML, deref).
 
 3. **Look outward for the real cause — this is where graphs beat grep:**
    - `trace_downstream(qname)` — what it calls / reads / writes. A `System.NullPointer` or
