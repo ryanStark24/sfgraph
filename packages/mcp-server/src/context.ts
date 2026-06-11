@@ -227,6 +227,17 @@ async function defaultFactory(opts: { orgId?: string }): Promise<ToolContext> {
   }
 
   const dbPath = safeOrgDbPath(paths.data, resolvedOrgId);
+  // A syntactically-valid orgId that was never ingested has no DB file. Opening
+  // it would CREATE an empty SQLite, and every graph-backed tool would then
+  // return a confident empty answer ("no risks", "no dead code", "0 nodes")
+  // instead of "this org isn't ingested." Reject up-front. (The alias path above
+  // already rejects unknown aliases; this catches the valid-orgId case.)
+  if (!existsSync(dbPath)) {
+    throw new SfgraphError(
+      ErrorCode.E_INVALID_ORG_IDENTIFIER,
+      `org '${orgIdOrAlias}' (orgId ${resolvedOrgId}) has not been ingested — no graph exists at ${dbPath}. Run 'sfgraph ingest --org ${orgIdOrAlias}' first. (Tools read the local graph; they never create one.)`,
+    );
+  }
   const { SqliteGraphStore, SqliteSnapshotStore, SqliteVectorStore } = await import(
     "@ryanstark24/sfgraph-core"
   );

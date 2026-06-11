@@ -1,7 +1,14 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/** Create an (empty but valid) SQLite file at the path getToolContext expects
+ *  for an orgId, so the new "org not ingested" guard passes — these tests
+ *  exercise orgId-classification / alias-resolution, not real graph data. */
+function seedOrgDb(dir: string, orgId: string): void {
+  writeFileSync(path.join(dir, `${orgId}.sqlite`), "");
+}
 
 /**
  * Cover the default factory's alias-classification + unknown-alias rejection
@@ -90,6 +97,7 @@ describe("default factory: alias classification (P1 regex fix)", () => {
       "../context.js"
     );
     setToolContextFactory(null);
+    seedOrgDb(workDir, "00DXX0000001abcEAA"); // org is "ingested" → guard passes
     const ctx = await getToolContext({ orgId: "00DXX0000001abcEAA" });
     expect(String(ctx.orgId)).toBe("00DXX0000001abcEAA");
     await closeAllContexts();
@@ -105,8 +113,21 @@ describe("default factory: alias classification (P1 regex fix)", () => {
       "../context.js"
     );
     setToolContextFactory(null);
+    seedOrgDb(workDir, "00DZZ0000009xyzEAA"); // resolved org is "ingested" → guard passes
     const ctx = await getToolContext({ orgId: "newlyAuthed" });
     expect(String(ctx.orgId)).toBe("00DZZ0000009xyzEAA");
     await closeAllContexts();
+  });
+
+  it("rejects a valid-but-never-ingested orgId instead of creating an empty DB (audit guard)", async () => {
+    await stubPaths();
+    await stubCore();
+    const { getToolContext, setToolContextFactory } = await import("../context.js");
+    setToolContextFactory(null);
+    // Valid 18-char orgId, but no <orgId>.sqlite seeded → must reject, not
+    // silently create an empty DB that makes every tool return confident-empty.
+    await expect(getToolContext({ orgId: "00DXX0000001abcEAA" })).rejects.toThrow(
+      /has not been ingested/,
+    );
   });
 });
