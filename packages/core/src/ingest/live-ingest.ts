@@ -560,6 +560,11 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     let membersProcessed = 0;
     let parseErrors = 0;
     let deletions = 0;
+    // Incremental detects changed/added members but cannot fetch their content
+    // yet, so it skips them. If we then advanced the watermark past them, the
+    // next incremental would start AFTER those changes and never see them —
+    // silent permanent data loss. Track the count so we can HOLD the watermark.
+    let incrementalUnfetched = 0;
     // Set in the full-sync branch if the bulkRetrieve stream itself throws.
     // Detect-deletions reads it post-fan-out to bail out instead of mass-
     // wiping nodes that were never visited due to the abort.
@@ -722,8 +727,9 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           changedNotApplied += 1;
         }
       }
+      incrementalUnfetched = changedNotApplied;
       if (changedNotApplied > 0) {
-        const msg = `incremental: ${changedNotApplied} changed/added member(s) detected but NOT refreshed (content fetch not implemented for incremental). Run \`sfgraph ingest --org ${resolved.alias} --rebuild\` (or --mode full) to capture them.`;
+        const msg = `incremental: ${changedNotApplied} changed/added member(s) detected but NOT refreshed (content fetch not implemented for incremental). The sync watermark is being HELD so the next run re-detects them. Run \`sfgraph ingest --org ${resolved.alias} --rebuild\` (or --mode full) to capture them.`;
         logger.warn(msg);
         wedgeWarnings.push(`incremental:contentNotFetched:count=${changedNotApplied}`);
       }
@@ -1223,11 +1229,20 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     }
 
     const completedIso = new Date().toISOString();
+    // N4: when incremental skipped changed members it couldn't fetch, do NOT
+    // advance the watermark past them — hold it at the prior value so the next
+    // incremental re-detects (and keeps warning about) those changes instead of
+    // stepping over them forever. generation still increments / in-progress
+    // still clears (markSyncComplete does both regardless of the timestamp).
+    const holdWatermark = incrementalUnfetched > 0 && existing?.lastSyncedAt != null;
+    const watermarkIso = holdWatermark
+      ? new Date(existing!.lastSyncedAt as number).toISOString()
+      : completedIso;
     try {
       // W1.5-08: markSyncComplete subsumes the old touchSync — it updates
       // last_synced_at AND increments sync_generation AND clears the
       // in-progress flag, atomically in one transaction.
-      graph.markSyncComplete(resolved.orgId, completedIso);
+      graph.markSyncComplete(resolved.orgId, watermarkIso);
     } catch (e) {
       logger.warn("live-ingest: markSyncComplete failed", { err: (e as Error).message });
     }
