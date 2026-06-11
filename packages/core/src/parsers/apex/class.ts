@@ -24,8 +24,33 @@ interface MethodInfo {
   endIdx: number;
 }
 
+// Modifiers are optional (`*`, not `+`): a method with NO explicit access
+// modifier is implicitly private in Apex and is still a real method — the old
+// `+` silently dropped every unmodified helper/inner-class method. Allowing
+// zero modifiers means the regex can also touch control-flow that happens to
+// look like `<word> <word>(...) {` (notably `else if (x) {`), so findMethods
+// rejects any match whose return-type or name is a reserved keyword.
 const METHOD_RE =
-  /(?:@[\w()=,'"\s.]+\s+)*(?:(public|private|protected|global|virtual|override|abstract|static|webservice|with\s+sharing|without\s+sharing|inherited\s+sharing|testmethod|final)\s+)+([A-Za-z_][\w<>,.\s\[\]]*?)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*\{/gi;
+  /(?:@[\w()=,'"\s.]+\s+)*(?:(public|private|protected|global|virtual|override|abstract|static|webservice|with\s+sharing|without\s+sharing|inherited\s+sharing|testmethod|final)\s+)*([A-Za-z_][\w<>,.\s\[\]]*?)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*\{/gi;
+
+// Apex reserved words that can appear as `<kw> <kw>(...) {` but are NOT method
+// declarations. If the captured return-type or method-name is one of these, the
+// match is control flow / a statement, not a method.
+const NON_METHOD_KEYWORDS = new Set([
+  "if",
+  "else",
+  "for",
+  "while",
+  "do",
+  "switch",
+  "catch",
+  "try",
+  "finally",
+  "return",
+  "new",
+  "throw",
+  "when",
+]);
 
 function findMatchingBrace(src: string, openIdx: number): number {
   let depth = 0;
@@ -101,6 +126,17 @@ function findMethods(src: string): MethodInfo[] {
     const returnType = (m[2] ?? "").trim();
     const name = m[3] ?? "";
     const params = parseParams(m[4] ?? "");
+    // Reject control-flow that looks like a method header (e.g. `else if (x) {`
+    // → returnType="else", name="if"). Without an explicit modifier the regex
+    // would otherwise treat these as implicitly-private methods.
+    if (
+      NON_METHOD_KEYWORDS.has(returnType.toLowerCase()) ||
+      NON_METHOD_KEYWORDS.has(name.toLowerCase())
+    ) {
+      re.lastIndex = (m.index ?? 0) + 1;
+      m = re.exec(src);
+      continue;
+    }
     // Skip constructors (returnType empty or equals class name when first letter is uppercase)
     // We'll keep ctor handling outside.
     const openBraceIdx = (m.index ?? 0) + m[0].length - 1;
