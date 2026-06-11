@@ -322,6 +322,19 @@ export function buildEmbedText(
       }
     }
   }
+
+  // Structural attributes that make automation findable by WHAT it acts on:
+  // a trigger's object + DML events ("on Account before insert"), a Flow's
+  // process type ("AutoLaunchedFlow"/"Flow"). Only appended when present, so
+  // nodes without them embed exactly as before.
+  if (typeof a.object === "string" && a.object) {
+    const ev = Array.isArray(a.events)
+      ? (a.events as unknown[]).filter((x): x is string => typeof x === "string").join(" ")
+      : "";
+    parts.push(`on ${a.object}${ev ? ` ${ev}` : ""}`);
+  }
+  if (typeof a.processType === "string" && a.processType) parts.push(a.processType);
+
   return parts.join("\n");
 }
 

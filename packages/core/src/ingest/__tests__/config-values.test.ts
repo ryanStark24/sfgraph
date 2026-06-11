@@ -50,6 +50,19 @@ describe("buildEmbedText — config values fold into the embedding", () => {
   it("no config attrs → just the baseline (no crash on missing fields)", () => {
     expect(buildEmbedText("Flow", "Flow:MyFlow", undefined)).toBe("Flow: Flow:MyFlow");
   });
+
+  it("folds a trigger's object + events so it's findable by what it acts on", () => {
+    const text = buildEmbedText("ApexTrigger", "ApexTrigger:AccountTrigger", {
+      object: "Account",
+      events: ["before insert", "after update"],
+    });
+    expect(text).toContain("on Account before insert after update");
+  });
+
+  it("folds a Flow's process type", () => {
+    const text = buildEmbedText("Flow", "Flow:MyFlow", { processType: "AutoLaunchedFlow" });
+    expect(text).toContain("AutoLaunchedFlow");
+  });
 });
 
 describe("CustomMetadata rule captures record values", () => {
