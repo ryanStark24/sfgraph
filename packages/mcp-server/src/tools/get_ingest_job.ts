@@ -5,7 +5,8 @@ const inputSchema = z.object({ job_id: z.string().min(1) });
 
 defineTool({
   name: "get_ingest_job",
-  description: "Fetch state of an ingest job by id.",
+  description:
+    "Fetch state of an in-process ingest job by id. NOTE: the MCP server does not run ingest workers — `start_ingest_job` returns a shell command instead of enqueueing, so in normal use there are no jobs to fetch and this returns 'unknown job'. Jobs exist only when a host embeds the server and enqueues programmatically. To check whether an out-of-band `sfgraph ingest` landed, use staleness_check / freshness_report instead.",
   inputSchema,
   async execute(input) {
     const job = getJob(input.job_id);

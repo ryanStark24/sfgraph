@@ -85,7 +85,9 @@ defineTool({
           : "When it completes, MCP tools will see the new data on next invocation.",
       ].join("\n"),
       data: { executed: false, run_this_command: cmd },
-      follow_up_tools: ["get_ingest_job", "freshness_report"],
+      // NOT get_ingest_job: this tool enqueues nothing, so there is no job to
+      // poll. After the shell command finishes, verify the graph refreshed.
+      follow_up_tools: ["staleness_check", "freshness_report"],
     };
   },
 });
