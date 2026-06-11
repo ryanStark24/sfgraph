@@ -49,9 +49,9 @@ State a fact about this org or the Salesforce platform **only when evidence back
    - "Field X isn't updating" → `analyze_field` on `<Object>.<Field>`.
    If you can't anchor it, ask the user for the class/object name — don't guess.
 
-2. **Read the failing unit.** `explain_code(qname=<ApexMethod>)` for Apex methods. The graph
-   stores source only for Apex methods — for a **trigger body, Flow logic, a whole class, or
-   managed/`(hidden)` code, fetch the real source** (the graph can't show it): read the local
+2. **Read the failing unit.** `explain_code(qname=…)` reads stored source for Apex methods
+   (`ApexMethod:…`), trigger bodies (`ApexTrigger:…`), and Flows (`Flow:…`). For a **whole
+   class, LWC JS, or managed/`(hidden)` code the graph has no source** — fetch it: read the local
    sfdx file (`force-app/main/default/{classes,triggers,flows}/<Name>.{cls,trigger,flow-meta.xml}`)
    or `sf project retrieve start -m "ApexTrigger:<Name>"`. See `sf-explain-code` for the full
    fallback. Confirm the trace's line maps to a real branch (SOQL, DML, deref).

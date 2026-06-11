@@ -62,7 +62,7 @@ Then continue with the playbook.
 ## Don't
 
 - Do not tell the user you passed a failing test / stack to `what_broke` — it has no such parameter. Route concrete failures to `sf-debug-root-cause`.
-- Do not claim `what_broke` returned a Mermaid path-to-failure — it returns tables.
+- `what_broke` DOES emit a dependency-graph Mermaid alongside its tables — embed the tool's diagram directly; don't claim it returns tables only, and don't redraw it from scratch.
 - Do not propose a code fix without first inspecting the suspect change via `sf-cross-layer-trace`.
 - Do not run write operations against the org. This skill only reads the local graph + snapshots.
 - Do not invent snapshots that don't exist; if no baseline is available, say so and use an explicit anchor.

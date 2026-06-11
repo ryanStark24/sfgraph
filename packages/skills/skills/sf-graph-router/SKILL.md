@@ -61,9 +61,10 @@ The graph is **metadata structure**, not source code or record data. When an ana
 genuinely needs something the graph doesn't store, fetch it — don't guess and don't analyse
 a stub. Two cases, with very different guardrails:
 
-- **Source code & metadata definitions (fetch freely).** The graph stores source only for
-  Apex methods — no trigger bodies, no Flow logic, nothing for managed/`(hidden)` code, no
-  whole-class snippet. And some metadata isn't ingested. Get the real definition: read the
+- **Source code & metadata definitions (fetch freely).** The graph stores source for Apex
+  methods (`ApexMethod:…`), trigger bodies (`ApexTrigger:…`), and Flow definitions
+  (`Flow:…`) — but NOT whole classes, LWC JS, or managed/`(hidden)` code, and some metadata
+  isn't ingested. Get the real definition when you need more: read the
   **local sfdx file** (`force-app/main/default/{classes,triggers,flows,objects}/…`) first, else
   retrieve from the org (`sf project retrieve start -m "ApexTrigger:<Name>"` / `Flow:<Name>` /
   `CustomObject:<Name>`, or Tooling `SELECT Body FROM ApexClass WHERE Name='…'`).

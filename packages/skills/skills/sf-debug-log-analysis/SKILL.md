@@ -76,7 +76,7 @@ The header line lists the API version + per-category log levels. Every subsequen
    - Governor → which limit, the count vs cap, and the `CODE_UNIT`/method where consumption spiked (repeated SOQL/DML lines under one unit).
    - Performance → the `CODE_UNIT`/method with the largest elapsed delta.
 4. **Ground it in the graph** (the part a log reader alone can't do):
-   - `find_nodes ApexClass:<Name>` / `ApexMethod:<Name>.*` to resolve the anchor to a qname; `explain_code` on the method to read the offending source. The graph stores source only for Apex methods — for a **trigger body, Flow, whole class, or managed code, fetch the real source** (local `force-app/main/default/{classes,triggers,flows}/...` or `sf project retrieve start -m "ApexTrigger:<Name>"`); don't analyse from an empty stub. See `sf-explain-code`.
+   - `find_nodes ApexClass:<Name>` / `ApexMethod:<Name>.*` to resolve the anchor to a qname; `explain_code` reads stored source for Apex methods, trigger bodies (`ApexTrigger:<Name>`), and Flows (`Flow:<Name>`). For a **whole class, LWC JS, or managed code the graph has no source** — fetch it (local `force-app/main/default/{classes,triggers,flows}/...` or `sf project retrieve start -m "ApexTrigger:<Name>"`); don't analyse from an empty stub. See `sf-explain-code`.
    - `trace_upstream` — who invokes this unit, and in what context (trigger vs batch vs LWC). Order-of-execution and "why was this even called" answers live here.
    - `trace_downstream` — what it calls/reads/writes; a NullPointer or limit usually originates in a callee.
    - Governor breach → `governor_risk_check` scoped to the class to pinpoint the SOQL/DML-in-loop **source line** the log proved is hot.

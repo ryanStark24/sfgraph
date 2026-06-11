@@ -47,13 +47,13 @@ not "the org is clean" — say so explicitly rather than reporting a false all-c
 1. Call `governor_risk_check` over the requested scope (single class, namespace, or full org). The tool returns risk records keyed on the **method** qname (`ApexMethod:Class.method(n)`) with `risk_type` (`soql_in_loop` / `dml_in_loop` / `no_bulk`) and evidence (the query text or DML target).
 2. Group findings by `risk_type`; within each group, sort by call-site fan-in (more callers = higher blast radius). Use `trace_upstream` on the owning class to get fan-in.
 3. For each finding, describe the canonical fix pattern (e.g. "extract the SOQL above the loop and key the result by `Id`") in one or two sentences — do not write the code. To actually design the bulkified fix, hand off to **`sf-architect-apex`** (or **`sf-architect-performance`** for LDV/query-plan work) with these call sites as grounding, so the rewrite respects the org's real selectors and trigger framework rather than a generic template.
-4. Render the Mermaid heat-map (class-by-rule) from the tool response.
+4. Render a Mermaid heat-map (class-by-rule) yourself from the tool's table findings — `governor_risk_check` returns a table + structured data, not a diagram. See **Visualization**.
 5. Produce a checklist the user can copy into a ticket: `- [ ] ClassName.methodName:line — rule — recommended pattern`.
 6. Recommend `sf-impact-from-diff` after the user applies fixes, to verify nothing downstream regressed.
 
 ## Visualization
 
-Render a **`flowchart TD`** heat-map: rows are Apex classes (top N by fan-in), columns are rule ids. Cell colour encodes severity (high/medium/low). When the tool returns its own Mermaid heat-map, embed that and skip this template.
+Render a **`flowchart TD`** heat-map: rows are Apex classes (top N by fan-in), columns are rule ids. Cell colour encodes severity (high/medium/low). Build it yourself from the tool's findings — `governor_risk_check` returns a table, not a diagram.
 
 ```
 flowchart TD

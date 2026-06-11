@@ -17,7 +17,7 @@ const inputSchema = z.object({
 defineTool({
   name: "explain_code",
   description:
-    "USE THIS for any 'explain this method' / 'walk me through X' / 'what does Apex method Y do' question about a stored Salesforce code snippet. Requires a METHOD-level qname (e.g. `ApexMethod:BillingSvc.run(2)`) — snippets are stored per Apex method, NOT for classes/triggers/fields. If you only have a class name, first call find_nodes(`ApexMethod:ClassName.*`) to list its methods. Returns the source text + cached LLM explanation (if any). Pass annotation to cache the LLM's explanation back to the graph for future use.",
+    "USE THIS for any 'explain this method' / 'walk me through X' / 'what does Apex method Y do' question about stored Salesforce source. Works on Apex methods (e.g. `ApexMethod:BillingSvc.run(2)`), trigger bodies (`ApexTrigger:AccountTrigger`), and Flow definitions (`Flow:My_Flow`). NOT stored for whole classes, fields, LWC JS, or managed/(hidden) code — for those fetch the real source from the local sfdx tree or the org. If you only have a class name, call find_nodes(`ApexMethod:ClassName.*`) to list its methods. Returns the source text + cached LLM explanation (if any). Pass annotation to cache the LLM's explanation back to the graph for future use.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

@@ -30,9 +30,9 @@ State a fact about this org or the Salesforce platform **only when evidence back
 5. Emit the `package.xml` inside a fenced code block. Also emit `destructiveChanges.xml` if the diff includes removals.
 6. If extra dependencies are needed beyond the raw diff, ask the user to extend the set manually — do not silently fabricate dependency edges the graph doesn't have.
 
-## Visualization
+## Visualization (optional — you build it)
 
-Render a **`flowchart LR`** dependency closure graph. The user's explicit change set is one subgraph; auto-pulled dependencies are another. Edge labels carry the dependency reason (`parent-of`, `layout-for`, `required-permission`).
+`deployment_manifest_gen` returns only the package.xml / destructiveChanges.xml (plus an `incomplete` block flagging dropped/truncated members) — it does NOT return a diagram or walk dependency edges. If a visual helps, render a **`flowchart LR`** closure graph YOURSELF from the manifest's member list: the user's explicit change set is one subgraph; any dependencies you add manually are another. Edge labels carry the dependency reason (`parent-of`, `layout-for`, `required-permission`).
 
 ```
 flowchart LR
