@@ -19,6 +19,10 @@ tools_used:
 
 Use when the user wants to inventory metadata that appears unreferenced. Output must be bucketed by confidence — deletion in Salesforce is reversible only via backup, so we communicate uncertainty.
 
+## Evidence rule — say it only if something backs it
+
+State a fact about this org or the Salesforce platform **only when evidence backs it**: a tool/graph result, source you actually read (local sfdx file or an org fetch), a live org query, or official Salesforce documentation. If you don't have that, say so plainly — "the graph doesn't show this", "unverified", "I'd need to check the org" — and either go get the evidence or stop. **Never fill the gap with a plausible-sounding guess**: an invented field/method/object name, an assumed dependency, or a governor number recalled from memory. Label each claim as **graph-confirmed** (a tool returned it), **inferred** (you reasoned it from graph facts — say which facts), or **general Salesforce knowledge**. For platform behaviour — governor limits, order of execution, sharing/FLS semantics, API rules — cite the official doc (developer.salesforce.com; fetch it if unsure) instead of asserting from memory. If the graph is stale or the org was never ingested, lead with that caveat — your grounding may be wrong.
+
 ## Playbook
 
 1. Call `dead_code_audit` for the org. The tool **summarizes by confidence (`high`/`medium`/`low`) and by metadata type**, then renders a capped list (`limit`, default 50). On a large org there can be thousands of candidates — do NOT try to retrieve them all inline; work from the summary counts and drill in with `confidence: "high"` (most-likely-dead first) or raise `limit`. For the complete machine-readable set, use `export_sarif`. Each row carries a score + reasons (`no_incoming_edges`, `stale_freshness`).

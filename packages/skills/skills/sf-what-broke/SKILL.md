@@ -19,6 +19,10 @@ Use when the user is triaging a regression and wants to know which metadata chan
 
 **What the tool actually does (and doesn't):** `what_broke(org, since?)` compares the current graph against the latest pre-sync snapshot (or the `since` you pass), finds the changed nodes, and buckets their dependents as **at-risk** (no test coverage) vs **covered**. It does NOT take a failing-test/stack "failure signal", does NOT rank by reachability to a specific failure, and does NOT emit a path-to-failure diagram. If the user has a concrete failure (a specific exception or failing test), route that to **`sf-debug-root-cause`** (symptom → graph cause) or **`sf-debug-log-analysis`** — then come back here for the "what changed in the window" picture.
 
+## Evidence rule — say it only if something backs it
+
+State a fact about this org or the Salesforce platform **only when evidence backs it**: a tool/graph result, source you actually read (local sfdx file or an org fetch), a live org query, or official Salesforce documentation. If you don't have that, say so plainly — "the graph doesn't show this", "unverified", "I'd need to check the org" — and either go get the evidence or stop. **Never fill the gap with a plausible-sounding guess**: an invented field/method/object name, an assumed dependency, or a governor number recalled from memory. Label each claim as **graph-confirmed** (a tool returned it), **inferred** (you reasoned it from graph facts — say which facts), or **general Salesforce knowledge**. For platform behaviour — governor limits, order of execution, sharing/FLS semantics, API rules — cite the official doc (developer.salesforce.com; fetch it if unsure) instead of asserting from memory. If the graph is stale or the org was never ingested, lead with that caveat — your grounding may be wrong.
+
 ## Playbook
 
 1. **`staleness_check`** first (see below).

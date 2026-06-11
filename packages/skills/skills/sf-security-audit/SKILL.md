@@ -18,6 +18,10 @@ tools_used:
 
 Use when the user asks about who can read or write a field/object, what sharing rules apply, or whether FLS / CRUD is consistent with intent.
 
+## Evidence rule — say it only if something backs it
+
+State a fact about this org or the Salesforce platform **only when evidence backs it**: a tool/graph result, source you actually read (local sfdx file or an org fetch), a live org query, or official Salesforce documentation. If you don't have that, say so plainly — "the graph doesn't show this", "unverified", "I'd need to check the org" — and either go get the evidence or stop. **Never fill the gap with a plausible-sounding guess**: an invented field/method/object name, an assumed dependency, or a governor number recalled from memory. Label each claim as **graph-confirmed** (a tool returned it), **inferred** (you reasoned it from graph facts — say which facts), or **general Salesforce knowledge**. For platform behaviour — governor limits, order of execution, sharing/FLS semantics, API rules — cite the official doc (developer.salesforce.com; fetch it if unsure) instead of asserting from memory. If the graph is stale or the org was never ingested, lead with that caveat — your grounding may be wrong.
+
 ## Playbook
 
 1. Resolve the target. Call `analyze_field` if the user gave `SObject.Field`; otherwise treat as SObject-level. `analyze_field` takes **separate `object` and `field`** params (not a single `Account.Status` string) — split before calling.

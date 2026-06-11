@@ -31,6 +31,10 @@ same object, a recent change upstream, an order-of-execution surprise, or automa
 developer forgot exists. The graph makes those visible. Debug by narrowing with evidence,
 never by pattern-matching the error message to a generic fix.
 
+## Evidence rule — say it only if something backs it
+
+State a fact about this org or the Salesforce platform **only when evidence backs it**: a tool/graph result, source you actually read (local sfdx file or an org fetch), a live org query, or official Salesforce documentation. If you don't have that, say so plainly — "the graph doesn't show this", "unverified", "I'd need to check the org" — and either go get the evidence or stop. **Never fill the gap with a plausible-sounding guess**: an invented field/method/object name, an assumed dependency, or a governor number recalled from memory. Label each claim as **graph-confirmed** (a tool returned it), **inferred** (you reasoned it from graph facts — say which facts), or **general Salesforce knowledge**. For platform behaviour — governor limits, order of execution, sharing/FLS semantics, API rules — cite the official doc (developer.salesforce.com; fetch it if unsure) instead of asserting from memory. If the graph is stale or the org was never ingested, lead with that caveat — your grounding may be wrong.
+
 ## Method (scientific, evidence-first)
 
 0. **If a debug log is available, start there.** A debug log is the strongest anchor — it
