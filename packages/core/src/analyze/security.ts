@@ -113,23 +113,24 @@ export function securityAudit(
     }
   }
 
-  // Field access matrix
+  // Field access matrix. FLS is granted via BOTH Profiles AND Permission Sets —
+  // scanning only Permission Sets reported false FLS gaps on every field whose
+  // access comes from a Profile (the most common case in older orgs). Fold both
+  // grantors into the same matrix.
   const fieldAccessMatrix = new Map<string, Set<string>>();
-  const permSets = store.listNodesByLabel(
-    orgId,
-    METADATA_CATEGORY.PERMISSION_SET,
-    SECURITY_PER_LABEL_CAP,
-  );
-  if (permSets.length >= SECURITY_PER_LABEL_CAP) truncated = true;
-  for (const n of permSets) {
-    const grants = store.listEdgesFrom(orgId, n.qualifiedName, REL_TYPES.GRANTS_FIELD_ACCESS);
-    for (const e of grants) {
-      let set = fieldAccessMatrix.get(e.dstQualifiedName);
-      if (!set) {
-        set = new Set();
-        fieldAccessMatrix.set(e.dstQualifiedName, set);
+  for (const grantorLabel of [METADATA_CATEGORY.PERMISSION_SET, METADATA_CATEGORY.PROFILE]) {
+    const grantors = store.listNodesByLabel(orgId, grantorLabel, SECURITY_PER_LABEL_CAP);
+    if (grantors.length >= SECURITY_PER_LABEL_CAP) truncated = true;
+    for (const n of grantors) {
+      const grants = store.listEdgesFrom(orgId, n.qualifiedName, REL_TYPES.GRANTS_FIELD_ACCESS);
+      for (const e of grants) {
+        let set = fieldAccessMatrix.get(e.dstQualifiedName);
+        if (!set) {
+          set = new Set();
+          fieldAccessMatrix.set(e.dstQualifiedName, set);
+        }
+        set.add(n.qualifiedName);
       }
-      set.add(n.qualifiedName);
     }
   }
 

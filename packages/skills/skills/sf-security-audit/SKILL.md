@@ -27,7 +27,7 @@ Use when the user asks about who can read or write a field/object, what sharing 
 3. Build the access matrix: Profile/PSet -> Read / Edit / Delete / View All / Modify All.
 4. Identify sharing exposure: OWD setting, sharing rules expanding access, role-hierarchy inheritance toggles.
 5. Flag risks: `without sharing` Apex selectors, missing `stripInaccessible` / `WITH SECURITY_ENFORCED`, guest user access, Experience Cloud profile reach.
-6. Render the Mermaid access matrix returned by the tool.
+6. Render the access matrix as Mermaid yourself from the tool's `fieldAccessMatrix` data — the tool returns the matrix as structured data + markdown, not a diagram. See **Visualization** below.
 
 ## Visualization
 

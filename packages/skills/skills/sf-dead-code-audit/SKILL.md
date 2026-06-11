@@ -28,7 +28,7 @@ Use when the user wants to inventory metadata that appears unreferenced. Output 
    - **confident-dead** — no incoming edges, no dynamic-invocation signature match, freshness > 12 months, no inclusion in active permission sets / page layouts.
    - **likely-dead** — no incoming edges, but at least one weak signal (recently modified, referenced from a managed package boundary, or named in a metadata file we don't parse fully).
    - **suspicious-uncertain** — looks dead but the graph has known blind spots (dynamic SOQL string-interpolated field name, reflection-style `Type.forName`, external system reference).
-5. Render the Mermaid bar-chart / treemap returned by the tool grouped by category.
+5. Render a bar-chart / treemap as Mermaid yourself, grouped by category, from the tool's `byConfidence` / `byLabel` counts — the tool returns a table + structured data, not a diagram.
 6. For confident-dead items, propose a destructive-changes.xml snippet but do not save it. The user owns the delete decision.
 
 ## Visualization
