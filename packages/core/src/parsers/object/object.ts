@@ -4,12 +4,15 @@ import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../.
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
 import { parseField } from "./field.js";
+import { type FormulaFieldInfo, formulaFieldRefs } from "./formula-refs.js";
 import { parseRecordType } from "./record-type.js";
 import { parseValidationRule } from "./validation-rule.js";
 
 export interface ObjectDirInput {
   apiName: string; // e.g. Account, Order_Event__e
   objectXml: string;
+  /** True when the source folder has `fields/` but no `<O>.object-meta.xml`. */
+  stub?: boolean;
   fields?: Record<string, string>; // apiName -> xml
   recordTypes?: Record<string, string>;
   validationRules?: Record<string, string>;
@@ -21,7 +24,19 @@ function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
 }
 
-const FORMULA_RE = /\b([A-Z][A-Za-z0-9_]*(?:__r)?)\.([A-Z][A-Za-z0-9_]*(?:__c)?)\b/g;
+/**
+ * Folded into the content hash of source-file CustomField nodes. Bump it when
+ * the parser starts emitting new attributes for unchanged XML: the graph merge
+ * only rewrites attributes when the hash changes, so a plain re-ingest would
+ * otherwise keep the old attributes. v2: referenceTo / relationshipName.
+ */
+export const FIELD_NODE_HASH_SALT = "custom-field-attrs:v2";
+
+/**
+ * Same idea for the CustomObject / PlatformEvent node built from the object
+ * XML. v2: customSettingsType.
+ */
+export const OBJECT_NODE_HASH_SALT = "custom-object-attrs:v2";
 
 export class CustomObjectParser implements Parser<ObjectDirInput> {
   readonly category = METADATA_CATEGORY.OBJECT;
@@ -56,8 +71,11 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
           // buildEmbedText's `description` branch permanently empty. Carry it so
           // object descriptions become semantically searchable.
           description: obj.description ?? null,
+          // `List` / `Hierarchy` marks a custom setting (absent on data objects).
+          ...(obj.customSettingsType ? { customSettingsType: String(obj.customSettingsType) } : {}),
+          ...(input.stub ? { stub: true } : {}),
         },
-        sha256(input.objectXml),
+        sha256(`${OBJECT_NODE_HASH_SALT}\n${input.objectXml}`),
       ),
     );
 
@@ -77,6 +95,10 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
     // Track which field qnames we've already emitted so the separate-file
     // loop below doesn't duplicate the inline ones.
     const emittedFieldQnames = new Set<string>();
+    // Every field of this object (for formula resolution) and the formulas
+    // to resolve once all of them are known.
+    const fieldInfos: FormulaFieldInfo[] = [];
+    const formulas: Array<{ src: string; formula: string; attrs: Record<string, unknown> }> = [];
 
     // Inline fields (live-org describe path). The live extractor builds a
     // CustomObject XML with <fields> elements containing fullName/type/
@@ -176,31 +198,9 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
           );
         }
       }
-      // Formula refs on inline-fields path too (same regex pattern the
-      // separate-file branch uses).
-      if (formula) {
-        const re = new RegExp(FORMULA_RE.source, "g");
-        let m: RegExpExecArray | null = re.exec(formula);
-        const seen = new Set<string>();
-        while (m !== null) {
-          const refObj = (m[1] ?? "").replace(/__r$/, "");
-          const refField = m[2] ?? "";
-          const key = `${refObj}.${refField}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            edges.push(
-              makeEdge(
-                ctx,
-                fieldQname,
-                REL_TYPES.READS_FIELD,
-                `CustomField:${refObj}.${refField}`,
-                { via: "formula" },
-              ),
-            );
-          }
-          m = re.exec(formula);
-        }
-      }
+      fieldInfos.push({ apiName: fieldApi, referenceTo, relationshipName });
+      // Formula refs are resolved once every field of the object is known.
+      if (formula) formulas.push({ src: fieldQname, formula, attrs: { via: "formula" } });
     }
 
     // Fields (separate XML files in source-dir layout)
@@ -210,6 +210,16 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
       // Skip if already emitted via the inline-fields path above.
       if (emittedFieldQnames.has(fieldQname)) continue;
       emittedFieldQnames.add(fieldQname);
+      // Lookup / Master-Detail target and relationship name, so graph
+      // resolvers can follow `X__r.F` paths (same keys as the inline path).
+      const fsRaw = f.raw as Record<string, unknown> | undefined;
+      const fsRef = fsRaw?.referenceTo;
+      const fsReferenceTo: string[] = Array.isArray(fsRef)
+        ? fsRef.map((x: unknown) => String(x))
+        : fsRef
+          ? [String(fsRef)]
+          : [];
+      const fsRelName = fsRaw?.relationshipName ? String(fsRaw.relationshipName) : null;
       nodes.push(
         makeNode(
           ctx,
@@ -221,37 +231,21 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
             formula: f.formula,
             required: f.required,
             object: apiName,
+            ...(fsReferenceTo.length > 0 ? { referenceTo: fsReferenceTo } : {}),
+            ...(fsRelName ? { relationshipName: fsRelName } : {}),
           },
-          sha256(fxml),
+          sha256(`${FIELD_NODE_HASH_SALT}\n${fxml}`),
         ),
       );
       edges.push(makeEdge(ctx, objQname, REL_TYPES.DEFINES_FIELD, fieldQname));
 
-      if (f.formula) {
-        const re = new RegExp(FORMULA_RE.source, "g");
-        let m: RegExpExecArray | null = re.exec(f.formula);
-        const seen = new Set<string>();
-        while (m !== null) {
-          const refObj = (m[1] ?? "").replace(/__r$/, "");
-          const refField = m[2] ?? "";
-          const key = `${refObj}.${refField}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            edges.push(
-              makeEdge(
-                ctx,
-                fieldQname,
-                REL_TYPES.READS_FIELD,
-                `CustomField:${refObj}.${refField}`,
-                {
-                  via: "formula",
-                },
-              ),
-            );
-          }
-          m = re.exec(f.formula);
-        }
-      }
+      fieldInfos.push({
+        apiName: f.apiName,
+        referenceTo: fsReferenceTo,
+        relationshipName: fsRelName,
+      });
+      if (f.formula)
+        formulas.push({ src: fieldQname, formula: f.formula, attrs: { via: "formula" } });
 
       // W2-04 MCD gap-fill on the filesystem path (mirrors the inline path
       // above). parseField exposes the unparsed XML as `raw`, which we
@@ -322,23 +316,28 @@ export class CustomObjectParser implements Parser<ObjectDirInput> {
       );
       edges.push(makeEdge(ctx, objQname, REL_TYPES.HAS_VALIDATION_RULE, vrQname));
 
-      if (vr.errorConditionFormula) {
-        const re = new RegExp(FORMULA_RE.source, "g");
-        let m: RegExpExecArray | null = re.exec(vr.errorConditionFormula);
-        const seen = new Set<string>();
-        while (m !== null) {
-          const refObj = (m[1] ?? "").replace(/__r$/, "");
-          const refField = m[2] ?? "";
-          const key = `${refObj}.${refField}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            edges.push(
-              makeEdge(ctx, vrQname, REL_TYPES.READS_FIELD, `CustomField:${refObj}.${refField}`),
-            );
-          }
-          m = re.exec(vr.errorConditionFormula);
-        }
+      if (vr.errorConditionFormula)
+        formulas.push({ src: vrQname, formula: vr.errorConditionFormula, attrs: {} });
+    }
+
+    for (const { src, formula, attrs } of formulas) {
+      const refs = formulaFieldRefs(formula, apiName, fieldInfos);
+      for (const target of refs.fields) {
+        const rel = refs.hops[target];
+        edges.push(
+          makeEdge(
+            ctx,
+            src,
+            REL_TYPES.READS_FIELD,
+            `CustomField:${stripNs(target, ctx.namespace)}`,
+            rel ? { ...attrs, hopRelationship: rel } : attrs,
+          ),
+        );
       }
+      for (const label of refs.labels)
+        edges.push(
+          makeEdge(ctx, src, REL_TYPES.REFERENCES, `CustomLabel:${label}`, { via: "formula" }),
+        );
     }
 
     return { nodes, edges };

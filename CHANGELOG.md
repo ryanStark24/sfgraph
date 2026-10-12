@@ -1,5 +1,178 @@
 # Changelog
 
+## 1.6.0 — 2026-10-12
+
+**Performance and stabilization.** This release makes ingest faster on large projects and orgs, fixes a wide set of audit and tool accuracy problems, and makes the MCP tool reports easier to read. Re-ingest with `sfgraph ingest --rebuild` after upgrading (see the upgrade notes below).
+
+### Upgrade notes (readiness round: audit fixes + ingest fast path)
+
+- **Re-ingest with `sfgraph ingest --rebuild` after upgrading.**
+  - Parser hash salts changed: Apex `apex-attrs:v2`, LWC `lwc-attrs:v3`, CustomObject `custom-object-attrs:v2`. Until both sides are re-ingested, `cross_org_diff`, `point_in_time_diff` and the wip-impact tools report every Apex/LWC/CustomObject node as changed when comparing a graph ingested before the upgrade with one ingested after.
+  - A full `--project` ingest now removes nodes whose source file was deleted (ghost sweep). It refuses to sweep when the source yields no members, and it keeps the nodes of members that failed to read or parse.
+- **Schema migration 11** runs on the first open of an existing graph. It takes a backup (`VACUUM INTO`) and backfills a new FTS rowid side table. Expect one slower first run.
+- **Dead-code algorithm v5.** Cached dead-code scores from older versions are ignored and replaced on the next ingest. The semantics changed (see "Tool accuracy" below), and `export_sarif` consumers see the new semantics.
+- **Apex and rules parser changes** (inline SOQL end, dynamic SOQL clause fields, relationship-path leaves, ApexPage/ApexComponent controllers, Process Builder objects) change graph output. Re-ingest with `--rebuild` to pick them up everywhere.
+- **Schema migration 12** adds the per-org `embeddings_pending` flag.
+- **Embedding cache.** The first ingest after upgrading computes every embedding: about 15 minutes on a corpus of roughly 22k members. Later rebuilds read the cache.
+- **Schema migrations 13 and 14** run on the first open after upgrading, MCP opens included. One backup (`<db>.v<old>.<stamp>`) is taken per upgrade, and progress goes to stderr.
+  - v13 records which process owns `sync_in_progress`. A killed ingest is then reported as not in progress, instead of staying stuck.
+  - v14 converts existing snapshots to versioned storage, which takes a few seconds on large graphs. **It is one-way:** older sfgraph versions cannot create or delete snapshots on an upgraded DB. To go back, restore the backup.
+  - The old full-copy snapshot tables are dropped, but the file does not shrink by itself. To reclaim the space, run `sqlite3 <orgId>.sqlite 'VACUUM;'` while no ingest or MCP server has the file open.
+- **Aura bundles are now parsed** on `--project` ingests, so re-ingest to get them. Live-org ingests are unchanged.
+
+### Ingest performance
+
+- **Bulk load on rebuild.** When an org's graph is empty at the start of a full ingest, secondary indexes are dropped and rebuilt after loading. The ingest also uses relaxed pragmas, one transaction per 2,000 members and cached statements, and skips per-member delete and reconcile probes. If an ingest crashes inside this window, the next open recreates the missing indexes.
+- **FTS updates delete by rowid** (side table) instead of scanning the FTS table. This removes an O(n²) cost.
+- **Embeddings:** mean pooling is vectorised, batches are length-sorted, and inference runs in batches of 64. When a node is emitted more than once, the last emission wins, whether the emissions fall in one batch or across batches in flight.
+- **Embeddings are off the graph-ready path.**
+  - Inference runs in a worker thread. The ingest prints `graph ready in Ns` once merges, resolvers and the dead-code cache are done, then `embeddings done in Ns (cached H / computed C)`.
+  - By default the CLI waits for embeddings. With `--no-wait-embeddings` it exits after graph ready, and the next ingest fills the pending vectors.
+  - While vectors are pending, `find_similar` falls back to text search and says `vector index warming: N/M embedded; using text search`.
+  - If embedding fails after graph ready, the CLI prints a warning and exits 0. The graph is complete; the vectors stay pending.
+- **Persistent embedding cache.**
+  - Location: `<dataDir>/embedding-cache/<modelId>@<model sha256 prefix>.sqlite`.
+  - It is keyed by text hash and lives outside the graph DB, so `--rebuild` reuses vectors for unchanged texts.
+  - Cached and computed vectors are identical.
+  - It only grows; delete the directory to reclaim space.
+- **Model input is capped at 256 tokens** (MiniLM's maximum), so long texts no longer inflate memory.
+- **Parallel parse.** Members are parsed in a worker-thread pool, and writes stay on the main thread in input order, so the output is identical to a serial parse.
+  - `SFGRAPH_PARSE_WORKERS` sets the pool size. The default is the available parallelism capped at 4, and `0` disables the pool.
+  - Inputs under 500 members are parsed serially.
+  - If a worker crashes or stalls, that member becomes a parse error (phase `worker`) and is retried on the next delta. After 3 crashes the pool falls back to the main thread.
+- **Delta ingest.** `sfgraph ingest --project <p> --org <o> --delta` re-parses only added, changed and deleted members. It then re-runs the post-merge resolvers, scoped to the affected sources, and prints `delta: +A ~C -D (=U unchanged) in Ns`.
+  - A graph built by an older sfgraph has no member hashes. In that case the delta prints a notice and runs a full rebuild.
+  - The MCP `start_ingest_job` tool emits `--delta` for project sources.
+  - A member whose parser throws keeps its content hash, so it is not re-parsed until the file changes.
+  - On a large Vlocity repo (21.7k members): no-op 1.6 s, single file 5.9 s, 500 files 23.5 s, and typical commits p95 7.7 s against a 50–56 s full rebuild. The delta graph is identical to a full rebuild on 20/20 replayed commits.
+- **Ingest lock.** `<dataDir>/<orgId>.ingest.lock` records the host, pid and process start time. A second ingest on the same org exits with `ingest already running for <org> (pid N since T); retry later`.
+  - A lock is stale when its pid is dead or reused on the same host, and stale locks are removed.
+  - A lock from another host is never removed automatically.
+- **The formula relationship-hop resolver** now runs on full and delta ingests. It skips ambiguous relationship names.
+- **Results on a large Vlocity repo** (21,763 members; graph output identical to the pre-change baseline):
+  - Graph ready in 44 s (was about 31 min end to end).
+  - A full rebuild with a warm cache, embeddings included, takes 57 s.
+  - Peak RSS is about 1.95 GB with 4 parse workers (it was 3.0 GB before the memory fixes below).
+- **Results on a large live Vlocity org** (60,376 members, warm embedding cache): graph ready in 429 s and 453 s end to end (was 3,488 s), with a peak RSS of 2.78 GiB (was 4.0 GB).
+- **Lower ingest memory.** The graph output is unchanged:
+  - Each parse worker clears the Apex parser's ANTLR DFA cache every 50 parses. This was the largest saving, about 1 GB.
+  - The index rebuild at the end of a bulk ingest sorts on disk (`temp_store=FILE`), then restores the previous setting.
+  - The dangling-edge audit streams its edges instead of loading every one.
+  - The SQLite page cache is capped at 64 MB and mmap at 64 MiB. MCP tool latency moved by at most +5.4%.
+
+### Tool accuracy (readiness round)
+
+These changes follow each tool's description and generic grammar rules (label, rel type, naming). They are not tuned to benchmark cases. The readiness report is `docs/superpowers/reports/2026-10-sfgraph-readiness-report.md`.
+
+- **Component scoping for change tools.** `point_in_time_diff` and `what_broke` roll members up to their owning component (an ApexMethod to its ApexClass, a FlowVersion to its Flow). Record and config rows (custom metadata records, entity filters, picklists, manifests and similar) go into a separate `nonComponentChanges` bucket with its own heading, so they are never dropped silently. `what_broke` seeds dependents only from component changes, and reports untraced record/config seeds.
+  - The split lives in one constant, `COMPONENT_LABELS`. **When a new metadata label gets a parser, add it there**; until then the label is treated as record/config.
+- **`dead_code_audit` semantics.**
+  - A reference from test code now counts as a reference.
+  - Test classes with no inbound references are reported, flagged `isTest: true`.
+  - Production components whose only references come from tests are listed separately as `referencedOnlyByTests`.
+  - A custom metadata record naming an Apex class counts as a use.
+- **`trace_downstream`, `cross_layer_flow_map`, `explain_code`.** Non-custom field rows carry `role: "standard-field"`. `ns.Type` targets with no node, where `ns` is a namespace learned from the graph, are reported as the pseudo kind `managed-package`.
+- **`cross_layer_flow_map`** follows every cross-layer rel type. A reached method stays member-precise: it adds its owner class as a participant, but no longer expands the class's other methods.
+- **`trace_upstream`** hops are member-precise by default. Callers of unrelated sibling methods are no longer counted.
+- **`wip_impact`** uses component-level hops, as its description says ("every component that depends on a changed component"). It also seeds the dependents pass from removed components.
+- **`impact_from_git_diff` / test-gap from git diff.** Seeds are member-level when the hunks identify the method. Every parsed type is mapped, renames are followed, and unmapped paths are listed. An ambiguous hunk, or an insertion at the end of a method, still seeds the whole class.
+- **`governor_risk_check`** sorts by severity before applying its limit; it used to cut alphabetically. SOSL and dynamic SOQL inside loops are reported (dynamic queries on the regex parser path only).
+- **`find_similar`** filters the keyword leg by label before its limit, so the filter no longer starves that leg. It collapses members to their component, never returns the focal's own component, and ranks test and record rows lower.
+- **Test coverage** (`test_gap_intelligence_from_git_diff`, `wip_test_gap`) decides coverage and test-ness on the owning class, with one verdict per unit.
+- **Apex parsing.**
+  - Inline SOQL ends at its depth-0 bracket outside string literals, so bind expressions such as `:ids[0]` no longer cut a query short.
+  - Dynamic SOQL WHERE / GROUP BY / ORDER BY fields are emitted when FROM is a literal. With a variable FROM they are counted as skipped. A variable FROM object is still not resolved.
+  - A relationship as the last path segment reads its lookup field, or is skipped. A `<Seg>Id` relationship leaf resolves only to a lookup field.
+  - Class-level SOQL and `Database.*` DML are parsed. `FeatureManagement` is a platform namespace.
+- **Other parsers.**
+  - ApexPage / ApexComponent controllers and extensions are read from filesystem input, quoted with single or double quotes.
+  - Process Builder flows get their object from `processMetadataValues`.
+  - `lightning-*` base tags are not `EMBEDS_LWC`.
+  - Vlocity Set Values elements that name an Integration Procedure link to it.
+- **MCP during a sync or rebuild.** A tool result now warns when a sync or rebuild of the org it read is running. It does not refuse, and direct handler calls get no warning.
+- **Ingest robustness.**
+  - A member whose content crashes parse workers repeatedly is quarantined, instead of being retried on every delta.
+  - An aborted member stream is reported in the ingest result.
+  - A resolver or dead-code failure during a delta is never recorded as a clean sync.
+  - The DataRaptor relationship resolver never takes over an edge a parser owns.
+- **Benchmark harness.** The layer-2 token cap now counts cache-creation and cache-read tokens (the old input+output figure is a separate column), so earlier layer-2 results are not directly comparable. Layer-2 agents are scoped to the corpus path.
+
+### Accuracy and safety fixes (audit)
+
+- **Aura components** (filesystem and project ingests). `AuraComponent:<bundle>` nodes now have these edges:
+  - `CONTROLLED_BY` to the Apex controller. A foreign namespace becomes `ApexClass:ns.Cls`.
+  - `EMBEDS_AURA` and `EMBEDS_LWC` for `<c:name>`. These resolve against the bundles that exist; letter case is only the tiebreak.
+  - `REFERENCES_LABEL` for `$Label.c.X`.
+
+  Apex classes and LWCs used only from Aura are no longer reported as dead code. On a large Vlocity repo this adds 41 components and 58 edges. Not parsed yet: server actions (`c.method`), events, `extends`, and a regex literal right after `)` or `]` in controller JS.
+- **Edge reconcile is case-insensitive.** A live edge is no longer deleted when only the case of its emitted target changes.
+- **Snapshots are versioned (schema v14).** A snapshot stores only the rows that changed, so an unchanged graph adds none; this used to take 6-10 s and about 0.7 GB per snapshot. `point_in_time_diff` runs in SQL, where it used to take 22 s and 4.3 GB of RAM.
+  - Diff output is ordered by key.
+  - An unchanged node or edge keeps the `last_seen_at` of the snapshot that first recorded its current version.
+  - A change to `last_seen_at` alone was never reported as a diff, so the diff sets are unchanged.
+- **Long-lived readers see new data.** The label and edge-type caches reload when another connection commits, and read statements are cached; graph traversal used to prepare about 69 statements per BFS node.
+- **MCP server during `ingest --rebuild`.** The server keeps answering from the previous complete graph and switches to the new file only once the rebuild completes. A failed rebuild is never adopted. A server *started* mid-rebuild still opens the partial file; that is a known limitation.
+- **Locked database.** Opening a DB that needs a migration while an ingest holds the write lock now fails with a clear retry message, not a raw `database is locked`. `busy_timeout` is set on open.
+- **A stale sync flag is ignored.** A killed ingest no longer leaves `sync_in_progress` set for readers, including the MCP analysis caches.
+- **Ctrl-C with `SFGRAPH_DEBUG_INGEST=1`** now stops the ingest; the debug handler used to swallow the signal.
+
+- **Dead code:**
+  - `@isTest` classes are excluded.
+  - A class referenced only by tests is reported with reason `referenced_only_by_tests`.
+  - Method references keep their class alive.
+  - `export_sarif` excludes tests by default (`includeTests`).
+- **Org alias resolution** never shells out to the `sf` CLI by default. Opt in with `SFGRAPH_ALIAS_SF_FALLBACK=1`; the timeout is `SFGRAPH_ALIAS_RESOLVE_TIMEOUT_MS`. `list_orgs` reads the registry only.
+- **Formula and relationship paths:**
+  - `Owner.` / `CreatedBy.` / `LastModifiedBy.` / `$User.X.Y` resolve through the `…Id` lookup to User fields.
+  - Formula second hops on self-lookups match the field by its relationship name.
+- **Apex:**
+  - Inner-class methods see the enclosing classes' static fields.
+  - Resolved call edges are re-derived when the caller changes.
+- **LWC record bindings** use static context. With no context they bind only when the field name is unique in the org; they never fan out.
+- **Dangling-reference audit:**
+  - Namespaces are learned only from `ns__Name__<suffix>` names.
+  - Custom metadata types (`__mdt`) expect exactly the platform's standard and audit fields.
+  - `SetupOwnerId` is expected only on known custom settings. CustomObject nodes now carry `customSettingsType`.
+- **CustomTab** metadata has a parser, and `tabs/` folders are routed to it.
+- **Live-org ingest no longer loses data silently.**
+  - Before this fix, a Tooling `queryMore` that failed during a dropped connection ended the Apex drain without an error. One org graph lost 1,493 of its 1,738 local classes this way.
+  - Transient errors are now retried with backoff (`SFGRAPH_LIVE_RETRY_*`). Anything still lost is recorded as a skip, which `--retry-skipped` re-runs. This applies to the Apex, LWC, Flow, security, integration, generic-metadata, custom-settings, OmniStudio and Vlocity sources.
+  - A source that hangs, a failed metadata discovery, and a failed Vlocity or OmniStudio probe are now reported as skips instead of silently dropping members.
+  - Members the org refuses to return are reported in their own group: "Unreadable (org refused; re-run with --retry-skipped to try again)".
+    - A refusal counts as unreadable when the error is deterministic (for example `INVALID_CROSS_REFERENCE_KEY`), or when the same `UNKNOWN_EXCEPTION` repeats on 3 attempts.
+    - These members are not auto-retried. `--retry-skipped` reads them again.
+    - After 10 identical refusals, the first pass stops reading that type. A later successful read resumes it.
+  - Settings members are read as `<name>Settings`. EntityDefinition object classification is read in prefix-split pages, so large orgs are no longer truncated.
+  - The CLI exits as soon as the ingest finishes. Before, a leftover watchdog timer kept the process alive for minutes after the last line.
+  - Live-org request throttling no longer inherits a cancelled source's stop signal.
+- **A local ApexClass wins over a managed class of the same name**, and carries `shadowsManaged: true`.
+- **Platform events** (`__e`) are kept by the live object extractor.
+
+- Vlocity DataPack scanner: `Cards` string lists → VlocityCard, any `dataSource`/`Datasource` (object or string) → `classifyDataSource` (ApexRemote data sources now resolve to ApexClass/ApexMethod), `c:x` / `c__target=c:x` strings → `LWC:x` (CSS-like `-c:hover` excluded). Exact, unique name matches of string values to an IntegrationProcedure/DataRaptor/OmniScript become REFERENCES with `inferred: "name-match"` (post-ingest `resolveVlocityNameMatches`; never overrides an explicit edge). Orphan `*_Element_*.json` siblings are inlined into their OmniScript/IP.
+- Apex (default regex parser): `new Foo(…)` → INSTANCE_OF and `Foo.CONST` / enum / inner-type use → REFERENCES to user Apex classes. Trigger bodies, constructors and field initializers now get static-call, constructor and static-member edges. Static-call arity counts string-literal arguments (`Foo.bar('x')` was recorded as `bar(0)`).
+- Dynamic SOQL: SELECT string literals built by concatenation (and directly following `q +=`) with a literal FROM object yield READS_FIELD edges marked `dynamic: true`.
+- LWC: compiled-OmniScript `_def.js` (OMNIDEF) yields IP/DR/remote/LWC/OS edges plus `REFERENCES OmniScript:<Type>_<SubType>_<Lang>`. `import 'c/x'` and `c__target` link LWC → LWC. Record-literal `X__c` keys bind to a field when its API name is unique in the org (`LWC_BINDS_FIELD`, `inferred`; post-ingest `resolveLwcFieldKeys`).
+- Flow: READS_FIELD / WRITES_FIELD from `Flow:<name>` for record-element filters and assignments, `$Record`/`$Record__Prior`, typed variables, Get Records outputs and formulas. Screen components `c:x` → EMBEDS_LWC.
+- FlexiPage: embedded custom components now point at `LWC:<name>` (previously a dangling `LightningComponentBundle:` label). Run `sfgraph ingest --rebuild` to drop the old edges.
+- `dead_code_audit`: labels outside the scored set (e.g. DataRaptor) are computed live as zero-inbound nodes (label match is case-insensitive; confidence/freshness filters do not apply and the output says so) instead of reporting "no dead code detected".
+- Dead code: a node is dead when it has zero real inbound references; freshness now only sets confidence (≤30 days low, 31–180 medium, >180 high) instead of hiding recently modified nodes. Cached and live paths share `scoreDeadCode` and return the same set. LWC bundle-to-own-component containment no longer counts as usage, LWC is scored, and a legacy cache with no current rows falls back to the live scan.
+- `analyze_field`: the description says Flow field refs are tracked and that commented-out code and string-only mentions are excluded from the graph.
+- DataRaptor field targets: Extract output rows (`Alias:Field`, nested `A:B:Field`) resolve through the step row's `InterfaceObjectName`; the DataPack `%vlocity_namespace%__` token is replaced with the Vlocity namespace detected from the source tree's object folders (stripped otherwise); `Rel__r.Field` paths are stored on the DataRaptor node (`drRelationshipPaths`) and resolved after merge through the lookup field's `referenceTo` (each hop's lookup field is emitted too; unknown or polymorphic targets emit nothing). `Formula`/`Configuration` pseudo pairs and `$Vlocity.*` tokens no longer become field targets. Disabled mapping rows (`IsDisabled: true`) are skipped. Filesystem CustomField nodes now carry `referenceTo` / `relationshipName`. Existing graphs: a plain re-ingest picks this up (the CustomField and DataRaptor node hashes carry a parser-version salt, so unchanged sources re-merge); a DataRaptor that now emits no edges at all keeps its old pseudo-target edges until `sfgraph ingest --rebuild`.
+- Object folders with `fields/*.field-meta.xml` but no `<O>.object-meta.xml` now yield a stub CustomObject (`attributes.stub: true`) with its CustomField nodes and DEFINES_FIELD edges. `analyze_field` no longer stops at "field not found" when edges target the qname: it says the node is missing and lists the inbound edges (other rels under "Other inbound").
+- Apex member-access field refs: a receiver resolves only to a declaration before the use, then to fields/properties (`T x { get; set; }` included) of its own enclosing class (constructor/initializer locals and other inner classes no longer leak; conflicting outer types are skipped). `Id` is no longer emitted from member access or constructors. AST mode no longer duplicates member-access READS_FIELD.
+- Apex classes and triggers now emit READS_FIELD / WRITES_FIELD (`CustomField:<Object>.<Field>`, attribute `via: "member-access"`) for member access on SObject-typed locals, params, enhanced-for vars and class fields, `list[i]` / `.get()` elements, `Trigger.new[i]` / `Trigger.old[i]` / `Trigger.newMap.get()` / `Trigger.oldMap.get()` (trigger object), assignment LHS (write; `+=`/`++` also read) and `new Obj(F = v, ...)` constructors (write). The object comes from the declared type; untyped and `SObject` receivers are skipped. Comments and strings yield nothing. Duplicates of SOQL select-list READS_FIELD are not re-emitted. The AST extractor keeps the `__c` suffix on dotted field refs. The standard-SObject whitelist moved to `domain/standard-sobjects.ts`.
+- Apex classes using the null-coalescing operator `??` no longer become ParseError nodes: code-level `??` is rewritten to the same-length `||` for grammar validation only (comments, strings and stored source are untouched). ParseError messages are now `line:column message` instead of `[object Object]`.
+- Generic DataPack scanner: fields whose normalised name ends in `DRBundleName`/`BundleName` (DocumentTemplate DataExtract/Token DR, …) with a non-empty string produce REFERENCES edges to `DataRaptor:<value>`.
+- Vlocity DataPack types without a dedicated parser (VlocityAction, …) now go through a generic reference scanner: OmniScript launch URLs (`OmniScriptType/<T>/OmniScriptSubType/<S>/OmniScriptLang/<L>` or the query form `OmniScriptType=<T>&…`, URL-decoded) become REFERENCES edges to `OmniScript:<T>_<S>_<L>`.
+- VlocityCard parser: `dataSource` objects (any nesting, plus the top-level `Datasource` field) now yield VC_USES_DR (`value.bundle`), VC_CALLS_IP (`value.ipMethod`) and VC_INVOKES_REMOTE (`value.remoteClass`/`remoteMethod`, resolved to Apex by `resolveVlocityApex`).
+- Vlocity parsers: any element whose propertySet has a `remoteClass` (Try Catch Block, Log Catch Block, …) now yields a remote ref, so `resolveVlocityApex` links it to Apex. References from inactive elements (`Active`/`IsActive` false, or under an inactive ancestor) are kept and tagged `inactive: true`; an edge is inactive only when every contributing element is inactive, and the flag carries onto the resolved ApexClass/ApexMethod edges.
+- `trace_downstream`: containment is no longer a dependency. A reached CustomObject/CustomField/ValidationRule/RecordType/NamedCredential is a leaf (no DEFINES_FIELD, HAS_VALIDATION_RULE, HAS_RECORD_TYPE, CONTAINS, field→field READS_FIELD or DEPENDS_ON_FIELD expansion); new `include_structure: true` restores the old expansion. Reaching an ApexMethod now also reaches its ApexClass and the class's other methods at the same hop (class roll-up). Core `findDependencies` gains opt-in `leafStructure` / `rollupApexClass` options (default off, so `impact_from_git_diff` is unchanged). `trace_upstream` traversal is unchanged.
+- `trace_downstream` / `trace_upstream` text output is now a lossless plain list: full qnames grouped by label with min hop and rel, a per-label count header, dangling endpoints marked `(no node)`, capped at 300 entries with an omitted count. New `labels` filter; mermaid only with `mermaid: true`. `data.reached` carries the same list.
+- `analyze_field`: readers/writers now include every `*_READS_FIELD` / `*_WRITES_FIELD` rel (DataRaptor `DR_READS_FIELD` / `DR_WRITES_FIELD` were ignored), enumerated by suffix. Output is a plain list of full `<Label>:<Name> — REL`. GRANTS_FIELD_ACCESS sources are hidden unless `include_grants: true` (`data.grants_count` always set); mermaid only with `mermaid: true`. Description now lists every component kind.
+- `dead_code_audit`: new `label` and `pattern` (name prefix or glob) filters; output is a plain list instead of a table, capped at `limit` with a narrowing hint. `find_nodes` default cap is 200 with a "N more, narrow with ..." line.
+- `trace_downstream` roll-up: sibling methods reached by Apex class roll-up are collapsed under their class line (`ApexClass:C (+k methods via roll-up)`) so they cannot crowd other labels out of the 300-entry cap; core roll-up lists each class's siblings once.
+- OmniScript/IntegrationProcedure nodes are now keyed `Type_SubType[_Language]` (was record Id). Existing graphs: run `sfgraph ingest --rebuild` once.
+
 ## 1.5.0 — case-insensitive qnames + hybrid search
 
 Two features that subsume the unreleased 1.4.1 line (the audit hardening below
@@ -139,7 +312,7 @@ Driven by validating sfgraph against a large real Vlocity-CMT enterprise org (89
 ### Ingest correctness (the "green tests, broken org" class)
 
 - **Members no longer silently dropped.** `adaptParserInput` returned `null` for any metadata type outside a hardcoded switch, so ~250 generic-extractor types (Layout, CustomTab, Bot, GenAi…) were extracted, logged ✓, and never merged — leaving 59k+ grant edges dangling on nodes that were never created. Unknown types now route to their registered rule parser or an opaque node. Visible for months as `fan-out complete (963)` vs `complete members=503`.
-- **Vlocity lineage now actually populates.** The runner emits `memberType: "DataRaptor"` but the rich parsers register as `"VlocityDataRaptor"`; dispatch fell through to the opaque parser, so a full ingest produced **zero** DataRaptor/IP/OmniScript lineage edges (only `VlocityCard` happened to align). Added the member→parser-type mapping + an end-to-end runner→dispatch→parser test. Confirmed on PLDT: `dr_reads_field` 131, `ip_calls_dr` 185, `os_uses_dr` 31.
+- **Vlocity lineage now actually populates.** The runner emits `memberType: "DataRaptor"` but the rich parsers register as `"VlocityDataRaptor"`; dispatch fell through to the opaque parser, so a full ingest produced **zero** DataRaptor/IP/OmniScript lineage edges (only `VlocityCard` happened to align). Added the member→parser-type mapping + an end-to-end runner→dispatch→parser test. Confirmed on a large Vlocity org: `dr_reads_field` 131, `ip_calls_dr` 185, `os_uses_dr` 31.
 - **DRMapItem children load by Name, not a non-existent FK.** The DataRaptor child query selected `Input/OutputFieldName__c` (absent on `DRMapItem__c`) and filtered on `DRBundleId__c` (also absent in `vlocity_cmt`). Both threw `INVALID_FIELD` → childless DataRaptors. Now selects the real mapping columns and correlates by `Name` (`linkBy`). Cleared the prior 8 DataRaptor skips.
 - **OmniDataTransform field mappings** captured structurally from `OmniDataTransformItem` (SOQL child fetch) + the Metadata-API retrieve XML shape; SOQL/retrieve dedup so a component isn't ingested twice.
 - **Apex paginates** (`queryMore`) — was capped at the first 200 of thousands of classes. **Rate-limiter deadlock fixed** (bottleneck@2.19.5 disarms `reservoirRefreshInterval` on any `updateSettings()`; replaced with a self-managed refill) — the cause of full-run hangs. **Full generic coverage** by default (opt-out `SFGRAPH_GENERIC_WHITELIST_ONLY=1`) + child types (ValidationRule/ListView on standard objects) dispatched.

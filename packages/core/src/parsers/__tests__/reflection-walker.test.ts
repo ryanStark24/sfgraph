@@ -2,6 +2,7 @@ import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared"
 import { describe, expect, it } from "vitest";
 import type { NodeFact } from "../../domain/index.js";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";
+import { resolveVlocityNameMatches } from "../vlocity/name-match-resolver.js";
 import { walkBlobsForReferences } from "../generic/reflection-walker.js";
 import { makeTestCtx } from "./_harness.js";
 
@@ -169,6 +170,61 @@ describe("W6-01: reflection-based generic walker", () => {
     // The string contains whitespace, so the whole value is rejected — we
     // do NOT tokenise and match per-word, by design.
     expect(result.edgesEmitted).toBe(0);
+    await store.close();
+  });
+});
+
+describe("reflection walker vs explicit / name-match REFERENCES", () => {
+  it("keeps inferred=name-match after the resolver then the walker; ignores nameMatchCandidates", async () => {
+    const store = await setupStore();
+    store.mergeNodes([
+      node("VlocityScheduledJob", "VlocityScheduledJob:Job", { nameMatchCandidates: ["IP_One"] }),
+      node("IntegrationProcedure", "IntegrationProcedure:IP_One"),
+    ]);
+    resolveVlocityNameMatches(store, ORG, makeTestCtx());
+    walkBlobsForReferences(store, { orgId: ORG, ctx: makeTestCtx() });
+    const e = store.listEdgesFrom(
+      ORG,
+      asQualifiedName("VlocityScheduledJob:Job"),
+      "REFERENCES" as never,
+    );
+    expect(e).toHaveLength(1);
+    expect(e[0]?.attributes.inferred).toBe("name-match");
+    expect(e[0]?.attributes.source).toBeUndefined();
+    await store.close();
+  });
+  it("does not walk nameMatchCandidates even with no existing edge", async () => {
+    const store = await setupStore();
+    store.mergeNodes([
+      node("VlocityScheduledJob", "VlocityScheduledJob:Job", { nameMatchCandidates: ["IP_One"] }),
+      node("IntegrationProcedure", "IntegrationProcedure:IP_One"),
+    ]);
+    const r = walkBlobsForReferences(store, { orgId: ORG, ctx: makeTestCtx() });
+    expect(r.edgesEmitted).toBe(0);
+    await store.close();
+  });
+  it("does not overwrite a parser-emitted REFERENCES edge", async () => {
+    const store = await setupStore();
+    store.mergeNodes([
+      node("OmniProcess", "OmniProcess:A", { cfg: { bundle: "AccountDR" } }),
+      node("DataRaptor", "DataRaptor:AccountDR"),
+    ]);
+    const ts = Date.now();
+    store.mergeEdges([
+      {
+        orgId: ORG,
+        srcQualifiedName: asQualifiedName("OmniProcess:A"),
+        dstQualifiedName: asQualifiedName("DataRaptor:AccountDR"),
+        relType: "REFERENCES" as never,
+        attributes: { via: "DRBundleName" },
+        firstSeenAt: ts,
+        lastSeenAt: ts,
+      },
+    ]);
+    walkBlobsForReferences(store, { orgId: ORG, ctx: makeTestCtx() });
+    const e = store.listEdgesFrom(ORG, asQualifiedName("OmniProcess:A"), "REFERENCES" as never);
+    expect(e).toHaveLength(1);
+    expect(e[0]?.attributes).toEqual({ via: "DRBundleName" });
     await store.close();
   });
 });

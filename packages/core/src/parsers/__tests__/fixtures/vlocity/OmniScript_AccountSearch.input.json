@@ -52,7 +52,7 @@
       "vlocity_cmt__ParentElementId__c": "a2O000000000000008",
       "vlocity_cmt__ParentElementName__c": "Verify",
       "vlocity_cmt__ParentElementType__c": "Step",
-      "vlocity_cmt__PropertySet__c": "{\"HTMLTemplateId\":\"VerifyResult\",\"accessibleInFutureSteps\":false,\"dataJSON\":true,\"disOnTplt\":false,\"itemsKey\":\"recSet\",\"label\":null,\"maxCompareSize\":4,\"modalConfigurationSetting\":{\"modalController\":\"ModalProductCtrl\",\"modalHTMLTemplateId\":\"vlcProductConfig.html\",\"modalSize\":\"lg\"},\"modalController\":\"ModalInstanceCtrl\",\"modalHTMLTemplateId\":\"vlcModalContent.html\",\"modalSize\":\"\",\"postTransformBundle\":\"\",\"preTransformBundle\":\"\",\"remoteClass\":\"\",\"remoteMethod\":\"\",\"remoteOptions\":{\"postTransformBundle\":\"\",\"preTransformBundle\":\"\"},\"remoteTimeout\":30000,\"responseJSONNode\":\"\",\"responseJSONPath\":\"\",\"selectMode\":\"Single\",\"sendJSONNode\":\"\",\"sendJSONPath\":\"\",\"show\":null}",
+      "vlocity_cmt__PropertySet__c": "{\"HTMLTemplateId\":\"acmeVerifyTemplate\",\"accessibleInFutureSteps\":false,\"dataJSON\":true,\"disOnTplt\":false,\"itemsKey\":\"recSet\",\"label\":null,\"maxCompareSize\":4,\"modalConfigurationSetting\":{\"modalController\":\"ModalProductCtrl\",\"modalHTMLTemplateId\":\"vlcProductConfig.html\",\"modalSize\":\"lg\"},\"modalController\":\"ModalInstanceCtrl\",\"modalHTMLTemplateId\":\"vlcModalContent.html\",\"modalSize\":\"\",\"postTransformBundle\":\"\",\"preTransformBundle\":\"\",\"remoteClass\":\"\",\"remoteMethod\":\"\",\"remoteOptions\":{\"postTransformBundle\":\"\",\"preTransformBundle\":\"\"},\"remoteTimeout\":30000,\"responseJSONNode\":\"\",\"responseJSONPath\":\"\",\"selectMode\":\"Single\",\"sendJSONNode\":\"\",\"sendJSONPath\":\"\",\"show\":null}",
       "vlocity_cmt__ReusableOmniScript__c": false,
       "vlocity_cmt__SearchKey__c": null,
       "vlocity_cmt__Type__c": "Selectable Items"
@@ -106,7 +106,7 @@
       "vlocity_cmt__ParentElementId__c": "a2O000000000000007",
       "vlocity_cmt__ParentElementName__c": "Result",
       "vlocity_cmt__ParentElementType__c": "Step",
-      "vlocity_cmt__PropertySet__c": "{\"HTMLTemplateId\":\"SearchResult\",\"accessibleInFutureSteps\":false,\"dataJSON\":false,\"disOnTplt\":false,\"itemsKey\":\"recSet\",\"label\":null,\"maxCompareSize\":4,\"modalConfigurationSetting\":{\"modalController\":\"ModalProductCtrl\",\"modalHTMLTemplateId\":\"vlcProductConfig.html\",\"modalSize\":\"lg\"},\"modalController\":\"ModalInstanceCtrl\",\"modalHTMLTemplateId\":\"vlcModalContent.html\",\"modalSize\":\"\",\"postTransformBundle\":\"\",\"preTransformBundle\":\"\",\"remoteClass\":\"\",\"remoteMethod\":\"\",\"remoteOptions\":{\"postTransformBundle\":\"\",\"preTransformBundle\":\"\"},\"remoteTimeout\":30000,\"responseJSONNode\":\"\",\"responseJSONPath\":\"\",\"selectMode\":\"Single\",\"sendJSONNode\":\"\",\"sendJSONPath\":\"\",\"show\":null}",
+      "vlocity_cmt__PropertySet__c": "{\"HTMLTemplateId\":\"acmeResultTemplate\",\"accessibleInFutureSteps\":false,\"dataJSON\":false,\"disOnTplt\":false,\"itemsKey\":\"recSet\",\"label\":null,\"maxCompareSize\":4,\"modalConfigurationSetting\":{\"modalController\":\"ModalProductCtrl\",\"modalHTMLTemplateId\":\"vlcProductConfig.html\",\"modalSize\":\"lg\"},\"modalController\":\"ModalInstanceCtrl\",\"modalHTMLTemplateId\":\"vlcModalContent.html\",\"modalSize\":\"\",\"postTransformBundle\":\"\",\"preTransformBundle\":\"\",\"remoteClass\":\"\",\"remoteMethod\":\"\",\"remoteOptions\":{\"postTransformBundle\":\"\",\"preTransformBundle\":\"\"},\"remoteTimeout\":30000,\"responseJSONNode\":\"\",\"responseJSONPath\":\"\",\"selectMode\":\"Single\",\"sendJSONNode\":\"\",\"sendJSONPath\":\"\",\"show\":null}",
       "vlocity_cmt__ReusableOmniScript__c": false,
       "vlocity_cmt__SearchKey__c": null,
       "vlocity_cmt__Type__c": "Selectable Items"
@@ -146,9 +146,49 @@
       "vlocity_cmt__ReusableOmniScript__c": false,
       "vlocity_cmt__SearchKey__c": null,
       "vlocity_cmt__Type__c": "Step"
+    },
+    {
+      "Id": "a2O000000000000101",
+      "LastModifiedDate": "2025-01-01T00:00:00.000Z",
+      "Name": "Extra",
+      "vlocity_cmt__Active__c": true,
+      "vlocity_cmt__Level__c": 0,
+      "vlocity_cmt__Order__c": 9,
+      "vlocity_cmt__PropertySet__c": "{\"namedCredential\":\"Acme_NC\",\"restMethod\":\"POST\"}",
+      "vlocity_cmt__Type__c": "Rest Action"
+    },
+    {
+      "Id": "a2O000000000000102",
+      "LastModifiedDate": "2025-01-01T00:00:00.000Z",
+      "Name": "Extra",
+      "vlocity_cmt__Active__c": true,
+      "vlocity_cmt__Level__c": 0,
+      "vlocity_cmt__Order__c": 9,
+      "vlocity_cmt__PropertySet__c": "{\"remoteClass\":\"vlocity_cmt.Svc\",\"remoteMethod\":\"go\",\"remoteOptions\":{\"preTransformBundle\":\"DR_Pre\",\"postTransformBundle\":\"\"}}",
+      "vlocity_cmt__Type__c": "Remote Action"
+    },
+    {
+      "Id": "a2O000000000000103",
+      "LastModifiedDate": "2025-01-01T00:00:00.000Z",
+      "Name": "Extra",
+      "vlocity_cmt__Active__c": true,
+      "vlocity_cmt__Level__c": 0,
+      "vlocity_cmt__Order__c": 9,
+      "vlocity_cmt__PropertySet__c": "{\"Type\":\"Change\",\"Sub Type\":\"Bulk\",\"Language\":\"English\"}",
+      "vlocity_cmt__Type__c": "OmniScript"
+    },
+    {
+      "Id": "a2O000000000000104",
+      "LastModifiedDate": "2025-01-01T00:00:00.000Z",
+      "Name": "Extra",
+      "vlocity_cmt__Active__c": true,
+      "vlocity_cmt__Level__c": 0,
+      "vlocity_cmt__Order__c": 9,
+      "vlocity_cmt__PropertySet__c": "{\"lwcName\":\"myCmp\"}",
+      "vlocity_cmt__Type__c": "Custom Lightning Web Component"
     }
   ],
-  "vlocity_cmt__AdditionalInformation__c": "Omniscript used by the Interaction Launcher",
+  "vlocity_cmt__AdditionalInformation__c": "Synthetic OmniScript fixture",
   "vlocity_cmt__CustomJavaScript__c": null,
   "vlocity_cmt__DataRaptorBundleId__c": null,
   "vlocity_cmt__DataRaptorBundleName__c": null,
@@ -170,6 +210,6 @@
   "vlocity_cmt__RequiredPermission__c": null,
   "vlocity_cmt__SubType__c": "AccountSearch",
   "vlocity_cmt__TestHTMLTemplates__c": null,
-  "vlocity_cmt__Type__c": "InteractionLauncher",
+  "vlocity_cmt__Type__c": "Acme",
   "vlocity_cmt__Version__c": 5
 }

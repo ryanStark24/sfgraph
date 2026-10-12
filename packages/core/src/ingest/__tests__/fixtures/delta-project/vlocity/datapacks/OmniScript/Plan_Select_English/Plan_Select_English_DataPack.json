@@ -1,0 +1,8 @@
+{
+  "%vlocity_namespace%__Type__c": "Plan",
+  "%vlocity_namespace%__SubType__c": "Select",
+  "%vlocity_namespace%__Language__c": "English",
+  "%vlocity_namespace%__Element__c": [
+    "Plan_Select_English_Element_IP.json"
+  ]
+}

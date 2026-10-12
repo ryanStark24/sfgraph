@@ -62,3 +62,47 @@ export function keepEdge(e: EdgeFact, opts: EdgeFilterOpts): boolean {
   if (opts.excludeReflection !== false && isReflectionEdge(e)) return false;
   return true;
 }
+
+/**
+ * Downstream "containment is not a dependency" rule.
+ *
+ * A trace that reaches a CustomObject would otherwise walk DEFINES_FIELD to
+ * every field of the object (hundreds on a standard object), then field ->
+ * field formula READS_FIELD, then HAS_VALIDATION_RULE etc. None of that is
+ * something the traced component depends on — the object *contains* those
+ * members. When `leafStructure` is on, a non-root node whose label is in
+ * STRUCTURE_LEAF_LABELS is not expanded along STRUCTURAL_RELTYPES; the node
+ * itself stays in the result as a leaf.
+ */
+export const STRUCTURE_LEAF_LABELS: ReadonlySet<string> = new Set([
+  "CustomObject",
+  "CustomField",
+  "ValidationRule",
+  "RecordType",
+  "NamedCredential",
+]);
+
+export const STRUCTURAL_RELTYPES: ReadonlySet<string> = new Set([
+  REL_TYPES.DEFINES_FIELD,
+  REL_TYPES.HAS_VALIDATION_RULE,
+  REL_TYPES.HAS_RECORD_TYPE,
+  REL_TYPES.CONTAINS,
+  // field -> field (formula) and ValidationRule -> field reads
+  REL_TYPES.READS_FIELD,
+  // dependent picklist -> controlling field
+  REL_TYPES.DEPENDS_ON_FIELD,
+]);
+
+/** Label of a qname from its `<Label>:` prefix ("" when there is none). */
+export function labelOfQname(qname: string): string {
+  const i = qname.indexOf(":");
+  return i > 0 ? qname.slice(0, i) : "";
+}
+
+/** True when `e` is a containment edge out of an object/field-like node. */
+export function isStructuralEdge(e: EdgeFact): boolean {
+  return (
+    STRUCTURAL_RELTYPES.has(e.relType) &&
+    STRUCTURE_LEAF_LABELS.has(labelOfQname(e.srcQualifiedName))
+  );
+}

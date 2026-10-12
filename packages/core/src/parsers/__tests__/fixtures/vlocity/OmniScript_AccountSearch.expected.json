@@ -12,9 +12,46 @@
   "edges": [
     {
       "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "NamedCredential:Acme_NC",
+      "relType": "CALLS_NAMED_CREDENTIAL",
+      "attributes": {
+        "restMethod": "POST"
+      }
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "LWC:myCmp",
+      "relType": "OS_EMBEDS_LWC",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "OmniScript:Change_Bulk_English",
+      "relType": "OS_EMBEDS_OS",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "Remote:vlocity_cmt.Svc",
+      "relType": "OS_INVOKES_REMOTE",
+      "attributes": {
+        "remoteClass": "vlocity_cmt.Svc",
+        "remoteMethod": "go"
+      }
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
       "dstQualifiedName": "DataRaptor:AccountSearch",
       "relType": "OS_USES_DR",
       "attributes": {}
+    },
+    {
+      "srcQualifiedName": "OmniScript:AccountSearch",
+      "dstQualifiedName": "DataRaptor:DR_Pre",
+      "relType": "OS_USES_DR",
+      "attributes": {
+        "role": "preTransform"
+      }
     }
   ]
 }

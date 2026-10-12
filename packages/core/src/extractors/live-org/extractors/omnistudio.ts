@@ -1,6 +1,20 @@
 import { METADATA_CATEGORY, type MetadataCategory } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleData, soqlWithTimeout } from "../rate-limit.js";
+import { scheduleData } from "../rate-limit.js";
+import {
+  type FetchFailure,
+  type RetryOptions,
+  isOrgRejection,
+  querySoqlAll,
+  throwIfIncomplete,
+} from "../retry.js";
+
+/** Child-fetch outcome: rows grouped by parent Id, plus the parent Ids whose
+ *  child chunk could not be fetched after retries. */
+interface ChildFetch<T> {
+  byParent: Map<string, T[]>;
+  failedParents: Map<string, unknown>;
+}
 
 interface ORow {
   Id?: string;
@@ -68,12 +82,14 @@ const QUERIES: OQuery[] = [
 async function fetchElementsByProcess(
   conn: any,
   processIds: string[],
-): Promise<Map<string, Array<{ Type: string; propertySet: unknown; name: string | null }>>> {
+  retryOpts: RetryOptions,
+): Promise<ChildFetch<{ Type: string; propertySet: unknown; name: string | null }>> {
   const byProcess = new Map<
     string,
     Array<{ Type: string; propertySet: unknown; name: string | null }>
   >();
-  if (processIds.length === 0) return byProcess;
+  const failedParents = new Map<string, unknown>();
+  if (processIds.length === 0) return { byParent: byProcess, failedParents };
   // SOQL IN() has a 4000-item ceiling; chunk defensively.
   const CHUNK = 200;
   for (let i = 0; i < processIds.length; i += CHUNK) {
@@ -82,17 +98,24 @@ async function fetchElementsByProcess(
     const soql = `SELECT Id, Name, Type, PropertySet, OmniProcessId, ParentElementId, ElementsLevel FROM OmniProcessElement WHERE OmniProcessId IN (${idList})`;
     // OmniProcessElement is a standard SObject in OmniStudio-on-Core, not
     // a Tooling object. Route via conn.query (regular SOQL) on the data pool.
-    let res: { records?: OElementRow[] } | null = null;
+    // 200 parents can carry far more than one 2000-row page of elements:
+    // drain every page (a plain conn.query returns only the first batch).
+    let records: OElementRow[] = [];
     try {
-      res = (await scheduleData(() =>
-        soqlWithTimeout(conn.query(soql), "data OmniProcessElement"),
-      )) as {
-        records?: OElementRow[];
-      } | null;
-    } catch {
+      records = await querySoqlAll<OElementRow>(
+        conn,
+        soql,
+        "data OmniProcessElement",
+        scheduleData,
+        retryOpts,
+      );
+    } catch (e) {
+      // Don't emit these parents with a missing/partial element graph;
+      // the caller surfaces them as not fetched.
+      for (const id of slice) failedParents.set(id, e);
       continue;
     }
-    for (const r of res?.records ?? []) {
+    for (const r of records) {
       if (!r.OmniProcessId) continue;
       let propertySet: unknown = {};
       if (typeof r.PropertySet === "string" && r.PropertySet.length > 0) {
@@ -111,7 +134,7 @@ async function fetchElementsByProcess(
       byProcess.set(r.OmniProcessId, arr);
     }
   }
-  return byProcess;
+  return { byParent: byProcess, failedParents };
 }
 
 /**
@@ -120,15 +143,17 @@ async function fetchElementsByProcess(
  * field mappings (InputObjectName/InputFieldName, Output*, Lookup*) that
  * the OmniDataTransform parser turns into DR_READS_FIELD / DR_WRITES_FIELD
  * edges. Wrapped in its own try/catch per chunk so field-name drift on a
- * newer org version degrades to "no items" with a breadcrumb, never a
- * failed source.
+ * newer org version degrades to "no items" with a breadcrumb; any other
+ * failure (after retries) marks the chunk's parents as not fetched.
  */
 async function fetchItemsByTransform(
   conn: any,
   transformIds: string[],
-): Promise<Map<string, Array<Record<string, unknown>>>> {
+  retryOpts: RetryOptions,
+): Promise<ChildFetch<Record<string, unknown>>> {
   const byTransform = new Map<string, Array<Record<string, unknown>>>();
-  if (transformIds.length === 0) return byTransform;
+  const failedParents = new Map<string, unknown>();
+  if (transformIds.length === 0) return { byParent: byTransform, failedParents };
   const CHUNK = 200;
   for (let i = 0; i < transformIds.length; i += CHUNK) {
     const slice = transformIds.slice(i, i + CHUNK);
@@ -136,18 +161,27 @@ async function fetchItemsByTransform(
     const ITEM_FIELDS =
       "Id, Name, InputObjectName, InputFieldName, OutputObjectName, OutputFieldName, LookupObjectName, LookupByFieldName, FilterValue, FilterOperator, OmniDataTransformationId";
     const soql = `SELECT ${ITEM_FIELDS} FROM OmniDataTransformItem WHERE OmniDataTransformationId IN (${idList})`;
-    let res: { records?: Array<Record<string, unknown>> } | null = null;
+    let records: Array<Record<string, unknown>> = [];
     try {
-      res = (await scheduleData(() =>
-        soqlWithTimeout(conn.query(soql), "data OmniDataTransformItem"),
-      )) as { records?: Array<Record<string, unknown>> } | null;
+      records = await querySoqlAll<Record<string, unknown>>(
+        conn,
+        soql,
+        "data OmniDataTransformItem",
+        scheduleData,
+        retryOpts,
+      );
     } catch (e) {
+      if (!isOrgRejection(e)) {
+        for (const id of slice) failedParents.set(id, e);
+        continue;
+      }
       console.log(
         `ingest:   omnistudio item query failed for OmniDataTransformItem: ${(e as Error).message?.slice(0, 200) ?? String(e)}`,
       );
-      continue;
+      // Schema drift is permanent: no items for any chunk.
+      return { byParent: byTransform, failedParents };
     }
-    for (const r of res?.records ?? []) {
+    for (const r of records) {
       const parentId = String(r.OmniDataTransformationId ?? "");
       if (!parentId) continue;
       const arr = byTransform.get(parentId) ?? [];
@@ -155,7 +189,7 @@ async function fetchItemsByTransform(
       byTransform.set(parentId, arr);
     }
   }
-  return byTransform;
+  return { byParent: byTransform, failedParents };
 }
 
 export interface IterOmnistudioOpts {
@@ -164,6 +198,8 @@ export interface IterOmnistudioOpts {
    *  with higher fidelity (OmniDataTransform, OmniUiCard) when
    *  enableOmnistudioRetrieve is on. */
   skipTypes?: Set<string>;
+  /** Retry/backoff for every query (tests pass retryBackoffMs: 0). */
+  retry?: RetryOptions;
 }
 
 export async function* iterOmnistudio(
@@ -180,15 +216,21 @@ export async function* iterOmnistudio(
   // how capabilities.ts detects them). They are NOT Tooling objects, so
   // routing through `conn.tooling.query` silently returned zero rows on
   // orgs that actually had data. Use regular SOQL via the data pool.
+  const retryOpts = opts.retry ?? {};
+  const failures: FetchFailure[] = [];
   const activeQueries = QUERIES.filter((q) => !opts.skipTypes?.has(q.memberType));
   const settled = await Promise.allSettled(
     activeQueries.map(async (q) => {
       try {
-        const res = (await scheduleData(() =>
-          soqlWithTimeout(conn.query(q.soql), `data ${q.memberType}`),
-        )) as {
-          records?: ORow[];
-        } | null;
+        // Drain every page: a plain conn.query returns only the first batch.
+        const records = await querySoqlAll<ORow>(
+          conn,
+          q.soql,
+          `data ${q.memberType}`,
+          scheduleData,
+          retryOpts,
+        );
+        const res = { records } as { records?: ORow[] } | null;
         return { q, res, err: null as Error | null };
       } catch (e) {
         return { q, res: null, err: e as Error };
@@ -206,7 +248,10 @@ export async function* iterOmnistudio(
   // org version (e.g. OmniProcessType -> Type) — without this line we
   // returned `✓ 0 records` and the user had no breadcrumb.
   for (const { q, err } of results) {
-    if (err) {
+    if (err && !isOrgRejection(err)) {
+      // Transient (timeout / connection loss): lost data, surface it.
+      failures.push({ name: q.memberType, error: err });
+    } else if (err) {
       console.log(
         `ingest:   omnistudio query failed for ${q.memberType}: ${err.message?.slice(0, 200) ?? String(err)}`,
       );
@@ -229,14 +274,26 @@ export async function* iterOmnistudio(
       if (q.fetchItems) transformIds.push(String(r.Id));
     }
   }
-  const [elementsByProcess, itemsByTransform] = await Promise.all([
-    fetchElementsByProcess(conn, parentIds),
-    fetchItemsByTransform(conn, transformIds),
+  const [elementFetch, itemFetch] = await Promise.all([
+    fetchElementsByProcess(conn, parentIds, retryOpts),
+    fetchItemsByTransform(conn, transformIds, retryOpts),
   ]);
+  const elementsByProcess = elementFetch.byParent;
+  const itemsByTransform = itemFetch.byParent;
 
   for (const { q, res } of results) {
     for (const r of res?.records ?? []) {
       const name = String(r.DeveloperName ?? r.Name ?? r.Id ?? "");
+      const id = r.Id ? String(r.Id) : "";
+      const childErr =
+        (q.fetchElements && elementFetch.failedParents.get(id)) ||
+        (q.fetchItems && itemFetch.failedParents.get(id));
+      if (childErr) {
+        // Emitting the parent without its children would replace a good
+        // node with an edgeless one; leave it for --retry-skipped.
+        failures.push({ name: `${q.memberType}:${name}`, error: childErr });
+        continue;
+      }
       const elements = q.fetchElements && r.Id ? (elementsByProcess.get(String(r.Id)) ?? []) : [];
       const items = q.fetchItems && r.Id ? (itemsByTransform.get(String(r.Id)) ?? []) : [];
       let enriched: Record<string, unknown> = r;
@@ -255,4 +312,5 @@ export async function* iterOmnistudio(
       };
     }
   }
+  throwIfIncomplete("omnistudio", failures);
 }

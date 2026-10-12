@@ -1,18 +1,33 @@
+import { existsSync, readFileSync } from "node:fs";
 import { type OrgId, type QualifiedName, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { Logger } from "@ryanstark24/sfgraph-shared";
-import { resolveApexMethodArity } from "../parsers/apex/arity-resolver.js";
+import { type ArityResolveOpts, resolveApexMethodArity } from "../parsers/apex/arity-resolver.js";
+import { retargetApexInterfaceRefs } from "../parsers/apex/interface-ref-resolver.js";
+import { resolveAuraEmbeds } from "../parsers/aura/embed-resolver.js";
 import type { ParseContext, ParseResult } from "../parsers/contract.js";
 import { resolveCrossFlavor } from "../parsers/cross-flavor-resolver.js";
 import { resolveFlowApexMethods } from "../parsers/flow/invocable-resolver.js";
-import { parserRegistry } from "../parsers/registry.js";
+import { resolveFormulaRelationshipHops } from "../parsers/object/formula-hop-resolver.js";
 // Ensure all parsers are registered before we look them up.
 import "../parsers/index.js";
 import { auditDanglingEdges } from "../analyze/audit-graph.js";
 import { populateAnalysisTables } from "../analyze/populate.js";
 import { REL_TYPES } from "../domain/rel-types.js";
-import { EmbeddingQueue, type VectorSink } from "../embedding/index.js";
+import {
+  EmbeddingCache,
+  type EmbeddingCacheLike,
+  EmbeddingPool,
+  EmbeddingQueue,
+  type VectorSink,
+  defaultEmbeddingWorkerUrl,
+  hashEmbedText,
+} from "../embedding/index.js";
 import { tokenizeIdentifier } from "../embedding/tokenize.js";
-import type { MemberRef, RawMember } from "../extractors/interfaces/metadata-source.js";
+import type {
+  MemberRef,
+  MetadataSource,
+  RawMember,
+} from "../extractors/interfaces/metadata-source.js";
 import { type ResolveOrgDeps, type ResolvedOrg, resolveOrg } from "../extractors/live-org/auth.js";
 import { type IngestSkipReport, bulkRetrieve } from "../extractors/live-org/bulk-retrieve.js";
 import { type OrgCapabilities, probeCapabilities } from "../extractors/live-org/capabilities.js";
@@ -30,13 +45,44 @@ const MEMBER_TYPE_TO_NODE_LABEL: Record<string, string> = {
   AuraDefinitionBundle: "AuraComponent",
 };
 import { loadAllRules } from "../parsers/rules/_loader.js";
-import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
+import type { BetterSqlite3Database, GraphStore, MemberRow } from "../storage/interfaces.js";
 import type { SnapshotStore } from "../storage/interfaces.js";
-import { evaluateDeletionGuard, resolveMaxDropRatio } from "./detect-deletions-guard.js";
+import {
+  evaluateDeletionGuard,
+  isSkipProtected,
+  resolveMaxDropRatio,
+  skipProtection,
+} from "./detect-deletions-guard.js";
+import {
+  hasGoodPriorOwned,
+  isParseFailureOnly,
+  isQuarantinedFor,
+  isQuarantinedRow,
+  memberContentHash,
+  memberFailureStamp,
+  ownedQnames,
+  quarantinedOutcome,
+} from "./member-rows.js";
+import { OFFLINE_CAPS } from "./offline-org.js";
+import { type MemberParse, parseMember } from "./parse-member.js";
+import {
+  type ParsePoolOpts,
+  type ParsePoolStats,
+  parsePool,
+  resolveParseWorkers,
+} from "./parse-pool.js";
+
+export { adaptParserInput } from "./parse-member.js";
+import { createIngestProfiler } from "./profile.js";
 
 export type IngestMode = "full" | "incremental" | "auto";
 
 export interface LiveIngestOpts {
+  /** Offline source (e.g. FilesystemMetadataSource). When set, no
+   *  connection call is made: capability probe, discovery, MCD baseline,
+   *  liveness probe and bulkRetrieve are skipped and the source's members
+   *  are streamed through processOne. Forces mode "full". */
+  metadataSource?: MetadataSource;
   alias: string;
   mode?: IngestMode;
   graphStore: GraphStore;
@@ -68,6 +114,12 @@ export interface LiveIngestOpts {
    * fetch a subset of types without rebuilding the whole graph.
    */
   onlyLabels?: Set<string>;
+  /**
+   * `onlyLabels` was chosen by the user (--only / --retry-skipped) rather
+   * than by the CLI's in-run auto-retry: the generic types it names are read
+   * in full, without the early stop on identical refusals.
+   */
+  explicitOnlyLabels?: boolean;
   /**
    * Where to persist the skip report at end of run. When set, the report is
    * written as JSON so --retry-skipped can read it on the next run.
@@ -122,10 +174,118 @@ export interface LiveIngestOpts {
   disableReflectionWalker?: boolean;
   /** Skip the post-merge Apex method arity resolver pass. */
   disableArityResolve?: boolean;
+  /**
+   * Skip the post-merge pass that moves `ApexClass:X` references onto
+   * `ApexInterface:X` when no class X exists (independent of
+   * `disableArityResolve`).
+   */
+  disableInterfaceRetarget?: boolean;
+  /**
+   * Skip the post-merge pass that moves a formula's second-hop field guess
+   * onto the CustomField declaring that relationshipName (independent of
+   * `disableArityResolve`).
+   */
+  disableFormulaHopResolve?: boolean;
   /** Skip the post-merge Flow→Apex method-level resolver pass. */
   disableFlowInvocableResolve?: boolean;
+  /** Skip the post-merge Vlocity Remote Action → Apex resolver pass. */
+  disableVlocityApexResolve?: boolean;
+  /** Skip the post-merge DataRaptor `Rel__r.Field` relationship-path resolver pass. */
+  disableDrRelationshipResolve?: boolean;
+  /** Skip the post-merge Vlocity DataPack name-match resolver pass. */
+  disableVlocityNameMatchResolve?: boolean;
+  /** Skip the post-merge Apex relationship-path / lowercase test-target resolver pass. */
+  disableApexRefResolve?: boolean;
+  /** Skip the post-merge LWC record-literal `X__c` key → unique CustomField resolver pass. */
+  disableLwcFieldKeyResolve?: boolean;
   /** Skip the post-merge dangling-edge audit pass. */
   disableAudit?: boolean;
+  /**
+   * The caller is rebuilding this org's graph (CLI `--rebuild`). Enables the
+   * rebuild fast path (bulk-load window, no per-member delete probes) when the
+   * org's graph is empty at start. Emptiness is the correctness condition, so
+   * an unset flag behaves like true for full-mode ingests into an empty graph;
+   * pass `false` to force the per-member path. `SFGRAPH_DISABLE_FASTPATH=1`
+   * always forces the per-member path.
+   */
+  rebuild?: boolean;
+  /**
+   * Embedding backend. Defaults to a worker-thread pool owned (and closed) by
+   * this ingest in compiled builds, else the in-process model. An injected
+   * embedder is owned by the CALLER and is never closed here, so one pool can
+   * be shared across several ingests (the CLI does this for multi-org runs).
+   */
+  embedder?: { embed(texts: string[]): Promise<Float32Array[]>; close?(): unknown };
+  /** Persistent text → vector cache file (see `embeddingCachePath`). */
+  embeddingCacheFile?: string;
+  /**
+   * Wait for embeddings to finish before returning (default true). With
+   * false, ingest returns at "graph ready"; the unembedded texts stay flagged
+   * pending and the next ingest fills them in.
+   */
+  waitEmbeddings?: boolean;
+  /**
+   * Parse-pool overrides (tests and tuning). Default: SFGRAPH_PARSE_WORKERS
+   * workers (min(4, availableParallelism - 1) when unset, 0 = parse on the
+   * main thread), the compiled worker, and serial parsing for inputs under 500
+   * members. `stats`, when given, is filled in during the fan-out.
+   */
+  parsePool?: Pick<ParsePoolOpts, "workers" | "workerUrl" | "minMembers" | "stats">;
+  /**
+   * Test / instrumentation hook, called synchronously as named phases
+   * complete. Today: "sync-complete" (right after markSyncComplete).
+   */
+  onPhase?: (name: string) => void;
+  /**
+   * Task 11c: run as the merge step of a project delta (ingest/delta.ts).
+   * Requires `metadataSource` and mode "full"; the hooks replace the member
+   * stream, scope the resolver passes, and skip the audit, the member-row
+   * bookkeeping and the ghost sweep (the delta does its own).
+   */
+  delta?: LiveIngestDeltaHooks;
+}
+
+/** Task 11c: how a delta ingest drives liveIngest (see `LiveIngestOpts.delta`). */
+export interface LiveIngestDeltaHooks {
+  /** The members to (re)parse, in source order; replaces `metadataSource.iter()`. */
+  members: AsyncIterable<RawMember>;
+  /** Every member as it is applied (errored: a parse or merge failure). */
+  onMember(member: RawMember, outcome: MemberParse, errored: boolean): void;
+  /** After the merge (bulk window closed), before the resolver passes. */
+  afterMerge(): void;
+  /** Scope for each resolver pass; undefined means the whole graph. */
+  arityScope(): ArityResolveOpts["scope"] | undefined;
+  /** Members whose row ends quarantined after this delta (T15 N5-1). */
+  quarantinedCount?(): number;
+  retargetInterfaceNames(): ReadonlySet<string> | undefined;
+  hopSources(): ReadonlySet<string> | undefined;
+  /**
+   * Called right before the reflection walk: removes the stale reflection
+   * edges and returns the sources to walk (undefined: walk everything).
+   */
+  reflectionSources(): ReadonlySet<string> | undefined;
+  /** After the sync is marked complete and dead code recomputed. */
+  finalize(): void;
+}
+
+/** Embedding outcome of an ingest (undefined when no vector store). */
+export interface LiveIngestEmbeddings {
+  /** Vectors served from the persistent cache. */
+  cached: number;
+  /** Texts run through the model. */
+  computed: number;
+  /** Texts whose stored vector already matched. */
+  unchanged: number;
+  /** Texts whose model call failed. */
+  failed: number;
+  /** Texts left unembedded when the ingest returned (no-wait or failure). */
+  pending: number;
+  /** Texts re-queued from an earlier run that left vectors pending. */
+  backfilled: number;
+  /** ms from ingest start until embeddings finished (or were abandoned). */
+  doneMs: number;
+  /** First embedding error, if any. */
+  error?: string;
 }
 
 export interface LiveIngestResult {
@@ -140,8 +300,29 @@ export interface LiveIngestResult {
   crossFlavorEdges: number;
   /** Number of stranded Apex CALLS edges rewritten to real-arity targets. */
   arityResolved: number;
+  /**
+   * Members recorded as failed and skipped until their content changes, after
+   * WORKER_FAILURE_LIMIT consecutive parse-worker crashes or stalls (T15 N5-1).
+   */
+  parseQuarantined?: number;
+  /** `ApexClass:X` references moved onto `ApexInterface:X` (Task 11c, M-3). */
+  interfaceRefsRetargeted?: number;
   /** Number of Flow→Apex class edges resolved to method-level. */
   flowMethodsResolved: number;
+  /** Vlocity Remote Action → Apex resolver counts (undefined when skipped or failed). */
+  vlocityApex?:
+    | undefined
+    | {
+        scanned: number;
+        resolvedClass: number;
+        resolvedMethod: number;
+        ambiguous: number;
+        external: number;
+      };
+  /** DataRaptor relationship-path resolver counts (undefined when skipped or failed). */
+  drRelationships?:
+    | undefined
+    | { scanned: number; resolved: number; unresolved: number; edgesEmitted: number };
   /** Number of edges whose dst node does not exist after all post-passes. */
   danglingEdges: number;
   /** REFERENCES edges emitted by the reflection walker. Zero when
@@ -169,6 +350,15 @@ export interface LiveIngestResult {
    * Empty array on a clean run.
    */
   warnings: string[];
+  /**
+   * The member stream threw part-way (e.g. the parallel merge rethrowing a
+   * failed sub-stream): the graph holds what was read before it, nothing was
+   * swept, and `warnings` carries `stream:aborted:<message>`.
+   */
+  streamAborted?: boolean;
+  /** ms from ingest start until the graph (merges, resolvers, dead-code) was complete. */
+  graphReadyMs?: number;
+  embeddings?: LiveIngestEmbeddings;
 }
 
 const NOOP_LOG: Logger = {
@@ -181,7 +371,42 @@ const NOOP_LOG: Logger = {
 /** Print a consolidated end-of-run summary of metadata types that were
  *  skipped during ingest, grouped by failure category, with a targeted
  *  remediation block per category. */
-function printSkipSummary(report: IngestSkipReport, orgAlias: string): void {
+/**
+ * Entries of the previous skip report at `path` (same org) whose label a
+ * scoped run did NOT re-run. Missing / malformed / other-org report: none.
+ * A `discovery` only-label re-runs every generic:* source (bulkRetrieve), so
+ * their entries are not carried either (review N3).
+ */
+export function carriedOverSkips(
+  path: string,
+  orgId: string,
+  reRun: ReadonlySet<string>,
+): IngestSkipReport["skips"] {
+  try {
+    if (!existsSync(path)) return [];
+    const prev = JSON.parse(readFileSync(path, "utf8")) as {
+      orgId?: string;
+      skips?: IngestSkipReport["skips"];
+    };
+    if (prev.orgId !== undefined && prev.orgId !== orgId) return [];
+    return (prev.skips ?? []).filter(
+      (s) =>
+        s &&
+        typeof s.label === "string" &&
+        !reRun.has(s.label) &&
+        !(reRun.has("discovery") && s.label.startsWith("generic:")),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** A skip reason without a leading "<label>: " — source errors already name
+ *  their source, which the summary bullet prints anyway. */
+function bulletReason(s: { label: string; reason: string }): string {
+  return s.reason.startsWith(`${s.label}: `) ? s.reason.slice(s.label.length + 2) : s.reason;
+}
+export function printSkipSummary(report: IngestSkipReport, orgAlias: string): void {
   const byCategory = new Map<string, Array<{ label: string; reason: string }>>();
   for (const s of report.skips) {
     const arr = byCategory.get(s.category) ?? [];
@@ -189,18 +414,26 @@ function printSkipSummary(report: IngestSkipReport, orgAlias: string): void {
     byCategory.set(s.category, arr);
   }
 
-  const total = report.skips.length;
+  const unreadableCount = byCategory.get("unreadable")?.length ?? 0;
+  const total = report.skips.length - unreadableCount;
   console.log("");
-  console.log(
-    `⚠ ${total} metadata ${total === 1 ? "type was" : "types were"} skipped during this ingest.`,
-  );
-  console.log("  The rest of the graph completed successfully — these types are simply absent.");
+  if (total > 0) {
+    console.log(
+      `⚠ ${total} metadata ${total === 1 ? "type was" : "types were"} skipped during this ingest.`,
+    );
+    console.log("  The rest of the graph completed successfully — these types are simply absent.");
+  }
+  if (unreadableCount > 0) {
+    console.log(
+      `⚠ ${unreadableCount} metadata ${unreadableCount === 1 ? "type (or some of its members)" : "types (or some of their members)"} could not be read: the org refused them (unreadable — see below).`,
+    );
+  }
 
   if (byCategory.has("insufficient_access")) {
     const list = byCategory.get("insufficient_access") ?? [];
     console.log("");
     console.log(`  Insufficient access (${list.length}):`);
-    for (const s of list) console.log(`    • ${s.label}: ${s.reason}`);
+    for (const s of list) console.log(`    • ${s.label}: ${bulletReason(s)}`);
     console.log("");
     console.log("  How to fix permanently:");
     console.log("    1. Have an admin assign your user a permission set with:");
@@ -239,52 +472,30 @@ function printSkipSummary(report: IngestSkipReport, orgAlias: string): void {
     const list = byCategory.get("network") ?? [];
     console.log("");
     console.log(`  Network errors (${list.length}):`);
-    for (const s of list) console.log(`    • ${s.label}: ${s.reason}`);
+    for (const s of list) console.log(`    • ${s.label}: ${bulletReason(s)}`);
     console.log("    How to fix: check connectivity to your org and re-run.");
+  }
+
+  if (byCategory.has("unreadable")) {
+    const list = byCategory.get("unreadable") ?? [];
+    console.log("");
+    console.log(
+      `  Unreadable (org refused; re-run with --retry-skipped to try again) (${list.length}):`,
+    );
+    for (const s of list) console.log(`    • ${s.label}: ${bulletReason(s)}`);
+    console.log("    The org rejected these reads as invalid, or returned the same error on");
+    console.log("    repeated reads, so they were not auto-retried in this run. To try again:");
+    console.log(`         sfgraph ingest --org ${orgAlias} --retry-skipped`);
   }
 
   if (byCategory.has("unknown")) {
     const list = byCategory.get("unknown") ?? [];
     console.log("");
     console.log(`  Other (${list.length}):`);
-    for (const s of list) console.log(`    • ${s.label}: ${s.reason}`);
+    for (const s of list) console.log(`    • ${s.label}: ${bulletReason(s)}`);
   }
   console.log("");
 }
-
-/** Live-org Apex extractor wraps body in a `{body, metaXml}` JSON envelope
- *  so we can forward Tooling-row ApiVersion/Status to the parser. Filesystem
- *  extractor still passes raw body. Detect by trying JSON.parse — if it
- *  yields an object with `body`, unwrap; otherwise treat as raw body. */
-function unwrapApexEnvelope(content: string): { body: string; metaXml?: string } {
-  if (!content) return { body: "" };
-  if (content[0] !== "{") return { body: content };
-  try {
-    const parsed = JSON.parse(content) as { body?: unknown; metaXml?: unknown };
-    if (parsed && typeof parsed === "object" && typeof parsed.body === "string") {
-      const out: { body: string; metaXml?: string } = { body: parsed.body };
-      if (typeof parsed.metaXml === "string") out.metaXml = parsed.metaXml;
-      return out;
-    }
-  } catch {
-    /* fallthrough — raw body */
-  }
-  return { body: content };
-}
-
-/** Maps the Vlocity runner's emitted memberType (the bare VlocityDataPackType)
- *  to the parser-registry key the four rich Vlocity parsers register under.
- *  Only these four DataPack types have dedicated parsers; the other ~44 fall
- *  through to the opaque node parser (node-only, by design). */
-const VLOCITY_MEMBER_TO_PARSER: Record<string, string> = {
-  DataRaptor: "VlocityDataRaptor",
-  VlocityDataRaptor: "VlocityDataRaptor",
-  IntegrationProcedure: "VlocityIntegrationProcedure",
-  VlocityIntegrationProcedure: "VlocityIntegrationProcedure",
-  OmniScript: "VlocityOmniScript",
-  VlocityOmniScript: "VlocityOmniScript",
-  VlocityCard: "VlocityCard",
-};
 
 /**
  * Build the text embedded for a node's semantic vector. Beyond the
@@ -292,7 +503,7 @@ const VLOCITY_MEMBER_TO_PARSER: Record<string, string> = {
  * `find_similar` matches on what a config artifact actually resolves to —
  * a Custom Metadata record's field values, a Custom Label's text, a Custom
  * Setting's rows. Without this, searching "endpoint for product push" can't
- * reach `End_Point_Urls.ProductPush_PLDT` because only its name was embedded.
+ * reach `Endpoint_Url.ProductPush_Acme` because only its name was embedded.
  * Exported for tests.
  */
 export function buildEmbedText(
@@ -371,136 +582,6 @@ function stringifyConfigVal(v: unknown): string {
   return String(v);
 }
 
-/** Exported for tests — maps a RawMember to the registered parser's input shape. */
-export function adaptParserInput(
-  ref: MemberRef,
-  content: string,
-): { type: string; input: unknown } | null {
-  switch (ref.memberType) {
-    case "ApexClass": {
-      const { body, metaXml } = unwrapApexEnvelope(content);
-      return {
-        type: "ApexClass",
-        input: { className: ref.memberName, body, ...(metaXml ? { metaXml } : {}) },
-      };
-    }
-    case "ApexTrigger": {
-      const { body, metaXml } = unwrapApexEnvelope(content);
-      return {
-        type: "ApexTrigger",
-        input: { triggerName: ref.memberName, body, ...(metaXml ? { metaXml } : {}) },
-      };
-    }
-    case "LightningComponentBundle": {
-      try {
-        const parsed = JSON.parse(content || "{}") as {
-          bundleName?: string;
-          files?: Record<string, string>;
-        };
-        return {
-          type: "LightningComponentBundle",
-          input: { bundleName: parsed.bundleName ?? ref.memberName, files: parsed.files ?? {} },
-        };
-      } catch {
-        return null;
-      }
-    }
-    case "Flow":
-      return { type: "Flow", input: { fullName: ref.memberName, xml: content } };
-    case "CustomObject":
-      return { type: "CustomObject", input: { apiName: ref.memberName, objectXml: content } };
-    case "Profile":
-      return { type: "Profile", input: { name: ref.memberName, xml: content } };
-    case "PermissionSet":
-      return { type: "PermissionSet", input: { name: ref.memberName, xml: content } };
-    case "SharingRules":
-      return { type: "SharingRules", input: { object: ref.memberName, xml: content } };
-    case "NamedCredential":
-      return { type: "NamedCredential", input: { name: ref.memberName, xml: content } };
-    case "ExternalServiceRegistration":
-      return { type: "ExternalServiceRegistration", input: { name: ref.memberName, xml: content } };
-    case "OmniProcess":
-    case "OmniUiCard":
-    case "OmniDataTransform":
-    case "OmniIntegrationProcedure": {
-      let metadata: unknown = content;
-      try {
-        metadata = JSON.parse(content);
-      } catch {
-        /* keep raw */
-      }
-      return { type: ref.memberType, input: { name: ref.memberName, metadata } };
-    }
-    // The Vlocity runner emits the bare VlocityDataPackType as memberType
-    // ("DataRaptor", "IntegrationProcedure", "OmniScript", "VlocityCard"),
-    // but the four rich parsers register under "Vlocity"-prefixed type names
-    // ("VlocityDataRaptor", …). Without this mapping the runner's members
-    // never matched a case here and fell through to the opaque fallback —
-    // shallow nodes with zero DR_/IP_/OS_ edges. Only "VlocityCard" happened
-    // to align on both sides, which is why a real ingest produced VC edges
-    // but no DataRaptor/IP/OmniScript lineage. The golden tests call the
-    // parsers directly, so this runner→dispatch seam was never covered.
-    // The legacy "Vlocity*"-prefixed keys are kept too in case any caller
-    // (or a future filesystem source) emits them.
-    case "DataRaptor":
-    case "VlocityDataRaptor":
-    case "IntegrationProcedure":
-    case "VlocityIntegrationProcedure":
-    case "OmniScript":
-    case "VlocityOmniScript":
-    case "VlocityCard": {
-      let datapack: unknown = content;
-      try {
-        datapack = JSON.parse(content);
-      } catch {
-        /* keep raw */
-      }
-      return {
-        type: VLOCITY_MEMBER_TO_PARSER[ref.memberType] ?? ref.memberType,
-        input: { name: ref.memberName, datapack },
-      };
-    }
-    default: {
-      // Long-tail metadata types: route to a registered parser when one
-      // exists (the 21 rule-based YAML parsers register under their raw
-      // metadata type name, e.g. "Layout", "Dashboard"), otherwise fall
-      // back to the opaque node parser so the member still becomes a
-      // graph node. Before this fallback every generic-extractor member
-      // was silently dropped here — extracted, logged as ✓, and never
-      // merged — which left grant/reference edges dangling (e.g. 59k
-      // GRANTS_TAB_ACCESS edges pointing at CustomTab nodes that were
-      // never created).
-      if (parserRegistry.for(ref.memberType)) {
-        return { type: ref.memberType, input: genericRuleInput(ref.memberName, content) };
-      }
-      return {
-        type: "OpaqueMetadata",
-        input: { metadataType: ref.memberType, name: ref.memberName, raw: content },
-      };
-    }
-  }
-}
-
-/**
- * Build the `{ name, xml, ...siblings }` input shape the rule-based parsers'
- * `xml-string` coercion expects. Filesystem sources hand us raw XML; the
- * live generic extractor hands us the JSON-serialized `metadata.read()`
- * object — whose keys mirror the parsed XML root, so they can be promoted
- * to sibling keys directly (coerceInput merges siblings into the record).
- */
-function genericRuleInput(name: string, content: string): Record<string, unknown> {
-  const s = (content ?? "").trimStart();
-  if (s.startsWith("<")) return { name, xml: content };
-  let parsed: Record<string, unknown> = {};
-  try {
-    const j: unknown = JSON.parse(s);
-    if (j && typeof j === "object" && !Array.isArray(j)) parsed = j as Record<string, unknown>;
-  } catch {
-    /* not JSON — leave record empty; the node still gets name + label */
-  }
-  return { xml: "", ...parsed, name };
-}
-
 export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult> {
   const logger = opts.logger ?? NOOP_LOG;
   // Load declarative rule parsers (idempotent).
@@ -538,29 +619,41 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     logger.warn("live-ingest: markSyncStarted failed", { err: (e as Error).message });
   }
 
+  // Opt-in profiling (SFGRAPH_INGEST_PROFILE=<file>); no-op otherwise.
+  // Created before the try so the finally can flush on failure too.
+  const profiler = createIngestProfiler();
+  // Embedding resources, owned here so the finally can release them on any path.
+  let embedQueue: EmbeddingQueue | null = null;
+  let ownedEmbedder: EmbeddingPool | null = null;
+  let embedCache: EmbeddingCache | null = null;
+
   // W1.5-08: the rest of the ingest runs inside this try so a thrown
   // exception still flips `sync_in_progress` back to 0 via markSyncFailed.
   // Per-resolver try/catch isolation inside bulkRetrieve / live-ingest is
   // preserved — this wrapper only catches exceptions that escape *all* of
   // those inner handlers (i.e. genuinely fatal failures).
   try {
-    const caps = await probeCapabilities(resolved.conn);
+    const caps = opts.metadataSource ? OFFLINE_CAPS : await probeCapabilities(resolved.conn);
     logger.info("live-ingest: probed capabilities", { caps });
 
     // Discovery is also invoked implicitly inside bulkRetrieve, but logging the
     // type-count up-front gives operators a quick coverage signal.
-    try {
-      const { discoverMetadataTypes } = await import("../extractors/live-org/discovery.js");
-      const discovered = await discoverMetadataTypes(resolved.conn, apiVersion);
-      logger.info("live-ingest: discovered metadata types", { count: discovered.length });
-    } catch (e) {
-      logger.warn("live-ingest: metadata.describe failed", { err: (e as Error).message });
+    if (!opts.metadataSource) {
+      try {
+        const { discoverMetadataTypes } = await import("../extractors/live-org/discovery.js");
+        const discovered = await discoverMetadataTypes(resolved.conn, apiVersion);
+        logger.info("live-ingest: discovered metadata types", { count: discovered.length });
+      } catch (e) {
+        logger.warn("live-ingest: metadata.describe failed", { err: (e as Error).message });
+      }
     }
 
     const existing = graph.getOrg(resolved.orgId);
     const requestedMode = opts.mode ?? "auto";
     let mode: IngestMode;
-    if (requestedMode === "auto") {
+    if (opts.metadataSource) {
+      mode = "full";
+    } else if (requestedMode === "auto") {
       mode = existing?.lastSyncedAt && caps.sourceTracking ? "incremental" : "full";
     } else {
       mode = requestedMode;
@@ -607,6 +700,43 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // final LiveIngestResult.warnings array. See bulk-retrieve.ts WedgeCoordinator.
     const wedgeWarnings: string[] = [];
 
+    // Task 10 rebuild fast path. On a full ingest into an org whose graph is
+    // empty at start, run the fan-out inside the store's bulk-load window:
+    // deferred secondary indexes, synchronous=OFF, one transaction per 2,000
+    // members, and no per-member delete probes for keys not yet written (the
+    // store tracks what this run wrote, so repeats are still reconciled and
+    // the graph is identical to the slow path). SFGRAPH_DISABLE_FASTPATH=1
+    // forces the per-member path (used by the same-output test and gate).
+    const fastPathDisabled = process.env.SFGRAPH_DISABLE_FASTPATH === "1";
+    const graphEmptyAtStart =
+      !fastPathDisabled &&
+      mode === "full" &&
+      opts.rebuild !== false &&
+      typeof graph.beginBulk === "function" &&
+      typeof graph.endBulk === "function" &&
+      typeof graph.isOrgEmpty === "function" &&
+      graph.isOrgEmpty(resolved.orgId);
+    // A vector store on its own connection would hit SQLITE_BUSY behind the
+    // held bulk transaction, so keep per-member commits in that case.
+    const vectorDb = (opts.vectorStore as { db?: unknown } | undefined)?.db;
+    const graphDb = (graph as unknown as { db?: unknown }).db;
+    const sharedConnection = vectorDb === undefined || vectorDb === graphDb;
+    let bulkOpen = false;
+    let bulkFailure: Error | null = null;
+    const openBulk = (): void => {
+      if (!graphEmptyAtStart || bulkOpen) return;
+      graph.beginBulk?.({
+        freshOrgId: resolved.orgId,
+        ...(sharedConnection ? {} : { batchTransactions: false }),
+      });
+      bulkOpen = true;
+    };
+    const closeBulk = (): void => {
+      if (!bulkOpen) return;
+      bulkOpen = false;
+      graph.endBulk?.();
+    };
+
     const parseCtxBase: Omit<ParseContext, "sourceUri"> = {
       orgId: resolved.orgId,
       parseTimestamp: new Date(now).toISOString(),
@@ -614,13 +744,54 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       logger,
     };
 
-    const embedQueue = opts.vectorStore
-      ? new EmbeddingQueue({
-          vectorStore: opts.vectorStore,
-          onError: (err) =>
-            logger.warn("live-ingest: embedding batch failed", { err: err.message }),
-        })
-      : null;
+    // Task 11a: embeddings run off the graph-ready path. Inference happens in
+    // a worker thread (compiled builds) or an injected embedder, with up to 4
+    // batches in flight to keep it fed. The queue is HELD until graph ready:
+    // texts buffer (bounded by backpressure, which still forces batches out)
+    // and no inference competes for CPU with the graph build — measured, an
+    // overlapping worker slowed fan-out by ~45%. A persistent text → vector
+    // cache makes --rebuild skip the model for unchanged texts. The org is flagged `embeddings_pending` until every
+    // vector is written, so find_similar can fall back to text search and the
+    // next ingest can fill whatever a no-wait / failed run left behind. The
+    // flag is set lazily, when the queue first has real vector work (a text
+    // past the unchanged check at dispatch, or live work abandoned), so a
+    // re-sync with nothing to embed keeps find_similar's vector leg on.
+    let embedError: Error | null = null;
+    let wasEmbeddingsPending = false;
+    if (opts.vectorStore) {
+      const workerUrl = opts.embedder ? null : defaultEmbeddingWorkerUrl();
+      ownedEmbedder = opts.embedder ? null : workerUrl ? new EmbeddingPool({ workerUrl }) : null;
+      const embedder = opts.embedder ?? ownedEmbedder;
+      if (opts.embeddingCacheFile) {
+        try {
+          embedCache = EmbeddingCache.open(opts.embeddingCacheFile);
+        } catch (e) {
+          logger.warn("live-ingest: embedding cache unavailable", { err: (e as Error).message });
+        }
+      }
+      wasEmbeddingsPending = graph.getEmbeddingStatus?.(resolved.orgId)?.pending ?? false;
+      const maxPendingChars = Number.parseInt(
+        process.env.SFGRAPH_EMBED_MAX_PENDING_CHARS ?? "",
+        10,
+      );
+      embedQueue = new EmbeddingQueue({
+        vectorStore: opts.vectorStore,
+        hold: true,
+        ...(maxPendingChars > 0 ? { maxPendingChars } : {}),
+        onWork: () => {
+          if (!wasEmbeddingsPending) graph.setEmbeddingsPending?.(resolved.orgId, true);
+        },
+        onCacheError: (err) => {
+          logger.warn("live-ingest: embedding cache write failed", { err: err.message });
+        },
+        ...(embedder ? { embed: (t: string[]) => embedder.embed(t), maxInFlight: 4 } : {}),
+        ...(embedCache ? { cache: embedCache as EmbeddingCacheLike } : {}),
+        onError: (err) => {
+          if (!embedError) embedError = err;
+          logger.warn("live-ingest: embedding batch failed", { err: err.message });
+        },
+      });
+    }
 
     const handleParsed = (parsed: ParseResult): void => {
       if (parsed.nodes.length) {
@@ -643,7 +814,23 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       // edges" — a SOQL/DML/CALLS that lingered after the code dropped it on a
       // non-rebuild re-sync). Resolver post-passes (arity / overlap / reflection)
       // re-add their cross-cutting edges afterward, so this is safe.
-      if (parsed.edges.length) graph.mergeEdges(parsed.edges, { reconcileSources: true });
+      // N-5: a method the member still emits but that now has NO outgoing
+      // edge (its only call was removed) is not a source in `parsed.edges`,
+      // so it is named explicitly and its stale edges are pruned too.
+      const methodSrcs: string[] = [];
+      for (const n of parsed.nodes) {
+        if (n.label === "ApexMethod" || n.label === "TestMethod") {
+          methodSrcs.push(String(n.qualifiedName));
+        }
+      }
+      if (parsed.edges.length || methodSrcs.length) {
+        graph.mergeEdges(parsed.edges, {
+          reconcileSources: true,
+          ...(methodSrcs.length
+            ? { reconcileExtraSrcs: { orgId: resolved.orgId, qnames: methodSrcs } }
+            : {}),
+        });
+      }
       if (parsed.snippets?.length) {
         graph.transaction(() => {
           for (const s of parsed.snippets ?? []) {
@@ -695,8 +882,18 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     };
 
     const debugProcess = process.env.SFGRAPH_DEBUG_INGEST === "1";
-    const processOne = async (ref: MemberRef, content: string): Promise<void> => {
+    // Per-member timings, filled by applyMember (parse vs. store write) and
+    // consumed by the member loop. Reset on every call. These are shared
+    // closure state: applyMember must NOT be called concurrently.
+    let lastParseMs = 0;
+    let lastWriteMs = 0;
+    // Apply one member's parse outcome to the graph (or delete an obsolete
+    // member). Always on the main thread, in member order: the parse may have
+    // run in a worker (parsePool), the writes never do.
+    const applyMember = (ref: MemberRef, outcome: MemberParse): void => {
       const qnameForLog = `${ref.memberType}:${ref.memberName}`;
+      lastParseMs = 0;
+      lastWriteMs = 0;
       if (ref.obsolete) {
         // Build the qname with the node's LABEL, not the raw SourceMember type:
         // e.g. LightningComponentBundle is stored as `LWC:<name>`, so the old
@@ -721,24 +918,31 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         deletions += 1;
         return;
       }
-      const adapted = adaptParserInput(ref, content);
-      if (!adapted) return;
-      const parser = parserRegistry.for(adapted.type);
-      if (!parser) return;
+      // Building the parser input threw: surfaces to the member loop's catch.
+      if (outcome.kind === "error" && outcome.phase === "adapt") throw new Error(outcome.message);
+      if (outcome.kind === "skip") return;
+      // Emitted when the result is applied (in member order); the parse itself
+      // may have run earlier in a worker.
+      if (debugProcess) console.log(`ingest: [trace] parse ← ${qnameForLog}`);
+      lastParseMs = outcome.parseMs;
       try {
-        const ctx: ParseContext = {
-          ...parseCtxBase,
-          sourceUri: ref.sourceUri,
-          namespace: ref.namespace ?? null,
-        };
-        if (debugProcess) console.log(`ingest: [trace] parse ← ${qnameForLog}`);
-        const result = await parser.parse(adapted.input, ctx);
+        if (outcome.kind === "error") {
+          const err = new Error(outcome.message);
+          if (outcome.stack) err.stack = outcome.stack;
+          throw err;
+        }
+        const result = outcome.result;
         if (debugProcess)
           console.log(
             `ingest: [trace] parse ✓ ${qnameForLog} (nodes=${result.nodes.length} edges=${result.edges.length})`,
           );
         if (debugProcess) console.log(`ingest: [trace] graph-merge ← ${qnameForLog}`);
-        handleParsed(result);
+        const tWrite = performance.now();
+        try {
+          handleParsed(result);
+        } finally {
+          lastWriteMs = performance.now() - tWrite;
+        }
         if (debugProcess) console.log(`ingest: [trace] graph-merge ✓ ${qnameForLog}`);
         membersProcessed += 1;
       } catch (e) {
@@ -754,6 +958,131 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           );
         }
       }
+    };
+    // Task 11c: member rows (delta ingest's record of what each member owns)
+    // and the ghost sweep, on a full ingest of a metadataSource. The rows are
+    // cleared now and rewritten only once the ingest completes, so an
+    // interrupted run leaves no rows and the next delta falls back to a full
+    // rebuild. The ghost sweep deletes what a member owned last run that no
+    // member owns now (a deleted / renamed file), before the resolvers run.
+    if (opts.delta && (!opts.metadataSource || mode !== "full")) {
+      throw new Error("liveIngest: delta hooks need a metadataSource and mode 'full'");
+    }
+    const deltaHooks = opts.delta;
+    const priorRows =
+      !deltaHooks &&
+      opts.metadataSource &&
+      mode === "full" &&
+      graph.listMemberRows &&
+      graph.replaceMemberRows
+        ? graph.listMemberRows(resolved.orgId)
+        : null;
+    if (priorRows && priorRows.length > 0) graph.clearMemberRows?.(resolved.orgId);
+    const memberRows: Map<string, MemberRow> | null = priorRows ? new Map() : null;
+    const priorRowByKey = new Map((priorRows ?? []).map((r) => [r.key, r]));
+    const keptPrior: string[] = [];
+    // T15 N5-1: members quarantined by earlier runs (workers kept failing on
+    // that exact content) are not parsed again until their content changes.
+    const quarantinedKeys = new Set(
+      (priorRows ?? []).filter((r) => isQuarantinedRow(r)).map((r) => r.key),
+    );
+    const quarantinePreset = (m: RawMember): MemberParse | undefined =>
+      quarantinedKeys.has(m.ref.sourceUri) &&
+      isQuarantinedFor(priorRowByKey.get(m.ref.sourceUri), memberContentHash(m.content))
+        ? quarantinedOutcome()
+        : undefined;
+    const recordMemberRow = (member: RawMember, outcome: MemberParse, errored: boolean): void => {
+      if (!memberRows) return;
+      const key = member.ref.sourceUri;
+      const prior = priorRowByKey.get(key);
+      const owned = outcome.kind === "parsed" ? ownedQnames(outcome.result) : [];
+      if (errored || (isParseFailureOnly(owned) && hasGoodPriorOwned(prior))) {
+        // Keep what it owned (its nodes are not re-emitted, nor swept). A
+        // member that parsed to ParseError only (N2-1) or whose parse threw
+        // records the hash of its broken content and is skipped until it
+        // changes; one whose merge failed is retried by every delta.
+        if (hasGoodPriorOwned(prior)) keptPrior.push(key);
+        memberRows.set(key, {
+          key,
+          ...memberFailureStamp(member, outcome, errored, prior),
+          owned: [...new Set([...(prior?.owned ?? []), ...owned])],
+        });
+        return;
+      }
+      memberRows.set(key, {
+        key,
+        fingerprint: member.fingerprint ?? "",
+        hash: memberContentHash(member.content),
+        owned,
+      });
+    };
+    const finishMemberRows = (): void => {
+      if (!memberRows || !priorRows) return;
+      if (streamAborted) {
+        memberRows.clear();
+        return;
+      }
+      if (priorRows.length === 0) return;
+      // Members the source indexed but could not load (unreadable, malformed)
+      // keep their previous graph and row (retried by the next delta).
+      const unloaded = opts.metadataSource?.unloadedKeys?.();
+      if (unloaded) {
+        for (const r of priorRows) {
+          if (!unloaded.has(r.key) || memberRows.has(r.key)) continue;
+          memberRows.set(r.key, { ...r, fingerprint: "" });
+          keptPrior.push(r.key);
+        }
+      }
+      if (keptPrior.length > 0) {
+        wedgeWarnings.push(`wedge:ingest:kept-prior:members=${keptPrior.length}`);
+        logger.warn("live-ingest: unreadable / unparseable members keep their previous graph", {
+          members: keptPrior.slice(0, 20),
+        });
+      }
+      if (memberRows.size === 0) {
+        // Same guard as detect-deletions' empty-stream refusal: a source that
+        // yielded no members at all (wrong path, unreadable tree) must not
+        // wipe the graph. No rows are written, so the next delta rebuilds.
+        wedgeWarnings.push(
+          `wedge:ghost-sweep:refuse:reason=empty-stream:priorMembers=${priorRows.length}`,
+        );
+        logger.warn("live-ingest: ghost sweep refused (the source yielded no members)", {
+          priorMembers: priorRows.length,
+        });
+        return;
+      }
+      // Qnames match case-insensitively (the store's NOCASE): `ApexClass:Util`
+      // re-emitted as `ApexClass:UTIL` is the same node, not a ghost.
+      const ownedNow = new Set<string>();
+      for (const r of memberRows.values()) for (const q of r.owned) ownedNow.add(q.toLowerCase());
+      const ghosts: string[] = [];
+      for (const r of priorRows) {
+        for (const q of r.owned) if (!ownedNow.has(q.toLowerCase())) ghosts.push(q);
+      }
+      if (ghosts.length === 0) return;
+      let removed = 0;
+      graph.transaction(() => {
+        graph.deleteEdgesFrom?.(resolved.orgId, ghosts);
+        graph.deleteReflectionEdges?.(resolved.orgId, { dsts: ghosts });
+        for (const q of new Set(ghosts)) {
+          const qn = asQualifiedName(q);
+          if (!graph.getNode(resolved.orgId, qn)) continue;
+          graph.deleteNode(resolved.orgId, qn);
+          purgeNodeVector(qn);
+          removed += 1;
+        }
+      });
+      deletions += removed;
+      if (removed > 0)
+        logger.info("live-ingest: ghost sweep removed nodes of vanished members", { removed });
+    };
+
+    // Serial parse + apply (incremental deletions).
+    const processOne = async (ref: MemberRef, content: string): Promise<void> => {
+      const outcome: MemberParse = ref.obsolete
+        ? { kind: "skip", parseMs: 0 }
+        : await parseMember(ref, content, parseCtxBase, logger);
+      applyMember(ref, outcome);
     };
 
     if (mode === "incremental") {
@@ -810,7 +1139,8 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       // different edge tables rather than competing for the same row, but
       // the pre-fan-out ordering preserves the "parsed wins" guarantee for
       // the (rare) case where a parser does emit REFERENCES.
-      if (!opts.disableMcdBaseline) {
+      openBulk();
+      if (!opts.disableMcdBaseline && !opts.metadataSource) {
         try {
           const { runMcdBaseline } = await import(
             "../extractors/live-org/extractors/mcd-baseline.js"
@@ -891,7 +1221,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         // benefit. The probe's job is observability, not control flow.
         // Disable via SFGRAPH_NO_LIVENESS_PROBE=1 for hermetic test runs
         // where the mock connection has no identity() implementation.
-        if (process.env.SFGRAPH_NO_LIVENESS_PROBE !== "1") {
+        if (process.env.SFGRAPH_NO_LIVENESS_PROBE !== "1" && !opts.metadataSource) {
           livenessProbe = startLivenessProbe(resolved.conn as { identity: () => Promise<unknown> });
         }
         // Wall-clock heartbeat — always on. Without this, silent phases (where
@@ -953,6 +1283,15 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
             );
             console.error(new Error(`signal:${sig}`).stack);
             process.exitCode = 130;
+            // rel-08: a breadcrumb only — never swallow the signal. Drop the
+            // debug handlers; if nothing else handles it (an embedding host
+            // or the CLI would), re-raise so the default action terminates.
+            // Review minor 12: on the library path the default action kills
+            // the process without the finally blocks, so the ingest lock file
+            // and sync_in_progress stay behind; the next run reclaims both
+            // through the dead-owner (stale pid) check (rel-02).
+            for (const h of installedSignalHandlers.splice(0)) process.off(h.sig, h.fn);
+            if (process.listenerCount(sig) === 0) process.kill(process.pid, sig as NodeJS.Signals);
           };
           const onUsr2 = () => {
             const mem = process.memoryUsage();
@@ -966,21 +1305,63 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           for (const h of installedSignalHandlers) process.on(h.sig, h.fn);
         }
         try {
-          for await (const member of bulkRetrieve(resolved.conn, caps, resolved.orgId, {
-            skipReport,
-            warnings: wedgeWarnings,
-            ...(opts.onlyLabels ? { onlyLabels: opts.onlyLabels } : {}),
-            // The bulk-retrieve flag name follows the same convention as
-            // the bulk-retrieve's other opts; semantically it's "do the
-            // retrieve()" which is now on by default. Caller-side disable
-            // routes through this same boolean inverted.
-            ...(opts.disableOmnistudioRetrieve ? {} : { enableOmnistudioRetrieve: true }),
-            // jsforce attaches the version it negotiated on conn.version; fall
-            // back to a sensible recent release if absent (mocks, etc.)
-            apiVersion: (resolved.conn as { version?: string }).version ?? "60.0",
-          })) {
+          const memberStream: AsyncIterable<RawMember> = deltaHooks
+            ? deltaHooks.members
+            : opts.metadataSource
+              ? opts.metadataSource.iter()
+              : bulkRetrieve(resolved.conn, caps, resolved.orgId, {
+                  skipReport,
+                  warnings: wedgeWarnings,
+                  ...(opts.onlyLabels ? { onlyLabels: opts.onlyLabels } : {}),
+                  ...(opts.explicitOnlyLabels ? { explicitOnlyLabels: true } : {}),
+                  // The bulk-retrieve flag name follows the same convention as
+                  // the bulk-retrieve's other opts; semantically it's "do the
+                  // retrieve()" which is now on by default. Caller-side disable
+                  // routes through this same boolean inverted.
+                  ...(opts.disableOmnistudioRetrieve ? {} : { enableOmnistudioRetrieve: true }),
+                  // jsforce attaches the version it negotiated on conn.version; fall
+                  // back to a sensible recent release if absent (mocks, etc.)
+                  apiVersion: (resolved.conn as { version?: string }).version ?? "60.0",
+                });
+          const tFanout = performance.now();
+          // Task 11b: parse in worker threads (SFGRAPH_PARSE_WORKERS, default
+          // min(4, availableParallelism - 1); 0 = main thread), apply in member
+          // order here.
+          const parseStats: ParsePoolStats = opts.parsePool?.stats ?? {
+            workers: 0,
+            pooled: 0,
+            inProcess: 0,
+            fallbacks: 0,
+            crashes: 0,
+            oomFallbacks: 0,
+          };
+          const parsed = parsePool(memberStream, {
+            orgId: parseCtxBase.orgId,
+            parseTimestamp: parseCtxBase.parseTimestamp,
+            logger,
+            workers: opts.parsePool?.workers ?? resolveParseWorkers(),
+            ...(opts.parsePool?.workerUrl !== undefined
+              ? { workerUrl: opts.parsePool.workerUrl }
+              : {}),
+            ...(opts.parsePool?.minMembers !== undefined
+              ? { minMembers: opts.parsePool.minMembers }
+              : {}),
+            stats: parseStats,
+            ...(quarantinedKeys.size > 0 ? { preset: quarantinePreset } : {}),
+          });
+          for await (const { member, outcome } of parsed) {
+            const errorsBefore = parseErrors;
             try {
-              await processOne(member.ref, member.content);
+              applyMember(member.ref, outcome);
+              if (profiler.enabled) {
+                profiler.member({
+                  qname: `${member.ref.memberType}:${member.ref.memberName}`,
+                  label: member.ref.memberType,
+                  bytes: member.content.length,
+                  parseMs: lastParseMs,
+                  writeMs: lastWriteMs,
+                });
+              }
             } catch (e) {
               parseErrors += 1;
               logger.warn("live-ingest: processOne failed", {
@@ -988,6 +1369,26 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
                 error: (e as Error).message,
               });
             }
+            // Task 11c: member rows (what each member owns) for delta ingest.
+            const errored = outcome.kind === "error" || parseErrors > errorsBefore;
+            if (deltaHooks) deltaHooks.onMember(member, outcome, errored);
+            else if (memberRows && member.fingerprint !== undefined) {
+              recordMemberRow(member, outcome, errored);
+            }
+            if (bulkOpen) {
+              // Outside the per-member catch: if SQLite rolled back the bulk
+              // transaction (SQLITE_FULL / IOERR / NOMEM), up to 2,000 earlier
+              // members are gone, so the ingest must fail, not count one error.
+              try {
+                graph.bulkMemberDone?.();
+              } catch (e) {
+                bulkFailure = e as Error;
+                break;
+              }
+            }
+            // Backpressure: past the queued-text bound, wait for forced
+            // batches to drain (the only inference during fan-out).
+            if (embedQueue?.overCapacity) await embedQueue.waitForCapacity();
             progressCount += 1;
             lastActivityAt = Date.now();
             lastMemberLabel = `${member.ref.memberType}:${member.ref.memberName}`;
@@ -1006,6 +1407,11 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
               if (typeof gs.checkpoint === "function") gs.checkpoint();
             }
           }
+          profiler.phase("fanout", performance.now() - tFanout);
+          // Always printed (serial too) so bench runs can record the counts.
+          console.log(
+            `ingest: parse pool: ${parseStats.workers} workers, ${parseStats.pooled} parsed in workers, ${parseStats.inProcess} on main (${parseStats.fallbacks} fallbacks, ${parseStats.crashes} worker crashes, ${parseStats.oomFallbacks ?? 0} heap-cap re-parses)`,
+          );
           console.log(
             `ingest: fan-out complete (${progressCount} members in ${Math.round((Date.now() - fanOutStart) / 1000)}s)`,
           );
@@ -1018,12 +1424,38 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           logger.warn("live-ingest: bulkRetrieve stream aborted", {
             error: (e as Error).message,
           });
+          // Never a silent partial ingest: the abort is in the result's warnings.
+          wedgeWarnings.push(`stream:aborted:${String((e as Error).message).slice(0, 200)}`);
         }
       } finally {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
         if (keepAlive) clearInterval(keepAlive);
         livenessProbe?.stop();
         for (const h of installedSignalHandlers) process.off(h.sig, h.fn);
+        // Commit the last bulk batch and rebuild the deferred indexes before
+        // any post-pass reads the graph.
+        const tEndBulk = performance.now();
+        closeBulk();
+        if (graphEmptyAtStart) profiler.phase("endBulk", performance.now() - tEndBulk);
+      }
+      if (bulkFailure) throw bulkFailure;
+      if (deltaHooks) {
+        // A partial stream must not be finalized as a delta: fail, keeping
+        // the pending marker, so the next delta replays it.
+        if (streamAborted) throw new Error("delta: member stream aborted");
+        deltaHooks.afterMerge();
+      } else if (memberRows) {
+        finishMemberRows();
+      }
+
+      // A scoped run (auto-retry pass, --retry-skipped, --only) re-ran only
+      // `onlyLabels`: carry the previous report's entries for every OTHER
+      // label forward, so unreadable / insufficient_access entries it did
+      // not touch stay in the report, the summary and the warnings (I2).
+      if (opts.onlyLabels && opts.skipReportPath) {
+        skipReport.skips.push(
+          ...carriedOverSkips(opts.skipReportPath, resolved.orgId, opts.onlyLabels),
+        );
       }
 
       // End-of-run skip summary. Grouped by category so the remediation is
@@ -1055,19 +1487,17 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       }
     }
 
-    if (embedQueue) {
-      try {
-        await embedQueue.drain();
-      } catch (e) {
-        logger.warn("live-ingest: embed drain failed", { err: (e as Error).message });
-      }
-    }
+    // Mark the end of input (the held queue still runs nothing until graph ready).
+    embedQueue?.startDrain();
 
     // Full-sync deletion detection: compute previously-known minus touched and
     // delete the difference. Skipped on incremental (SourceMember handles it),
     // skipped if any parse error occurred this run (avoid mass-wipe on
     // transient SF errors).
-    if (opts.detectDeletions && mode === "full") {
+    // Fast path: an org that was empty at start has no stale qnames — every
+    // persisted node was touched by this run — so the sweep (and its
+    // deleteEdgesFor calls) would be a no-op; skip it.
+    if (opts.detectDeletions && !opts.metadataSource && mode === "full" && !graphEmptyAtStart) {
       if (streamAborted) {
         logger.warn(
           "live-ingest: detect-deletions skipped because bulkRetrieve stream aborted — touchedQnames is incomplete and a full deletion sweep would wrongly wipe untouched-but-still-present nodes",
@@ -1085,7 +1515,21 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           const maxDropRatio = resolveMaxDropRatio(
             process.env.SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO,
           );
-          const labels = graph.listAllLabels();
+          // Task 11c: a node from a source this run skipped (or carried a
+          // skip for) is never "stale" — the source touched nothing.
+          const protection = skipProtection(skipReport.skips);
+          if (protection.refuseAll) {
+            const warning = `wedge:detect-deletions:refuse:label=*:reason=skipped-source:skips=${protection.unknownLabels.join(",")}`;
+            wedgeWarnings.push(warning);
+            logger.warn(
+              "live-ingest: detect-deletions refused (a skipped source has no type mapping)",
+              {
+                skips: protection.unknownLabels,
+              },
+            );
+          }
+          const labels = protection.refuseAll ? [] : graph.listAllLabels();
+          let protectedCount = 0;
           for (const label of labels) {
             const priorCount = graph.countNodesByLabel(resolved.orgId, label);
             const touchedCount = touchedQnamesByLabel.get(label)?.size ?? 0;
@@ -1112,6 +1556,10 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
             for (const node of persisted) {
               const q = String(node.qualifiedName);
               if (touchedSet?.has(q)) continue;
+              if (isSkipProtected(protection, node)) {
+                protectedCount += 1;
+                continue;
+              }
               graph.deleteEdgesFor(resolved.orgId, asQualifiedName(q));
               graph.deleteNode(resolved.orgId, asQualifiedName(q));
               purgeNodeVector(asQualifiedName(q));
@@ -1125,10 +1573,45 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
               });
             }
           }
+          if (protectedCount > 0) {
+            logger.info("live-ingest: detect-deletions kept nodes of skipped sources", {
+              count: protectedCount,
+            });
+          }
         } catch (e) {
           logger.warn("live-ingest: detect-deletions failed", { err: (e as Error).message });
         }
       }
+    }
+
+    // Backfill: an earlier run returned before its vectors were all written
+    // (--no-wait-embeddings, a worker crash, a kill). Every embedded text is
+    // also stored verbatim as the node's FTS body, so re-queue the docs this
+    // run did not touch whose stored vector is missing or stale.
+    let backfilled = 0;
+    if (embedQueue && wasEmbeddingsPending && graph.listFtsDocs) {
+      const sink = opts.vectorStore;
+      try {
+        for (const doc of graph.listFtsDocs(resolved.orgId)) {
+          if (touchedQnames.has(doc.qname)) continue;
+          const stored = sink?.getContentHash?.(resolved.orgId, asQualifiedName(doc.qname));
+          if (stored && stored === hashEmbedText(doc.body)) continue;
+          embedQueue.push({
+            qname: doc.qname,
+            text: doc.body,
+            orgId: String(resolved.orgId),
+            label: doc.label,
+          });
+          backfilled += 1;
+          if (embedQueue.overCapacity) await embedQueue.waitForCapacity();
+        }
+      } catch (e) {
+        logger.warn("live-ingest: embedding backfill failed", { err: (e as Error).message });
+      }
+      if (backfilled > 0) {
+        logger.info("live-ingest: re-queued pending embeddings", { backfilled });
+      }
+      embedQueue.startDrain();
     }
 
     // -----------------------------------------------------------------------
@@ -1138,15 +1621,31 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     let crossFlavorEdges = 0;
     let arityResolved = 0;
     let flowMethodsResolved = 0;
+    let vlocityApexResult: LiveIngestResult["vlocityApex"];
+    let drRelationshipsResult: LiveIngestResult["drRelationships"];
     let danglingEdges = 0;
     let overlapResult = { matched: 0, diverged: 0, empty: 0, annotated: 0 };
     let reflectionEdges = 0;
+    // T15 I-2: post-merge steps that threw. A full ingest only warns; a delta
+    // must not finalize (see below).
+    const postFailures: string[] = [];
 
     // Synth a ParseContext for post-passes that need to mint edges/nodes.
     const postCtx: ParseContext = {
       ...parseCtxBase,
       sourceUri: "post-merge://resolver",
     };
+
+    // review I4: re-target Aura `<c:name>` embeds at the bundles that exist.
+    try {
+      const auraEmbeds = resolveAuraEmbeds(graph, resolved.orgId);
+      if (auraEmbeds.retargeted > 0) {
+        logger.info("live-ingest: aura embed resolver re-targeted embeds", { ...auraEmbeds });
+      }
+    } catch (e) {
+      postFailures.push("aura embed resolver");
+      logger.warn("live-ingest: aura embed resolver failed", { err: (e as Error).message });
+    }
 
     if (!opts.disableCrossFlavor) {
       try {
@@ -1161,6 +1660,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           });
         }
       } catch (e) {
+        postFailures.push("cross-flavor resolver");
         logger.warn("live-ingest: cross-flavor resolver failed", { err: (e as Error).message });
       }
     }
@@ -1187,6 +1687,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           });
         }
       } catch (e) {
+        postFailures.push("omnistudio overlap detector");
         logger.warn("live-ingest: omnistudio overlap detector failed", {
           err: (e as Error).message,
         });
@@ -1194,6 +1695,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     }
 
     if (!opts.disableFlowInvocableResolve) {
+      const tPhase = performance.now();
       try {
         const flowResult = resolveFlowApexMethods(graph, resolved.orgId, postCtx);
         flowMethodsResolved = flowResult.resolved;
@@ -1206,15 +1708,122 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           });
         }
       } catch (e) {
+        postFailures.push("flow→apex resolver");
         logger.warn("live-ingest: flow→apex resolver failed", { err: (e as Error).message });
       }
+      profiler.phase("resolver:flow-apex", performance.now() - tPhase);
+    }
+
+    if (!opts.disableVlocityApexResolve) {
+      const tPhase = performance.now();
+      try {
+        const { resolveVlocityApex } = await import("../parsers/vlocity/apex-resolver.js");
+        vlocityApexResult = resolveVlocityApex(graph, resolved.orgId, postCtx);
+        if (vlocityApexResult.scanned > 0)
+          logger.info("live-ingest: vlocity→apex resolver", vlocityApexResult);
+      } catch (e) {
+        postFailures.push("vlocity-apex-resolver");
+        logger.warn(`vlocity-apex-resolver:failed:${(e as Error).message}`);
+        wedgeWarnings.push(`vlocity-apex-resolver:failed:${(e as Error).message}`);
+      }
+      profiler.phase("resolver:vlocity-apex", performance.now() - tPhase);
+    }
+
+    if (!opts.disableDrRelationshipResolve) {
+      const tPhase = performance.now();
+      try {
+        const { resolveDataRaptorRelationships } = await import(
+          "../parsers/vlocity/dr-relationship-resolver.js"
+        );
+        drRelationshipsResult = resolveDataRaptorRelationships(graph, resolved.orgId, postCtx);
+        if (drRelationshipsResult.scanned > 0)
+          logger.info("live-ingest: dataraptor relationship-path resolver", drRelationshipsResult);
+      } catch (e) {
+        postFailures.push("dr-relationship-resolver");
+        logger.warn(`dr-relationship-resolver:failed:${(e as Error).message}`);
+        wedgeWarnings.push(`dr-relationship-resolver:failed:${(e as Error).message}`);
+      }
+      profiler.phase("resolver:dr-relationship", performance.now() - tPhase);
+    }
+
+    if (!opts.disableLwcFieldKeyResolve) {
+      const tPhase = performance.now();
+      try {
+        const { resolveLwcFieldKeys } = await import("../parsers/lwc/field-key-resolver.js");
+        const r = resolveLwcFieldKeys(graph, resolved.orgId, postCtx);
+        if (r.scanned > 0) logger.info("live-ingest: lwc field-key resolver", { ...r });
+      } catch (e) {
+        postFailures.push("lwc-field-key-resolver");
+        logger.warn(`lwc-field-key-resolver:failed:${(e as Error).message}`);
+        wedgeWarnings.push(`lwc-field-key-resolver:failed:${(e as Error).message}`);
+      }
+      profiler.phase("resolver:lwc-field-key", performance.now() - tPhase);
+    }
+
+    if (!opts.disableVlocityNameMatchResolve) {
+      const tPhase = performance.now();
+      try {
+        const { resolveVlocityNameMatches } = await import(
+          "../parsers/vlocity/name-match-resolver.js"
+        );
+        const nm = resolveVlocityNameMatches(graph, resolved.orgId, postCtx);
+        if (nm.scanned > 0) logger.info("live-ingest: vlocity name-match resolver", { ...nm });
+      } catch (e) {
+        postFailures.push("vlocity-name-match-resolver");
+        logger.warn(`vlocity-name-match-resolver:failed:${(e as Error).message}`);
+        wedgeWarnings.push(`vlocity-name-match-resolver:failed:${(e as Error).message}`);
+      }
+      profiler.phase("resolver:vlocity-name-match", performance.now() - tPhase);
+    }
+
+    if (!opts.disableApexRefResolve) {
+      const tPhase = performance.now();
+      try {
+        const { resolveApexReferences } = await import("../parsers/apex/ref-resolver.js");
+        const ar = resolveApexReferences(graph, resolved.orgId, postCtx);
+        if (ar.edgesEmitted > 0 || ar.pathsUnresolved > 0 || ar.dynamicSoqlFieldsSkipped > 0)
+          logger.info("live-ingest: apex ref resolver", { ...ar });
+      } catch (e) {
+        postFailures.push("apex-ref-resolver");
+        logger.warn(`apex-ref-resolver:failed:${(e as Error).message}`);
+        wedgeWarnings.push(`apex-ref-resolver:failed:${(e as Error).message}`);
+      }
+      profiler.phase("resolver:apex-ref", performance.now() - tPhase);
+    }
+
+    // `ApexClass:X` references to an interface X (no class X): move them onto
+    // `ApexInterface:X`. Before arity, which then sees interface method calls
+    // under their real owner.
+    let interfaceRefsRetargeted = 0;
+    if (!opts.disableInterfaceRetarget) {
+      const tPhase = performance.now();
+      try {
+        const names = deltaHooks?.retargetInterfaceNames();
+        interfaceRefsRetargeted = retargetApexInterfaceRefs(
+          graph,
+          resolved.orgId,
+          names ? { interfaceNames: names } : {},
+        );
+        if (interfaceRefsRetargeted > 0) {
+          logger.info("live-ingest: apex interface references retargeted", {
+            interfaceRefsRetargeted,
+          });
+        }
+      } catch (e) {
+        postFailures.push("apex interface retarget");
+        logger.warn("live-ingest: apex interface retarget failed", { err: (e as Error).message });
+      }
+      profiler.phase("resolver:interface-retarget", performance.now() - tPhase);
     }
 
     if (!opts.disableArityResolve) {
+      const tPhase = performance.now();
       try {
+        const scope = deltaHooks?.arityScope();
         const arityResult = resolveApexMethodArity(graph, {
           orgId: resolved.orgId,
           ctx: postCtx,
+          ...(scope ? { scope } : {}),
         });
         arityResolved = arityResult.resolved;
         if (arityResult.scanned > 0) {
@@ -1227,19 +1836,44 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           });
         }
       } catch (e) {
+        postFailures.push("apex arity resolver");
         logger.warn("live-ingest: apex arity resolver failed", { err: (e as Error).message });
       }
+      profiler.phase("resolver:arity", performance.now() - tPhase);
+    }
+
+    // A formula's second-hop field guess moves onto the CustomField that
+    // declares that relationshipName.
+    if (!opts.disableFormulaHopResolve) {
+      const tPhase = performance.now();
+      try {
+        const sources = deltaHooks?.hopSources();
+        const hop = resolveFormulaRelationshipHops(
+          graph,
+          resolved.orgId,
+          sources ? { sources } : {},
+        );
+        if (hop.moved > 0)
+          logger.info("live-ingest: formula relationship hops resolved", { ...hop });
+      } catch (e) {
+        postFailures.push("formula hop resolver");
+        logger.warn("live-ingest: formula hop resolver failed", { err: (e as Error).message });
+      }
+      profiler.phase("resolver:formula-hop", performance.now() - tPhase);
     }
 
     // Reflection walker: runs BEFORE the dangling-edge audit so any
     // REFERENCES edges it emits are validated by the audit alongside
     // parser-emitted edges. Default on; disable via disableReflectionWalker.
     if (!opts.disableReflectionWalker) {
+      const tPhase = performance.now();
       try {
         const { walkBlobsForReferences } = await import("../parsers/generic/reflection-walker.js");
+        const sourceQnames = deltaHooks?.reflectionSources();
         const reflectionResult = walkBlobsForReferences(graph, {
           orgId: resolved.orgId,
           ctx: postCtx,
+          ...(sourceQnames ? { sourceQnames } : {}),
         });
         reflectionEdges = reflectionResult.edgesEmitted;
         if (reflectionEdges > 0) {
@@ -1251,13 +1885,17 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           });
         }
       } catch (e) {
+        postFailures.push("reflection walker");
         logger.warn("live-ingest: reflection walker failed", {
           err: (e as Error).message,
         });
       }
+      profiler.phase("resolver:reflection", performance.now() - tPhase);
     }
 
-    if (!opts.disableAudit) {
+    // The audit only reports (it changes nothing): a delta skips it.
+    if (!opts.disableAudit && !deltaHooks) {
+      const tPhase = performance.now();
       try {
         const auditResult = auditDanglingEdges(graph, resolved.orgId, { sampleSize: 25 });
         danglingEdges = auditResult.danglingCount;
@@ -1272,8 +1910,10 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           });
         }
       } catch (e) {
+        postFailures.push("graph audit");
         logger.warn("live-ingest: graph audit failed", { err: (e as Error).message });
       }
+      profiler.phase("audit", performance.now() - tPhase);
     }
 
     const completedIso = new Date().toISOString();
@@ -1286,6 +1926,43 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     const watermarkIso = holdWatermark
       ? new Date(existing!.lastSyncedAt as number).toISOString()
       : completedIso;
+    // N-1: the held queue has not dispatched yet, so its lazy `onWork` flag
+    // may not be set. Make `embeddings_pending` durable BEFORE the sync is
+    // marked complete: a crash between here and the drain must leave the
+    // next ingest knowing vectors are missing (it backfills them).
+    if (embedQueue && !wasEmbeddingsPending && embedQueue.hasVectorWork()) {
+      try {
+        graph.setEmbeddingsPending?.(resolved.orgId, true);
+      } catch (e) {
+        logger.warn("live-ingest: setEmbeddingsPending failed", { err: (e as Error).message });
+      }
+    }
+    const populate = async (): Promise<void> => {
+      if (!opts.analysisDb) return;
+      const tDead = performance.now();
+      try {
+        await populateAnalysisTables(graph, resolved.orgId, opts.analysisDb);
+      } catch (e) {
+        postFailures.push("populate analysis tables");
+        logger.warn("live-ingest: populate analysis tables failed", {
+          err: (e as Error).message,
+        });
+      }
+      profiler.phase("deadcode", performance.now() - tDead);
+    };
+    // T15 I-2: a delta whose resolver or dead-code pass failed is not a clean
+    // sync. Populate runs before the sync is marked complete, and any failure
+    // throws here: the pending marker and member rows stay as they were, so the
+    // next delta replays the touched members with every resolver at full scope
+    // (the outer catch marks the sync failed; the generation does not move).
+    if (deltaHooks) {
+      await populate();
+      if (postFailures.length > 0) {
+        throw new Error(
+          `delta: post-merge step(s) failed (${postFailures.join(", ")}); not finalized, the next delta re-derives at full scope`,
+        );
+      }
+    }
     try {
       // W1.5-08: markSyncComplete subsumes the old touchSync — it updates
       // last_synced_at AND increments sync_generation AND clears the
@@ -1294,15 +1971,92 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     } catch (e) {
       logger.warn("live-ingest: markSyncComplete failed", { err: (e as Error).message });
     }
+    opts.onPhase?.("sync-complete");
 
-    if (opts.analysisDb) {
+    if (!deltaHooks) await populate();
+
+    // Task 11c: the ingest is complete; record what each member owns.
+    if (deltaHooks) deltaHooks.finalize();
+    else if (memberRows && !streamAborted) {
       try {
-        await populateAnalysisTables(graph, resolved.orgId, opts.analysisDb);
+        graph.replaceMemberRows?.(resolved.orgId, [...memberRows.values()]);
       } catch (e) {
-        logger.warn("live-ingest: populate analysis tables failed", {
-          err: (e as Error).message,
-        });
+        logger.warn("live-ingest: member rows write failed", { err: (e as Error).message });
       }
+    }
+
+    // T15 N5-1: surface members skipped after repeated parse-worker failures.
+    const parseQuarantined = deltaHooks
+      ? (deltaHooks.quarantinedCount?.() ?? 0)
+      : memberRows
+        ? [...memberRows.values()].filter((r) => isQuarantinedRow(r)).length
+        : 0;
+    if (parseQuarantined > 0) {
+      logger.warn(
+        "live-ingest: members skipped after repeated parse-worker failures (until their content changes)",
+        { count: parseQuarantined },
+      );
+    }
+
+    // Graph ready: merges, resolvers and the dead-code cache are done. Only
+    // embeddings may still be in flight.
+    const graphReadyMs = Date.now() - startedAt;
+    console.log(`graph ready in ${(graphReadyMs / 1000).toFixed(1)}s`);
+    profiler.phase("graph-ready", graphReadyMs, true);
+
+    let embeddings: LiveIngestEmbeddings | undefined;
+    if (embedQueue) {
+      const q = embedQueue;
+      let pendingLeft = 0;
+      if (opts.waitEmbeddings === false) {
+        // Cache hits are cheap: write them before returning, so a warm no-wait
+        // run still completes its vectors. Only model work is deferred.
+        try {
+          q.flushCached();
+        } catch (e) {
+          // Items may have been dropped mid-flush: keep the flag set.
+          if (!embedError) embedError = e as Error;
+          logger.warn("live-ingest: cached vector flush failed", { err: (e as Error).message });
+        }
+        pendingLeft = q.abandon() + q.stats.failed;
+        const err = embedError as Error | null;
+        if (pendingLeft > 0 || err) {
+          console.log(
+            `embeddings deferred: ${pendingLeft} texts pending (cached vectors written: ${q.stats.cached}); find_similar uses text search until an ingest that waits for embeddings fills them`,
+          );
+        } else {
+          graph.setEmbeddingsPending?.(resolved.orgId, false);
+        }
+      } else {
+        try {
+          // drain() releases the held queue.
+          await q.drain();
+        } catch (e) {
+          if (!embedError) embedError = e as Error;
+        }
+        const doneMs = Date.now() - startedAt;
+        const err = embedError as Error | null;
+        if (err) {
+          pendingLeft = q.stats.failed;
+          console.error(
+            `embeddings failed: ${err.message} — ${q.stats.failed} texts left unembedded; they will be filled on the next ingest`,
+          );
+        } else {
+          graph.setEmbeddingsPending?.(resolved.orgId, false);
+          console.log(
+            `embeddings done in ${(doneMs / 1000).toFixed(1)}s (cached ${q.stats.cached} / computed ${q.stats.computed})`,
+          );
+        }
+        profiler.phase("embeddings", doneMs, true);
+      }
+      const err = embedError as Error | null;
+      embeddings = {
+        ...q.stats,
+        pending: pendingLeft,
+        backfilled,
+        doneMs: Date.now() - startedAt,
+        ...(err ? { error: err.message } : {}),
+      };
     }
 
     if (opts.snapshotStore) {
@@ -1323,7 +2077,11 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       durationMs: Date.now() - startedAt,
       crossFlavorEdges,
       arityResolved,
+      parseQuarantined,
+      interfaceRefsRetargeted,
       flowMethodsResolved,
+      vlocityApex: vlocityApexResult,
+      drRelationships: drRelationshipsResult,
       danglingEdges,
       reflectionEdges,
       overlap: overlapResult,
@@ -1334,8 +2092,18 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         // with Phase 1's structured-warnings refactor (W1-01).
         ...wedgeWarnings,
       ],
+      graphReadyMs,
+      ...(streamAborted ? { streamAborted: true } : {}),
+      ...(embeddings ? { embeddings } : {}),
     };
   } catch (e) {
+    embedQueue?.abandon();
+    // Never leave a bulk window (open transaction, dropped indexes) behind.
+    try {
+      graph.endBulk?.();
+    } catch {
+      /* best-effort */
+    }
     // W1.5-08: ingest threw before reaching markSyncComplete. Flip
     // sync_in_progress back to 0 (and clear sync_started_at) so concurrent
     // MCP readers don't see an orphaned in_progress flag forever. Generation
@@ -1350,5 +2118,17 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       });
     }
     throw e;
+  } finally {
+    profiler.close();
+    try {
+      await ownedEmbedder?.close();
+    } catch {
+      /* best-effort */
+    }
+    try {
+      embedCache?.close();
+    } catch {
+      /* best-effort */
+    }
   }
 }

@@ -8,6 +8,8 @@ export const LABEL_TO_METADATA_TYPE: Record<string, string> = {
   ApexPage: "ApexPage",
   ApexComponent: "ApexComponent",
   LightningComponentBundle: "LightningComponentBundle",
+  // The LWC parser labels bundle nodes "LWC".
+  LWC: "LightningComponentBundle",
   AuraDefinitionBundle: "AuraDefinitionBundle",
   Flow: "Flow",
   CustomObject: "CustomObject",

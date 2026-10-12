@@ -1,4 +1,4 @@
-import { asOrgId } from "@ryanstark24/sfgraph-shared";
+import { asOrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import type { EdgeFact, NodeFact } from "../../domain/index.js";
 import { REL_TYPES } from "../../domain/index.js";
@@ -65,6 +65,13 @@ export interface ReflectionWalkerOpts {
   /** When set, scan only these label families (e.g. only OmniProcess
    *  + VlocityCard). Default: every label in the graph. */
   scopeToLabels?: string[];
+  /** Task 11c (delta ingest): walk only these source qnames (the bare-name
+   *  index still covers the whole graph). A source's edges depend only on
+   *  its own attributes, its explicit REFERENCES and the index, so a
+   *  scoped walk over the sources whose inputs changed emits exactly what a
+   *  full walk would for them. The caller deletes their old reflection
+   *  edges first. */
+  sourceQnames?: ReadonlySet<string>;
 }
 
 export interface ReflectionWalkerResult {
@@ -130,9 +137,9 @@ function buildBareNameIndex(
   const lower = new Map<string, string[]>();
   const labels = scopeToLabels && scopeToLabels.length > 0 ? scopeToLabels : store.listAllLabels();
   for (const label of labels) {
-    // 50k cap matches what find-nodes uses; bigger orgs would benefit
-    // from streaming but this index lives in memory by design.
-    const nodes = store.listNodesByLabel(orgId, label, 50_000);
+    // Uncapped: a silent per-label cap would drop real targets (and, below,
+    // whole source nodes) on large orgs. The index lives in memory by design.
+    const nodes = store.listNodesByLabel(orgId, label);
     for (const n of nodes) {
       const q = String(n.qualifiedName);
       const bare = bareName(q);
@@ -200,16 +207,46 @@ export function walkBlobsForReferences(
       ? opts.scopeToLabels
       : store.listAllLabels();
 
+  const labelSet = opts.scopeToLabels && opts.scopeToLabels.length > 0 ? new Set(labels) : null;
+  const nodeBatches = function* (): Generator<NodeFact[]> {
+    if (opts.sourceQnames) {
+      const nodes: NodeFact[] = [];
+      for (const q of opts.sourceQnames) {
+        const n = store.getNode(orgId, asQualifiedName(q));
+        if (n && (!labelSet || labelSet.has(n.label))) nodes.push(n);
+      }
+      yield nodes;
+      return;
+    }
+    for (const label of labels) yield store.listNodesByLabel(orgId, label);
+  };
+
   store.transaction(() => {
-    for (const label of labels) {
-      const nodes = store.listNodesByLabel(orgId, label, 50_000);
+    for (const nodes of nodeBatches()) {
       for (const node of nodes) {
         result.scanned += 1;
         const srcQname = String(node.qualifiedName);
         const edgesForThisSource: EdgeFact[] = [];
         const seenDst = new Set<string>();
+        // Pairs already linked by a parser or resolver (non-reflection) keep
+        // their attributes: a REFERENCES merge on the same key would replace them.
+        // Keyed lower-case: the store merges edges on a NOCASE key, so an
+        // explicit `LWC:QuoteServ` and a reflected `LWC:quoteServ` collide.
+        const explicit = new Set<string>();
+        for (const e of store.listEdgesFrom(orgId, node.qualifiedName, REL_TYPES.REFERENCES)) {
+          if ((e.attributes as Record<string, unknown>)?.source !== "reflection")
+            explicit.add(String(e.dstQualifiedName).toLowerCase());
+        }
+        // nameMatchCandidates / apexRelationshipPaths / testTargetCandidates
+        // are resolver input, not source data.
+        const {
+          nameMatchCandidates: _skip,
+          apexRelationshipPaths: _paths,
+          testTargetCandidates: _cands,
+          ...scanAttrs
+        } = node.attributes as Record<string, unknown>;
 
-        for (const { key, value } of walkStrings(node.attributes, 0, maxDepth, null)) {
+        for (const { key, value } of walkStrings(scanAttrs, 0, maxDepth, null)) {
           if (edgesForThisSource.length >= maxEdgesPerSource) {
             result.truncatedSources += 1;
             break;
@@ -232,9 +269,10 @@ export function walkBlobsForReferences(
 
           for (const dst of candidates) {
             // Skip self-references and already-emitted dsts for this source.
-            if (dst === srcQname) continue;
-            if (seenDst.has(dst)) continue;
-            seenDst.add(dst);
+            const dstKey = dst.toLowerCase();
+            if (dstKey === srcQname.toLowerCase() || explicit.has(dstKey)) continue;
+            if (seenDst.has(dstKey)) continue;
+            seenDst.add(dstKey);
             const e = makeEdge(opts.ctx, srcQname, REL_TYPES.REFERENCES, dst, {
               source: "reflection",
               confidence: "pattern-match",

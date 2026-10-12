@@ -21,7 +21,21 @@ export interface CrossOrgDiff {
  */
 export const CROSS_ORG_PER_LABEL_CAP = 10000;
 
-const ALL_LABELS = Object.values(METADATA_CATEGORY);
+/**
+ * Labels `category: "all"` covers: every label stored in either graph (parsers
+ * emit labels such as LWC, ApexMethod, DataRaptor or OmniScript that are not
+ * METADATA_CATEGORY values), plus the category names for stores that predate
+ * the label cache.
+ */
+function allLabels(storeA: GraphStore, storeB: GraphStore): string[] {
+  return [
+    ...new Set([
+      ...storeA.listAllLabels(),
+      ...storeB.listAllLabels(),
+      ...Object.values(METADATA_CATEGORY),
+    ]),
+  ];
+}
 
 export interface DiffOrgsArgs {
   storeA: GraphStore;
@@ -79,7 +93,7 @@ export function diffOrgs(
     category = maybeCategory;
   }
 
-  const labels = category === "all" ? ALL_LABELS : [category];
+  const labels = category === "all" ? allLabels(storeA, storeB) : [category];
   const aMap = new Map<string, NodeFact>();
   const bMap = new Map<string, NodeFact>();
   let truncated = false;

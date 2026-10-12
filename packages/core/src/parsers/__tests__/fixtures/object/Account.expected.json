@@ -57,7 +57,15 @@
   "edges": [
     {
       "srcQualifiedName": "CustomField:Account.Owner_Manager__c",
-      "dstQualifiedName": "CustomField:Owner.Manager",
+      "dstQualifiedName": "CustomField:Account.OwnerId",
+      "relType": "READS_FIELD",
+      "attributes": {
+        "via": "formula"
+      }
+    },
+    {
+      "srcQualifiedName": "CustomField:Account.Owner_Manager__c",
+      "dstQualifiedName": "CustomField:User.ManagerId",
       "relType": "READS_FIELD",
       "attributes": {
         "via": "formula"

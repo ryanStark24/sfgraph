@@ -74,13 +74,50 @@ describe("mermaid render layer", () => {
     expect(r.kept[0]?.qualifiedName).toBe("n0");
   });
 
-  it("sanitizeLabel truncates and escapes", () => {
-    const long = "x".repeat(50);
+  // Cycle 2 T5 fix round 1: labels are full qnames (a reader copies them; a 27-char cut made
+  // distinct nodes look alike), cut only past 100 chars.
+  it("sanitizeLabel keeps names up to 100 chars, cuts longer ones, and escapes", () => {
+    const qn = "CustomObject:ACME_CUTOVER_DATETIME__mdt";
+    expect(sanitizeLabel(qn)).toBe(qn);
+    const long = "x".repeat(150);
     const s = sanitizeLabel(long);
-    expect(s.length).toBeLessThanOrEqual(30);
+    expect(s.length).toBe(100);
     expect(s.endsWith("…")).toBe(true);
-    const escaped = sanitizeLabel('a"b[c]d(e)f');
-    expect(escaped).not.toContain('"');
-    expect(escaped).not.toMatch(/[\[\]\(\)]/);
+    // Sequence text: quotes and semicolons break it, parentheses and brackets do not.
+    expect(sanitizeLabel('a"b;c[d](e)')).toBe("a'b,c[d](e)");
+    expect(
+      renderSequence({ participants: [{ id: "m", label: "ApexMethod:C.m(1)" }], messages: [] }),
+    ).toContain("participant m as ApexMethod:C.m(1)");
+  });
+
+  it("fenceLabel keeps parentheses and brackets inside the quotes (a method qname stays exact)", () => {
+    const out = renderDependencyGraph({
+      nodes: [
+        { qualifiedName: "ApexMethod:Svc.run(2)", label: "ApexMethod" },
+        { qualifiedName: "ApexClass:Svc", label: "ApexClass" },
+      ],
+      edges: [],
+    });
+    expect(out).toContain('ApexMethod_Svc_run_2_["ApexMethod:Svc.run(2)"]');
+    expect(
+      renderDependencyGraph({ nodes: [{ qualifiedName: 'A"q', label: "X" }], edges: [] }),
+    ).toContain('["A#quot;q"]');
+  });
+
+  it("renderDependencyGraph draws one edge per node pair, rel types joined", () => {
+    const out = renderDependencyGraph({
+      nodes: [
+        { qualifiedName: "A", label: "ApexClass" },
+        { qualifiedName: "B", label: "ApexClass" },
+      ],
+      edges: [
+        { srcQualifiedName: "A", dstQualifiedName: "B", relType: "REFERENCES" },
+        { srcQualifiedName: "A", dstQualifiedName: "B", relType: "INSTANCE_OF" },
+        { srcQualifiedName: "A", dstQualifiedName: "B", relType: "REFERENCES" },
+        { srcQualifiedName: "B", dstQualifiedName: "A", relType: "CALLS" },
+      ],
+    });
+    const arrows = out.split("\n").filter((l) => l.includes("-->"));
+    expect(arrows).toEqual(["  A -->|REFERENCES, INSTANCE_OF| B", "  B -->|CALLS| A"]);
   });
 });

@@ -14,6 +14,14 @@ import { iterOmnistudio } from "./extractors/omnistudio.js";
 import { iterSecurity } from "./extractors/security.js";
 import { iterVlocity } from "./extractors/vlocity.js";
 import { StopWaitingError, stopSignalContext } from "./rate-limit.js";
+import {
+  type FetchFailure,
+  IncompleteSourceError,
+  TypeUnreadableError,
+  UNREADABLE_EARLY_STOP,
+  isPlatformRefusal,
+  withRetry,
+} from "./retry.js";
 
 /** Aggregate of every source that errored during a bulkRetrieve run.
  *  bulkRetrieve mutates this in-place via onError; live-ingest reads it at
@@ -63,6 +71,25 @@ export interface BackgroundWedgeEntry {
    *  pending HTTP request (if any) is NOT actively cancelled — that's the
    *  job of W1.5-03. */
   stopWaitingRef: { value: boolean };
+  /**
+   * The source's skip hook (failSoft's `onError`). A wedge is only a
+   * deferral: once the late drain (or cap eviction) decides the source did
+   * NOT finish — a late error, the drain budget running out, eviction, or
+   * late drain disabled — the outcome is reported here under the source's
+   * own label so it lands in skipReport and `--retry-skipped` re-runs it.
+   * (Review I1: these used to surface only as `wedge:*` warnings.)
+   */
+  onError?: (label: string, err: Error) => void;
+  /** Set once a skip has been reported for this entry (one skip per wedge). */
+  skipReported?: boolean;
+}
+
+/** Report a parked wedge as a skip, at most once per entry. */
+function reportWedgeSkip(entry: BackgroundWedgeEntry, reason: string): void {
+  if (entry.skipReported) return;
+  entry.skipReported = true;
+  entry.onError?.(entry.label, new Error(reason));
+  console.log(`ingest:   ${entry.label} ✗ skipped (${reason.slice(0, 80)})`);
 }
 
 export interface WedgeCoordinator {
@@ -116,7 +143,89 @@ export type SkipCategory =
   | "not_found"
   | "rate_limit"
   | "network"
-  | "unknown";
+  | "unknown"
+  /** The org refused these members deterministically (same server fault on
+   *  every read, or an org rejection). Listed to the user with the first
+   *  error, but never re-run by auto-retry / --retry-skipped. */
+  | "unreadable";
+
+/**
+ * Turn a source failure into skip-report entries. An IncompleteSourceError
+ * is split: members the org refused deterministically become one
+ * `unreadable` entry, the rest one entry classified as before — so a source
+ * with both still gets re-run for the recoverable part, and an all-refused
+ * source is not re-run at all.
+ */
+export function skipEntriesFor(
+  label: string,
+  err: Error,
+): Array<{ label: string; reason: string; category: SkipCategory }> {
+  if (err instanceof IncompleteSourceError && err.failures.length > 0) {
+    const out: Array<{ label: string; reason: string; category: SkipCategory }> = [];
+    const refused = err.failures.filter((f) => isPlatformRefusal(f.error));
+    if (refused.length > 0) {
+      out.push({ label, reason: describeUnreadable(err.source, refused), category: "unreadable" });
+    }
+    // Classify the recoverable rest per failure (review M5): the combined
+    // message holds member names and only the FIRST error, so one
+    // INSUFFICIENT_ACCESS member (or a name containing NOT_FOUND) mislabelled
+    // every other loss. One entry per category, each naming its members.
+    const byCategory = new Map<SkipCategory, FetchFailure[]>();
+    for (const f of err.failures) {
+      if (isPlatformRefusal(f.error)) continue;
+      const msg = f.error instanceof Error ? f.error.message : String(f.error);
+      const cat = classifySkip(msg);
+      byCategory.set(cat, [...(byCategory.get(cat) ?? []), f]);
+    }
+    for (const [category, group] of byCategory) {
+      out.push({ label, reason: new IncompleteSourceError(err.source, group).message, category });
+    }
+    return out;
+  }
+  const reason = err?.message ?? String(err);
+  return [{ label, reason, category: classifySkip(reason) }];
+}
+
+/** Counts behind a source's unreadable failures: members refused, members
+ *  never requested after an early stop, and whether the listing was refused. */
+function unreadableCounts(refused: FetchFailure[]): {
+  members: FetchFailure[];
+  unread: number;
+  listing: boolean;
+} {
+  const members = refused.filter(
+    (f) => !(f.error instanceof TypeUnreadableError) && !f.name.startsWith("metadata.list "),
+  );
+  const unread = refused.reduce(
+    (n, f) => n + (f.error instanceof TypeUnreadableError ? f.error.unreadCount : 0),
+    0,
+  );
+  return { members, unread, listing: refused.some((f) => f.name.startsWith("metadata.list ")) };
+}
+
+function describeUnreadable(source: string, refused: FetchFailure[]): string {
+  const MAX_NAMES = 25;
+  const { members, unread, listing } = unreadableCounts(refused);
+  // The shared refusal of an early stop is its first member's (review N2);
+  // otherwise the first refusal recorded.
+  const stop = refused.find((f) => f.error instanceof TypeUnreadableError)?.error as
+    | TypeUnreadableError
+    | undefined;
+  const first = stop?.cause ?? refused[0]?.error;
+  const firstMsg = first instanceof Error ? first.message : String(first ?? "");
+  if (listing && members.length === 0) {
+    // The type's listing itself was refused (e.g. ManagedTopic).
+    return `${source}: listing unreadable (org refused metadata.list); error: ${firstMsg}`;
+  }
+  const names = members.map((f) => f.name);
+  const shown = names.slice(0, MAX_NAMES).join(", ");
+  const more = names.length > MAX_NAMES ? ` (+${names.length - MAX_NAMES} more)` : "";
+  const stopped =
+    unread > 0
+      ? `; stopped reading the type after ${UNREADABLE_EARLY_STOP} identical refusals — ${unread} more member(s) not read`
+      : "";
+  return `${source}: ${members.length} member(s) unreadable (org refused): ${shown}${more}${stopped}; first error: ${firstMsg}`;
+}
 
 /** Best-effort classification so the end-of-run recommendation is targeted. */
 function classifySkip(msg: string): SkipCategory {
@@ -161,6 +270,11 @@ export async function* mergeAsyncIterables<T>(...iters: Array<AsyncIterable<T>>)
  *
  * Output ordering is non-deterministic. `live-ingest`'s processOne is
  * order-independent (idempotent per-record upserts), so this is safe.
+ *
+ * Errors: a sub-stream that rejects releases its slot and the remaining
+ * streams keep draining; after the last one finishes the merge rejects with
+ * that error (or an `AggregateError` when several failed). Values already
+ * yielded are never retracted.
  */
 export interface MergeParallelOptions {
   /** Override the sliding-window size for this call. When omitted, the
@@ -217,6 +331,13 @@ async function* mergeAsyncIterablesParallelImpl<T>(
   type Tagged = Promise<{ idx: number; result: IteratorResult<T> }>;
   const pending = new Map<number, Tagged>();
   let nextIterIdx = 0;
+  // Sub-stream failures, in the order they happened. A failed stream frees
+  // its slot like a finished one so its peers (and queued streams) still
+  // drain, but the failure is re-thrown once everything else is done — it is
+  // never mapped to a silent `done` (review M7; the swallowed-error shape
+  // behind the original ApexClass truncation). bulkRetrieve's sources are
+  // failSoft-wrapped and never reject, so this only affects direct callers.
+  const errors: unknown[] = [];
   const advance = (idx: number): void => {
     const it = iterators[idx];
     if (!it) return;
@@ -224,13 +345,13 @@ async function* mergeAsyncIterablesParallelImpl<T>(
       idx,
       it.next().then(
         (result) => ({ idx, result }),
-        // Per-iter rejections are handled by the failSoft() wrapper one
-        // level up. Anything that reaches here is unexpected; mark the
-        // iter done so the outer race makes forward progress.
-        () => ({
-          idx,
-          result: { value: undefined as unknown as T, done: true } as IteratorResult<T>,
-        }),
+        (e: unknown) => {
+          errors.push(e);
+          return {
+            idx,
+            result: { value: undefined as unknown as T, done: true } as IteratorResult<T>,
+          };
+        },
       ),
     );
   };
@@ -249,6 +370,10 @@ async function* mergeAsyncIterablesParallelImpl<T>(
     }
     yield result.value;
     advance(idx);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, `${errors.length} merged sources failed`);
   }
 }
 
@@ -351,6 +476,10 @@ function enforceBackgroundWedgeCap(coordinator: WedgeCoordinator): void {
     if (!victim) continue;
     victim.stopWaitingRef.value = true;
     const ageMs = Date.now() - victim.registeredAt;
+    reportWedgeSkip(
+      victim,
+      `background wedge evicted (cap ${coordinator.maxBackgroundWedges}) after ${ageMs}ms — remaining rows not fetched`,
+    );
     coordinator.warnings.push(
       fmtWedgeWarning("cap", "backgroundWedgeAborted", {
         source: victim.label,
@@ -379,9 +508,16 @@ async function* drainBackgroundWedge(
   const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
   const startedAt = Date.now();
   let lateCount = 0;
+  // Why the loop ended. Only "done" means the source finished; every other
+  // outcome loses rows and must become a skip (review I1).
+  let outcome: "done" | "budget" | "evicted" | "error" = "evicted";
+  const BUDGET_SENTINEL = Symbol("late-drain budget");
   while (!entry.stopWaitingRef.value) {
     const remaining = startedAt + budgetMs - Date.now();
-    if (remaining <= 0) break;
+    if (remaining <= 0) {
+      outcome = "budget";
+      break;
+    }
     // First iteration: consume the abandoned-but-still-pending `it.next()`
     // promise from when the watchdog fired. Subsequent iterations call
     // `iterator.next()` normally. Async-generator semantics queue
@@ -394,28 +530,42 @@ async function* drainBackgroundWedge(
         ? entry.pendingFirstNext
         : stopSignalContext.run(entry.stopWaitingRef, () => entry.iterator.next());
     if (entry.pendingFirstNext !== null) entry.pendingFirstNext = null;
-    let next: IteratorResult<RawMember>;
+    let next: IteratorResult<RawMember> | typeof BUDGET_SENTINEL;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       next = await Promise.race([
         nextPromise,
-        new Promise<IteratorResult<RawMember>>((resolve) => {
-          setTimeout(
-            // Resolve (not reject) with a synthetic done sentinel — bailing
-            // is the normal exit path from a budget-exceeded drain, not an
-            // error condition.
-            () => resolve({ value: undefined as unknown as RawMember, done: true }),
-            remaining,
-          );
+        new Promise<typeof BUDGET_SENTINEL>((resolve) => {
+          // A distinct sentinel (not a synthetic `done`) so budget exhaustion
+          // is never mistaken for the source finishing.
+          timer = setTimeout(() => resolve(BUDGET_SENTINEL), remaining);
         }),
       ]);
     } catch (e) {
-      // Late-arriving error from the wedged iterator. Don't crash the drain;
-      // surface as a warning and stop.
-      const err = (e as Error)?.message ?? String(e);
-      warnings.push(fmtWedgeWarning(entry.label, "lateError", { error: err.slice(0, 120) }));
+      // Late-arriving error from the wedged iterator (e.g. an
+      // IncompleteSourceError after a truncated drain). Don't crash the
+      // drain; keep the warning AND record the skip.
+      const err = e as Error;
+      const msg = err?.message ?? String(e);
+      warnings.push(fmtWedgeWarning(entry.label, "lateError", { error: msg.slice(0, 120) }));
+      outcome = "error";
+      if (!entry.skipReported) {
+        entry.skipReported = true;
+        entry.onError?.(entry.label, err instanceof Error ? err : new Error(msg));
+        console.log(`ingest:   ${entry.label} ✗ skipped (${msg.slice(0, 80)})`);
+      }
+      break;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (next === BUDGET_SENTINEL) {
+      outcome = "budget";
       break;
     }
-    if (next.done) break;
+    if (next.done) {
+      outcome = "done";
+      break;
+    }
     lateCount += 1;
     const rec = next.value as RawMember;
     // Tag with lateYield so downstream consumers / tests can identify the
@@ -425,6 +575,14 @@ async function* drainBackgroundWedge(
       attributes: { ...(rec.attributes ?? {}), lateYield: true },
     };
     yield tagged;
+  }
+  if (outcome === "budget") {
+    reportWedgeSkip(
+      entry,
+      `late-drain budget exhausted (${budgetMs}ms) after ${lateCount} late records — source did not finish`,
+    );
+  } else if (outcome === "evicted") {
+    reportWedgeSkip(entry, "background wedge evicted before the late drain finished it");
   }
   if (lateCount > 0) {
     const totalMs = Date.now() - entry.registeredAt;
@@ -523,21 +681,25 @@ async function* failSoft<T extends RawMember>(
       // wrappers can resolve the stop-signal via `getStore()`.
       const pending = stopSignalContext.run(stopWaitingRef, () => it.next());
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const wedged = await Promise.race<
-        { wedge: true } | { wedge: false; result: IteratorResult<T> }
-      >([
-        pending.then((result) => {
-          if (timer) clearTimeout(timer);
-          return { wedge: false as const, result };
-        }),
-        new Promise<{ wedge: true }>((resolve) => {
-          // watchdogMs may be <=0 if the budget is already burned (defensive
-          // — should be rare since the clock starts at body-entry). setTimeout
-          // with non-positive delay fires on the next event-loop tick, which
-          // is the correct wedge-immediately behavior.
-          timer = setTimeout(() => resolve({ wedge: true as const }), Math.max(0, watchdogMs));
-        }),
-      ]);
+      let wedged: { wedge: true } | { wedge: false; result: IteratorResult<T> };
+      try {
+        wedged = await Promise.race<{ wedge: true } | { wedge: false; result: IteratorResult<T> }>([
+          pending.then((result) => ({ wedge: false as const, result })),
+          new Promise<{ wedge: true }>((resolve) => {
+            // watchdogMs may be <=0 if the budget is already burned (defensive
+            // — should be rare since the clock starts at body-entry). setTimeout
+            // with non-positive delay fires on the next event-loop tick, which
+            // is the correct wedge-immediately behavior.
+            timer = setTimeout(() => resolve({ wedge: true as const }), Math.max(0, watchdogMs));
+          }),
+        ]);
+      } finally {
+        // Clear on EVERY outcome. Clearing only when `pending` resolved left
+        // the ref'd timer (up to the 5 min inactivity budget) armed whenever
+        // the source threw, so a run whose last sources skipped held the
+        // process open after its final line (exit hang, 2026-10-09).
+        if (timer) clearTimeout(timer);
+      }
 
       if (wedged.wedge) {
         // Hand off the still-pending it.next() so the drain can consume
@@ -558,7 +720,25 @@ async function* failSoft<T extends RawMember>(
   } catch (e) {
     const err = e as Error;
     onError?.(label, err);
-    console.log(`ingest:   ${label} ✗ skipped (${err?.message?.slice(0, 80) ?? "unknown"})`);
+    // Print the unreadable and recoverable counts separately (review M6):
+    // the combined message counts both as "not fetched after retries".
+    let detail = err?.message?.slice(0, 80) ?? "unknown";
+    let verdict = "skipped";
+    if (err instanceof IncompleteSourceError && err.failures.length > 0) {
+      const refused = err.failures.filter((f) => isPlatformRefusal(f.error));
+      const lost = err.failures.length - refused.length;
+      if (refused.length > 0) {
+        const { members, unread, listing } = unreadableCounts(refused);
+        const parts: string[] = [];
+        if (lost > 0) parts.push(`${lost} member(s) not fetched`);
+        if (listing) parts.push("listing refused");
+        if (members.length > 0) parts.push(`${members.length} member(s) unreadable`);
+        if (unread > 0) parts.push(`${unread} not read after early stop`);
+        detail = parts.join(", ");
+        if (lost === 0) verdict = "unreadable";
+      }
+    }
+    console.log(`ingest:   ${label} ✗ ${verdict} (${detail})`);
     if (debug) {
       console.error(`ingest: [debug] ${label} failure detail: ${err?.message ?? String(err)}`);
       if (err?.stack) console.error(err.stack);
@@ -626,6 +806,7 @@ async function* failSoft<T extends RawMember>(
         pendingFirstNext,
         registeredAt: Date.now(),
         stopWaitingRef,
+        ...(onError ? { onError } : {}),
       });
       enforceBackgroundWedgeCap(coordinator);
     } else {
@@ -787,6 +968,10 @@ export interface BulkRetrieveOpts {
    *  'security', 'integration', 'vlocity', 'omnistudio', or
    *  'generic:<MetadataType>' for the long tail. */
   onlyLabels?: Set<string>;
+  /** `onlyLabels` came from the user (--only / --retry-skipped), not from the
+   *  in-run auto-retry: generic types it names are read in full (no early
+   *  stop on identical refusals). */
+  explicitOnlyLabels?: boolean;
   /** Opt-in: invoke the OmniStudio-on-Core retrieve() extractor in addition
    *  to the existing SOQL path. Default off — retrieve() consumes Metadata
    *  API quota (10k/24h) and is slower; only enable when the higher-fidelity
@@ -819,6 +1004,10 @@ export async function* bulkRetrieve(
       : (opts as BulkRetrieveOpts);
   const skipReport = normalized.skipReport;
   const onlyLabels = normalized.onlyLabels;
+  // An explicit re-run (--retry-skipped / --only) reads every member of the
+  // generic types it names: no early stop (review N1c). Every generic source
+  // such a run launches was named, directly or via `discovery`.
+  const genericOpts = { earlyStop: !(onlyLabels && normalized.explicitOnlyLabels) };
   // Phase 1.5 W1.5-02 coordinator. Built only when a warnings sink was
   // supplied — without one, no place to push wedge strings, so the legacy
   // "watchdog fires → skip entry" behavior is preserved. The coordinator
@@ -826,25 +1015,54 @@ export async function* bulkRetrieve(
   const coordinator: WedgeCoordinator | undefined = normalized.warnings
     ? createWedgeCoordinator(normalized.warnings)
     : undefined;
-  // Discover the type list this org actually supports. If discovery fails or
-  // returns nothing usable, fall back to invoking every known extractor —
-  // preserves Commit-A behavior for mocks that don't implement describe.
+  const onSkip = skipReport
+    ? (label: string, err: Error) => {
+        skipReport.skips.push(...skipEntriesFor(label, err));
+      }
+    : undefined;
+  /** Record a skip for a label the --only filter selects (a pre-fan-out
+   *  failure under an unrelated `--only` is not this run's loss). */
+  const skipIfSelected = (label: string, err: Error, selected: boolean) => {
+    if (onlyLabels && !selected) return;
+    onSkip?.(label, err);
+    console.log(`ingest:   ${label} ✗ skipped (${err.message.slice(0, 80)})`);
+  };
+
+  // Discover the type list this org actually supports. Retried like every
+  // other fetch. If it still fails, fall back to invoking every dedicated
+  // extractor AND record a `discovery` skip: without the type list every
+  // generic:<Type> source (and every child type) is never invoked, which
+  // used to be silent (review I2). `--retry-skipped` feeds `discovery` back
+  // as an only-label, which selects every generic source below.
   let types: Awaited<ReturnType<typeof discoverMetadataTypes>> = [];
   try {
-    types = await discoverMetadataTypes(conn);
-  } catch {
+    types = await withRetry(() => discoverMetadataTypes(conn));
+  } catch (e) {
     types = [];
+    const err = e instanceof Error ? e : new Error(String(e));
+    skipIfSelected(
+      "discovery",
+      new Error(`metadata discovery failed — generic metadata types not fetched: ${err.message}`, {
+        cause: err,
+      }),
+      !onlyLabels ||
+        onlyLabels.has("discovery") ||
+        [...onlyLabels].some((l) => l.startsWith("generic:")),
+    );
+  }
+  // Capability probes that failed transiently (not "absent"): the gated
+  // source was not invoked, so it is a skip under that source's label.
+  for (const pe of caps.probeErrors ?? []) {
+    if (!pe.source) continue;
+    skipIfSelected(
+      pe.source,
+      new Error(`capability probe ${pe.probe} failed — source not run: ${pe.error}`),
+      onlyLabels?.has(pe.source) ?? true,
+    );
   }
 
   const sources: Array<AsyncIterable<RawMember>> = [];
   const invoked = new Set<string>(); // source-key dedup
-
-  const onSkip = skipReport
-    ? (label: string, err: Error) => {
-        const reason = err?.message ?? String(err);
-        skipReport.skips.push({ label, reason, category: classifySkip(reason) });
-      }
-    : undefined;
 
   const invoke = (key: string, factory: () => AsyncIterable<RawMember>) => {
     if (invoked.has(key)) return;
@@ -852,7 +1070,15 @@ export async function* bulkRetrieve(
     // --only filter: when onlyLabels is set, skip any source not in the set.
     // Filter applies to the exact source key ('apex', 'generic:Profile', etc.)
     // for precise targeting of retry/partial-refresh flows.
-    if (onlyLabels && !onlyLabels.has(key)) return;
+    // A `discovery` only-label (from a skipped discovery) selects every
+    // generic source — those are what a failed discovery lost.
+    if (
+      onlyLabels &&
+      !onlyLabels.has(key) &&
+      !(onlyLabels.has("discovery") && key.startsWith("generic:"))
+    ) {
+      return;
+    }
     // Each source is wrapped fail-soft so one failing type (e.g. a metadata
     // category the user's profile lacks access to) doesn't abort the whole
     // ingest. The wrapper records the source label + error into skipReport
@@ -880,7 +1106,9 @@ export async function* bulkRetrieve(
           else if (LWC_TYPES.has(type)) invoke("lwc", () => iterLwc(conn));
           else if (shouldRouteGeneric(type)) {
             routedGeneric += 1;
-            invoke(`generic:${type}`, () => iterGenericMetadata(conn, String(orgId), type));
+            invoke(`generic:${type}`, () =>
+              iterGenericMetadata(conn, String(orgId), type, {}, genericOpts),
+            );
           } else {
             skippedGeneric += 1;
           }
@@ -892,7 +1120,9 @@ export async function* bulkRetrieve(
           else if (INTEGRATION_TYPES.has(type)) invoke("integration", () => iterIntegration(conn));
           else if (shouldRouteGeneric(type)) {
             routedGeneric += 1;
-            invoke(`generic:${type}`, () => iterGenericMetadata(conn, String(orgId), type));
+            invoke(`generic:${type}`, () =>
+              iterGenericMetadata(conn, String(orgId), type, {}, genericOpts),
+            );
           } else {
             skippedGeneric += 1;
           }
@@ -934,7 +1164,9 @@ export async function* bulkRetrieve(
       for (const child of childTypes) {
         if (dispatch.has(child) || typedOwned.has(child)) continue;
         if (CONTAINER_COVERED_TYPES.has(child)) continue; // CustomLabel ⊂ CustomLabels
-        invoke(`generic:${child}`, () => iterGenericMetadata(conn, String(orgId), child));
+        invoke(`generic:${child}`, () =>
+          iterGenericMetadata(conn, String(orgId), child, {}, genericOpts),
+        );
       }
     }
   }
@@ -998,7 +1230,17 @@ export async function* bulkRetrieve(
   // unresolved after the budget is dropped on the floor — its underlying
   // jsforce HTTP request continues running until libuv tears it down at
   // process exit (W1.5-03 will surface a "stop-waiting" semantic for this).
-  if (coordinator && coordinator.backgroundWedges.length > 0 && coordinator.lateDrainBudgetMs > 0) {
+  if (
+    coordinator &&
+    coordinator.backgroundWedges.length > 0 &&
+    coordinator.lateDrainBudgetMs <= 0
+  ) {
+    // Late drain disabled (SFGRAPH_LATE_DRAIN_BUDGET_MS=0): every parked
+    // wedge is abandoned, so each one is a skip, not a silent loss.
+    for (const entry of coordinator.backgroundWedges) {
+      reportWedgeSkip(entry, "wedged and late drain disabled — source did not finish");
+    }
+  } else if (coordinator && coordinator.backgroundWedges.length > 0) {
     if (process.env.SFGRAPH_DEBUG_INGEST === "1") {
       console.log(
         `ingest: [debug] late-drain pass: ${coordinator.backgroundWedges.length} background wedge(s), budget=${coordinator.lateDrainBudgetMs}ms`,

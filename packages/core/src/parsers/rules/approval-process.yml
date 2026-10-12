@@ -13,13 +13,33 @@ nodes:
       active: "${bool(record.active)}"
 
 edges:
-  # Entry-criteria formula references. (Step-level formulas covered by code path
-  # historically; this rule covers the common single-entry-formula case which
-  # matches the golden fixture byte-for-byte.)
+  # Entry-criteria formula references, qualified with the process object (the
+  # member name is `<Object>.<Process>`). Bare `X__c` names are fields of that
+  # object; a `Rel__r.F` hop reads the lookup field `Rel__c` (the far object is
+  # unknown here, so nothing is guessed for `F`). Names inside string literals
+  # (an odd number of quotes follows them) and after a `.` or `$` (other
+  # objects, $globals) are not this object's fields.
   - relType: APPROVAL_USES_FORMULA
-    iterate: "${matchAll(toString(record.entryCriteria.formula),'\\b([A-Za-z_][A-Za-z0-9_]*__c)\\b')}"
+    iterate: "${matchAll(toString(record.entryCriteria.formula),'(?<![\\w.$])([A-Za-z_][A-Za-z0-9_]*__c)\\b(?!\\s*\\.)(?=(?:[^\\x22]*\\x22[^\\x22]*\\x22)*[^\\x22]*$)(?=(?:[^\\x27]*\\x27[^\\x27]*\\x27)*[^\\x27]*$)')}"
     when: "${item}"
     src: "ApprovalProcess:${record.name}"
-    dst: "CustomField:${item}"
+    dst: "CustomField:${split(toString(record.name),'.')[0]}.${item}"
     props:
       formula: "${record.entryCriteria.formula | raw}"
+
+  - relType: APPROVAL_USES_FORMULA
+    iterate: "${matchAll(toString(record.entryCriteria.formula),'(?<![\\w.$])([A-Za-z_][A-Za-z0-9_]*)__r\\s*\\.(?=(?:[^\\x22]*\\x22[^\\x22]*\\x22)*[^\\x22]*$)(?=(?:[^\\x27]*\\x27[^\\x27]*\\x27)*[^\\x27]*$)')}"
+    when: "${item}"
+    src: "ApprovalProcess:${record.name}"
+    dst: "CustomField:${split(toString(record.name),'.')[0]}.${item}__c"
+    props:
+      formula: "${record.entryCriteria.formula | raw}"
+
+  # Filter-style entry criteria name fields as `Object.Field` already.
+  - relType: APPROVAL_USES_FORMULA
+    iterate: "${record.entryCriteria.criteriaItems}"
+    when: "${item.field}"
+    src: "ApprovalProcess:${record.name}"
+    dst: "CustomField:${item.field}"
+    props:
+      criteria: true

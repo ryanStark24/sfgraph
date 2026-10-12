@@ -12,7 +12,7 @@
   "edges": [
     {
       "srcQualifiedName": "ApprovalProcess:Account.Approval1",
-      "dstQualifiedName": "CustomField:Amount__c",
+      "dstQualifiedName": "CustomField:Account.Amount__c",
       "relType": "APPROVAL_USES_FORMULA",
       "attributes": {
         "formula": "Amount__c > 1000"

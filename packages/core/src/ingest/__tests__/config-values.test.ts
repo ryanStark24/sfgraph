@@ -14,16 +14,16 @@ describe("buildEmbedText — config values fold into the embedding", () => {
   it("CMDT field values (array of {field,value}) become searchable lines", () => {
     const text = buildEmbedText(
       "CustomMetadataRecord",
-      "CustomMetadataRecord:End_Point_Urls.ProductPush",
+      "CustomMetadataRecord:Endpoint_Url.ProductPush",
       {
         values: [
-          { field: "Endpoint__c", value: "https://api.example.com/cbs/product" },
-          { field: "Order_Type__c", value: "Create" },
+          { field: "Service_Url__c", value: "https://api.example.com/cbs/product" },
+          { field: "Txn_Mode__c", value: "Create" },
         ],
       },
     );
-    expect(text).toContain("Endpoint__c = https://api.example.com/cbs/product");
-    expect(text).toContain("Order_Type__c = Create");
+    expect(text).toContain("Service_Url__c = https://api.example.com/cbs/product");
+    expect(text).toContain("Txn_Mode__c = Create");
   });
 
   it("CMDT values as a plain object also fold in", () => {
@@ -41,7 +41,7 @@ describe("buildEmbedText — config values fold into the embedding", () => {
   });
 
   it("Custom Setting rows fold in", () => {
-    const text = buildEmbedText("CustomObject", "CustomObject:In_App_Checklist_Settings__c", {
+    const text = buildEmbedText("CustomObject", "CustomObject:App_Checklist_Settings__c", {
       customSettingRows: [{ Name: "default", Page_URL__c: "/lightning/checklist" }],
     });
     expect(text).toContain("Page_URL__c=/lightning/checklist");
@@ -87,9 +87,9 @@ describe("CustomMetadata rule captures record values", () => {
     const result = await parser!.parse(
       {
         xml: "",
-        name: "End_Point_Urls.ProductPush_PLDT",
+        name: "Endpoint_Url.ProductPush_Acme",
         label: "Product Push",
-        values: [{ field: "Endpoint__c", value: "https://api.example.com/cbs/product" }],
+        values: [{ field: "Service_Url__c", value: "https://api.example.com/cbs/product" }],
       } as never,
       makeTestCtx(),
     );
@@ -97,7 +97,7 @@ describe("CustomMetadata rule captures record values", () => {
     expect(rec).toBeDefined();
     const vals = (rec!.attributes as { values?: Array<{ field?: string; value?: string }> }).values;
     expect(Array.isArray(vals)).toBe(true);
-    expect(vals?.[0]?.field).toBe("Endpoint__c");
+    expect(vals?.[0]?.field).toBe("Service_Url__c");
     expect(vals?.[0]?.value).toBe("https://api.example.com/cbs/product");
     // And the embed text built from that node surfaces the value.
     expect(buildEmbedText(rec!.label, String(rec!.qualifiedName), rec!.attributes)).toContain(

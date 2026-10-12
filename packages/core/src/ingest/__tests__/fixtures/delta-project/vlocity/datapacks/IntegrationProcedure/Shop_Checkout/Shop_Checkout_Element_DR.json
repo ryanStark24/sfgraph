@@ -1,0 +1,7 @@
+{
+  "Name": "Fetch",
+  "%vlocity_namespace%__Type__c": "DataRaptor Extract Action",
+  "%vlocity_namespace%__PropertySet__c": {
+    "bundle": "AcctFetch"
+  }
+}

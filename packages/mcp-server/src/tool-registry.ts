@@ -54,3 +54,66 @@ export function registerTool(spec: {
     inputSchema: spec.inputSchema,
   });
 }
+
+/**
+ * Cycle 3 T5: the tools served with SFGRAPH_TOOLS=core, sorted: the 18 keyed tools of the bench
+ * (bench/tool-tests/cases). Adding a tool here is a conscious choice; the size budget test holds
+ * the list.
+ */
+export const CORE_TOOLS: readonly string[] = [
+  "analyze_field",
+  "cross_layer_flow_map",
+  "cross_org_diff",
+  "dead_code_audit",
+  "explain_code",
+  "find_nodes",
+  "find_similar",
+  "governor_risk_check",
+  "impact_from_git_diff",
+  "point_in_time_diff",
+  "security_audit",
+  "test_gap_intelligence_from_git_diff",
+  "trace_downstream",
+  "trace_upstream",
+  "what_broke",
+  "wip_diff",
+  "wip_impact",
+  "wip_test_gap",
+];
+
+export type ToolProfile = "full" | "core";
+
+/**
+ * The tool profile from an SFGRAPH_TOOLS value: `core`, or `full` (also when unset or empty).
+ * An unknown value means `full`, with one warning line.
+ */
+export function toolProfile(
+  value: string | undefined = process.env.SFGRAPH_TOOLS,
+  warn: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
+): ToolProfile {
+  const v = (value ?? "").trim().toLowerCase();
+  if (v === "core") return "core";
+  if (v !== "" && v !== "full")
+    warn(
+      `sfgraph: unknown SFGRAPH_TOOLS value "${value}"; serving the full tool list (use core or full).`,
+    );
+  return "full";
+}
+
+export const inProfile = (name: string, profile: ToolProfile): boolean =>
+  profile === "full" || CORE_TOOLS.includes(name);
+
+/** The tools/list entries for `profile`, exactly as the server sends them. */
+export function toolList(
+  registry: ToolRegistry,
+  profile: ToolProfile,
+): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
+  return registry
+    .list()
+    .filter((t) => inProfile(t.name, profile))
+    .map((t) => ({
+      name: t.name,
+      description: t.schema.description,
+      inputSchema: t.schema.inputSchema ?? { type: "object" },
+    }));
+}

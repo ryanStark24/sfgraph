@@ -5,6 +5,7 @@ import { REL_TYPES } from "../../domain/index.js";
 import type { GraphStore } from "../../storage/interfaces.js";
 import { makeEdge } from "../common.js";
 import type { ParseContext } from "../contract.js";
+import { pruneStaleResolverEdges } from "../resolver-prune.js";
 
 /**
  * Resolve `FLOW_INVOKES_APEX → ApexClass:Foo` edges to the specific
@@ -102,6 +103,13 @@ export function resolveFlowApexMethods(
     }
   }
 
+  pruneStaleResolverEdges(
+    store,
+    orgId,
+    "flow-invocable-resolver",
+    store.listEdgesByDstLike(orgId, "ApexMethod:%", REL_TYPES.FLOW_INVOKES_APEX_METHOD),
+    newEdges,
+  );
   if (newEdges.length > 0) store.mergeEdges(newEdges);
 
   // Suppress an unused-import warning when asQualifiedName isn't directly used.

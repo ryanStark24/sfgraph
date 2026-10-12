@@ -80,6 +80,23 @@ export const RULE_CATALOG: Record<string, RuleDescriptor> = {
       "Detected via the `hasDmlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 150 DML statements the platform allows per transaction — bulkify by collecting records into a list and committing once after the loop.",
     defaultLevel: "error",
   },
+  "governor.sosl-in-loop": {
+    id: "governor.sosl-in-loop",
+    name: "SOSL in loop",
+    shortDescription: "Apex method executes SOSL inside a loop.",
+    fullDescription:
+      "Detected from the EXECUTES_SOSL edge the Apex parser stamps `inLoop`. Each loop iteration consumes one of the 20 SOSL queries the platform allows per transaction — search once outside the loop.",
+    defaultLevel: "error",
+  },
+  "governor.dynamic-soql-in-loop": {
+    id: "governor.dynamic-soql-in-loop",
+    name: "Dynamic SOQL in loop",
+    shortDescription:
+      "Apex method or trigger runs a dynamic query (Database.query, ...) inside a loop.",
+    fullDescription:
+      "Detected from the `dynamicQueryInLoop` attribute the Apex parsers stamp on a method or trigger. Each iteration consumes one of the 100 SOQL queries allowed per transaction — build one query outside the loop.",
+    defaultLevel: "error",
+  },
   "governor.unbounded-query": {
     id: "governor.unbounded-query",
     name: "Unbounded query",

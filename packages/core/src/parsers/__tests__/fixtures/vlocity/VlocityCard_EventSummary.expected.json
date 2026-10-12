@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "VlocityCard:EventSummary",
+      "label": "VlocityCard",
+      "attributes": {
+        "name": "EventSummary",
+        "flavor": "VC"
+      }
+    }
+  ],
+  "edges": []
+}

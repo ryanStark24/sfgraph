@@ -5,7 +5,7 @@ const s = new Sanitizer();
 
 describe("Sanitizer", () => {
   it("redacts Unix /Users path", () => {
-    expect(s.sanitize("see /Users/alice/project")).toBe("see <path>");
+    expect(s.sanitize("see /Users/dev/project")).toBe("see <path>");
   });
   it("redacts /home path", () => {
     expect(s.sanitize("at /home/bob/x.txt here")).toBe("at <path> here");
@@ -65,7 +65,7 @@ describe("Sanitizer", () => {
     expect(s.sanitize("zzzzzzzzzzzzzzz")).toBe("zzzzzzzzzzzzzzz");
   });
   it("recursively sanitizes object string values", () => {
-    expect(s.sanitize({ path: "/Users/x/y", email: "a@b.com" })).toEqual({
+    expect(s.sanitize({ path: "/Users/dev/y", email: "a@b.com" })).toEqual({
       path: "<path>",
       email: "<email>",
     });
@@ -116,7 +116,7 @@ describe("Sanitizer", () => {
     expect(s.sanitize(undefined)).toBe(undefined);
   });
   it("sanitizes multiple patterns in one string", () => {
-    expect(s.sanitize("user@x.com at /Users/x")).toBe("<email> at <path>");
+    expect(s.sanitize("user@x.com at /Users/dev/x")).toBe("<email> at <path>");
   });
   it("sanitizeEvent strips unknown fields", () => {
     const out = s.sanitizeEvent({
@@ -125,7 +125,7 @@ describe("Sanitizer", () => {
       command: "ingest",
       durationMs: 10,
       exitCode: 0,
-      extraSecret: "/Users/x",
+      extraSecret: "/Users/dev/x",
     });
     expect(out).not.toHaveProperty("extraSecret");
     expect(out["command"]).toBe("ingest");
@@ -138,7 +138,7 @@ describe("Sanitizer", () => {
       kind: "ingest_failure",
       ts: 1,
       category: "ApexClass",
-      errorCode: "failed at /Users/x",
+      errorCode: "failed at /Users/dev/x",
     });
     expect(out["errorCode"]).toBe("failed at <path>");
   });

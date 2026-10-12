@@ -136,6 +136,9 @@ export class RuleBasedParser implements Parser<unknown> {
           merged[k] = v;
         }
       }
+      // Markup sources (a filesystem `.page` / `.component`) arrive as
+      // `{ name, xml }`: the raw text is the body rules match against.
+      if (merged.body === undefined && xml) merged.body = xml;
       return merged;
     }
     return input;

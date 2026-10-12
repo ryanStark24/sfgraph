@@ -147,7 +147,10 @@ export function extractHtmlEdges(
       const rest = m[2] ?? "";
       // Convert kebab to camelCase for bundle ref
       const bundleName = rest.replace(/-([a-z0-9])/g, (_x, l) => String(l).toUpperCase());
-      if (ns === "c" || ns === "lightning") {
+      if (ns === "lightning") {
+        // Salesforce base components (lightning-card, lightning-input): part
+        // of the platform, not bundles in the org. No edge.
+      } else if (ns === "c") {
         const dst = `LWC:${bundleName}`;
         if (!seenLwc.has(dst)) {
           seenLwc.add(dst);

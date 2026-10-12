@@ -1,21 +1,35 @@
+import { existsSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import path from "node:path";
 import {
+  EmbeddingPool,
   SqliteGraphStore,
   SqliteSnapshotStore,
   SqliteVectorStore,
+  acquireIngestLock,
+  defaultEmbeddingWorkerUrl,
+  embedMaxTokens,
+  embedModelFingerprint,
+  embeddingCachePath,
   listAllAuthenticatedOrgs,
   liveIngest,
   multiOrgIngest,
+  resolveEmbedModelId,
 } from "@ryanstark24/sfgraph-core";
-import type { LiveIngestOpts, MultiOrgIngestEntry } from "@ryanstark24/sfgraph-core";
+import type { IngestLock, LiveIngestOpts, MultiOrgIngestEntry } from "@ryanstark24/sfgraph-core";
 import {
   ConsoleLogger,
   SfgraphError,
   getSfgraphPaths,
   safeOrgDbPath,
 } from "@ryanstark24/sfgraph-shared";
+import { retrySkippedLabels } from "./skip-labels.js";
 
 export interface IngestOpts {
+  /** Offline ingest of an SFDX checkout; --org then only sets the alias. */
+  project?: string | undefined;
+  /** With --project: re-ingest only the members that changed (Task 11c). */
+  delta?: boolean | undefined;
   org?: string | undefined;
   orgs?: string | undefined;
   all?: boolean | undefined;
@@ -27,6 +41,9 @@ export interface IngestOpts {
   embedModelDim?: number | undefined;
   rebuild?: boolean | undefined;
   noBackup?: boolean | undefined;
+  /** Return at "graph ready" instead of waiting for embeddings
+   *  (`--no-wait-embeddings`); the next ingest fills the pending vectors. */
+  noWaitEmbeddings?: boolean | undefined;
   detectDeletions?: boolean | undefined;
   /** Comma-separated source labels to fetch (e.g. 'apex,generic:Profile').
    *  Forces mode=full and merges into the existing graph without rebuild. */
@@ -117,9 +134,15 @@ async function buildSingleIngestOpts(
   alias: string,
   opts: IngestOpts,
   logger: ConsoleLogger,
-  deps: { resolveOrg: typeof import("@ryanstark24/sfgraph-core").resolveOrg },
+  deps: {
+    resolveOrg: typeof import("@ryanstark24/sfgraph-core").resolveOrg;
+    /** Called once the org is known, before anything touches its graph
+     *  (the ingest lock is taken here). */
+    onResolved?: (orgId: string, alias: string) => void;
+  },
 ): Promise<LiveIngestOpts> {
   const resolved = await deps.resolveOrg(alias);
+  deps.onResolved?.(String(resolved.orgId), alias);
   const dataDir = getSfgraphPaths().data;
   const dbPath = opts.db
     ? validateDbPath(opts.db, dataDir)
@@ -185,11 +208,11 @@ async function buildSingleIngestOpts(
     }
     try {
       const raw = JSON.parse(readFileSync(skipReportPath, "utf8")) as {
-        skips?: Array<{ label: string }>;
+        skips?: Array<{ label: string; category?: string }>;
       };
-      const labels = (raw.skips ?? []).map((s) => s.label).filter(Boolean);
+      const labels = retrySkippedLabels(raw.skips ?? []);
       if (labels.length === 0) {
-        console.log("--retry-skipped: previous run had zero skips. Nothing to retry.");
+        console.log("--retry-skipped: previous run had no skips. Nothing to retry.");
         // Return a no-op opts; the live-ingest will exit cleanly with no work.
         onlyLabels = new Set();
       } else {
@@ -205,16 +228,20 @@ async function buildSingleIngestOpts(
     }
   }
 
+  const embeddingCacheFile = vectorStore ? await embeddingCacheFileFor(dataDir) : undefined;
   return {
     alias,
     mode,
     graphStore,
     snapshotStore,
-    ...(vectorStore ? { vectorStore } : {}),
+    ...(vectorStore ? { vectorStore, waitEmbeddings: !opts.noWaitEmbeddings } : {}),
+    ...(embeddingCacheFile ? { embeddingCacheFile } : {}),
     logger,
     preResolved: resolved,
     detectDeletions: Boolean(opts.detectDeletions),
-    ...(onlyLabels ? { onlyLabels } : {}),
+    // User-chosen labels (--only / --retry-skipped) are read in full: no
+    // early stop on identical refusals (review N1c).
+    ...(onlyLabels ? { onlyLabels, explicitOnlyLabels: true } : {}),
     skipReportPath,
     disableCrossFlavor: Boolean(opts.noCrossFlavor),
     disableArityResolve: Boolean(opts.noArityResolve),
@@ -226,6 +253,79 @@ async function buildSingleIngestOpts(
     // live scans or return empty results — the tables existed but nothing
     // ever wrote to them.
     analysisDb: graphStore.db,
+  };
+}
+
+/**
+ * The persistent embedding cache for the active model:
+ * `<dataDir>/embedding-cache/<modelId>@<sha16>[@<cap>].sqlite`, where sha16 is
+ * the first 16 hex chars of the model weights file's sha256, so new weights
+ * under the same model id never reuse old vectors. A non-default token cap
+ * changes the vectors too, so it gets its own file. Undefined (no cache) when
+ * the model file cannot be found: there is nothing trustworthy to key it by.
+ * The file lives outside the per-org graph DB, so `--rebuild` reuses it; it
+ * only grows.
+ */
+export async function embeddingCacheFileFor(dataDir: string): Promise<string | undefined> {
+  const sha = await embedModelFingerprint();
+  if (!sha) return undefined;
+  const cap = embedMaxTokens();
+  const key = `${resolveEmbedModelId()}@${sha.slice(0, 16)}`;
+  return embeddingCachePath(dataDir, cap === 256 ? key : `${key}@${cap}`);
+}
+
+/**
+ * Ruling (a): an embedding failure after graph ready is not an ingest failure.
+ * The graph is complete and the unembedded texts stay flagged pending, so the
+ * next ingest fills them (find_similar uses text search meanwhile). Warn and
+ * leave the exit code alone; live-ingest already printed the cause.
+ */
+export function reportEmbeddingOutcome(result: {
+  embeddings?: { error?: string; failed?: number; pending?: number };
+}): void {
+  const e = result.embeddings;
+  if (!e?.error) return;
+  const left = Math.max(e.pending ?? 0, e.failed ?? 0);
+  console.warn(
+    `warning: the graph is complete, but ${left} texts were left unembedded (${e.error}); their vectors stay pending and the next ingest fills them`,
+  );
+}
+
+/** Give every built ingest the same embedder (multi-org runs: one worker and
+ *  one model in memory instead of one per org). The caller closes it. */
+export function shareEmbedder(
+  build: (alias: string) => Promise<LiveIngestOpts>,
+  embedder: NonNullable<LiveIngestOpts["embedder"]>,
+): (alias: string) => Promise<LiveIngestOpts> {
+  return async (alias) => {
+    const o = await build(alias);
+    return o.vectorStore ? { ...o, embedder } : o;
+  };
+}
+
+/** Offline ingest of an SFDX checkout (plus vlocity/datapacks when present).
+ *  Reuses buildSingleIngestOpts with a resolver that never contacts an org. */
+export async function buildProjectIngestOpts(
+  opts: IngestOpts,
+  logger: ConsoleLogger,
+  deps: { onResolved?: (orgId: string, alias: string) => void } = {},
+): Promise<LiveIngestOpts> {
+  const root = path.resolve(String(opts.project));
+  if (!existsSync(path.join(root, "sfdx-project.json"))) {
+    throw new Error(`--project: ${root} has no sfdx-project.json`);
+  }
+  const { offlineResolvedOrg, FilesystemMetadataSource } = await import(
+    "@ryanstark24/sfgraph-core"
+  );
+  const alias = opts.org ?? path.basename(root);
+  const built = await buildSingleIngestOpts(alias, opts, logger, {
+    resolveOrg: (async () => offlineResolvedOrg(root, alias)) as never,
+    ...(deps.onResolved ? { onResolved: deps.onResolved } : {}),
+  });
+  return {
+    ...built,
+    mode: "full",
+    metadataSource: await FilesystemMetadataSource.fromProjectRoot(root),
   };
 }
 
@@ -288,8 +388,45 @@ async function applyRebuild(
   console.warn(`REBUILD: existing graph for ${orgId} moved to ${backupPath}; running full sync`);
 }
 
+/**
+ * Task 11c: one ingest per org at a time (`<dataDir>/<orgId>.ingest.lock`).
+ * Taken as soon as an org is resolved, before --rebuild moves its graph;
+ * released when the command ends. Re-taking a held org is a no-op.
+ * While a lock is held, SIGINT / SIGTERM release it and exit with 128 + signo
+ * (a stale lock is only detectable on the same host).
+ */
+export function ingestLocks(o: { dir?: string; onSignal?: (sig: NodeJS.Signals) => void } = {}): {
+  take: (orgId: string, alias: string) => void;
+  releaseAll: () => void;
+} {
+  const held = new Map<string, IngestLock>();
+  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
+  const releaseAll = (): void => {
+    for (const l of held.values()) l.release();
+    held.clear();
+    for (const s of signals) process.off(s, onSig);
+  };
+  const onSig = (sig: NodeJS.Signals): void => {
+    releaseAll();
+    if (o.onSignal) o.onSignal(sig);
+    // Exit explicitly: re-raising relies on the default action, which other
+    // SIGINT / SIGTERM listeners would suppress (the run would go on unlocked).
+    else process.exit(128 + (osConstants.signals[sig] ?? 0));
+  };
+  return {
+    take(orgId, alias) {
+      if (held.has(orgId)) return;
+      const dir = o.dir ?? getSfgraphPaths().data;
+      held.set(orgId, acquireIngestLock({ dir, orgId, orgLabel: alias }));
+      if (held.size === 1) for (const s of signals) process.on(s, onSig);
+    },
+    releaseAll,
+  };
+}
+
 export async function ingestCmd(opts: IngestOpts): Promise<void> {
   const logger = new ConsoleLogger("info");
+  const locks = ingestLocks();
   if (opts.embedModel) process.env.SFGRAPH_EMBED_MODEL_PATH = opts.embedModel;
   if (opts.embedModelId) process.env.SFGRAPH_EMBED_MODEL_ID = opts.embedModelId;
   if (opts.embedModelDim !== undefined) {
@@ -310,6 +447,37 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
     logger.info(
       `ingest: pool concurrency tooling=${applied.tooling} metadata=${applied.metadata} data=${applied.data}`,
     );
+
+    if (opts.delta && !opts.project) throw new Error("--delta needs --project");
+    if (opts.delta && opts.rebuild) throw new Error("--delta and --rebuild are mutually exclusive");
+    if (opts.project && opts.delta) {
+      await projectDelta(opts, logger, locks.take);
+      return;
+    }
+    if (opts.project) {
+      const built = await buildProjectIngestOpts(opts, logger, { onResolved: locks.take });
+      const result = await liveIngest(built);
+      reportEmbeddingOutcome(result);
+      console.log(
+        `ingest --project: ${result.membersProcessed} members, ${result.parseErrors} parse errors -> ${built.preResolved?.orgId}`,
+      );
+      const dp = (
+        built.metadataSource as
+          | {
+              dataPackReport?: {
+                skipped: Array<{ path: string; reason: string }>;
+                types: Record<string, number>;
+              };
+            }
+          | undefined
+      )?.dataPackReport;
+      if (dp) {
+        console.log(`datapacks: ${JSON.stringify(dp.types)} skipped=${dp.skipped.length}`);
+        for (const s of dp.skipped.slice(0, 20)) console.log(`  skipped ${s.path}: ${s.reason}`);
+      }
+      await (built.graphStore as SqliteGraphStore).close();
+      return;
+    }
 
     // Determine the alias list (multi-org modes).
     let aliases: string[] | null = null;
@@ -343,16 +511,27 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
 
     if (aliases !== null && aliases.length > 0) {
       const list = aliases;
-      const summary = await multiOrgIngest({
-        aliases: list,
-        parallel: Boolean(opts.parallel),
-        logger,
-        buildOpts: (alias: string) => buildSingleIngestOpts(alias, opts, logger, { resolveOrg }),
-      });
+      const build = (alias: string) =>
+        buildSingleIngestOpts(alias, opts, logger, { resolveOrg, onResolved: locks.take });
+      // One embedding worker (one model, one ORT arena) shared by every org.
+      const workerUrl = defaultEmbeddingWorkerUrl();
+      const sharedPool = workerUrl ? new EmbeddingPool({ workerUrl }) : null;
+      let summary: Awaited<ReturnType<typeof multiOrgIngest>>;
+      try {
+        summary = await multiOrgIngest({
+          aliases: list,
+          parallel: Boolean(opts.parallel),
+          logger,
+          buildOpts: sharedPool ? shareEmbedder(build, sharedPool) : build,
+        });
+      } finally {
+        await sharedPool?.close();
+      }
       console.log(
         `\nMulti-org ingest complete (${summary.parallel ? "parallel" : "sequential"}, ${summary.totalElapsedMs}ms):`,
       );
       printResultsTable(summary.entries, opts.mode ?? "auto");
+      for (const e of summary.entries) if (e.result) reportEmbeddingOutcome(e.result);
       const failed = summary.entries.filter(
         (e: MultiOrgIngestEntry) => e.status === "error",
       ).length;
@@ -377,10 +556,14 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
       logger.info(`ingest: using default org from sf config: ${alias}`);
     }
 
-    const built = await buildSingleIngestOpts(alias, opts, logger, { resolveOrg });
+    const built = await buildSingleIngestOpts(alias, opts, logger, {
+      resolveOrg,
+      onResolved: locks.take,
+    });
     const startedAt = Date.now();
     logger.info(`ingest: starting alias=${alias}`);
     const result = await liveIngest(built);
+    reportEmbeddingOutcome(result);
     logger.info("ingest: capabilities", result.capabilities as unknown as Record<string, unknown>);
     logger.info(
       `ingest: complete mode=${result.mode} members=${result.membersProcessed} deletions=${result.deletions} parseErrors=${result.parseErrors} elapsed=${Date.now() - startedAt}ms`,
@@ -423,7 +606,12 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
         console.log("         Disable with --no-auto-retry-skipped or SFGRAPH_NO_AUTO_RETRY=1.");
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         const retryStartedAt = Date.now();
-        const retryResult = await liveIngest({ ...built, onlyLabels: labels });
+        // In-run auto-retry: not an explicit re-run, so the early stop stays on.
+        const retryResult = await liveIngest({
+          ...built,
+          onlyLabels: labels,
+          explicitOnlyLabels: false,
+        });
         logger.info(
           `ingest: auto-retry complete members=${retryResult.membersProcessed} parseErrors=${retryResult.parseErrors} elapsed=${Date.now() - retryStartedAt}ms`,
         );
@@ -474,5 +662,51 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
       console.error((e as Error).message);
     }
     process.exitCode = 1;
+  } finally {
+    locks.releaseAll();
+  }
+}
+
+/**
+ * `ingest --project <p> --delta`: re-derive only the changed members
+ * (core runDeltaIngest prints `delta: +A ~C -D (=U unchanged) in Ns`). A
+ * graph without member rows (older sfgraph, interrupted full ingest) gets a
+ * full rebuild instead. The caller's lock covers both.
+ */
+async function projectDelta(
+  opts: IngestOpts,
+  logger: ConsoleLogger,
+  takeLock: (orgId: string, alias: string) => void,
+): Promise<void> {
+  const { runDeltaIngest } = await import("@ryanstark24/sfgraph-core");
+  const built = await buildProjectIngestOpts({ ...opts, rebuild: false }, logger, {
+    onResolved: takeLock,
+  });
+  const store = built.graphStore as SqliteGraphStore;
+  let open = true;
+  try {
+    const r = await runDeltaIngest({
+      ...built,
+      graphStore: store,
+      preResolved: built.preResolved as NonNullable<LiveIngestOpts["preResolved"]>,
+      metadataSource: built.metadataSource as NonNullable<LiveIngestOpts["metadataSource"]>,
+      fullRebuild: async () => {
+        await store.close();
+        open = false;
+        const full = await buildProjectIngestOpts({ ...opts, rebuild: true, delta: false }, logger);
+        try {
+          const result = await liveIngest(full);
+          reportEmbeddingOutcome(result);
+          console.log(
+            `ingest --project: ${result.membersProcessed} members, ${result.parseErrors} parse errors -> ${full.preResolved?.orgId}`,
+          );
+        } finally {
+          await (full.graphStore as SqliteGraphStore).close();
+        }
+      },
+    });
+    if (r.result) reportEmbeddingOutcome(r.result);
+  } finally {
+    if (open) await store.close();
   }
 }

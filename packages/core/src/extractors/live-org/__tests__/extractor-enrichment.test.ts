@@ -50,9 +50,18 @@ describe("apex extractor — robustness", () => {
           },
         },
       };
-      const members = await collect(iterApex(conn));
+      const members: RawMember[] = [];
+      let thrown: Error | undefined;
+      try {
+        for await (const m of iterApex(conn, { retryBackoffMs: 0 })) members.push(m);
+      } catch (e) {
+        thrown = e as Error;
+      }
       // Class results still come back even though trigger query rejected.
       expect(members.some((m) => m.ref.memberType === "ApexClass")).toBe(true);
+      // The trigger failure is surfaced (once, after the class stream) so the
+      // bulk-retrieve failSoft wrapper records a skip instead of "apex ✓".
+      expect(thrown?.message).toMatch(/INVALID_SESSION/);
       // Give microtasks a chance to flush any orphan rejections.
       await new Promise((r) => setImmediate(r));
     } finally {

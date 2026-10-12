@@ -1,4 +1,5 @@
-import type { OrgId } from "@ryanstark24/sfgraph-shared";
+import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
+import type { NodeFact } from "../domain/index.js";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import { REL_TYPES } from "../domain/rel-types.js";
 import type { GraphStore } from "../storage/interfaces.js";
@@ -139,8 +140,25 @@ export function securityAudit(
   // — those dominated the raw list and are never a real FLS finding.
   const flsGaps: string[] = [];
   let flsGapsExcluded = 0;
-  const fields = store.listNodesByLabel(orgId, METADATA_CATEGORY.FIELD, SECURITY_PER_LABEL_CAP);
-  if (fields.length >= SECURITY_PER_LABEL_CAP) truncated = true;
+  // The cap bounds the fields IN SCOPE: with an object/field filter, filter
+  // first and cap after, so narrowing (the advice the cap gives) can reach
+  // fields past the first SECURITY_PER_LABEL_CAP rows of the label.
+  let fields: NodeFact[];
+  if (opts?.field) {
+    const one = store.getNode(orgId, opts.field as QualifiedName);
+    fields = one && one.label === METADATA_CATEGORY.FIELD ? [one] : [];
+  } else if (opts?.object) {
+    fields = store
+      .listNodesByLabel(orgId, METADATA_CATEGORY.FIELD)
+      .filter((n) => matchesFilter(n.qualifiedName, opts));
+    if (fields.length > SECURITY_PER_LABEL_CAP) {
+      fields = fields.slice(0, SECURITY_PER_LABEL_CAP);
+      truncated = true;
+    }
+  } else {
+    fields = store.listNodesByLabel(orgId, METADATA_CATEGORY.FIELD, SECURITY_PER_LABEL_CAP);
+    if (fields.length >= SECURITY_PER_LABEL_CAP) truncated = true;
+  }
   for (const n of fields) {
     if (!matchesFilter(n.qualifiedName, opts)) continue;
     if (fieldAccessMatrix.has(n.qualifiedName)) continue;

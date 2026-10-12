@@ -54,17 +54,23 @@ export function truncateByCentrality<N extends CentralityNode>(
   return { kept: sorted.slice(0, cap), truncated: nodes.length - cap };
 }
 
+/** Labels longer than this are cut (with "…"); shorter ones, i.e. nearly every qname, stay whole. */
+export const LABEL_MAX = 100;
+
+function cut(name: string): string {
+  return name.length > LABEL_MAX ? `${name.slice(0, LABEL_MAX - 1)}…` : name;
+}
+
+/** An unquoted label (sequence participants and messages): `"` as `'`, `;` (a statement break) as `,`. */
 export function sanitizeLabel(name: string): string {
-  let s = name;
-  if (s.length > 30) s = `${s.slice(0, 27)}…`;
-  s = s.replace(/"/g, "'").replace(/[\[\]\(\)]/g, "_");
-  return s;
+  return cut(name).replace(/"/g, "'").replace(/;/g, ",");
 }
 
 export function mermaidId(qname: string): string {
   return qname.replace(/[^A-Za-z0-9_]/g, "_");
 }
 
+/** A quoted node label: kept as is inside the quotes (a method qname keeps its `(n)`), `"` as `#quot;`. */
 export function fenceLabel(name: string): string {
-  return `"${sanitizeLabel(name)}"`;
+  return `"${cut(name).replace(/"/g, "#quot;")}"`;
 }

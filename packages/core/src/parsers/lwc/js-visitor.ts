@@ -14,6 +14,11 @@ export interface JsExtractResult {
   extraNodes: NodeFact[];
   /** Phase 5: bindings the HTML visitor needs to resolve `{var.field}`. */
   bindings: LwcBindings;
+  /** Custom-field API names used as plain object-literal keys
+   *  (`{ Site_Remarks__c: v }`, typically a record payload). They carry no
+   *  object, so a post-ingest resolver binds the ones whose name is unique in
+   *  the graph (see field-key-resolver.ts). */
+  recordFieldKeys: Set<string>;
 }
 
 const APEX_IMPORT_RE = /^@salesforce\/apex\/([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/;
@@ -21,6 +26,13 @@ const SR_IMPORT_RE = /^@salesforce\/resourceUrl\/([A-Za-z_]\w*)$/;
 const LABEL_IMPORT_RE = /^@salesforce\/label\/c\.([A-Za-z_]\w*)$/;
 const SCHEMA_OBJ_RE = /^@salesforce\/schema\/([A-Za-z_][\w]*)$/;
 const SCHEMA_FIELD_RE = /^@salesforce\/schema\/([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)$/;
+/** `import x from 'c/otherCmp'`: a local LWC module (component or service). */
+const LOCAL_LWC_IMPORT_RE = /^c\/([A-Za-z]\w*)$/;
+/** `c:name` value of a `c__target` navigation state key. */
+const C_TARGET_VALUE_RE = /^c:([A-Za-z]\w*)$/;
+/** `…?c__target=c:name` inside a URL string. */
+const C_TARGET_URL_RE = /c__target=c:([A-Za-z]\w*)/g;
+const CUSTOM_FIELD_KEY_RE = /^[A-Za-z]\w*__c$/;
 
 /**
  * LWC template bindings discovered through JS analysis. Consumed by
@@ -54,6 +66,18 @@ export function extractJsEdges(
     schemaFieldImports: new Map(),
     schemaObjectImports: new Map(),
   };
+  const recordFieldKeys = new Set<string>();
+  const referenced = new Set<string>();
+  const refLwc = (name: string, via: string) => {
+    const dst = `LWC:${stripNs(name, ctx.namespace)}`;
+    if (dst === lwcQname || referenced.has(dst)) return;
+    referenced.add(dst);
+    extraEdges.push(makeEdge(ctx, lwcQname, REL_TYPES.REFERENCES, dst, { via }));
+  };
+  const scanUrlTargets = (text: string) => {
+    if (!text.includes("c__target=")) return;
+    for (const m of text.matchAll(C_TARGET_URL_RE)) refLwc(m[1] ?? "", "c__target");
+  };
 
   let ast: any;
   try {
@@ -67,12 +91,17 @@ export function extractJsEdges(
         message: err instanceof Error ? err.message : String(err),
       }),
     );
-    return { extraEdges, extraNodes, bindings };
+    return { extraEdges, extraNodes, bindings, recordFieldKeys };
   }
 
   traverse(ast, {
     ImportDeclaration(path: NodePath<any>) {
       const src = String(path.node.source?.value ?? "");
+      const local = LOCAL_LWC_IMPORT_RE.exec(src);
+      if (local) {
+        refLwc(local[1] ?? "", "import");
+        return;
+      }
       let m = APEX_IMPORT_RE.exec(src);
       if (m) {
         const className = stripNs(m[1] ?? "", ctx.namespace);
@@ -229,6 +258,61 @@ export function extractJsEdges(
       }
     },
 
+    StringLiteral(path: NodePath<any>) {
+      scanUrlTargets(String(path.node.value ?? ""));
+    },
+
+    TemplateElement(path: NodePath<any>) {
+      scanUrlTargets(String(path.node.value?.cooked ?? path.node.value?.raw ?? ""));
+    },
+
+    ObjectExpression(path: NodePath<any>) {
+      const props = path.node.properties ?? [];
+      for (const p of props) {
+        if (p.type !== "ObjectProperty" || p.computed) continue;
+        const key =
+          p.key?.type === "Identifier"
+            ? String(p.key.name)
+            : p.key?.type === "StringLiteral"
+              ? String(p.key.value)
+              : "";
+        if (key === "c__target") {
+          const v = p.value;
+          const text =
+            v?.type === "StringLiteral"
+              ? String(v.value)
+              : v?.type === "TemplateLiteral" && (v.expressions?.length ?? 0) === 0
+                ? String(v.quasis?.[0]?.value?.cooked ?? "")
+                : "";
+          const t = C_TARGET_VALUE_RE.exec(text.trim());
+          if (t) refLwc(t[1] ?? "", "c__target");
+        } else if (CUSTOM_FIELD_KEY_RE.test(key)) {
+          recordFieldKeys.add(stripNs(key, ctx.namespace));
+        }
+      }
+      const get = (n: string) =>
+        props.find(
+          (p: any) => p.type === "ObjectProperty" && (p.key?.name === n || p.key?.value === n),
+        )?.value;
+      const cls = get("sClassName");
+      const m = get("sMethodName");
+      const clsText =
+        cls?.type === "StringLiteral"
+          ? String(cls.value)
+          : cls?.type === "TemplateLiteral"
+            ? String(cls.quasis?.[cls.quasis.length - 1]?.value?.cooked ?? "")
+            : "";
+      if (!clsText.endsWith("IntegrationProcedureService") || m?.type !== "StringLiteral") return;
+      const dst = `IntegrationProcedure:${m.value}`;
+      if (
+        !extraEdges.some(
+          (e) => e.relType === REL_TYPES.LWC_CALLS_IP && String(e.dstQualifiedName) === dst,
+        )
+      ) {
+        extraEdges.push(makeEdge(ctx, lwcQname, REL_TYPES.LWC_CALLS_IP, dst));
+      }
+    },
+
     CallExpression(path: NodePath<any>) {
       const callee = path.node.callee;
       // Apex imperative call: importedName({...})
@@ -262,7 +346,7 @@ export function extractJsEdges(
     },
   });
 
-  return { extraEdges, extraNodes, bindings };
+  return { extraEdges, extraNodes, bindings, recordFieldKeys };
 }
 
 function lwcCtx(ctx: ParseContext): ParseContext {

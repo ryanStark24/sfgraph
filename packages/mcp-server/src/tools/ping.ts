@@ -1,14 +1,15 @@
 import type { RegisteredTool } from "../tool-registry.js";
 import { defineTool, z } from "./_define.js";
+import { withInShort } from "./_report.js";
 
 defineTool({
   name: "ping",
-  description: "health check — returns ok+ts",
+  description: "Health check.",
   inputSchema: z.object({}).strict(),
   async execute() {
     return {
       summary: "ok",
-      markdown: "pong",
+      markdown: withInShort("The sfgraph server is running and answering.", "pong"),
       data: { ok: true, ts: Date.now() },
     };
   },

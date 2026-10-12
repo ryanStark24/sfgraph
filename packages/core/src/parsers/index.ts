@@ -1,6 +1,7 @@
 // Side-effect imports register each code parser with the singleton registry.
 import "./apex/index.js";
 import "./lwc/index.js";
+import "./aura/index.js";
 import "./flow/index.js";
 import "./object/index.js";
 import "./security/index.js";

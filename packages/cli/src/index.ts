@@ -21,6 +21,7 @@ import {
   statusCmd,
 } from "./commands/telemetry.js";
 import { wipCmd } from "./commands/wip.js";
+import { applyHeapGrowth } from "./heap.js";
 import { getCliVersion } from "./version.js";
 
 export function buildProgram(): Command {
@@ -90,6 +91,15 @@ export function buildProgram(): Command {
       "with --orgs/--all, run all orgs concurrently (shares default rate-limit pools)",
       false,
     )
+    .option(
+      "--project <dir>",
+      "ingest an SFDX checkout (and vlocity/datapacks) offline instead of an org; --org sets the alias",
+    )
+    .option(
+      "--delta",
+      "with --project, re-ingest only the members that changed since the last --project ingest",
+      false,
+    )
     .option("--mode <mode>", "full | incremental | auto", "auto")
     .option(
       "--rebuild",
@@ -157,6 +167,10 @@ export function buildProgram(): Command {
     .option("--no-flow-resolve", "skip the post-merge Flow→Apex invocable-method resolver.")
     .option("--no-audit", "skip the post-merge dangling-edge audit summary printed at end of run.")
     .option(
+      "--no-wait-embeddings",
+      "exit at 'graph ready' instead of waiting for embeddings. Cached vectors are still written; texts that need the model stay pending, and find_similar uses text search until an ingest that waits for embeddings fills them.",
+    )
+    .option(
       "--skip-threshold <n>",
       "exit non-zero when ≥N transient sources skipped in a single-org ingest. Env: SFGRAPH_SKIP_THRESHOLD. Default 5. Use a large value (e.g. 9999) to preserve the prior exit-0 behavior.",
       (v) => Number.parseInt(v, 10),
@@ -165,6 +179,8 @@ export function buildProgram(): Command {
       async (opts: {
         org?: string;
         orgs?: string;
+        project?: string;
+        delta?: boolean;
         all?: boolean;
         parallel?: boolean;
         mode: "full" | "incremental" | "auto";
@@ -186,12 +202,15 @@ export function buildProgram(): Command {
         arityResolve?: boolean; // commander inverts --no-arity-resolve
         flowResolve?: boolean; // commander inverts --no-flow-resolve
         audit?: boolean; // commander inverts --no-audit
+        waitEmbeddings?: boolean; // commander inverts --no-wait-embeddings
         skipThreshold?: number;
       }) => {
         if (opts.debug) process.env.SFGRAPH_DEBUG_INGEST = "1";
         await ingestCmd({
           org: opts.org,
           orgs: opts.orgs,
+          project: opts.project,
+          delta: opts.delta,
           all: opts.all,
           parallel: opts.parallel,
           mode: opts.mode,
@@ -212,6 +231,7 @@ export function buildProgram(): Command {
           noArityResolve: opts.arityResolve === false,
           noFlowResolve: opts.flowResolve === false,
           noAudit: opts.audit === false,
+          noWaitEmbeddings: opts.waitEmbeddings === false,
           skipThreshold: opts.skipThreshold,
         });
       },
@@ -501,8 +521,20 @@ export function buildProgram(): Command {
   return program;
 }
 
-export async function run(argv: string[]): Promise<void> {
-  const program = buildProgram();
+/** Seams for tests; production uses the real heap setting and program. */
+export interface RunDeps {
+  applyHeapGrowth?: () => number | null;
+  buildProgram?: () => Pick<Command, "parseAsync"> | { parseAsync(argv: string[]): Promise<unknown> };
+}
+
+/**
+ * The CLI entry. Every shipped entry point (the `sfgraph` bin, and through it
+ * `sfgraph mcp` and every ingest) calls this, so the V8 heap setting is
+ * applied before any command runs (cycle 2 T2).
+ */
+export async function run(argv: string[], deps: RunDeps = {}): Promise<void> {
+  (deps.applyHeapGrowth ?? applyHeapGrowth)();
+  const program = (deps.buildProgram ?? buildProgram)();
   await program.parseAsync(argv);
 }
 

@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
+import { networkInterfaces } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -150,6 +151,60 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: string)
   }
 }
 
+/**
+ * Host header values this server answers to (audit sec-03). A DNS-rebinding
+ * page resolves its own name (e.g. attacker.example) to 127.0.0.1, so the
+ * socket address alone proves nothing; the Host header still carries the
+ * attacker's name and is checked here. Loopback names are always allowed; a
+ * deliberate non-loopback bind (--i-understand-public-bind) adds that host,
+ * and a wildcard bind (0.0.0.0 / ::) adds this machine's interface addresses.
+ */
+export function allowedHosts(bindHost: string, port: number): Set<string> {
+  const names = new Set(["127.0.0.1", "localhost", "[::1]"]);
+  const bracket = (h: string) => (h.includes(":") && !h.startsWith("[") ? `[${h}]` : h);
+  const b = bindHost.toLowerCase();
+  if (b === "0.0.0.0" || b === "::") {
+    for (const addrs of Object.values(networkInterfaces())) {
+      for (const a of addrs ?? []) {
+        if (b === "0.0.0.0" && a.family !== "IPv4") continue;
+        names.add(bracket(a.address.toLowerCase()));
+      }
+    }
+  } else if (!["127.0.0.1", "localhost", "::1"].includes(b)) {
+    names.add(bracket(b));
+  }
+  const out = new Set<string>();
+  for (const n of names) {
+    out.add(`${n}:${port}`);
+    if (port === 80) out.add(n);
+  }
+  return out;
+}
+
+/**
+ * Reject a request whose Host is not one of `allowed`, or whose Origin (when
+ * a browser sends one) is not `http://<allowed host>`. Returns the reason, or
+ * null when the request may proceed.
+ */
+export function rejectReason(req: IncomingMessage, allowed: Set<string>): string | null {
+  const host = (req.headers.host ?? "").trim().toLowerCase();
+  if (!allowed.has(host)) return `host '${host}' not allowed`;
+  const origin = req.headers.origin;
+  if (origin !== undefined && origin !== "null") {
+    let ok = false;
+    try {
+      const u = new URL(origin);
+      ok = u.protocol === "http:" && allowed.has(u.host.toLowerCase());
+    } catch {
+      ok = false;
+    }
+    if (!ok) return `origin '${origin}' not allowed`;
+  } else if (origin === "null") {
+    return "opaque origin not allowed";
+  }
+  return null;
+}
+
 export interface ServeOpts {
   port?: number;
   host?: string;
@@ -172,8 +227,14 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<ServeHandle>
   const port = opts.port ?? 7777;
   const log = opts.log ?? ((s) => console.log(s));
 
+  let allowed = new Set<string>();
   const server = createServer((req, res) => {
     const url = req.url ?? "/";
+    const reason = rejectReason(req, allowed);
+    if (reason) {
+      sendJson(res, 403, { error: `forbidden: ${reason}` });
+      return;
+    }
     if (url.startsWith("/api/")) {
       void handleApi(req, res, url);
     } else {
@@ -191,6 +252,7 @@ export async function startWebServer(opts: ServeOpts = {}): Promise<ServeHandle>
 
   const addr = server.address();
   const actualPort = typeof addr === "object" && addr ? addr.port : port;
+  allowed = allowedHosts(host, actualPort);
   const url = `http://${host}:${actualPort}`;
   log(`sfgraph-web listening at ${url}`);
 

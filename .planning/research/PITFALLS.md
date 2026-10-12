@@ -360,7 +360,7 @@ If the rename-detection code sees "same serviceId, different qualifiedName" and 
 |---------|------|------------|
 | Logging full SOQL strings including data values in W1-01 warnings | Sensitive field values in `LiveIngestResult.warnings` exposed to MCP clients | Log query type + table only; never values from SELECT results |
 | Storing `retrieve()` ZIP content on disk without cleanup (W2-02) | Org metadata persisted in `~/Library/Application Support/sfgraph/tmp/` indefinitely | Use `fs.mkdtemp` + finally-block cleanup; never persist raw ZIPs past ingest |
-| Emitting `sourceUri` with absolute filesystem paths in SARIF (W3-02 × W1-02) | Leaks `/Users/<username>/` paths to GitHub Security tab | Normalize to repo-relative paths before SARIF emission |
+| Emitting `sourceUri` with absolute filesystem paths in SARIF (W3-02 × W1-02) | Leaks home-directory paths to GitHub Security tab | Normalize to repo-relative paths before SARIF emission |
 | Glob selector regex passed through to SQLite query directly (W3-04) | SQL injection via crafted glob like `apex.Class.'; DROP TABLE …` | Parse glob into AST; emit parameterized SQLite queries only |
 | Reading `connection.accessToken` for retrieve() polling (W2-02) | Token captured in async-job state and persisted to SQLite | Polling reuses the existing `read-only-proxy.js` connection; never serialize tokens |
 

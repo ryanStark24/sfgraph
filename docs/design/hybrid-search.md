@@ -77,7 +77,7 @@ This piece is independently useful: even before FTS lands, folding split words i
 ### Piece 3 — relevance score threshold
 
 Add an optional `minSimilarity` (cosine, 0–1) to `find_similar` and `searchNodes`:
-- Default a conservative floor (suggest **0.30–0.35** cosine for MiniLM-L6 on this corpus — empirically the band below which matches read as noise; validate against the PLDT baseline before fixing the number).
+- Default a conservative floor (suggest **0.30–0.35** cosine for MiniLM-L6 on this corpus — empirically the band below which matches read as noise; validate against a large-org baseline before fixing the number).
 - Filter the fused/vector results to `similarity ≥ minSimilarity`, *then* take top-k. So a query with only 2 decent matches returns 2, not 2 good + (k−2) junk.
 - Surface it: when results are cut by the threshold, say so ("3 above the 0.30 relevance floor; raise `min_similarity` to see weaker matches"). Never silently return an empty list without telling the user the floor filtered everything.
 
@@ -104,6 +104,6 @@ All three are additive and behind the existing `find_similar` surface; none chan
 ## Open questions
 
 - **FTS tokenizer choice:** `unicode61` + pre-split words (this design) vs a custom tokenizer extension. Pre-splitting in app code is simpler and portable; revisit only if it underperforms.
-- **Default threshold value:** must be calibrated on the PLDT baseline (real distances), not guessed — treat the 0.30–0.35 above as a starting hypothesis, confirm before fixing.
+- **Default threshold value:** must be calibrated on a large-org baseline (real distances), not guessed — treat the 0.30–0.35 above as a starting hypothesis, confirm before fixing.
 - **RRF K constant:** 60 is the literature default; expose as an internal constant, not a user knob, until there's evidence to tune it.
 - **Storage growth:** FTS roughly doubles the text footprint of the embed corpus. Acceptable for a local SQLite graph; note it in `freshness_report`/db-size reporting if we track size.

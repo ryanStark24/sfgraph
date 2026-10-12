@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FilesystemMetadataSource } from "../index.js";
+import { FilesystemMetadataSource, detectVlocityNamespace } from "../index.js";
 
 let workDir: string;
 
@@ -82,6 +82,27 @@ describe("FilesystemMetadataSource", () => {
     expect(payload.fields).toHaveProperty("Status__c");
   });
 
+  it("yields a stub CustomObject for a fields-only object folder (no object-meta.xml)", async () => {
+    w("force-app/main/default/objects/Widget__c/fields/Size__c.field-meta.xml", "<CustomField/>");
+    w("force-app/main/default/objects/Widget__c/listViews/All.listView-meta.xml", "<ListView/>");
+    // A folder with no fields and no object-meta still yields nothing.
+    w("force-app/main/default/objects/Empty__c/listViews/All.listView-meta.xml", "<ListView/>");
+    const src = new FilesystemMetadataSource(workDir);
+    const members = await collect(src);
+    const objs = members.filter((m) => m.type === "CustomObject");
+    expect(objs.map((o) => o.name)).toEqual(["Widget__c"]);
+    const payload = JSON.parse(objs[0]?.content ?? "{}") as {
+      apiName: string;
+      objectXml: string;
+      stub?: boolean;
+      fields: Record<string, string>;
+    };
+    expect(payload.apiName).toBe("Widget__c");
+    expect(payload.stub).toBe(true);
+    expect(payload.objectXml).toBe("");
+    expect(payload.fields).toHaveProperty("Size__c");
+  });
+
   it("tolerates missing subdirs", async () => {
     w("force-app/main/default/classes/Solo.cls", "public class Solo {}");
     const src = new FilesystemMetadataSource(workDir);
@@ -110,5 +131,73 @@ describe("FilesystemMetadataSource", () => {
     const names = members.map((m) => m.name);
     expect(names).toContain("Custom");
     expect(names).not.toContain("ShouldBeSkipped");
+  });
+});
+
+describe("detectVlocityNamespace", () => {
+  it("returns the most frequent Vlocity namespace among object names", () => {
+    expect(
+      detectVlocityNamespace([
+        "vlocity_ins__A__c",
+        "vlocity_ins__B__c",
+        "vlocity_cmt__C__c",
+        "Account",
+      ]),
+    ).toBe("vlocity_ins");
+  });
+
+  it("breaks ties by candidate order, not by the order names are seen", () => {
+    expect(detectVlocityNamespace(["vlocity_ins__A__c", "vlocity_cmt__B__c"])).toBe("vlocity_cmt");
+    expect(detectVlocityNamespace(["vlocity_cmt__B__c", "vlocity_ins__A__c"])).toBe("vlocity_cmt");
+  });
+
+  it("returns null without Vlocity-namespaced objects", () => {
+    expect(detectVlocityNamespace(["Account", "Widget__c"])).toBeNull();
+  });
+});
+
+describe("Task 11c: iterIndexed (cheap per-member fingerprints, lazy load)", () => {
+  const FIXTURE = path.resolve(__dirname, "../../../ingest/__tests__/fixtures/delta-project");
+
+  async function indexed(root: string) {
+    const src = FilesystemMetadataSource.fromProjectRoot(root);
+    const out: Array<{ key: string; type: string; fp: string; m: unknown }> = [];
+    for await (const e of src.iterIndexed()) {
+      const m = await e.load();
+      out.push({ key: e.key, type: e.memberType, fp: e.fingerprint, m });
+    }
+    return out;
+  }
+
+  it("load() yields exactly what iter() yields, in the same order", async () => {
+    const { cpSync } = await import("node:fs");
+    cpSync(FIXTURE, workDir, { recursive: true });
+    const viaIter: unknown[] = [];
+    for await (const m of FilesystemMetadataSource.fromProjectRoot(workDir).iter()) viaIter.push(m);
+    const viaIndex = await indexed(workDir);
+    expect(viaIndex.map((x) => x.m)).toEqual(viaIter);
+    expect(viaIter.length).toBeGreaterThan(15);
+    // Keys are the members' sourceUris and are unique.
+    expect(viaIndex.map((x) => x.key)).toEqual(
+      viaIter.map((m) => (m as { ref: { sourceUri: string } }).ref.sourceUri),
+    );
+    expect(new Set(viaIndex.map((x) => x.key)).size).toBe(viaIndex.length);
+  });
+
+  it("a fingerprint changes only for the member whose file changed", async () => {
+    const { cpSync } = await import("node:fs");
+    cpSync(FIXTURE, workDir, { recursive: true });
+    const before = new Map((await indexed(workDir)).map((x) => [x.key, x.fp]));
+    w(
+      "force-app/main/default/objects/Account/fields/Tier__c.field-meta.xml",
+      "<CustomField><fullName>Tier__c</fullName><type>Text</type><length>9</length></CustomField>",
+    );
+    w("vlocity/datapacks/DataRaptor/AcctFetch/AcctFetch_Mappings.json", "[]");
+    const after = new Map((await indexed(workDir)).map((x) => [x.key, x.fp]));
+    const changed = [...after].filter(([k, fp]) => before.get(k) !== fp).map(([k]) => k);
+    expect(changed.map((k) => path.basename(k)).sort()).toEqual([
+      "Account.object-meta.xml",
+      "AcctFetch_DataPack.json",
+    ]);
   });
 });

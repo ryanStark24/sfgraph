@@ -12,7 +12,7 @@ async function callsFromBody(body: string) {
     .map((e) => ({
       dst: String(e.dstQualifiedName),
       arity: e.attributes.arity,
-      resolvedBy: e.attributes.resolvedBy,
+      callResolution: e.attributes.callResolution,
       unresolvedArity: e.attributes.unresolvedArity,
     }));
 }
@@ -30,7 +30,7 @@ describe("W1-04: regex-mode arg counting in Apex CALLS emission", () => {
     const c = calls.find((e) => e.dst === "ApexMethod:Util.doWork(2)");
     expect(c).toBeDefined();
     expect(c?.arity).toBe(2);
-    expect(c?.resolvedBy).toBe("regex-arg-count");
+    expect(c?.callResolution).toBe("regex-arg-count");
   });
 
   it("counts zero args correctly (no commas, no content)", async () => {

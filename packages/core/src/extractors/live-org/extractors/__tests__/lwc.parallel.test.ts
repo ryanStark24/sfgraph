@@ -200,10 +200,20 @@ describe("iterLwc — W1.5-04 parallelization", () => {
       "bad-bundle": { throws: true },
     };
     const conn = makeConn(bundles, behaviors);
-    // Must not throw out of the iterator.
-    const out = await collectWithTimings(iterLwc(conn));
-    const names = out.map((o) => o.member.ref.memberName).sort();
+    // Peers are unaffected; the lost bundle surfaces only AFTER every peer
+    // was yielded, as an IncompleteSourceError naming it (so failSoft
+    // records an `lwc` skip instead of "lwc ✓").
+    const out: RawMember[] = [];
+    let thrown: Error | undefined;
+    try {
+      for await (const m of iterLwc(conn, { retryBackoffMs: 0 })) out.push(m);
+    } catch (e) {
+      thrown = e as Error;
+    }
+    const names = out.map((m) => m.ref.memberName).sort();
     expect(names).toEqual(["good-1", "good-2", "good-3"]);
+    expect(thrown?.name).toBe("IncompleteSourceError");
+    expect(thrown?.message).toContain("bad-bundle");
 
     // Exactly one wedge warning for the bad bundle, namespaced per spec.
     const warningCalls = warnSpy.mock.calls.map((c) => String(c[0]));
@@ -243,5 +253,40 @@ describe("iterLwc — W1.5-04 parallelization", () => {
     const out = await collectWithTimings(iterLwc(conn));
     const names = out.map((o) => o.member.ref.memberName);
     expect(names).toEqual(["C", "A", "B"]);
+  });
+
+  it("drains every page of the bundle list (not just the first batch)", async () => {
+    const page1 = [{ Id: "01pA", DeveloperName: "page-one" }];
+    const page2 = [{ Id: "01pB", DeveloperName: "page-two" }];
+    const all = [...page1, ...page2];
+    const conn = makeConn(all, {});
+    const baseQuery = conn.tooling.query;
+    const tooling = {
+      query: (soql: string) =>
+        soql.includes("FROM LightningComponentBundle")
+          ? Promise.resolve({ records: page1, done: false, nextRecordsUrl: "/q/lcb-2" })
+          : baseQuery(soql),
+      queryMore: () => Promise.resolve({ records: page2, done: true }),
+    };
+    const out = await collectWithTimings(iterLwc({ tooling }, { retryBackoffMs: 0 }));
+    expect(out.map((o) => o.member.ref.memberName).sort()).toEqual(["page-one", "page-two"]);
+  });
+
+  it("retries a transiently failing resource fetch instead of dropping the bundle", async () => {
+    const bundles = [{ Id: "01pF", DeveloperName: "flaky" }];
+    const conn = makeConn(bundles, {});
+    const baseQuery = conn.tooling.query;
+    let calls = 0;
+    const tooling = {
+      query: (soql: string) => {
+        if (soql.includes("LightningComponentBundleId")) {
+          calls += 1;
+          if (calls === 1) return Promise.reject(new Error("socket hang up"));
+        }
+        return baseQuery(soql);
+      },
+    };
+    const out = await collectWithTimings(iterLwc({ tooling }, { retryBackoffMs: 0 }));
+    expect(out.map((o) => o.member.ref.memberName)).toEqual(["flaky"]);
   });
 });

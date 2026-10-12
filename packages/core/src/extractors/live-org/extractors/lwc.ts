@@ -1,6 +1,7 @@
 import { METADATA_CATEGORY } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
-import { scheduleQuery, soqlWithTimeout } from "../rate-limit.js";
+import { scheduleQuery } from "../rate-limit.js";
+import { type FetchFailure, type RetryOptions, querySoqlAll, throwIfIncomplete } from "../retry.js";
 
 interface BundleRow {
   Id: string;
@@ -14,17 +15,21 @@ interface ResourceRow {
   Source: string;
 }
 
-export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
+export async function* iterLwc(conn: any, retryOpts: RetryOptions = {}): AsyncIterable<RawMember> {
   const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
-  const bundles = (await scheduleQuery(() =>
-    soqlWithTimeout(
-      conn.tooling.query(
-        "SELECT Id, DeveloperName, NamespacePrefix, LastModifiedDate FROM LightningComponentBundle",
-      ),
-      "tooling LightningComponentBundle list",
-    ),
-  )) as { records?: BundleRow[] } | null;
-  const allBundles = bundles?.records ?? [];
+  // Drain every page: a single `conn.tooling.query` returns only the first
+  // batch, so orgs with more bundles than one page silently lost the rest.
+  const allBundles = await querySoqlAll<BundleRow>(
+    conn.tooling,
+    "SELECT Id, DeveloperName, NamespacePrefix, LastModifiedDate FROM LightningComponentBundle",
+    "tooling LightningComponentBundle list",
+    scheduleQuery,
+    retryOpts,
+  );
+  // Bundles whose resources could not be fetched after retries. Re-thrown as
+  // an IncompleteSourceError at the end so failSoft records an `lwc` skip
+  // naming them (previously: a console warning and the source still logged ✓).
+  const failures: FetchFailure[] = [];
   if (debug) {
     const managedCount = allBundles.filter((b) => b.NamespacePrefix).length;
     console.log(`ingest: [debug] lwc bundles total=${allBundles.length} managed=${managedCount}`);
@@ -78,16 +83,15 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
     const files: Record<string, string> = {};
     try {
       const escapedId = b.Id.replace(/'/g, "\\'");
-      const resources = (await scheduleQuery(() =>
-        soqlWithTimeout(
-          conn.tooling.query(
-            `SELECT FilePath, Source FROM LightningComponentResource WHERE LightningComponentBundleId = '${escapedId}'`,
-          ),
-          `tooling LightningComponentResource ${b.DeveloperName}`,
-        ),
-      )) as { records?: ResourceRow[] } | null;
+      const resources = await querySoqlAll<ResourceRow>(
+        conn.tooling,
+        `SELECT FilePath, Source FROM LightningComponentResource WHERE LightningComponentBundleId = '${escapedId}'`,
+        `tooling LightningComponentResource ${b.DeveloperName}`,
+        scheduleQuery,
+        retryOpts,
+      );
       let totalSourceBytes = 0;
-      for (const r of resources?.records ?? []) {
+      for (const r of resources) {
         const src = r.Source ?? "";
         files[r.FilePath] = src;
         totalSourceBytes += src.length;
@@ -104,6 +108,7 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
       console.warn(
         `wedge:lwc:bundleFetchFailed:bundleId=${b.Id}:bundleName=${b.DeveloperName}:error=${msg}`,
       );
+      failures.push({ name: b.DeveloperName, error: e });
       return { skipped: true };
     }
     let content: string;
@@ -190,4 +195,5 @@ export async function* iterLwc(conn: any): AsyncIterable<RawMember> {
     inFlight.delete(settled.token);
     if ("member" in settled.result) yield settled.result.member;
   }
+  throwIfIncomplete("lwc", failures);
 }

@@ -122,3 +122,51 @@ describe("cross_org_diff", () => {
     expect(d.onlyInA.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// Cycle 2 T5 fix round 1: an MCP client sees only the markdown (server.ts runTool), so the
+// lists must be in it, with full qnames, not only counts and a truncated-label diagram.
+describe("cross_org_diff: markdown lists every difference by full qname", () => {
+  it("names each only-in-A, only-in-B and changed node, under its org", async () => {
+    const r = await callTool("cross_org_diff", { org_a: ORG_A, org_b: ORG_B });
+    const md = r.markdown;
+    expect(md).toMatch(/### Only in A \(`orgA`\) \(1\)\n- ApexClass:Only_A\n/);
+    expect(md).toMatch(/### Only in B \(`orgB`\) \(1\)\n- ApexClass:Only_B\n/);
+    expect(md).toMatch(/### Changed \(1, in both with different source\)\n- ApexClass:Both\n/);
+    // Lists come before the diagram.
+    expect(md.indexOf("### Only in A")).toBeLessThan(md.indexOf("```mermaid"));
+  });
+
+  it("caps each list at 100 and says how to narrow it", async () => {
+    const facts: NodeFact[] = [];
+    for (let i = 0; i < 105; i++) {
+      facts.push({
+        orgId: ORG_A,
+        qualifiedName: asQualifiedName(`ApexClass:Many_${String(i).padStart(3, "0")}`),
+        label: "ApexClass",
+        attributes: {},
+        sourceHash: asSha256(`m${i}`),
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+        lastModifiedAt: 1,
+      });
+    }
+    storeA.mergeNodes(facts);
+    const md = (await callTool("cross_org_diff", { org_a: ORG_A, org_b: ORG_B })).markdown;
+    expect(md).toContain("### Only in A (`orgA`) (106)");
+    expect(md).toContain("- ApexClass:Many_000");
+    expect(md).not.toContain("- ApexClass:Only_A\n"); // sorted: Many_* first, Only_A is past the cap
+    expect(md).toContain("_+6 more only in A_ (narrow with `category`)");
+    // T5 review fix 3: with a category already passed, the note says how many are left out
+    // instead of suggesting the filter the caller already used.
+    const narrowed = (
+      await callTool("cross_org_diff", { org_a: ORG_A, org_b: ORG_B, category: "ApexClass" })
+    ).markdown;
+    expect(narrowed).toContain("_+6 more only in A not shown_ (each list is capped at 100)");
+    expect(narrowed).not.toContain("narrow with `category`");
+  });
+
+  it("an empty list says none", async () => {
+    const md = (await callTool("cross_org_diff", { org_a: ORG_A, org_b: ORG_A })).markdown;
+    expect(md).toContain("### Only in A (`orgA`) (0)\n_none_");
+  });
+});

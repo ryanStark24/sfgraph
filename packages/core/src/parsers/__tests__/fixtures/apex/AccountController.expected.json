@@ -140,6 +140,14 @@
       "attributes": {
         "target": "a"
       }
+    },
+    {
+      "srcQualifiedName": "ApexMethod:AccountController.updateAccountStatus(2)",
+      "dstQualifiedName": "CustomField:Account.Status__c",
+      "relType": "WRITES_FIELD",
+      "attributes": {
+        "via": "member-access"
+      }
     }
   ]
 }

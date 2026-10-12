@@ -99,12 +99,18 @@ describe("liveIngest full-sync detectDeletions", () => {
       detectDeletions: true,
     });
 
-    // W1.5-07: empty-stream refusal — node survives; refusal warning recorded.
+    // W1.5-07: refusal — node survives; refusal warning recorded. The mock
+    // has no metadata.describe, so discovery is skipped and (Task 11c) the
+    // skipReport guard refuses the whole sweep before the empty-stream check.
     expect(result.deletions).toBe(0);
     expect(graphStore.getNode(orgId, staleQ)).not.toBeNull();
     expect(
-      result.warnings.some((w) =>
-        w.startsWith("wedge:detect-deletions:refuse:label=ApexClass:reason=empty-stream"),
+      result.warnings.some(
+        (w) =>
+          w.startsWith("wedge:detect-deletions:refuse:label=ApexClass:reason=empty-stream") ||
+          w.startsWith(
+            "wedge:detect-deletions:refuse:label=*:reason=skipped-source:skips=discovery",
+          ),
       ),
     ).toBe(true);
   });

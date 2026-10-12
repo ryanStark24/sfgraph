@@ -1,5 +1,7 @@
 import type { OrgId } from "@ryanstark24/sfgraph-shared";
+import type { NodeFact } from "../../domain/index.js";
 import type { GraphStore } from "../../storage/interfaces.js";
+import { ownerOf } from "../containment.js";
 import { diffOrgs } from "../cross-org.js";
 import { formatMemberName } from "./member-name-formatters.js";
 import { LABEL_TO_METADATA_TYPE } from "./member-types.js";
@@ -127,9 +129,22 @@ export function generateManifest(
     byType[type] = (byType[type] ?? 0) + 1;
   };
 
-  for (const n of diff.onlyInA) add(pkgMembers, n.label, n.qualifiedName);
-  for (const { a } of diff.changed) add(pkgMembers, a.label, a.qualifiedName);
-  for (const n of diff.onlyInB) add(destMembers, n.label, n.qualifiedName);
+  // A member (an ApexMethod inside its ApexClass, see containment.ts) is
+  // deployed with its owner: the owner's source changes with it, so the
+  // owner's own diff entry carries it. It is neither unmapped nor destructive.
+  // One indexed query on the containment table per entry.
+  const isMember = (store: GraphStore, org: OrgId, qname: NodeFact["qualifiedName"]): boolean =>
+    ownerOf(store, org, qname) !== null;
+
+  for (const n of diff.onlyInA) {
+    if (!isMember(storeA, orgA, n.qualifiedName)) add(pkgMembers, n.label, n.qualifiedName);
+  }
+  for (const { a } of diff.changed) {
+    if (!isMember(storeA, orgA, a.qualifiedName)) add(pkgMembers, a.label, a.qualifiedName);
+  }
+  for (const n of diff.onlyInB) {
+    if (!isMember(storeB, orgB, n.qualifiedName)) add(destMembers, n.label, n.qualifiedName);
+  }
 
   return {
     packageXml: buildPackage(pkgMembers, apiVersion),

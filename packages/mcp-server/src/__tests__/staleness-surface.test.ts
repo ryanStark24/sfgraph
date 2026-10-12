@@ -4,7 +4,12 @@ import path from "node:path";
 import { SqliteGraphStore, SqliteSnapshotStore } from "@ryanstark24/sfgraph-core";
 import { type OrgId, asOrgId } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type ToolContext, closeAllContexts, setToolContextFactory } from "../context.js";
+import {
+  type ToolContext,
+  closeAllContexts,
+  getToolContext,
+  setToolContextFactory,
+} from "../context.js";
 import { SfgraphMcpServer } from "../server.js";
 
 // W1.5-08: integration test for the MCP `_meta.staleness` block. We swap
@@ -126,5 +131,58 @@ describe("MCP dispatch _meta.staleness (W1.5-08)", () => {
     expect(res.content[0]?.type).toBe("text");
     // Staleness is in _meta, not in content
     expect(res._meta?.staleness).toBeDefined();
+  });
+});
+
+describe("T15 R2-1: a tool result warns while the org it read is being synced", () => {
+  const texts = (r: { content: Array<{ text: string }> }) => r.content.map((c) => c.text);
+
+  it("an org-arg call during a sync carries a warning block after the payload", async () => {
+    graphStore.markSyncStarted(asOrgId(ORG), "2025-05-18T12:00:00.000Z");
+    const server = new SfgraphMcpServer();
+    server.registry.register("probe", async () => ({ ok: true }), { description: "test probe" });
+    const res = await server.dispatch("probe", { org: ORG });
+    expect(JSON.parse(res.content[0]?.text ?? "")).toEqual({ ok: true });
+    expect(texts(res).join("\n")).toMatch(/WARNING: a sync of org .* is in progress/);
+    expect(res._meta?.warnings).toEqual([expect.stringMatching(/in progress/)]);
+  });
+
+  it("an orgless call that reads the default context is warned too", async () => {
+    graphStore.markSyncStarted(asOrgId(ORG), "2025-05-18T12:00:00.000Z");
+    const server = new SfgraphMcpServer();
+    server.registry.register(
+      "reader",
+      async () => {
+        await getToolContext({});
+        return { ok: true };
+      },
+      { description: "reads the default org" },
+    );
+    const res = await server.dispatch("reader", {});
+    expect(texts(res).join("\n")).toMatch(/WARNING: a sync of org .* is in progress/);
+  });
+
+  it("a sync that completes during the call is reported (generation moved)", async () => {
+    const server = new SfgraphMcpServer();
+    server.registry.register(
+      "reader",
+      async () => {
+        await getToolContext({});
+        graphStore.markSyncStarted(asOrgId(ORG), "2025-05-18T12:00:00.000Z");
+        graphStore.markSyncComplete(asOrgId(ORG), "2025-05-18T12:05:00.000Z");
+        return { ok: true };
+      },
+      { description: "reads the default org" },
+    );
+    const res = await server.dispatch("reader", {});
+    expect(texts(res).join("\n")).toMatch(/WARNING: org .* was re-synced during this call/);
+  });
+
+  it("no sync: one content block, no warnings", async () => {
+    const server = new SfgraphMcpServer();
+    server.registry.register("probe", async () => ({ ok: true }), { description: "test probe" });
+    const res = await server.dispatch("probe", { org: ORG });
+    expect(res.content).toHaveLength(1);
+    expect(res._meta?.warnings).toBeUndefined();
   });
 });

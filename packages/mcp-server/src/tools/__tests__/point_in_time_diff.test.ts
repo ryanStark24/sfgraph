@@ -71,3 +71,69 @@ describe("point_in_time_diff", () => {
     expect(r.summary).toMatch(/\+1/);
   });
 });
+
+// T14 batch L pin: edge rows and counts must equal the full in-store edge diff
+// (diffEdges) cut to `limit`, in the same order, for snapshot->current,
+// current->snapshot and snapshot->snapshot.
+describe("point_in_time_diff edge output pin", () => {
+  it("edgeDiff / counts / truncated equal the full diff sliced to limit", async () => {
+    const s0 = await callTool("snapshot_create", { org: fix.orgId, name: "s0" });
+    const srcs = ["ApexClass:B", "ApexClass:a", "ApexClass:é", "Flow:\u{1f600}", "Flow:z"];
+    const rels = ["CALLS", "REFERENCES", "READS_FIELD", "WRITES_FIELD"];
+    for (const [i, src] of srcs.entries()) {
+      fix.addNode({ qualifiedName: src, label: src.split(":")[0] as string });
+      for (const [j, rt] of rels.entries()) {
+        if ((i + j) % 3 === 0) continue;
+        fix.addEdge({ srcQualifiedName: src, dstQualifiedName: `F:${(i + j) % 4}`, relType: rt });
+        fix.addEdge({ srcQualifiedName: src, dstQualifiedName: `f:${j}`, relType: rt });
+      }
+    }
+    const s1 = await callTool("snapshot_create", { org: fix.orgId, name: "s1" });
+    const g = fix.ctx.graphStore;
+    g.deleteEdgesFor(fix.orgId, "Flow:z" as never);
+    g.deleteEdge(fix.orgId, "ApexClass:a" as never, "f:0" as never, "CALLS" as never);
+    fix.addEdge({ srcQualifiedName: "ApexClass:New", dstQualifiedName: "F:1", relType: "CALLS" });
+    fix.addEdge({ srcQualifiedName: "ApexClass:B", dstQualifiedName: "F:9", relType: "CALLS" });
+    const ids = [(s0.data as { id: string }).id, (s1.data as { id: string }).id, "current"];
+    let checked = 0;
+    for (const from of ids) {
+      for (const to of ids) {
+        if (from === to) continue;
+        const full = fix.ctx.snapshotStore.diffEdges(fix.orgId, from, to);
+        for (const limit of [1, 2, 7, 100]) {
+          const r = await callTool("point_in_time_diff", { org: fix.orgId, from, to, limit });
+          const d = r.data as {
+            edgeDiff: { added: unknown[]; removed: unknown[] };
+            counts: { edges: { added: number; removed: number } };
+            truncated: boolean;
+          };
+          expect(JSON.stringify(d.edgeDiff)).toBe(
+            JSON.stringify({
+              added: full.added.slice(0, limit),
+              removed: full.removed.slice(0, limit),
+            }),
+          );
+          expect(d.counts.edges).toEqual({
+            added: full.added.length,
+            removed: full.removed.length,
+          });
+          const nd = fix.ctx.snapshotStore.diffNodes(fix.orgId, from, to);
+          expect(d.truncated).toBe(
+            [
+              nd.added.length,
+              nd.removed.length,
+              nd.changed.length,
+              full.added.length,
+              full.removed.length,
+            ].some((c) => c > limit),
+          );
+          expect(r.markdown).toContain(
+            `**Edges** — +${full.added.length} / -${full.removed.length}`,
+          );
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBe(24);
+  });
+});

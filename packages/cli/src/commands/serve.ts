@@ -64,6 +64,58 @@ function pidsOnPort(port: number): number[] {
 }
 
 /**
+ * Full command line of `pid`, or null when it can't be read.
+ *   Unix:    `ps -p <pid> -o command=`
+ *   Windows: PowerShell `Get-CimInstance Win32_Process` (wmic is deprecated).
+ */
+function commandLineOf(pid: number): string | null {
+  try {
+    const r =
+      platform() === "win32"
+        ? spawnSync(
+            "powershell",
+            [
+              "-NoProfile",
+              "-Command",
+              `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+            ],
+            { encoding: "utf8" },
+          )
+        : spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+    if (r.status !== 0 || typeof r.stdout !== "string") return null;
+    const line = r.stdout.trim();
+    return line.length > 0 ? line : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A command-line token that is the sfgraph CLI entry point: the `sfgraph`
+ *  bin (any dir, optional .js/.cjs/.cmd/.exe), a script inside the published
+ *  `@ryanstark24/sfgraph` package, or the built entry of this repo's CLI. */
+function isSfgraphEntryToken(tok: string): boolean {
+  return (
+    /(^|[/\\])sfgraph(\.c?js|\.cmd|\.exe)?$/i.test(tok) ||
+    /@ryanstark24[/\\]sfgraph[/\\]\S*\.c?js$/i.test(tok) ||
+    /sfgraph\S*[/\\]packages[/\\]cli[/\\]dist[/\\]\S*\.c?js$/i.test(tok)
+  );
+}
+
+/**
+ * True when a command line is an `sfgraph serve` process: the sfgraph entry
+ * point immediately followed by the `serve` subcommand (review M7: a `serve`
+ * token elsewhere, e.g. `sfgraph ingest --org serve`, does not count).
+ * Exported for tests.
+ */
+export function isSfgraphServeCommand(cmd: string): boolean {
+  const toks = cmd.trim().split(/\s+/);
+  for (let i = 0; i < toks.length - 1; i++) {
+    if (isSfgraphEntryToken(toks[i] ?? "")) return toks[i + 1] === "serve";
+  }
+  return false;
+}
+
+/**
  * Terminate each pid.
  *   Unix:    SIGTERM, brief grace period, then SIGKILL any survivors.
  *   Windows: `taskkill /F /PID <pid>` — Windows has no SIGTERM/SIGKILL
@@ -172,8 +224,25 @@ export async function serveCmd(opts: ServeOpts): Promise<void> {
       );
       throw err;
     }
+    // Only ever signal a stale `sfgraph serve`. Anything else on the port
+    // (another dev server, a database, ...) is left alone: report and stop.
+    const foreign = pids
+      .filter((p) => p !== process.pid)
+      .map((p) => ({ pid: p, cmd: commandLineOf(p) }))
+      .filter((h) => h.cmd === null || !isSfgraphServeCommand(h.cmd));
+    if (foreign.length > 0) {
+      console.error(
+        `sfgraph serve: port ${opts.port} is held by ${foreign
+          .map((h) => `pid ${h.pid}${h.cmd ? ` (${h.cmd.slice(0, 120)})` : " (command unknown)"}`)
+          .join(
+            ", ",
+          )}, which is not an sfgraph server. Not stopping it; pick another port with --port or stop that process yourself.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
     console.log(
-      `sfgraph serve: port ${opts.port} held by pid${pids.length > 1 ? "s" : ""} ${pids.join(", ")} — terminating and retrying…`,
+      `sfgraph serve: port ${opts.port} held by a previous sfgraph serve (pid${pids.length > 1 ? "s" : ""} ${pids.join(", ")}) — terminating and retrying…`,
     );
     await killPids(pids);
     handle = await startWebServer({ port: opts.port, host: opts.host });

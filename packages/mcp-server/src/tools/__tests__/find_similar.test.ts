@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { SqliteGraphStore, SqliteSnapshotStore, type VectorStore } from "@ryanstark24/sfgraph-core";
-import { type OrgId, asOrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
+import { type OrgId, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type ToolContext, setToolContextFactory } from "../../context.js";
 import { callTool } from "./_runner.js";
@@ -66,6 +66,23 @@ async function makeCtx(vectorStore: VectorStore | null): Promise<ToolContext> {
   return ctx;
 }
 
+/** The focal must exist in the graph (audit tools-13: a missing focal is
+ *  reported as not found); these cases test the vector-side reasons. */
+function addGraphNode(qname: string, label = "ApexClass"): void {
+  graphStore.mergeNodes([
+    {
+      orgId: asOrgId("00DFINDSIM00000XYZ"),
+      qualifiedName: asQualifiedName(qname),
+      label,
+      attributes: {},
+      sourceHash: asSha256(`h-${qname}`),
+      firstSeenAt: 1,
+      lastSeenAt: 1,
+      lastModifiedAt: 1,
+    },
+  ]);
+}
+
 afterEach(async () => {
   setToolContextFactory(null);
   await graphStore?.close();
@@ -75,6 +92,7 @@ afterEach(async () => {
 describe("find_similar", () => {
   it("returns reason=vector_index_unavailable when no VectorStore on context", async () => {
     await makeCtx(null);
+    addGraphNode("ApexClass:Foo");
     const res = await callTool("find_similar", {
       org: "00DFINDSIM00000XYZ",
       qname: "ApexClass:Foo",
@@ -86,6 +104,7 @@ describe("find_similar", () => {
 
   it("returns reason=no_focal_vector when qname has no stored embedding", async () => {
     await makeCtx(makeStubVectorStore({ vectors: new Map() }));
+    addGraphNode("ApexClass:Missing");
     const res = await callTool("find_similar", {
       org: "00DFINDSIM00000XYZ",
       qname: "ApexClass:Missing",
@@ -258,5 +277,93 @@ describe("find_similar", () => {
       qname: "ApexClass:Focal",
     });
     expect((res.data as { reason: string }).reason).toBe("below_similarity_floor");
+  });
+});
+
+describe("find_similar while embeddings are pending (task 11a)", () => {
+  const ORG = asOrgId("00DFINDSIM00000XYZ");
+  function pendingOrg(): void {
+    graphStore.upsertOrg({
+      id: ORG,
+      alias: "a",
+      instanceUrl: "https://x",
+      apiVersion: "60.0",
+      createdAt: 1,
+    });
+    graphStore.upsertNodeFts(
+      ORG,
+      asQualifiedName("ApexClass:OrderCancel"),
+      "ApexClass",
+      "order cancel",
+    );
+    graphStore.upsertNodeFts(
+      ORG,
+      asQualifiedName("ApexClass:OrderCreate"),
+      "ApexClass",
+      "order create",
+    );
+    graphStore.upsertNodeFts(ORG, asQualifiedName("ApexClass:Billing"), "ApexClass", "billing run");
+    graphStore.setEmbeddingsPending(ORG, true);
+  }
+
+  it("skips the vector leg, answers from text search, and says the index is warming", async () => {
+    let searched = 0;
+    const vs = makeStubVectorStore({
+      vectors: new Map([["ApexClass:OrderCancel", new Float32Array(384).fill(0.05)]]),
+      results: [{ qname: "ApexClass:Billing", label: "ApexClass", distance: 0.1 }],
+    });
+    const wrapped: VectorStore = {
+      ...vs,
+      searchNodes: (...a) => {
+        searched += 1;
+        return vs.searchNodes(...a);
+      },
+    };
+    await makeCtx(wrapped);
+    addGraphNode("ApexClass:OrderCancel");
+    pendingOrg();
+    const res = await callTool("find_similar", { org: String(ORG), text: "order" });
+    expect(searched).toBe(0);
+    expect(res.markdown).toContain("vector index warming: 1/3 embedded; using text search");
+    const data = res.data as {
+      hits: Array<{ qname: string; via: string }>;
+      vectorIndexWarming?: { embedded: number; total: number };
+    };
+    expect(data.vectorIndexWarming).toEqual({ embedded: 1, total: 3 });
+    expect(data.hits.length).toBeGreaterThan(0);
+    expect(data.hits.every((h) => h.via === "keyword")).toBe(true);
+    expect(data.hits.map((h) => h.qname)).not.toContain("ApexClass:Billing");
+  });
+
+  it("says the index is warming when the text search also finds nothing", async () => {
+    await makeCtx(makeStubVectorStore({ vectors: new Map() }));
+    pendingOrg();
+    const res = await callTool("find_similar", { org: String(ORG), text: "zzzunmatched" });
+    expect(res.markdown).toContain("vector index warming: 0/3 embedded; using text search");
+    expect((res.data as { reason: string }).reason).toBe("vector_index_warming");
+  });
+
+  it("uses the vector leg once embeddings are done", async () => {
+    let searched = 0;
+    const vs = makeStubVectorStore({
+      vectors: new Map([["ApexClass:OrderCancel", new Float32Array(384).fill(0.05)]]),
+      results: [{ qname: "ApexClass:Billing", label: "ApexClass", distance: 0.1 }],
+    });
+    await makeCtx({
+      ...vs,
+      searchNodes: (...a) => {
+        searched += 1;
+        return vs.searchNodes(...a);
+      },
+    });
+    addGraphNode("ApexClass:OrderCancel");
+    pendingOrg();
+    graphStore.setEmbeddingsPending(ORG, false);
+    const res = await callTool("find_similar", {
+      org: String(ORG),
+      qname: "ApexClass:OrderCancel",
+    });
+    expect(searched).toBe(1);
+    expect(res.markdown).not.toContain("warming");
   });
 });

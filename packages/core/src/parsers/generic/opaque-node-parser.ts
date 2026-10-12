@@ -1,17 +1,24 @@
-import { METADATA_CATEGORY, type NodeFact } from "../../domain/index.js";
+import { type EdgeFact, METADATA_CATEGORY, type NodeFact } from "../../domain/index.js";
 import { sha256 } from "../_xml-helpers.js";
-import { makeNode, stripNs } from "../common.js";
+import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
+import { collectNameMatchCandidates, scanDataPackRefs } from "../vlocity/datapack-refs.js";
+
+const OPAQUE_DATAPACK_HASH_SALT = "vlocity-datapack-refs:v2";
 
 export interface OpaqueInput {
   metadataType: string;
   name: string;
   raw: string;
+  /** Vlocity DataPack members: JSON `raw` is scanned for OmniScript launch
+   *  URLs and DR bundle-name fields (REFERENCES edges). */
+  scanDataPackRefs?: boolean;
 }
 
 /**
  * Fallback for long-tail XML metadata types not given a dedicated parser.
- * Emits a single node with the raw blob as `rawSize` and no edges.
+ * Emits a single node with the raw blob as `rawSize`; edges only for Vlocity
+ * DataPack members (`scanDataPackRefs`).
  */
 export class OpaqueNodeParser implements Parser<OpaqueInput> {
   readonly category = METADATA_CATEGORY.OPAQUE;
@@ -20,13 +27,37 @@ export class OpaqueNodeParser implements Parser<OpaqueInput> {
   async parse(input: OpaqueInput, ctx: ParseContext): Promise<ParseResult> {
     const name = stripNs(input.name, ctx.namespace);
     const qname = `${input.metadataType}:${name}`;
+    const edges: EdgeFact[] = [];
+    let candidates: string[] = [];
+    if (input.scanDataPackRefs && input.raw) {
+      let rec: unknown;
+      try {
+        rec = JSON.parse(input.raw);
+      } catch {
+        rec = null;
+      }
+      for (const r of scanDataPackRefs(rec))
+        edges.push(makeEdge(ctx, qname, r.rel, r.dst, r.attrs));
+      candidates = collectNameMatchCandidates(rec);
+    }
     const node = makeNode(
       ctx,
       input.metadataType,
       qname,
-      { name, metadataType: input.metadataType, rawSize: input.raw?.length ?? 0 },
-      sha256(input.raw ?? ""),
+      {
+        name,
+        metadataType: input.metadataType,
+        rawSize: input.raw?.length ?? 0,
+        ...(candidates.length > 0 ? { nameMatchCandidates: candidates } : {}),
+      },
+      // Salted for scanned DataPack members so existing graphs re-parse when
+      // the scanner's output changes (v2: cards, dataSource, LWC, name-match).
+      sha256(
+        input.scanDataPackRefs
+          ? `${OPAQUE_DATAPACK_HASH_SALT}\n${input.raw ?? ""}`
+          : (input.raw ?? ""),
+      ),
     );
-    return { nodes: [node], edges: [] };
+    return { nodes: [node], edges };
   }
 }

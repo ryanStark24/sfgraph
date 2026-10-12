@@ -5,7 +5,9 @@ import { loadBetterSqlite3 } from "@ryanstark24/sfgraph-core";
 import { getSfgraphPaths, validateOrgIdentifier } from "@ryanstark24/sfgraph-shared";
 
 const nodeRequire = createRequire(import.meta.url);
+import { aliasResolveTimeoutMs, sfAliasFallbackEnabled, withSfCliTimeout } from "../context.js";
 import { defineTool, z } from "./_define.js";
+import { countNoun, withInShort } from "./_report.js";
 
 const inputSchema = z.object({}).strict();
 
@@ -161,7 +163,7 @@ function defaultOpenDb(p: string): {
 defineTool({
   name: "list_orgs",
   description:
-    "USE THIS as the FIRST step in any sfgraph workflow to enumerate the user's available Salesforce orgs and their ingest status. Shows aliases, orgIds, default-org marker, ingested-locally flag, last-synced timestamp, stale flag. Works even when the sf CLI auth isn't reachable from this process (falls back to scanning the local data dir).",
+    "Use first: lists the orgs sfgraph knows (alias, org id, default, ingested, last sync, stale).",
   inputSchema,
   async execute(_input) {
     const deps = depsOverride ?? {};
@@ -173,19 +175,35 @@ defineTool({
     let auths: AuthorizationRow[] = [];
     let aliasByUsername: Map<string, string> = new Map();
     let loadError: string | null = null;
-    try {
-      const sfCore = await loadSfCore();
-      auths = await sfCore.AuthInfo.listAllAuthorizations();
-      if (sfCore.aliasByUsername) aliasByUsername = sfCore.aliasByUsername;
-    } catch (e) {
-      loadError = (e as Error).message;
-    }
-
     let defaultAlias: string | null = null;
-    try {
-      defaultAlias = await resolveDefault();
-    } catch {
-      defaultAlias = null;
+    // @salesforce/core (AuthInfo / StateAggregator / ConfigAggregator) can
+    // reach the macOS keychain and block on a GUI prompt. Only touch it on
+    // explicit opt-in, and bound it (audit review I1, same rule as alias
+    // resolution in context.ts).
+    const useSfCli = sfAliasFallbackEnabled();
+    if (useSfCli) {
+      const ms = aliasResolveTimeoutMs();
+      try {
+        const out = await withSfCliTimeout(async () => {
+          const sfCore = await loadSfCore();
+          const list = await sfCore.AuthInfo.listAllAuthorizations();
+          return { list, aliases: sfCore.aliasByUsername };
+        }, ms);
+        if (out === "timeout") {
+          loadError = `timed out after ${ms} ms (a keychain prompt may be blocking)`;
+        } else {
+          auths = out.list;
+          if (out.aliases) aliasByUsername = out.aliases;
+        }
+      } catch (e) {
+        loadError = (e as Error).message;
+      }
+      try {
+        const d = await withSfCliTimeout(() => resolveDefault(), ms);
+        defaultAlias = d === "timeout" ? null : d;
+      } catch {
+        defaultAlias = null;
+      }
     }
 
     // Sandbox fallback: when the MCP child can't read ~/.sf/ directly
@@ -367,14 +385,42 @@ defineTool({
         snapshotSuffix = ` ⚠ org snapshot is ${ageDays} days old — run \`sfgraph refresh-orgs\` to pick up any sf-CLI changes`;
       }
     }
-    const summary = loadError
-      ? `sf-cli auth unavailable in this process (${loadError}); discovered ${orgs.length} org${orgs.length === 1 ? "" : "s"} from local sfgraph data dir (${ingestedCount} ingested)${dbErrSuffix}${snapshotSuffix}`
-      : `${orgs.length} org${orgs.length === 1 ? "" : "s"} total — ${authCount} via sf CLI, ${ingestedCount} ingested locally${dbErrSuffix}${snapshotSuffix}`;
+    const sfSuffix = useSfCli
+      ? ""
+      : " (sf CLI not consulted; set SFGRAPH_ALIAS_SF_FALLBACK=1 to include sf CLI auths)";
+    const summary = !useSfCli
+      ? `${orgs.length} org${orgs.length === 1 ? "" : "s"} total — ${authCount} from orgs snapshot, ${ingestedCount} ingested locally${dbErrSuffix}${snapshotSuffix}${sfSuffix}`
+      : loadError
+        ? `sf-cli auth unavailable in this process (${loadError}); discovered ${orgs.length} org${orgs.length === 1 ? "" : "s"} from local sfgraph data dir (${ingestedCount} ingested)${dbErrSuffix}${snapshotSuffix}`
+        : `${orgs.length} org${orgs.length === 1 ? "" : "s"} total — ${authCount} via sf CLI, ${ingestedCount} ingested locally${dbErrSuffix}${snapshotSuffix}`;
+    const caveats = [
+      ...(useSfCli ? [] : ["Logins saved by the Salesforce command line were not read."]),
+      ...(loadError
+        ? [
+            "Saved logins are incomplete: the Salesforce command line logins could not be read here.",
+          ]
+        : []),
+      ...(lastOpenDbError ? ["At least one graph file could not be opened."] : []),
+    ];
     // Reset for next invocation so a transient error doesn't stick.
     lastOpenDbError = null;
     return {
       summary,
-      markdown: md,
+      markdown: withInShort(
+        [
+          orgs.length === 0
+            ? useSfCli && !loadError
+              ? "No orgs found: no loaded graphs and no saved logins."
+              : "No orgs found: no loaded graphs, and the install-time login list is empty."
+            : `Found ${countNoun(orgs.length, "org")}: ${ingestedCount} with a loaded graph${
+                orgs.some((o) => o.ingested && o.stale)
+                  ? `, of which ${orgs.filter((o) => o.ingested && o.stale).length} ${orgs.filter((o) => o.ingested && o.stale).length === 1 ? "was" : "were"} last refreshed ${STALE_THRESHOLD_DAYS} or more days ago, or never`
+                  : ""
+              }.`,
+          ...caveats,
+        ].join(" "),
+        md,
+      ),
       data: { orgs, defaultAlias },
       follow_up_tools: ["freshness_report", "staleness_check", "start_ingest_job"],
     };

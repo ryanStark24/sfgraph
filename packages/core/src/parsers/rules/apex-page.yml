@@ -15,13 +15,13 @@ nodes:
 
 edges:
   - relType: CONTROLLED_BY
-    when: "${match(toString(record.body),'controller\\s*=\\s*\"([^\"]+)\"','i')}"
+    when: "${match(toString(record.body),'(?<![A-Za-z])controller\\s*=\\s*[\"\\x27]([A-Za-z_][A-Za-z0-9_]*)[\"\\x27]','i')}"
     src: "ApexPage:${record.name}"
-    dst: "ApexClass:${match(toString(record.body),'controller\\s*=\\s*\"([^\"]+)\"','i')}"
+    dst: "ApexClass:${match(toString(record.body),'(?<![A-Za-z])controller\\s*=\\s*[\"\\x27]([A-Za-z_][A-Za-z0-9_]*)[\"\\x27]','i')}"
 
   - relType: EXTENDS_CONTROLLER
-    iterate: "${splitCsv(match(toString(record.body),'extensions\\s*=\\s*\"([^\"]+)\"','i'))}"
-    when: "${item}"
+    iterate: "${splitCsv(match(toString(record.body),'extensions\\s*=\\s*[\"\\x27]([^\"\\x27]+)[\"\\x27]','i'))}"
+    when: "${match(item,'^([A-Za-z_][A-Za-z0-9_]*)$')}"
     src: "ApexPage:${record.name}"
     dst: "ApexClass:${item}"
 

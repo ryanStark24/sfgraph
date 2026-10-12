@@ -1,0 +1,1 @@
+<CustomField><fullName>Score__c</fullName><type>Number</type><formula>LEN(Tier__c)</formula></CustomField>
