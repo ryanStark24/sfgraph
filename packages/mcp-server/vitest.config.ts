@@ -14,10 +14,12 @@ export default defineConfig({
     // (a 3,000-node diff timed out at 5 s). Headroom there only; elsewhere
     // keep the default so a real hang still fails fast.
     testTimeout: process.platform === "win32" ? 30_000 : 5_000,
-    // Fewer parallel workers on Windows: the small runner was so overloaded
-    // that vitest's own worker->main reporting timed out ("Timeout calling
-    // onTaskUpdate") even though every test passed.
-    ...(process.platform === "win32" ? { maxWorkers: 2 } : {}),
+    // Windows: vitest's worker->main reporting kept timing out ("Timeout
+    // calling onTaskUpdate", 60 s) with every test passing. No test blocks
+    // that long and output is small, so it is the forks pool's child-process
+    // IPC over Windows pipes; worker threads avoid it. The suite passes under
+    // threads (verified on Linux). Fewer workers for the small runner too.
+    ...(process.platform === "win32" ? { pool: "threads" as const, maxWorkers: 2 } : {}),
     env: {
       SFGRAPH_DATA_DIR: path.join(root, "data"),
       SFGRAPH_CACHE_DIR: path.join(root, "cache"),
