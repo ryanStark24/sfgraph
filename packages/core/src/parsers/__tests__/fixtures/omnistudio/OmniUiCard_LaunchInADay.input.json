@@ -59,10 +59,10 @@
     ],
     "isFlex": true,
     "lwc": {
-      "DeveloperName": "cfLaunchOSAppInADay_2_BrianStults",
+      "DeveloperName": "cfLaunchOSAppInADay_2_Sample",
       "Id": "0Rb000000000033",
       "ManageableState": "unmanaged",
-      "MasterLabel": "cfLaunchOSAppInADay_2_BrianStults",
+      "MasterLabel": "cfLaunchOSAppInADay_2_Sample",
       "NamespacePrefix": "c"
     },
     "selectableMode": "Multi",
