@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
@@ -125,5 +125,50 @@ describe("SqliteSnapshotStore", () => {
       .prepare("SELECT COUNT(*) AS c FROM _sfgraph_node_snapshots WHERE snapshot_id = ?")
       .get(s.id) as { c: number };
     expect(rows.c).toBe(0);
+  });
+});
+
+describe("copySnapshotsFrom (final review core I-2)", () => {
+  it("copies an old file's snapshot history and skips when it has none or this graph has some", async () => {
+    graph.mergeNodes([n("ApexClass", "Foo", "h1")]);
+    const s = snap.createSnapshot(asOrgId("org1"), "v1", false);
+    const oldPath = path.join(workDir, "s.sqlite");
+    const fresh = async (name: string) => {
+      const p = path.join(workDir, name);
+      const g = new SqliteGraphStore({ dbPath: p, backupDir: path.join(workDir, "bkp") });
+      await g.init();
+      const st = new SqliteSnapshotStore({ dbPath: p, db: g.db, skipMigrations: true });
+      await st.init();
+      return { g, st, p };
+    };
+    const a = await fresh("a.sqlite");
+    try {
+      expect(a.st.copySnapshotsFrom(oldPath)).toEqual({ copied: 1 });
+      expect(a.st.getSnapshot(s.id)?.label).toBe("v1");
+      expect(a.st.copySnapshotsFrom(oldPath).skipped).toMatch(/already has snapshots/);
+      // The old file is detached again.
+      expect(
+        (a.g.db.prepare("PRAGMA database_list").all() as Array<{ name: string }>).map(
+          (d) => d.name,
+        ),
+      ).not.toContain("sfg_old");
+    } finally {
+      await a.g.close();
+    }
+    const bare = path.join(workDir, "bare.sqlite");
+    const Database = (await import("better-sqlite3")).default;
+    const bareDb = new Database(bare);
+    bareDb.exec("CREATE TABLE t(x)");
+    bareDb.close();
+    const b = await fresh("b.sqlite");
+    try {
+      expect(b.st.copySnapshotsFrom(bare).skipped).toMatch(/no _sfgraph_snapshots table/);
+      writeFileSync(path.join(workDir, "stub.sqlite"), "stub");
+      expect(b.st.copySnapshotsFrom(path.join(workDir, "stub.sqlite")).skipped).toMatch(
+        /not a database/,
+      );
+    } finally {
+      await b.g.close();
+    }
   });
 });

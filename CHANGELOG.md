@@ -65,6 +65,20 @@
 
 ### Readable reports and tool fixes (cycle 3)
 
+- **`export_sarif` now writes the SARIF file itself.** By default it writes `<data dir>/exports/<org>.sarif`, and it overwrites that file on each run. `out_path` picks another file inside the exports folder, and `SFGRAPH_EXPORTS_DIR` moves the folder. The report and the summary end with "saved to <file>". The SARIF `data.report` now carries the sfgraph package version as the tool version.
+- **`export_sarif` text:** when `audits` is empty, the report says no checks were selected. The `includeTests` note only shows when the governor check ran, and the next-step line names only the tools whose checks ran (report text only; `data` is unchanged).
+- **`SFGRAPH_TOOLS=core` serves a smaller tool list:** the 18 tools the benchmark covers. The ingest, snapshot, export and utility tools are left out. When a client calls a tool outside the list, the server names the setting. If the variable is unset, empty or unknown, the full list is served, and an unknown value prints one warning line.
+- **`freshness_report` now scans Lightning web components (`LWC`)**, so `data.buckets` can hold LWC rows it did not hold before.
+- **Diagrams are on by default.** `mermaid` now defaults to `true` on `trace_upstream`, `trace_downstream`, `explain_code`, `what_broke`, `wip_impact`, `analyze_field`, `impact_from_git_diff` and `cross_layer_flow_map`. Pass `mermaid: false` to leave the diagram out.
+- **`cross_org_diff` matches `category` without regard to case** (`apexclass` finds `ApexClass`, and `All` means every category). When neither org has the category, the report says "Neither org has any <category>; check the name with find_nodes" instead of "No differences found". **`data` change:** in that case `data.unknownCategory` is `true`. Core's `diffOrgs` returns the matching labels as `resolvedCategory` and flags `unknownCategory`.
+- **`point_in_time_diff` on a snapshot of another org** now says which org the snapshot was taken of, and compares nothing. Before, it reported the snapshot as "empty, taken before the first ingest", and every node as added. **`data` change:** this answer's `data` is `{ foreignSnapshots: [{ id, org }] }`.
+- **Report text fixes** (`data` is unchanged):
+  - A multi-line or `|`-holding query in the `governor_risk_check` evidence column stays in its table row.
+  - Long or multi-line `find_similar` free text is shown as one line of at most 80 characters.
+  - Merged piece lines with counts say "each".
+  - When the server shortens a long report, the "N more pieces" count includes every piece of a dropped merged line.
+  - Diagram labels stay on one line, escape `#`, and are cut on whole characters.
+  - `cross_org_diff` and `point_in_time_diff` diagram boxes get generated ids (`n0`, `n1`), so two names that differ only in non-ASCII letters no longer merge into one box.
 - **`find_similar` (free text): a field that two or more of the top matches read or write is no longer listed last.** It is the data those matches share, so it is part of the same process. It is listed right after the later of those matches, and its line names them (`data.hits[].sharedBy`). Other fields, settings records and test code are still listed last.
 - **Reports name a 4th caller or callee instead of writing "and 1 other"**, which took as much room as the name it hid. Five or more are still cut to 3 and "and N others".
 - **The presentation guide asks for only the pieces on the path in question, and for each piece's role once.** It no longer asks the reader to repeat the piece list, and it asks for every Salesforce or Vlocity term to be defined. The guide stays under 1,200 characters.
@@ -120,11 +134,21 @@ These changes follow each tool's description and generic grammar rules (label, r
 - **MCP during a sync or rebuild.** A tool result now warns when a sync or rebuild of the org it read is running. It does not refuse, and direct handler calls get no warning.
 - **Ingest robustness.**
   - A member whose content crashes parse workers repeatedly is quarantined, instead of being retried on every delta.
-  - A delta on a graph whose member rows were written by a different sfgraph build now runs a full rebuild, with a message. Member hashes cover only file content, so after an upgrade a delta used to re-parse only the edited files and keep the old parsers' output for everything else. This matters because `start_ingest_job` defaults to `--delta`. The rows record the `sfgraph-core` version that wrote them.
+  - A delta on a graph whose member rows were written by a different sfgraph build now runs a full rebuild, with a message. Member hashes cover only file content, so after an upgrade a delta used to re-parse only the edited files and keep the old parsers' output for everything else. This matters because `start_ingest_job` defaults to `--delta`. The rows record the `sfgraph-core` version that wrote them plus a short hash of every parser hash salt (`core@1.6.0+<hash>`), so a parser change inside one version also triggers the rebuild. A graph stamped with the plain `core@1.6.0` rebuilds once.
+  - That rebuild, and `ingest --rebuild`, keep the snapshot history: the snapshots are copied from the moved-away graph into the new one, so `point_in_time_diff` still sees them. Only the newest 2 rebuild backups of each org are kept in `<data dir>/backups/`; older ones are deleted.
+  - `--only` and `--retry-skipped` are rejected with `--project`; a project ingest always reads the whole checkout.
+  - A failed ingest setup closes the graph file it opened.
   - An aborted member stream is reported in the ingest result.
   - A resolver or dead-code failure during a delta is never recorded as a clean sync.
   - The DataRaptor relationship resolver never takes over an edge a parser owns.
 - **Benchmark harness.** The layer-2 token cap now counts cache-creation and cache-read tokens (the old input+output figure is a separate column), so earlier layer-2 results are not directly comparable. Layer-2 agents are scoped to the corpus path.
+  - The gate says PASS only when every required row is measured. A missing row makes it "incomplete". The holdout row is exempt on a dev round. When A1 answered but drew no diagram, that counts as a fail.
+  - The quality aggregate reports judge coverage for each variant, category and pair, and lists pairs judged in one order only. When coverage is below 100%, the gate fails. A round judged before this change has no coverage data, so re-run `aggregate` on it before scoring.
+  - The pairwise order now comes from the task and run alone, so a resume keeps the two orders opposite. The judging seed is kept in `quality/seed.json`.
+  - Blinding drops narration about reading files the same way it drops narration about tools.
+  - The jargon list catches single-word relationship constants such as CALLS, and no longer flags "edge case".
+  - A resumed run re-runs answers that ended in an error or a timeout.
+  - Run transcripts and MCP configs under `bench/results/` are ignored by git.
 
 ### Accuracy and safety fixes (audit)
 

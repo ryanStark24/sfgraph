@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { StorageError, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
@@ -15,6 +15,20 @@ import type {
 import { wrapAbiError } from "./load-better-sqlite3.js";
 import { MIGRATIONS, MigrationRunner } from "./migrations.js";
 import { advanceEdges, advanceNodes, visibleAt } from "./snapshot-versions.js";
+
+/** The file starts with SQLite's 16-byte header. */
+function isSqliteFile(filePath: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, "r");
+    const b = Buffer.alloc(16);
+    return readSync(fd, b, 0, 16, 0) === 16 && b.toString("latin1") === "SQLite format 3\0";
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 
 // any[]: statements take positional or named (@param) bindings.
 type Statement = Database.Statement<any[]>;
@@ -285,6 +299,75 @@ export class SqliteSnapshotStore implements SnapshotStore {
       createdAt,
       isAuto,
     };
+  }
+
+  /**
+   * Copy the snapshot history from an older graph file (a `--rebuild` backup)
+   * into this database, so a rebuild keeps `point_in_time_diff`'s history.
+   * Copies every `_sfgraph_snap*` table of the old file (rows only; a table
+   * this database lacks is created from the old file's own SQL), using the
+   * columns both sides share. All or nothing: any error rolls the copy back.
+   * Returns how many snapshots were copied, or why nothing was copied. Only
+   * runs into an empty snapshot table (the seq numbers are kept as they are).
+   */
+  copySnapshotsFrom(
+    filePath: string,
+  ): { copied: number; skipped?: undefined } | { copied: 0; skipped: string } {
+    const has = (schema: string, name: string): boolean =>
+      Boolean(
+        this.db
+          .prepare(`SELECT 1 FROM ${schema}.sqlite_master WHERE type = 'table' AND name = ?`)
+          .get(name),
+      );
+    const cols = (schema: string, table: string): string[] =>
+      (
+        this.db.prepare(`PRAGMA ${schema}.table_info("${table}")`).all() as Array<{
+          name: string;
+        }>
+      ).map((c) => c.name);
+    const mine = this.db.prepare("SELECT COUNT(*) AS c FROM _sfgraph_snapshots").get() as {
+      c: number;
+    };
+    if (mine.c > 0) return { copied: 0, skipped: "this graph already has snapshots" };
+    // Attach only a real SQLite file: SQLite would otherwise still act on its
+    // sidecars. (Attaching a WAL-mode file checkpoints its WAL into it on
+    // detach; the rows are unchanged.)
+    if (!isSqliteFile(filePath)) return { copied: 0, skipped: "the old file is not a database" };
+    this.db.prepare("ATTACH DATABASE ? AS sfg_old").run(filePath);
+    try {
+      for (const t of ["_sfgraph_snapshots", "_sfgraph_snap_nodes", "_sfgraph_snap_edges"]) {
+        if (!has("sfg_old", t)) {
+          return { copied: 0, skipped: `the old graph has no ${t} table (an older sfgraph)` };
+        }
+      }
+      if (!cols("sfg_old", "_sfgraph_snapshots").includes("seq")) {
+        return { copied: 0, skipped: "the old graph's snapshots are not versioned" };
+      }
+      const tables = (
+        this.db
+          .prepare(
+            "SELECT name, sql FROM sfg_old.sqlite_master WHERE type = 'table' AND name LIKE '\\_sfgraph\\_snap%' ESCAPE '\\' ORDER BY name",
+          )
+          .all() as Array<{ name: string; sql: string }>
+      ).filter((t) => /^[A-Za-z0-9_]+$/.test(t.name));
+      const copied = this.db.transaction(() => {
+        for (const t of tables) {
+          if (!has("main", t.name)) this.db.exec(t.sql);
+          const theirs = new Set(cols("sfg_old", t.name));
+          const shared = cols("main", t.name).filter((c) => theirs.has(c));
+          const list = shared.map((c) => `"${c}"`).join(", ");
+          this.db.exec(
+            `INSERT INTO main."${t.name}"(${list}) SELECT ${list} FROM sfg_old."${t.name}"`,
+          );
+        }
+        return (
+          this.db.prepare("SELECT COUNT(*) AS c FROM _sfgraph_snapshots").get() as { c: number }
+        ).c;
+      })();
+      return { copied };
+    } finally {
+      this.db.exec("DETACH DATABASE sfg_old");
+    }
   }
 
   listSnapshots(orgId: OrgId): Snapshot[] {

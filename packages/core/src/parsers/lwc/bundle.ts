@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../../domain/index.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
+import { LWC_NODE_HASH_SALT } from "../hash-salts.js";
 import { extractHtmlEdges } from "./html-visitor.js";
 import { type LwcBindings, extractJsEdges } from "./js-visitor.js";
 import { isOmnidefChunkFile, isOmnidefFile, omnidefEdges, readOmnidef } from "./omnidef.js";
 import { extractMetaXml } from "./xml-meta.js";
+export { LWC_NODE_HASH_SALT } from "../hash-salts.js";
 
 export interface LwcBundleInput {
   bundleName: string;
@@ -15,13 +17,6 @@ export interface LwcBundleInput {
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
 }
-
-/**
- * Folded into the LWC / LWCBundle node hash. Bump it when the node attributes
- * change so a plain re-ingest re-merges unchanged bundles. v2: recordFieldKeys.
- * v3: recordObjects (static object context for the field-key resolver).
- */
-export const LWC_NODE_HASH_SALT = "lwc-attrs:v3";
 
 function bundleContentHash(files: Record<string, string>): string {
   const keys = Object.keys(files).sort();

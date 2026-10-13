@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
-import { SqliteVectorStore, offlineResolvedOrg } from "@ryanstark24/sfgraph-core";
+import {
+  SqliteGraphStore,
+  SqliteSnapshotStore,
+  SqliteVectorStore,
+  offlineResolvedOrg,
+} from "@ryanstark24/sfgraph-core";
 import { ConsoleLogger } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -222,6 +227,71 @@ describe("Task 11c: ingest --project --delta and the ingest lock", () => {
     );
     const lockFiles = readdirSync(data).filter((f) => f.endsWith(".ingest.lock"));
     expect(lockFiles).toEqual([]);
+  });
+
+  it("final review core I-2: a stale-generation delta rebuilds through the CLI, keeps the snapshots and prunes backups", async () => {
+    const orgId = offlineResolvedOrg(proj, "p").orgId;
+    const dbPath = path.join(data, `${orgId}.sqlite`);
+    await run({ delta: true });
+    // A manual snapshot, then an old generation stamp (an older sfgraph build).
+    const ageGraph = async (): Promise<string> => {
+      const g = new SqliteGraphStore({ dbPath });
+      await g.init();
+      const s = new SqliteSnapshotStore({ dbPath, db: g.db, skipMigrations: true });
+      await s.init();
+      const id = s.createSnapshot(orgId, "before-upgrade", false).id;
+      g.db.prepare("UPDATE _sfgraph_member_generation SET generation = 'core@0.0.1'").run();
+      await g.close();
+      return id;
+    };
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      ids.push(await ageGraph());
+      const out = await run({ delta: true });
+      expect(out.some((l) => l.startsWith("delta: graph was built by core@0.0.1"))).toBe(true);
+      await new Promise((r) => setTimeout(r, 5)); // distinct backup stamps
+    }
+    const g = new SqliteGraphStore({ dbPath });
+    await g.init();
+    const s = new SqliteSnapshotStore({ dbPath, db: g.db, skipMigrations: true });
+    await s.init();
+    try {
+      // Every manual snapshot survived its rebuild, and still diffs against the live graph.
+      for (const id of ids) expect(s.getSnapshot(id)?.label).toBe("before-upgrade");
+      const diff = s.diffNodes(orgId, ids[0] as string, "current");
+      expect(diff.added).toEqual([]);
+      expect(diff.removed).toEqual([]);
+      expect(g.getMemberRowsGeneration(orgId)).not.toBe("core@0.0.1");
+    } finally {
+      await g.close();
+    }
+    const backups = readdirSync(path.join(data, "backups")).filter((f) => f.endsWith(".sqlite"));
+    expect(backups).toHaveLength(2);
+  });
+
+  it("final review core M-3: --only and --retry-skipped are rejected with --project", async () => {
+    const only = await run({ only: "ApexClass" });
+    expect(only.some((l) => l.startsWith("--only does not work with --project"))).toBe(true);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = exitBefore;
+    const retry = await run({ retrySkipped: true, delta: true });
+    expect(retry.some((l) => l.startsWith("--retry-skipped does not work with --project"))).toBe(
+      true,
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("final review core M-2: a failure after the graph opens closes it", async () => {
+    const orgId = offlineResolvedOrg(proj, "p").orgId;
+    const spy = vi.spyOn(SqliteGraphStore.prototype, "close");
+    await expect(
+      buildProjectIngestOptsRaw(
+        { project: proj, org: "p", retrySkipped: true },
+        new ConsoleLogger("error"),
+      ),
+    ).rejects.toThrow(/no skip report/);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(existsSync(path.join(data, `${orgId}.sqlite`))).toBe(true);
   });
 
   it("refuses while another live ingest holds the org's lock", async () => {

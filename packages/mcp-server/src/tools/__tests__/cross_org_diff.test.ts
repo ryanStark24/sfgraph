@@ -170,3 +170,30 @@ describe("cross_org_diff: markdown lists every difference by full qname", () => 
     expect(md).toContain("### Only in A (`orgA`) (0)\n_none_");
   });
 });
+
+describe("cross_org_diff: category case and an unknown category (final review I2)", () => {
+  it("matches `apexclass` and `All` without case", async () => {
+    const lower = await callTool("cross_org_diff", {
+      org_a: ORG_A,
+      org_b: ORG_B,
+      category: "apexclass",
+    });
+    expect((lower.data as { onlyInA: string[] }).onlyInA).toEqual(["ApexClass:Only_A"]);
+    const all = await callTool("cross_org_diff", { org_a: ORG_A, org_b: ORG_B, category: "All" });
+    expect((all.data as { onlyInB: string[] }).onlyInB).toEqual(["ApexClass:Only_B"]);
+    expect(all.markdown).toContain("Compared: every category.");
+  });
+
+  it("a category neither org has is not reported as no differences", async () => {
+    const r = await callTool("cross_org_diff", {
+      org_a: ORG_A,
+      org_b: ORG_B,
+      category: "Nonesuch",
+    });
+    expect(r.markdown).toContain(
+      "Neither org has any `Nonesuch`; check the name with `find_nodes`.",
+    );
+    expect(r.markdown).not.toContain("No differences found");
+    expect((r.data as { unknownCategory?: boolean }).unknownCategory).toBe(true);
+  });
+});

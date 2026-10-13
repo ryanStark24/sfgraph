@@ -377,6 +377,18 @@ describe("project delta ingestion: same graph as a full rebuild", () => {
     await expectSameAsRebuild(ctx);
   });
 
+  it("11c. rows stamped by 1.6.0 before salts joined the stamp -> full rebuild (final review I-1)", async () => {
+    const ctx = await baseline();
+    const v = memberRowsGeneration().replace(/\+[0-9a-f]+$/, "");
+    expect(v).toMatch(/^core@\d/);
+    ctx.store.db.prepare("UPDATE _sfgraph_member_generation SET generation = ?").run(v);
+    let rebuilt = 0;
+    const r = await delta(ctx, { onFullRebuild: () => rebuilt++ });
+    expect(r.kind).toBe("full");
+    expect(rebuilt).toBe(1);
+    expect(ctx.store.getMemberRowsGeneration(orgId())).toBe(memberRowsGeneration());
+  });
+
   it("11b. rows from another sfgraph build -> full rebuild, then deltas resume", async () => {
     const ctx = await baseline();
     expect(ctx.store.getMemberRowsGeneration(orgId())).toBe(memberRowsGeneration());

@@ -8,6 +8,7 @@ import {
 } from "../../domain/index.js";
 import { makeEdge } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
+import { DATARAPTOR_NODE_HASH_SALT } from "../hash-salts.js";
 import {
   asJson,
   buildBaseNode,
@@ -17,6 +18,7 @@ import {
   pickProp,
   sha256,
 } from "./common.js";
+export { DATARAPTOR_NODE_HASH_SALT } from "../hash-salts.js";
 
 export interface DataRaptorInput {
   name: string;
@@ -30,13 +32,6 @@ export interface DrRelationshipPath {
   path: string;
   rel: RelType;
 }
-
-/**
- * Folded into the DataRaptor node's content hash. Bump it when the parser
- * starts emitting new node attributes for an unchanged pack: the graph merge
- * only rewrites attributes on a hash change. v2: drRelationshipPaths.
- */
-export const DATARAPTOR_NODE_HASH_SALT = "dataraptor-attrs:v2";
 
 const NS_TOKEN_RE = /%vlocity_namespace%__/g;
 const CUSTOM_SUFFIX_RE = /__(?:c|mdt|e|b|x)$/;

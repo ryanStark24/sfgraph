@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  fenceLabel,
   renderDependencyGraph,
   renderDiff,
   renderFlowchart,
@@ -119,5 +120,27 @@ describe("mermaid render layer", () => {
     });
     const arrows = out.split("\n").filter((l) => l.includes("-->"));
     expect(arrows).toEqual(["  A -->|REFERENCES, INSTANCE_OF| B", "  B -->|CALLS| A"]);
+  });
+
+  it("fenceLabel keeps a label on one line, escapes # and cuts on code points (final review M5)", () => {
+    expect(fenceLabel("a\n  b")).toBe('"a b"');
+    expect(fenceLabel('C#"x')).toBe('"C#35;#quot;x"');
+    const emoji = "😀".repeat(150);
+    const out = fenceLabel(emoji);
+    expect(out).toBe(`"${"😀".repeat(99)}…"`);
+  });
+
+  it("renderDiff gives every node its own id, even names that differ only in non-ASCII (M6)", () => {
+    const out = renderDiff({
+      added: [{ qualifiedName: "ApexClass:Café" }],
+      removed: [{ qualifiedName: "ApexClass:Cafè" }],
+      changed: [],
+    });
+    const ids = out
+      .split("\n")
+      .filter((l) => l.includes(":::"))
+      .map((l) => l.trim().split("[")[0]);
+    expect(ids).toEqual(["n0", "n1"]);
+    expect(out).toContain('n0["ApexClass:Café"]:::added');
   });
 });

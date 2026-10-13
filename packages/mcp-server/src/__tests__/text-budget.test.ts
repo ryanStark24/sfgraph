@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SfgraphMcpServer, TEXT_MAX, fitText } from "../server.js";
+import { SfgraphMcpServer, TEXT_MAX, fitText, piecesInLine } from "../server.js";
 import { renderReport } from "../tools/_report.js";
 
 // Cycle 2 T5 fix round 1: an MCP client sees only the result text, and a client may refuse a text
@@ -159,5 +159,36 @@ describe("tool text budget", () => {
     const res = await server.dispatch("probe_big", {});
     expect(res.content[0]?.text.length).toBeLessThanOrEqual(TEXT_MAX);
     expect(res.content[0]?.text).toMatch(/more lines not shown/);
+  });
+});
+
+describe("final review M3: a dropped merged line counts every piece it names", () => {
+  it("piecesInLine counts names and 'others'", () => {
+    expect(piecesInLine("- `a`: Apex class.")).toBe(1);
+    expect(piecesInLine("- `a`, `b` and `c`: Apex classes, each called by `T`.")).toBe(3);
+    expect(piecesInLine("- `a`, `b` and 4 others: Apex classes.")).toBe(6);
+  });
+
+  it("fitText counts the pieces of a dropped merged line", () => {
+    const long = "r".repeat(1500);
+    const pieces = Array.from({ length: 13 }, (_, i) => ({
+      name: `P${i}`,
+      kind: "ApexClass",
+      role: `Apex class (server code) ${long}${i}`,
+    }));
+    // The last two share a role, so they are one merged line, dropped first.
+    for (const n of ["Q0", "Q1"])
+      pieces.push({ name: n, kind: "ApexClass", role: `Apex class (server code) ${long}twin` });
+    const md = renderReport({ title: "T", inShort: ["Short."], details: "d", pieces });
+    expect(md).toContain("- `Q0` and `Q1`: ");
+    const out = fitText(md);
+    expect(out).not.toContain("`Q0`");
+    const named = out
+      .split("\n")
+      .filter((l) => l.startsWith("- `"))
+      .reduce((n, l) => n + piecesInLine(l), 0);
+    const more = /- and (\d+) more pieces not shown/.exec(out);
+    expect(more).not.toBeNull();
+    expect(named + Number(more![1])).toBe(15);
   });
 });

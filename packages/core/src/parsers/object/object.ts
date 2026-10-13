@@ -3,10 +3,12 @@ import { XMLParser } from "fast-xml-parser";
 import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../../domain/index.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
+import { FIELD_NODE_HASH_SALT, OBJECT_NODE_HASH_SALT } from "../hash-salts.js";
 import { parseField } from "./field.js";
 import { type FormulaFieldInfo, formulaFieldRefs } from "./formula-refs.js";
 import { parseRecordType } from "./record-type.js";
 import { parseValidationRule } from "./validation-rule.js";
+export { FIELD_NODE_HASH_SALT, OBJECT_NODE_HASH_SALT } from "../hash-salts.js";
 
 export interface ObjectDirInput {
   apiName: string; // e.g. Account, Order_Event__e
@@ -23,20 +25,6 @@ const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: 
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
 }
-
-/**
- * Folded into the content hash of source-file CustomField nodes. Bump it when
- * the parser starts emitting new attributes for unchanged XML: the graph merge
- * only rewrites attributes when the hash changes, so a plain re-ingest would
- * otherwise keep the old attributes. v2: referenceTo / relationshipName.
- */
-export const FIELD_NODE_HASH_SALT = "custom-field-attrs:v2";
-
-/**
- * Same idea for the CustomObject / PlatformEvent node built from the object
- * XML. v2: customSettingsType.
- */
-export const OBJECT_NODE_HASH_SALT = "custom-object-attrs:v2";
 
 export class CustomObjectParser implements Parser<ObjectDirInput> {
   readonly category = METADATA_CATEGORY.OBJECT;

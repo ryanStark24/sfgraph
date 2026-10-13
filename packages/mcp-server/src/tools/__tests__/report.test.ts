@@ -522,4 +522,19 @@ describe("report wording (cycle 3 T9 fix 1)", () => {
       "- `C0`, `C1`, `C2`, `C3`, `C4`, `C5` and `C6`: Apex classes (server code), each called by `T`.",
     ]);
   });
+
+  it("a merged line with a count says each (final review M2)", () => {
+    const pieces = ["A", "B"].map((x) => ({
+      name: `ApexClass:${x}`,
+      kind: "ApexClass",
+      role: "Apex class (server code) with 2 database queries inside a loop.",
+    }));
+    const r = renderReport({ title: "t", inShort: ["x."], pieces, details: "" });
+    const lines = section(r, "What each piece does")!
+      .split("\n")
+      .filter((l) => l.startsWith("- "));
+    expect(lines).toEqual([
+      "- `A` and `B`: Apex classes (server code), each with 2 database queries inside a loop.",
+    ]);
+  });
 });

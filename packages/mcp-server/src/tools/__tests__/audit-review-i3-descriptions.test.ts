@@ -41,3 +41,27 @@ describe("audit review I3: tools say what they do", () => {
     expect(desc("trace_downstream")).toMatch(/not found/i);
   });
 });
+
+describe("final review M1, M8: export_sarif names only the checks that ran", () => {
+  it("an empty `audits` says no checks were selected", async () => {
+    const r = await callTool("export_sarif", { org: fix.orgId, audits: [] });
+    expect(r.markdown).toContain("No checks selected");
+    expect(r.markdown).not.toMatch(/the checks for {2}found/);
+    expect(r.markdown).not.toMatch(/test code is excluded by default/i);
+  });
+
+  it("the next step names only the tool whose check ran", async () => {
+    fix.addNode({ qualifiedName: "ApexMethod:G.run(0)", label: "ApexMethod" });
+    fix.addEdge({
+      srcQualifiedName: "ApexMethod:G.run(0)",
+      dstQualifiedName: "CustomObject:Account",
+      relType: "EXECUTES_SOQL",
+      attributes: { inLoop: true, query: "[SELECT Id FROM Account]" },
+    });
+    const r = await callTool("export_sarif", { org: fix.orgId, audits: ["governor"] });
+    expect(r.markdown).toContain("Run `governor_risk_check` for the full list of the check.");
+    expect(r.markdown).not.toContain("security_audit");
+    const d = await callTool("export_sarif", { org: fix.orgId, audits: ["dangling"] });
+    expect(d.markdown).not.toMatch(/test code is excluded by default/i);
+  });
+});

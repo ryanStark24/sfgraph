@@ -61,3 +61,26 @@ describe("T15 I-5 governor_risk_check", () => {
     );
   });
 });
+
+describe("final review I1: governor evidence in a table cell", () => {
+  it("a two-line query with a pipe and backticks stays in one table row", async () => {
+    fix.addNode({ qualifiedName: "ApexMethod:Q.run(0)", label: "ApexMethod" });
+    fix.addEdge({
+      srcQualifiedName: "ApexMethod:Q.run(0)",
+      dstQualifiedName: "CustomObject:Contact",
+      relType: "EXECUTES_SOQL",
+      attributes: { inLoop: true, query: "SELECT Id\n  FROM Contact | x ```js" },
+    });
+    const r = await callTool("governor_risk_check", { org: fix.orgId });
+    const md = String(r.markdown ?? "");
+    const row = md
+      .split("\n")
+      .find((l) => l.includes("`ApexMethod:Q.run(0)`") && l.startsWith("|"));
+    expect(row).toBeDefined();
+    expect(row).toContain("SELECT Id FROM Contact");
+    expect(row).toContain("\\|");
+    expect(row).not.toContain("```");
+    // Four unescaped pipes: three cells.
+    expect((row ?? "").replace(/\\\|/g, "").split("|").length).toBe(5);
+  });
+});

@@ -4,6 +4,8 @@ import { REL_TYPES } from "../../domain/index.js";
 import { xmlParser } from "../_xml-helpers.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext } from "../contract.js";
+import { VLOCITY_ELEMENT_HASH_SALT } from "../hash-salts.js";
+export { VLOCITY_ELEMENT_HASH_SALT } from "../hash-salts.js";
 
 export function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
@@ -168,10 +170,6 @@ export interface BuildArgs {
   raw: any;
   hash: string;
 }
-
-/** Hash salt shared by the OS/IP/Card parsers: bump when emitted edge attrs
- *  change so incremental ingests re-parse. v2: inactive=true tagging. */
-export const VLOCITY_ELEMENT_HASH_SALT = "vlocity-elements:v3";
 
 export function buildBaseNode(args: BuildArgs): NodeFact {
   return makeNode(

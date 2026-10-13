@@ -148,18 +148,53 @@ async function buildSingleIngestOpts(
     ? validateDbPath(opts.db, dataDir)
     : safeOrgDbPath(dataDir, String(resolved.orgId));
 
-  if (opts.rebuild) {
-    await applyRebuild(dbPath, String(resolved.orgId), Boolean(opts.noBackup), logger);
-  }
+  const backupPath = opts.rebuild
+    ? await applyRebuild(dbPath, String(resolved.orgId), Boolean(opts.noBackup), logger)
+    : undefined;
 
   const graphStore = new SqliteGraphStore({ dbPath });
   await graphStore.init();
+  // Closed if anything below fails: the caller only closes what it gets back.
+  try {
+    return await buildOnStore(graphStore, {
+      alias,
+      opts,
+      logger,
+      dbPath,
+      dataDir,
+      resolved,
+      backupPath,
+    });
+  } catch (e) {
+    await graphStore.close().catch(() => {});
+    throw e;
+  }
+}
+
+async function buildOnStore(
+  graphStore: SqliteGraphStore,
+  c: {
+    alias: string;
+    opts: IngestOpts;
+    logger: ConsoleLogger;
+    dbPath: string;
+    dataDir: string;
+    resolved: Awaited<ReturnType<typeof import("@ryanstark24/sfgraph-core").resolveOrg>>;
+    backupPath: string | undefined;
+  },
+): Promise<LiveIngestOpts> {
+  const { alias, opts, logger, dbPath, dataDir, resolved, backupPath } = c;
   const snapshotStore = new SqliteSnapshotStore({
     dbPath,
     db: graphStore.db,
     skipMigrations: true,
   });
   await snapshotStore.init();
+  // A rebuild keeps the snapshot history (point_in_time_diff): copy it from
+  // the backup before the first snapshot of the new graph is taken.
+  const carried = backupPath
+    ? carrySnapshots(snapshotStore, backupPath, String(resolved.orgId))
+    : 0;
 
   // Wire a vector store so ingest GENERATES MiniLM embeddings — without this
   // `opts.vectorStore` is undefined, live-ingest never builds its embedding
@@ -247,6 +282,9 @@ async function buildSingleIngestOpts(
     disableArityResolve: Boolean(opts.noArityResolve),
     disableFlowInvocableResolve: Boolean(opts.noFlowResolve),
     disableAudit: Boolean(opts.noAudit),
+    // A snapshot of the still-empty rebuilt graph adds nothing to the carried
+    // history; the next ingest's snapshot records the rebuilt state.
+    ...(carried > 0 ? { skipSnapshot: true } : {}),
     // Populate the _sfgraph_findings / dead-code / governor / test-coverage
     // tables after merge. Without this the analysis MCP tools (dead_code_audit,
     // security_audit, governor_risk_check, export_sarif) fall back to weak
@@ -322,11 +360,16 @@ export async function buildProjectIngestOpts(
     resolveOrg: (async () => offlineResolvedOrg(root, alias)) as never,
     ...(deps.onResolved ? { onResolved: deps.onResolved } : {}),
   });
-  return {
-    ...built,
-    mode: "full",
-    metadataSource: await FilesystemMetadataSource.fromProjectRoot(root),
-  };
+  try {
+    return {
+      ...built,
+      mode: "full",
+      metadataSource: await FilesystemMetadataSource.fromProjectRoot(root),
+    };
+  } catch (e) {
+    await (built.graphStore as SqliteGraphStore).close().catch(() => {});
+    throw e;
+  }
 }
 
 /**
@@ -361,16 +404,70 @@ export function onGraphFile<T>(dbPath: string, op: () => T): T {
   }
 }
 
+/** Rebuild backups kept per org (each is a full copy of the graph file). */
+export const REBUILD_BACKUPS_KEPT = 2;
+
+/**
+ * Copy the backup's snapshot tables into the rebuilt graph. A failure leaves
+ * the new graph without history (the backup still has it) and warns.
+ */
+function carrySnapshots(store: SqliteSnapshotStore, backupPath: string, orgId: string): number {
+  try {
+    const r = store.copySnapshotsFrom(backupPath);
+    if (r.skipped) {
+      console.warn(`REBUILD: snapshot history for ${orgId} not kept: ${r.skipped}`);
+      return 0;
+    }
+    if (r.copied > 0) {
+      console.warn(`REBUILD: kept ${r.copied} snapshot${r.copied === 1 ? "" : "s"} for ${orgId}`);
+    }
+    return r.copied;
+  } catch (e) {
+    console.warn(
+      `REBUILD: snapshot history for ${orgId} not kept (${(e as Error).message}); it is still in ${backupPath}`,
+    );
+    return 0;
+  }
+}
+
+/**
+ * Delete all but the newest {@link REBUILD_BACKUPS_KEPT} rebuild backups of
+ * one org (with their sidecars). The names carry an ISO stamp, so name order
+ * is time order. Best-effort.
+ */
+export async function pruneRebuildBackups(backupDir: string, orgId: string): Promise<string[]> {
+  const { readdirSync, unlinkSync } = await import("node:fs");
+  const prefix = `${orgId}.rebuild-`;
+  let names: string[];
+  try {
+    names = readdirSync(backupDir).filter((f) => f.startsWith(prefix) && f.endsWith(".sqlite"));
+  } catch {
+    return [];
+  }
+  const old = names.sort().reverse().slice(REBUILD_BACKUPS_KEPT);
+  for (const f of old) {
+    for (const suffix of ["", ...SQLITE_SIDECAR_SUFFIXES]) {
+      try {
+        unlinkSync(path.join(backupDir, `${f}${suffix}`));
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+  return old;
+}
+
+/** Move (or delete) the org's graph file; returns the backup's path when moved. */
 async function applyRebuild(
   dbPath: string,
   orgId: string,
   noBackup: boolean,
   logger: ConsoleLogger,
-): Promise<void> {
+): Promise<string | undefined> {
   const { existsSync, mkdirSync, renameSync, unlinkSync } = await import("node:fs");
   if (!existsSync(dbPath)) {
     logger.info(`rebuild: no existing graph at ${dbPath}; starting fresh`);
-    return;
+    return undefined;
   }
   if (noBackup) {
     onGraphFile(dbPath, () => unlinkSync(dbPath));
@@ -385,7 +482,7 @@ async function applyRebuild(
       }
     }
     console.warn(`REBUILD: existing graph for ${orgId} DELETED (no-backup); running full sync`);
-    return;
+    return undefined;
   }
   const backupDir = path.join(getSfgraphPaths().data, "backups");
   mkdirSync(backupDir, { recursive: true });
@@ -409,6 +506,13 @@ async function applyRebuild(
     }
   }
   console.warn(`REBUILD: existing graph for ${orgId} moved to ${backupPath}; running full sync`);
+  const pruned = await pruneRebuildBackups(backupDir, orgId);
+  if (pruned.length > 0) {
+    console.warn(
+      `REBUILD: removed ${pruned.length} older backup${pruned.length === 1 ? "" : "s"} for ${orgId} (keeping the newest ${REBUILD_BACKUPS_KEPT})`,
+    );
+  }
+  return backupPath;
 }
 
 /**
@@ -472,6 +576,13 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
     );
 
     if (opts.delta && !opts.project) throw new Error("--delta needs --project");
+    // An offline ingest reads every member of the checkout; a label filter has
+    // nothing to narrow (final review core M-3).
+    if (opts.project && (opts.only || opts.retrySkipped)) {
+      throw new Error(
+        `${opts.only ? "--only" : "--retry-skipped"} does not work with --project: a project ingest always reads the whole checkout`,
+      );
+    }
     if (opts.delta && opts.rebuild) throw new Error("--delta and --rebuild are mutually exclusive");
     if (opts.project && opts.delta) {
       await projectDelta(opts, logger, locks.take);

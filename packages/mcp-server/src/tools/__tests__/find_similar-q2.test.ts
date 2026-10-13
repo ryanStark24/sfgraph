@@ -156,3 +156,15 @@ describe("find_similar: qname mode (fix round 1, I1)", () => {
     expect(h.map((x) => x.qname)).toEqual(["ApexClass:Other"]);
   });
 });
+
+describe("find_similar: caller text in the report (final review M4)", () => {
+  it("a long multi-line text is shown as one short line; data keeps it whole", async () => {
+    doc("ApexClass:Svc", "refund svc");
+    const text = `refund\n## not a heading\n${"word ".repeat(200)}`;
+    const r = await callTool("find_similar", { org: fix.orgId, text });
+    expect(r.markdown).not.toContain("\n## not a heading");
+    for (const line of r.markdown.split("\n")) expect(line).not.toContain("word ".repeat(30));
+    expect(r.markdown).toContain("refund ## not a heading word");
+    expect((r.data as { focalText: string }).focalText).toBe(text);
+  });
+});

@@ -42,6 +42,18 @@ const AUDIT_PLAIN: Record<
   },
 };
 
+/** The tool that lists one check's findings in full; dangling links have none. */
+const AUDIT_TOOL: Record<(typeof ORDER)[number], string | null> = {
+  governor: "governor_risk_check",
+  security: "security_audit",
+  "dead-code": "dead_code_audit",
+  dangling: null,
+};
+
+/** "a", "a or b", "a, b or c". */
+const orList = (xs: readonly string[]): string =>
+  xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} or ${xs[xs.length - 1]}`;
+
 /** A path with the home folder shown as `~`, so no user name lands in the text. */
 export function tildePath(p: string): string {
   const home = homedir();
@@ -242,12 +254,15 @@ defineTool({
       }))
       .filter((x) => x.n > 0)
       .map((x) => countNoun(x.n, AUDIT_PLAIN[x.a].one, AUDIT_PLAIN[x.a].many));
+    const listTools = ran.flatMap((a) => (AUDIT_TOOL[a] ? [AUDIT_TOOL[a]] : []));
     const markdown = renderReport({
       title: "Audit findings exported for code scanning",
       inShort: [
-        findings.length === 0
-          ? `Exported 0 findings: the checks for ${andList(ran.map((a) => AUDIT_PLAIN[a].check))} found nothing.`
-          : `Exported ${countNoun(findings.length, "finding")}: ${andList(severities)}.`,
+        ran.length === 0
+          ? "No checks selected: `audits` is empty, so the report has no findings; pass at least one check."
+          : findings.length === 0
+            ? `Exported 0 findings: the checks for ${andList(ran.map((a) => AUDIT_PLAIN[a].check))} found nothing.`
+            : `Exported ${countNoun(findings.length, "finding")}: ${andList(severities)}.`,
         ...(findings.length > 0 ? [`By check: ${andList(perAudit)}.`] : []),
         saved.ok
           ? `Saved the report to \`${shown}\`; upload it to GitHub code scanning.`
@@ -260,12 +275,13 @@ defineTool({
       ],
       details: oldMd,
       next: [
-        ...(findings.length > 0
+        // Name only the tools whose checks ran (dangling links have no tool of their own).
+        ...(findings.length > 0 && listTools.length > 0
           ? [
-              "Run `governor_risk_check`, `security_audit` or `dead_code_audit` for the full list of one check.",
+              `Run ${orList(listTools.map((t) => `\`${t}\``))} for the full list of ${listTools.length === 1 ? "the" : "one"} check.`,
             ]
           : []),
-        ...(input.includeTests
+        ...(input.includeTests || !audits.has("governor")
           ? []
           : ["Governor test code is excluded by default; pass `includeTests: true` to keep it."]),
       ],

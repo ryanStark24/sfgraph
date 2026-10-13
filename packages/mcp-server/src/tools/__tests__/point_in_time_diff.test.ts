@@ -180,3 +180,18 @@ describe("point_in_time_diff cache", () => {
     expect(diffLoadCount()).toBe(base + 4);
   });
 });
+
+describe("point_in_time_diff: a snapshot of another org (final review M7)", () => {
+  it("says the snapshot belongs to another org, not that it is empty", async () => {
+    fix.addNode({ qualifiedName: "ApexClass:A", label: "ApexClass" });
+    const other = fix.ctx.snapshotStore.createSnapshot(
+      "otherOrg" as typeof fix.orgId,
+      "theirs",
+      false,
+    );
+    const r = await callTool("point_in_time_diff", { org: fix.orgId, from: other.id });
+    expect(r.markdown).toContain("was taken of org `otherOrg`");
+    expect(r.markdown).not.toMatch(/taken before the first ingest|is empty/);
+    expect(r.data).toEqual({ foreignSnapshots: [{ id: other.id, org: "otherOrg" }] });
+  });
+});

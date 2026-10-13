@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ParseResult } from "../parsers/contract.js";
+import { HASH_SALTS } from "../parsers/hash-salts.js";
 import type { MemberParse } from "./parse-member.js";
 
 /**
@@ -17,18 +18,11 @@ export function ownedQnames(result: Pick<ParseResult, "nodes" | "edges">): strin
   return [...out];
 }
 
-let generation: string | undefined;
-/**
- * The generation stamped on member rows: the sfgraph-core version. A member's
- * hash covers only its content, not the parsers that read it, so a delta
- * under another build would keep the old build's output for every unchanged
- * member. Delta compares this to the stamp and rebuilds on a mismatch. Any
- * release can change parser output, so the version (not a hand-bumped salt)
- * is the safe key; "unknown" never matches, which errs towards a rebuild.
- */
-export function memberRowsGeneration(): string {
-  if (generation !== undefined) return generation;
-  generation = "unknown";
+let coreVersion: string | undefined;
+/** The sfgraph-core package version, or "unknown". */
+function readCoreVersion(): string {
+  if (coreVersion !== undefined) return coreVersion;
+  coreVersion = "unknown";
   const here = path.dirname(fileURLToPath(import.meta.url));
   // src/ingest or dist/ingest → ../../package.json
   for (const p of [
@@ -38,14 +32,33 @@ export function memberRowsGeneration(): string {
     try {
       const pkg = JSON.parse(readFileSync(p, "utf8")) as { name?: string; version?: string };
       if (pkg.name === "@ryanstark24/sfgraph-core" && pkg.version) {
-        generation = `core@${pkg.version}`;
+        coreVersion = pkg.version;
         break;
       }
     } catch {
       // try the next candidate
     }
   }
-  return generation;
+  return coreVersion;
+}
+
+/** Short hash (12 hex chars) of the parser hash salts, joined in order. */
+export function saltsHash(salts: readonly string[] = HASH_SALTS): string {
+  return createHash("sha256").update(salts.join("\n")).digest("hex").slice(0, 12);
+}
+
+/**
+ * The generation stamped on member rows: `core@<version>+<short hash of every parser hash salt>`.
+ * A member's hash covers only its content, not the parsers that read it, so a delta under another
+ * build would keep the old build's output for every unchanged member. Delta compares this to the
+ * stamp and rebuilds on a mismatch. Any release can change parser output, so the version is part
+ * of the key; a salt bump inside one version changes it too (cycle 3 final review I-1). An older
+ * stamp (`core@1.6.0`, no salts part) never matches, so it rebuilds; "unknown" never matches either,
+ * which errs towards a rebuild.
+ */
+export function memberRowsGeneration(salts: readonly string[] = HASH_SALTS): string {
+  const v = readCoreVersion();
+  return v === "unknown" ? "unknown" : `core@${v}+${saltsHash(salts)}`;
 }
 
 /** Content hash of a member (what its parse depends on). */

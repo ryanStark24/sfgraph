@@ -59,7 +59,11 @@ export function nameOf(qnameOrName: string): string {
 }
 
 /** One line: any run of whitespace holding a newline becomes one space. */
-const oneLine = (t: string): string => t.replace(/\s*\n\s*/g, " ");
+export const oneLine = (t: string): string => t.replace(/\s*\n\s*/g, " ");
+
+/** Free text safe in a markdown table cell: one line, `|` escaped, backticks made quotes. */
+export const tableCell = (t: string): string =>
+  t.replace(/\s+/g, " ").trim().replace(/`/g, "'").replace(/\|/g, "\\|");
 
 /** An API name in code style; a backtick inside it becomes a quote so the span stays closed. */
 export const code = (name: string): string => `\`${name.replace(/`/g, "'")}\``;
@@ -521,7 +525,9 @@ export function renderReport(r: HumanReport): string {
       const rest = said
         .slice(kind.length)
         .replace(/^; it /, "; each ")
-        .replace(/^, (?!each )/, ", each ");
+        .replace(/^, (?!each )/, ", each ")
+        // A count in a merged line is per piece, not a total ("Apex classes, each with 2 ...").
+        .replace(/^ (?=\S)(?=.*\d)/, ", each ");
       const names = nameList(
         g.map((x) => oneLine(x.name)),
         MERGED_NAMES_MAX,

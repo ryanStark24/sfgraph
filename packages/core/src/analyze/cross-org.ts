@@ -14,6 +14,13 @@ export interface CrossOrgDiff {
    * narrow the scope or paginate before drawing conclusions.
    */
   truncated?: boolean;
+  /**
+   * Set when a named `category` matches no label in either store (compared without case), so
+   * the empty result means "neither org has any", not "no differences".
+   */
+  unknownCategory?: boolean;
+  /** The stored label(s) a named `category` resolved to (case-insensitive match). */
+  resolvedCategory?: string[];
 }
 
 /**
@@ -94,7 +101,21 @@ export function diffOrgs(
     category = maybeCategory;
   }
 
-  const labels = category === "all" ? allLabels(storeA, storeB) : [category];
+  // `all` in any case means every label; a named category matches stored labels without case
+  // (`apexclass` finds `ApexClass`), so a casing slip does not read as "no differences".
+  const isAll = category.toLowerCase() === "all";
+  const wanted = category.toLowerCase();
+  const resolved = isAll
+    ? []
+    : [
+        ...new Set(
+          [...storeA.listAllLabels(), ...storeB.listAllLabels()].filter(
+            (l) => l.toLowerCase() === wanted,
+          ),
+        ),
+      ];
+  // No stored label matches: still query the name as given (a store without the label cache).
+  const labels = isAll ? allLabels(storeA, storeB) : resolved.length ? resolved : [category];
   const aMap = new Map<string, NodeFact>();
   const bMap = new Map<string, NodeFact>();
   let truncated = false;
@@ -117,7 +138,16 @@ export function diffOrgs(
   for (const [k, b] of bMap) {
     if (!aMap.has(k)) onlyInB.push(b);
   }
-  return { onlyInA, onlyInB, changed, truncated };
+  if (isAll) return { onlyInA, onlyInB, changed, truncated };
+  if (resolved.length > 0 || aMap.size > 0 || bMap.size > 0)
+    return {
+      onlyInA,
+      onlyInB,
+      changed,
+      truncated,
+      resolvedCategory: resolved.length ? resolved : [category],
+    };
+  return { onlyInA, onlyInB, changed, truncated, unknownCategory: true, resolvedCategory: [] };
 }
 
 /** The item's own name: the last dotted part of the qname (`Tier__c` for `CustomField:Account.Tier__c`). */

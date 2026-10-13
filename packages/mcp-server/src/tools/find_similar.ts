@@ -16,6 +16,15 @@ import {
   theKind,
 } from "./_report.js";
 
+/** One line, at most 80 characters (code points), "…" when cut. */
+const TEXT_SHOWN_MAX = 80;
+function shortText(t: string): string {
+  const cps = [...t.replace(/\s+/g, " ").trim()];
+  return cps.length > TEXT_SHOWN_MAX
+    ? `${cps.slice(0, TEXT_SHOWN_MAX - 1).join("")}…`
+    : cps.join("");
+}
+
 const TITLE = "Similar pieces";
 const NEXT_EMPTY = [
   "Use `find_nodes` with a pattern to check a name.",
@@ -287,11 +296,14 @@ defineTool({
         ? undefined
         : (ctx.graphStore.listAllLabels().find((l) => l.toLowerCase() === wantLabel) ??
           input.label);
-    const focalLabel = focalQname ? focalQname : `"${input.text}"`;
+    // Caller text (up to 4,096 chars, any line breaks) shown as one short line, so it cannot split
+    // the report (final review M4); `data.focalText` keeps it whole.
+    const textShown = shortText(input.text ?? "");
+    const focalLabel = focalQname ? focalQname : `"${textShown}"`;
     // The focal in plain words: "the Apex class `CaseService`" or "the text `order cancel`".
     const focalPlain = focalQname
       ? theKind(labelOfQname(focalQname), focalQname)
-      : `the text ${code(input.text ?? "")}`;
+      : `the text ${code(textShown)}`;
     const among = label ? ` among ${kindInText(label, { plural: true })}` : "";
     const empty = (why: string, details: string) =>
       renderReport({ title: TITLE, inShort: [why], details, next: NEXT_EMPTY });
@@ -464,7 +476,7 @@ defineTool({
           markdown: empty(
             `Nothing similar to ${focalPlain} was found${among}: the text could not be read for meaning (the model files are missing), and the search by name found no match.`,
             [
-              `> Couldn't embed the query text \`"${input.text}"\`, and the keyword leg found no match.`,
+              `> Couldn't embed the query text ${code(`"${textShown}"`)}, and the keyword leg found no match.`,
               "",
               "The `@xenova/transformers` runtime or the MiniLM model files (`@ryanstark24/sfgraph-models`) aren't reachable. Both are optionalDependencies of `@ryanstark24/sfgraph-core`; reinstall to pull them.",
               "",

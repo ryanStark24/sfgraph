@@ -13,6 +13,7 @@ import {
   listWithMore,
   nameOf,
   renderReport,
+  tableCell,
 } from "./_report.js";
 
 type Risk = ReturnType<typeof collectGovernorRisks>["risks"][number];
@@ -189,7 +190,7 @@ defineTool({
           "",
           "| qname | risk | evidence |",
           "|---|---|---|",
-          ...rs.map((r) => `| \`${r.qualifiedName}\` | ${r.risk} | ${r.evidence} |`),
+          ...rs.map((r) => `| \`${r.qualifiedName}\` | ${r.risk} | ${tableCell(r.evidence)} |`),
         ]),
       ...(truncated
         ? [

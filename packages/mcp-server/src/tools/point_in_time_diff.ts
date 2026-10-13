@@ -22,6 +22,33 @@ defineTool({
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
     const n = input.limit;
+    // A snapshot of another org reads as empty in the store; say whose it is instead of reporting
+    // "empty, taken before the first ingest" and the whole graph as added (final review M7).
+    const foreign = [input.from, input.to].flatMap((id) => {
+      if (id === "current") return [];
+      const s = ctx.snapshotStore.getSnapshot(id);
+      return s && String(s.orgId) !== String(ctx.orgId) ? [{ id, org: String(s.orgId) }] : [];
+    });
+    if (foreign.length > 0) {
+      const which = andList(foreign.map((f) => `${code(f.id)} was taken of org ${code(f.org)}`));
+      return {
+        summary: `snapshot from another org: ${foreign.map((f) => `${f.id} (${f.org})`).join(", ")}`,
+        markdown: renderReport({
+          title: "Snapshot belongs to another org",
+          inShort: [
+            `Nothing was compared: snapshot ${which}, not ${code(String(ctx.orgId))}. Snapshots can only be compared within the org they were taken of.`,
+          ],
+          details: foreign
+            .map((f) => `> Snapshot \`${f.id}\` belongs to org \`${f.org}\`.`)
+            .join("\n"),
+          next: [
+            "Run `snapshot_list` for this org to pick one of its snapshots, or pass the snapshot's own org.",
+          ],
+        }),
+        data: { foreignSnapshots: foreign },
+        follow_up_tools: ["snapshot_list"],
+      };
+    }
     const { nodeDiff, edgeDiff, scoped } = cachedDiff(
       ctx,
       JSON.stringify([String(ctx.orgId), input.from, input.to, n]),

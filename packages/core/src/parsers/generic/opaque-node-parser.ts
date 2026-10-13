@@ -2,9 +2,8 @@ import { type EdgeFact, METADATA_CATEGORY, type NodeFact } from "../../domain/in
 import { sha256 } from "../_xml-helpers.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
+import { OPAQUE_DATAPACK_HASH_SALT } from "../hash-salts.js";
 import { collectNameMatchCandidates, scanDataPackRefs } from "../vlocity/datapack-refs.js";
-
-const OPAQUE_DATAPACK_HASH_SALT = "vlocity-datapack-refs:v2";
 
 export interface OpaqueInput {
   metadataType: string;

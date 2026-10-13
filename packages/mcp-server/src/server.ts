@@ -74,6 +74,13 @@ function cutLines(text: string, budget: number, max: number): string {
 
 const PIECE_COUNT_LINE = /^- and (\d+) more\b/;
 
+/** How many pieces a piece line names: a merged line ("- `a`, `b` and 2 others: ...") holds several. */
+export function piecesInLine(line: string): number {
+  const m = /^- ((?:`[^`]*`(?:, | and )?)+)(?:(\d+) others?)?: /.exec(line);
+  if (!m) return 1;
+  return (m[1]!.match(/`[^`]*`/g)?.length ?? 1) + (m[2] ? Number(m[2]) : 0);
+}
+
 /**
  * Cycle 3 T2: a human report (it holds a Technical details heading) keeps every section before
  * Technical details whole and its What to check next; only the technical details are cut. When the
@@ -115,9 +122,8 @@ function fitReport(text: string, max: number): string | null {
   };
   let budget = max - headText().length - 1 - tail.length;
   while (budget < Math.min(minDetails, details.length) && piecesEnd > piecesAt) {
-    head.splice(piecesEnd, 1);
+    dropped += piecesInLine(head.splice(piecesEnd, 1)[0]!);
     piecesEnd--;
-    dropped++;
     budget = max - headText().length - 1 - tail.length;
   }
   if (budget < Math.min(minDetails, details.length)) return null;

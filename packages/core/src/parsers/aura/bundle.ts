@@ -8,6 +8,8 @@ import {
 } from "../../domain/index.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
+import { AURA_NODE_HASH_SALT } from "../hash-salts.js";
+export { AURA_NODE_HASH_SALT } from "../hash-salts.js";
 
 /**
  * corecorr-08: Aura bundles (filesystem source format), parsed so Apex
@@ -30,8 +32,6 @@ export interface AuraBundleInput {
   bundleName: string;
   files: Record<string, string>;
 }
-
-export const AURA_NODE_HASH_SALT = "aura-attrs:v1";
 
 const MARKUP_EXT = /\.(cmp|app|intf|evt)$/i;
 // Attribute values may contain `>`, so the root tag body skips quoted runs.

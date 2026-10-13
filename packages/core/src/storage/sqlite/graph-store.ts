@@ -2007,8 +2007,11 @@ export class SqliteGraphStore implements GraphStore {
 
   clearMemberRows(orgId: OrgId): void {
     this.ensureDeltaTables();
-    this.stmt("DELETE FROM _sfgraph_members WHERE org_id = ?").run(orgId);
-    this.stmt("DELETE FROM _sfgraph_member_generation WHERE org_id = ?").run(orgId);
+    // Rows and their generation stamp go together (final review core M-4).
+    this.db.transaction(() => {
+      this.stmt("DELETE FROM _sfgraph_members WHERE org_id = ?").run(orgId);
+      this.stmt("DELETE FROM _sfgraph_member_generation WHERE org_id = ?").run(orgId);
+    })();
   }
 
   getDeltaPending(orgId: OrgId): string[] | null {

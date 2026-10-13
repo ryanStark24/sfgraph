@@ -4,6 +4,7 @@ import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../.
 import type { SnippetRecord } from "../../storage/interfaces.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
+import { APEX_NODE_HASH_SALT } from "../hash-salts.js";
 import {
   type ClassRefScope,
   NEW_INSTANCE_RE,
@@ -34,6 +35,7 @@ import {
   extractVlocityCalls,
   extractVlocityDispatch,
 } from "./vlocity-calls.js";
+export { APEX_NODE_HASH_SALT } from "../hash-salts.js";
 
 /**
  * apex-parser (antlr4ts) keeps a DFA cache on each grammar's static ATN. It is
@@ -433,22 +435,6 @@ function extractShadowsManaged(metaXml?: string): string[] {
   }
   return out;
 }
-
-/**
- * Salt for ApexClass / ApexInterface / ApexMethod node hashes. Bump it when a
- * parser change alters node attributes or qnames for unchanged source: node
- * merge keeps the stored attributes when `sourceHash` is unchanged, so without
- * a bump a re-ingest would leave e.g. stale `modifiers` in place.
- * v2: generic-aware header / arity parsing (audit corecorr-01, dangling-06).
- * v4: inline SOQL ends at its depth-0 `]` (relationship paths from the full
- * query) and `dynamicSoqlFieldsSkipped`.
- * v5: `dynamicSoqlFieldsSkipped` also counts rejected literal-FROM queries.
- * v6: a top-level enum gets its `modifiers`; the empty-body stub gets `bodyUnavailable`.
- * v7: a guard-bound dynamic FROM is no longer counted in `dynamicSoqlFieldsSkipped`.
- * v8: the guard check ignores `(`, `||` and `&&` inside string literals, and
- * treats `+=` and the like as a reassignment, so the skipped-field count can change.
- */
-export const APEX_NODE_HASH_SALT = "apex-attrs:v8";
 
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");

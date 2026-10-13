@@ -86,7 +86,9 @@ defineTool({
       removed: diff.onlyInA.slice(0, 30).map((n) => ({ qualifiedName: n.qualifiedName })),
       changed: diff.changed.slice(0, 30).map((c) => ({ qualifiedName: c.a.qualifiedName })),
     });
-    const filtered = input.category !== "all";
+    const filtered = input.category.toLowerCase() !== "all";
+    // A named category neither org has: say so instead of "No differences found" (final review I2).
+    const unknown = diff.unknownCategory === true;
     const byQname = (xs: string[]) => [...xs].sort(analyze.codePointCompare);
     const md = [
       "| metric | count |",
@@ -147,11 +149,13 @@ defineTool({
     const markdown = renderReport({
       title: `How ${a} and ${b} differ`,
       inShort: [
-        total > 0
-          ? `${a} and ${b} differ in ${countNoun(total, "piece")}: ${andList(sides)}.`
-          : hiddenTotal > 0
-            ? `No differences are shown between ${a} and ${b}: the only ${one ? "difference is" : "differences are"} ${andList(hiddenParts)} found in one org only, hidden by default; set ${hiddenFlags.join(" or ")} to see ${one ? "it" : "them"}.`
-            : `No differences found between ${a} and ${b}: no piece is only in one of them, and none has different source.`,
+        unknown
+          ? `Neither org has any ${code(input.category)}; check the name with \`find_nodes\`.`
+          : total > 0
+            ? `${a} and ${b} differ in ${countNoun(total, "piece")}: ${andList(sides)}.`
+            : hiddenTotal > 0
+              ? `No differences are shown between ${a} and ${b}: the only ${one ? "difference is" : "differences are"} ${andList(hiddenParts)} found in one org only, hidden by default; set ${hiddenFlags.join(" or ")} to see ${one ? "it" : "them"}.`
+              : `No differences found between ${a} and ${b}: no piece is only in one of them, and none has different source.`,
         ...(total > 0 ? [`By kind: ${byKind.join("; ")}.`] : []),
         scope,
         ...(hiddenNote && total > 0 ? [hiddenNote] : []),
@@ -172,7 +176,9 @@ defineTool({
       ],
     });
     return {
-      summary: `A-only:${diff.onlyInA.length} B-only:${diff.onlyInB.length} changed:${diff.changed.length}${hiddenTotal > 0 ? ` hidden:${hiddenTotal}` : ""}${truncationNote}`,
+      summary: unknown
+        ? `neither org has category ${input.category}`
+        : `A-only:${diff.onlyInA.length} B-only:${diff.onlyInB.length} changed:${diff.changed.length}${hiddenTotal > 0 ? ` hidden:${hiddenTotal}` : ""}${truncationNote}`,
       markdown,
       data: {
         onlyInA: diff.onlyInA.map((n) => n.qualifiedName),
@@ -180,6 +186,7 @@ defineTool({
         changed: diff.changed.map((c) => c.a.qualifiedName),
         truncated: diff.truncated ?? false,
         hidden,
+        ...(unknown ? { unknownCategory: true } : {}),
       },
       follow_up_tools: ["point_in_time_diff", "deployment_manifest_gen"],
     };
