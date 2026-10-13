@@ -1,2 +1,5 @@
+# Keep LF on every platform: Biome formats with LF and fails on CRLF
+# checkouts (Windows runners default to core.autocrlf=true).
+* text=auto eol=lf
 packages/models/data/**/*.onnx filter=lfs diff=lfs merge=lfs -text
 packages/models/data/**/*.bin filter=lfs diff=lfs merge=lfs -text
