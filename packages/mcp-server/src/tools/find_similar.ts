@@ -1,4 +1,4 @@
-import { analyze } from "@ryanstark24/sfgraph-core";
+import { REL_TYPES, analyze } from "@ryanstark24/sfgraph-core";
 import type { GraphStore } from "@ryanstark24/sfgraph-core";
 import { type OrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
@@ -6,6 +6,7 @@ import { defineTool, numeric, z } from "./_define.js";
 import { labelOfQname } from "./_reach_list.js";
 import {
   type Piece,
+  andList,
   code,
   countNoun,
   kindCounts,
@@ -44,10 +45,11 @@ const inputSchema = z
     /** Minimum cosine similarity (0–1) a VECTOR-leg match must clear to be
      *  returned. KNN always returns *k* nearest by distance, including
      *  near-irrelevant tail matches; this floor turns "k nearest" into "the
-     *  relevant ones, up to k". Default 0.3 (conservative for MiniLM-L6 on this
-     *  corpus). Keyword (exact-name) matches bypass the floor. Lower it to widen
-     *  recall, raise it to tighten precision. */
-    min_similarity: numeric(z.number().min(0).max(1).default(0.3)),
+     *  relevant ones, up to k". Keyword (exact-name) matches bypass the floor.
+     *  Default 0.4 (cycle 3 T6, was 0.3): on the benchmark's dev and dev2 cases (the held-out split
+     *  was not looked at) the weakest expected match scored just above 0.4, and the matches between
+     *  0.3 and 0.4 were all unrelated, so 0.4 hides them without losing an expected one. */
+    min_similarity: numeric(z.number().min(0).max(1).default(0.4)),
   })
   .refine((v) => Boolean(v.qname) !== Boolean(v.text), {
     message: "Provide exactly one of `qname` or `text`",
@@ -68,11 +70,24 @@ interface FusedHit {
   rrf: number;
   /** Ranked after every other hit (test code, record-level labels). */
   demoted?: boolean;
+  /** A field kept in place because these top hits read or write it. */
+  sharedBy?: string[];
 }
 
 /** Record-level labels: rows inside a component (a CMDT record, a field),
  *  not the code or automation a free-text concept query asks for. */
 const RECORD_LEVEL_LABELS: ReadonlySet<string> = new Set(["CustomMetadataRecord", "CustomField"]);
+
+/** Rels by which a component reads or writes a field (as analyze_field counts them). */
+const FIELD_USE_RELS: ReadonlySet<string> = new Set(
+  (Object.values(REL_TYPES) as string[]).filter(
+    (r) =>
+      r.endsWith("READS_FIELD") ||
+      r.endsWith("WRITES_FIELD") ||
+      r === REL_TYPES.LWC_BINDS_FIELD ||
+      r === REL_TYPES.WORKFLOW_UPDATES_FIELD,
+  ),
+);
 
 /**
  * Reciprocal Rank Fusion of the vector and keyword legs. Scale-free: needs only
@@ -123,7 +138,10 @@ function rrfFuse(vec: VecHit[], kw: Array<{ qname: string; label: string }>): Fu
  *    merged `via`. A component equal to the focal is dropped.
  *  - `demote`: test code (decided on the owning class), and with
  *    `tests+records` record-level labels too, move after every other hit,
- *    order kept within each group.
+ *    order kept within each group. A field among the candidates that two or
+ *    more of the top `k` kept hits read or write is the data those hits
+ *    share, so it is part of the same process: it is not demoted, and it is
+ *    listed right after the later of those hits (`sharedBy` names them).
  */
 function shapeHits(
   store: GraphStore,
@@ -173,6 +191,42 @@ function shapeHits(
       if ((records && RECORD_LEVEL_LABELS.has(h.label)) || classify(h.qname).isTest) {
         late.push({ ...h, demoted: true });
       } else keep.push(h);
+    }
+    if (records) {
+      const top = keep.slice(0, k);
+      const pos = new Map(top.map((h, i) => [h.qname.toLowerCase(), i]));
+      const after = new Map<number, FusedHit[]>();
+      const stay: FusedHit[] = [];
+      for (const h of late) {
+        if (h.label !== "CustomField" || classify(h.qname).isTest) {
+          stay.push(h);
+          continue;
+        }
+        const users = new Set<string>();
+        for (const e of store.listEdgesTo(orgId, asQualifiedName(h.qname))) {
+          if (!FIELD_USE_RELS.has(e.relType)) continue;
+          const unit = String(analyze.componentOf(store, orgId, e.srcQualifiedName));
+          if (pos.has(unit.toLowerCase())) users.add(unit);
+        }
+        if (users.size < 2) {
+          stay.push(h);
+          continue;
+        }
+        const sharedBy = [...users].sort(
+          (a, b) => pos.get(a.toLowerCase())! - pos.get(b.toLowerCase())!,
+        );
+        const at = pos.get(sharedBy[sharedBy.length - 1]!.toLowerCase())!;
+        const { demoted: _d, ...rest } = h;
+        after.set(at, [...(after.get(at) ?? []), { ...rest, sharedBy }]);
+      }
+      if (after.size) {
+        const merged: FusedHit[] = [];
+        keep.forEach((h, i) => merged.push(h, ...(after.get(i) ?? [])));
+        keep.length = 0;
+        keep.push(...merged);
+        late.length = 0;
+        late.push(...stay);
+      }
     }
     rows = [...keep, ...late];
   }
@@ -473,7 +527,7 @@ defineTool({
     const pieces: Piece[] = fused.map((h) => ({
       name: h.qname,
       kind: h.label,
-      role: `${h.similarity == null ? "no similarity score" : `similarity ${h.similarity.toFixed(3)}`}, found ${VIA_PLAIN[h.via]}${h.demoted ? `; listed last (${input.text !== undefined ? "test code, a field or a settings record" : "test code"})` : ""}.`,
+      role: `${h.similarity == null ? "no similarity score" : `similarity ${h.similarity.toFixed(3)}`}, found ${VIA_PLAIN[h.via]}${h.demoted ? `; listed last (${input.text !== undefined ? "test code, a field or a settings record" : "test code"})` : ""}${h.sharedBy ? `; used by ${andList(h.sharedBy.map((q) => code(q.slice(q.indexOf(":") + 1))))}, so it is part of the same process` : ""}.`,
     }));
     const markdown = renderReport({
       title: TITLE,
@@ -519,6 +573,7 @@ defineTool({
           similarity: h.similarity,
           via: h.via,
           ...(h.demoted ? { demoted: true } : {}),
+          ...(h.sharedBy ? { sharedBy: h.sharedBy } : {}),
         })),
       },
     };

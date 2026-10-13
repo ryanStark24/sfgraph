@@ -606,8 +606,9 @@ if (CAPTURE) {
     it("find_similar counts the matches and the hidden weaker ones", async () => {
       const t = await md("find_similar.qname");
       const inShort = section(t, "In short") ?? "";
-      expect(inShort).toContain("2 pieces similar to the Apex class `CaseService`");
-      expect(inShort).toContain("1 weaker match was hidden");
+      // Cycle 3 T6: the default min_similarity is 0.4, so OldHelper (0.395) is hidden with caseCard.
+      expect(inShort).toContain("1 piece similar to the Apex class `CaseService`");
+      expect(inShort).toContain("2 weaker matches were hidden below the similarity floor of 0.4");
       expect(pieceLine(t, "OrderService")).toContain("similarity 0.875");
     });
 

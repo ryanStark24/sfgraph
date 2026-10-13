@@ -7,6 +7,8 @@
  * padded with spaces), so a query whose FROM object or a
  * field name is computed fails the identifier checks downstream and is
  * skipped (conservative). Comments are never scanned.
+ * One exception: a variable right after `FROM`, inside a block guarded by
+ * `if (v == 'Name')` (see guardedValue), is folded as the guard's literal.
  */
 
 import { STANDARD_SOBJECT_WHITELIST } from "../../domain/index.js";
@@ -89,6 +91,15 @@ export function foldDynamicSoql(src: string): string[] {
     return masked.length;
   };
   const consumed = new Set<number>();
+  let guards: Guards | undefined;
+  // A non-literal operand: PLACEHOLDER, or the guard's literal for a plain
+  // variable right after `FROM` (cycle 3 T7).
+  const operandText = (k: number, e: number, before: string): string => {
+    const v = src.slice(k, e).trim();
+    if (!/\bfrom\s*$/i.test(before) || !/^[A-Za-z_]\w*$/.test(v)) return PLACEHOLDER;
+    guards ??= guardIndex(masked);
+    return guardedValue(masked, src, guards, v, k) ?? PLACEHOLDER;
+  };
   // Fold `<operand> (+ <operand>)*` starting at `from`; returns [text, endIdx].
   const foldExpr = (from: number, first: string): [string, number] => {
     let text = first;
@@ -104,7 +115,7 @@ export function foldDynamicSoql(src: string): string[] {
       } else {
         const e = operandEnd(k);
         if (e === k) return [text, j];
-        text += PLACEHOLDER;
+        text += operandText(k, e, text);
         pos = e;
       }
     }
@@ -137,7 +148,7 @@ export function foldDynamicSoql(src: string): string[] {
         } else {
           const e = operandEnd(k);
           if (e === k) break;
-          piece = PLACEHOLDER;
+          piece = operandText(k, e, text);
           next = e;
         }
         const [t2, s2] = foldExpr(next, piece);
@@ -148,6 +159,104 @@ export function foldDynamicSoql(src: string): string[] {
     out.push(text.replace(/\s+/g, " ").trim());
   }
   return out;
+}
+
+/** Each `(` / `{` index in `masked` to the index of its matching close. */
+function bracketPairs(masked: string): Map<number, number> {
+  const pairs = new Map<number, number>();
+  const stack: number[] = [];
+  for (let i = 0; i < masked.length; i++) {
+    const c = masked[i];
+    if (c === "(" || c === "{") stack.push(i);
+    else if (c === ")" || c === "}") {
+      const o = stack.pop();
+      if (o !== undefined) pairs.set(o, i);
+    }
+  }
+  return pairs;
+}
+
+/** The bracket pairs of a masked text and the `(` of each `if (`, in order. */
+type Guards = { pairs: Map<number, number>; ifOpens: number[] };
+
+function guardIndex(masked: string): Guards {
+  const ifOpens = [...masked.matchAll(/\bif\s*\(/gi)].map((m) => (m.index ?? 0) + m[0].length - 1);
+  return { pairs: bracketPairs(masked), ifOpens };
+}
+
+/**
+ * Splits a condition on depth-0 `&&`; null when it has a depth-0 `||` or `?`.
+ * The split points come from `masked` (string contents and comments blanked),
+ * so a `(`, `||` or `&&` inside a literal does not count; the parts are cut
+ * from `cond` at the same offsets.
+ */
+function conjuncts(masked: string, cond: string): string[] | null {
+  const out: string[] = [];
+  let d = 0;
+  let start = 0;
+  for (let i = 0; i < masked.length; i++) {
+    const ch = masked[i] ?? "";
+    if (ch === "(") d++;
+    else if (ch === ")") d--;
+    if (d === 0 && (masked.startsWith("||", i) || ch === "?")) return null;
+    if (d === 0 && masked.startsWith("&&", i)) {
+      out.push(cond.slice(start, i));
+      start = i + 2;
+      i++;
+    }
+  }
+  out.push(cond.slice(start));
+  return out.map((c) => c.trim());
+}
+
+/**
+ * The literal a variable must equal at `pos` (cycle 3 T7): the innermost
+ * `if (…) { … }` enclosing `pos` whose condition has a conjunct
+ * `v == 'X'`, `'X' == v`, `v.equals('X')` or `v.equalsIgnoreCase('X')`
+ * (no `||`), with no assignment to `v` (`=`, `+=` and the like) between the
+ * block's `{` and `pos`. Null otherwise. `masked` is maskApex(`src`), `guards`
+ * its guardIndex, and `name` (`v`) a plain identifier.
+ *
+ * Known limit: an assignment after `pos` inside a loop in the block (the next
+ * pass queries another object) is not seen.
+ */
+function guardedValue(
+  masked: string,
+  src: string,
+  guards: Guards,
+  name: string,
+  pos: number,
+): string | null {
+  const { pairs, ifOpens } = guards;
+  const lit = "'([^'\\\\]*)'";
+  const forms = [
+    new RegExp(`^${name}\\s*==\\s*${lit}$`, "i"),
+    new RegExp(`^${lit}\\s*==\\s*${name}$`, "i"),
+    new RegExp(`^${name}\\s*\\.\\s*equals(?:IgnoreCase)?\\s*\\(\\s*${lit}\\s*\\)$`, "i"),
+  ];
+  const assigned = new RegExp(`(?<![\\w.])${name}\\s*(?:[-+*/%|&^]|<<|>>>?)?=(?!=)`, "i");
+  for (let i = ifOpens.length - 1; i >= 0; i--) {
+    const open = ifOpens[i] ?? -1;
+    if (open < 0 || open >= pos) continue;
+    const shut = pairs.get(open) ?? -1;
+    if (shut < 0 || shut > pos) continue;
+    let b = shut + 1;
+    while (b < masked.length && /\s/.test(masked[b] ?? "")) b++;
+    if (masked[b] !== "{") continue;
+    const end = pairs.get(b) ?? -1;
+    if (end < pos) continue;
+    const parts = conjuncts(masked.slice(open + 1, shut), src.slice(open + 1, shut));
+    let value: string | null = null;
+    for (const c of parts ?? []) {
+      for (const f of forms) {
+        const hit = c.match(f);
+        if (hit) value = hit[1] ?? null;
+      }
+    }
+    if (value === null) continue;
+    return assigned.test(masked.slice(b, pos)) ? null : value;
+  }
+  return null;
 }
 
 const CUSTOM_OBJECT_RE = /__(c|mdt|e|x|b|kav|share|history|feed)$/i;

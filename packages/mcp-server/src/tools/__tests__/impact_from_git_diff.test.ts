@@ -343,3 +343,34 @@ describe("impact_from_git_diff notes in the result (cycle 3 T5)", () => {
     expect(d).not.toMatch(/containing object/);
   });
 });
+
+// Cycle 3 T9 fix round 1: the technical list says why its total is not the In short count.
+describe("impact_from_git_diff: count note", () => {
+  it("says the list counts methods one by one when the In short counts their classes", async () => {
+    fix.addNode({ qualifiedName: "ApexClass:Caller", label: "ApexClass" });
+    for (const m of ["a(0)", "b(0)"]) {
+      fix.addNode({ qualifiedName: `ApexMethod:Caller.${m}`, label: "ApexMethod" });
+      fix.addEdge({
+        srcQualifiedName: "ApexClass:Caller",
+        dstQualifiedName: `ApexMethod:Caller.${m}`,
+        relType: REL_TYPES.CONTAINS_METHOD,
+      });
+      fix.addEdge({
+        srcQualifiedName: `ApexMethod:Caller.${m}`,
+        dstQualifiedName: "ApexClass:Foo",
+        relType: REL_TYPES.CALLS,
+      });
+    }
+    const r = await callTool("impact_from_git_diff", { org: fix.orgId, diff: DIFF });
+    const md = r.markdown as string;
+    expect(md).toMatch(/2 pieces that rely on it could be affected/);
+    expect(md).toContain(
+      "The list below counts each Apex method on its own (a method is part of its class above), so it shows 4 entries.",
+    );
+  });
+
+  it("adds no note when the counts agree", async () => {
+    const r = await callTool("impact_from_git_diff", { org: fix.orgId, diff: DIFF });
+    expect(r.markdown as string).not.toContain("counts each Apex method on its own");
+  });
+});

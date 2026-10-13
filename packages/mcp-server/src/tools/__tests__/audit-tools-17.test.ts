@@ -1,3 +1,4 @@
+import path from "node:path";
 import { analyze } from "@ryanstark24/sfgraph-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Fixture, createFixture } from "./_fixture.js";
@@ -11,6 +12,14 @@ import { callTool } from "./_runner.js";
  * dropped from the cache but kept by the live scan.
  */
 let fix: Fixture;
+let prevExports: string | undefined;
+
+/**
+ * A fixed sync instant long before any populate (cycle 3 T6). It used to be `Date.now() - 60s`,
+ * which tied cache freshness to the wall clock: a clock step back of over a minute between
+ * recordSync and the populate after it made the cache read as stale (live scan only).
+ */
+const SYNCED_AT = new Date(1_000).toISOString();
 
 /** Mark the org synced in the past so a cache populated afterwards is fresh. */
 function recordSync(): void {
@@ -19,13 +28,17 @@ function recordSync(): void {
     alias: "t17",
     instanceUrl: "https://example.my.salesforce.com",
     apiVersion: "62.0",
-    createdAt: Date.now(),
+    createdAt: 1,
   });
-  fix.ctx.graphStore.markSyncComplete(fix.orgId, new Date(Date.now() - 60_000).toISOString());
+  fix.ctx.graphStore.markSyncComplete(fix.orgId, SYNCED_AT);
 }
 
 beforeEach(async () => {
   fix = await createFixture();
+  // export_sarif writes `<org>.sarif`; keep it in this test's own dir, not the exports dir every
+  // test file in the run shares (they all use org "org1").
+  prevExports = process.env.SFGRAPH_EXPORTS_DIR;
+  process.env.SFGRAPH_EXPORTS_DIR = path.join(fix.workDir, "exports");
   const m = "ApexMethod:Multi.run(0)";
   fix.addNode({ qualifiedName: m, label: "ApexMethod" });
   for (const [obj, q] of [
@@ -48,6 +61,10 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (prevExports === undefined) {
+    // biome-ignore lint/performance/noDelete: assigning undefined to process.env coerces to the string "undefined"
+    delete process.env.SFGRAPH_EXPORTS_DIR;
+  } else process.env.SFGRAPH_EXPORTS_DIR = prevExports;
   await fix.cleanup();
 });
 

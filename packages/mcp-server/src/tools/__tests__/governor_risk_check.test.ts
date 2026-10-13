@@ -81,4 +81,79 @@ describe("governor_risk_check", () => {
     const r = await callTool("governor_risk_check", { org: fix.orgId });
     expect((r.data as { cached: boolean }).cached).toBe(false);
   });
+
+  // Cycle 3 T9 fix 1: the groups read A to Z, and the test classes left out are named.
+  it("lists the classes A to Z, whatever their worst spot", async () => {
+    addLoopMethod("Zeta", "EXECUTES_SOQL");
+    addLoopMethod("Alpha", "EXECUTES_DML");
+    addLoopMethod("Mid", "EXECUTES_SOQL");
+    const r = await callTool("governor_risk_check", { org: fix.orgId });
+    const md = r.markdown as string;
+    const heads = [...md.matchAll(/^#### `([^`]+)`/gm)].map((m) => m[1]);
+    expect(heads).toEqual(["ApexClass:Alpha", "ApexClass:Mid", "ApexClass:Zeta"]);
+    const pieces = md.slice(
+      md.indexOf("**What each piece does**"),
+      md.indexOf("**Technical details**"),
+    );
+    expect(pieces.indexOf("`Alpha`")).toBeLessThan(pieces.indexOf("`Mid`"));
+    expect(pieces.indexOf("`Mid`")).toBeLessThan(pieces.indexOf("`Zeta`"));
+    expect(md).toMatch(/grouped by class or trigger, A to Z/i);
+    // data keeps the documented priority order
+    const risks = (r.data as { risks: Array<{ qualifiedName: string }> }).risks;
+    expect(risks.map((x) => x.qualifiedName)).toEqual([
+      "ApexMethod:Mid.run(0)",
+      "ApexMethod:Zeta.run(0)",
+      "ApexMethod:Alpha.run(0)",
+    ]);
+  });
+
+  it("names the test classes whose spots were left out", async () => {
+    addLoopMethod("Live", "EXECUTES_SOQL");
+    for (const c of ["LiveTest", "OtherTest"]) {
+      const m = `ApexMethod:${c}.run(0)`;
+      fix.addNode({ qualifiedName: m, label: "ApexMethod", attributes: { isTest: true } });
+      fix.addEdge({
+        srcQualifiedName: m,
+        dstQualifiedName: "CustomObject:Account",
+        relType: "EXECUTES_SOQL",
+        attributes: { inLoop: true, query: "[SELECT Id FROM Account]" },
+      });
+    }
+    const r = await callTool("governor_risk_check", { org: fix.orgId });
+    const md = r.markdown as string;
+    expect(md).toContain("2 spots in test code were left out, in `LiveTest` and `OtherTest`");
+    expect(md).toContain("Left out as test code: `ApexClass:LiveTest`, `ApexClass:OtherTest`");
+    const withTests = await callTool("governor_risk_check", { org: fix.orgId, includeTests: true });
+    expect(withTests.markdown as string).not.toContain("Left out as test code");
+  });
+
+  it("names the left-out test classes when nothing else is found", async () => {
+    const m = "ApexMethod:OnlyTest.run(0)";
+    fix.addNode({ qualifiedName: m, label: "ApexMethod", attributes: { isTest: true } });
+    fix.addEdge({
+      srcQualifiedName: m,
+      dstQualifiedName: "DML:update",
+      relType: "EXECUTES_DML",
+      attributes: { inLoop: true, target: "acc" },
+    });
+    const r = await callTool("governor_risk_check", { org: fix.orgId });
+    expect(r.markdown as string).toContain("1 spot in test code was left out, in `OnlyTest`");
+  });
+
+  // Cycle 3 T9 fix 2: past `limit`, the classes whose spots were cut are still named.
+  it("names the classes and triggers whose spots fall past the limit", async () => {
+    addLoopMethod("Alpha", "EXECUTES_SOQL");
+    addLoopMethod("Beta", "EXECUTES_SOQL");
+    addLoopMethod("Cut", "EXECUTES_DML");
+    const r = await callTool("governor_risk_check", { org: fix.orgId, limit: 2 });
+    const md = r.markdown as string;
+    expect(md).toMatch(
+      /1 other spot is in 1 Apex class[^.]* not listed below; Technical details names it\./,
+    );
+    expect(md).toContain(
+      "Not listed below (their spots rank lower), A to Z: `ApexClass:Cut` (1 spot).",
+    );
+    const all = await callTool("governor_risk_check", { org: fix.orgId });
+    expect(all.markdown as string).not.toContain("Not listed below");
+  });
 });

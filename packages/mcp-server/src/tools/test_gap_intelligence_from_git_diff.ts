@@ -21,7 +21,7 @@ const inputSchema = z.object({
 defineTool({
   name: "test_gap_intelligence_from_git_diff",
   description:
-    "Use for 'which changes in this git diff lack tests': changed and dependent Apex classes and triggers no test covers.",
+    "Use for 'which changes in this git diff lack tests': changed and dependent Apex classes and triggers with no test.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

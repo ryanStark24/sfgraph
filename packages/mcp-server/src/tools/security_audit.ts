@@ -69,7 +69,7 @@ function fieldSecurityAudit(
 defineTool({
   name: "security_audit",
   description:
-    "Use for FLS, access and sharing: full-access sharing rules, FLS gaps on PII-like fields, and the profile and permission set access matrix.",
+    "Use for FLS, access and sharing: full-access sharing rules, FLS gaps on PII-like fields, and the profile/permission set access matrix.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

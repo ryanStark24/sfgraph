@@ -116,6 +116,8 @@ export interface GovernorCollection {
   source: "live" | "live+cache";
   cache: CacheFreshness;
   excludedTests: number;
+  /** The qnames of the test-code risks left out, sorted (for naming what was left out). */
+  excludedTestQnames: string[];
 }
 
 function readGovernorCache(db: Db, orgId: string): GovernorRiskRow[] {
@@ -175,6 +177,7 @@ export function collectGovernorRisks(
     }
   }
   let excludedTests = 0;
+  const excludedQ = new Set<string>();
   if (!opts.includeTests) {
     const testByQname = new Map<string, boolean>();
     all = all.filter((r) => {
@@ -183,7 +186,10 @@ export function collectGovernorRisks(
         t = isTestNode(ctx.graphStore.getNode(ctx.orgId, r.qualifiedName as never));
         testByQname.set(r.qualifiedName, t);
       }
-      if (t) excludedTests += 1;
+      if (t) {
+        excludedTests += 1;
+        excludedQ.add(r.qualifiedName);
+      }
       return !t;
     });
   }
@@ -191,7 +197,13 @@ export function collectGovernorRisks(
   // risk kind by severity, then qname, then evidence), so a `limit` keeps the
   // most severe risks.
   all = [...all].sort(analyze.compareGovernorRisks);
-  return { risks: all, source, cache, excludedTests };
+  return {
+    risks: all,
+    source,
+    cache,
+    excludedTests,
+    excludedTestQnames: [...excludedQ].sort(),
+  };
 }
 
 // ---------------------------------------------------------------------------

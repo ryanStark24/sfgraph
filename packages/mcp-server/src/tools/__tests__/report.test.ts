@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { plainKind } from "../_plain.js";
+import { plainKind, plainRel } from "../_plain.js";
 import {
   HEADINGS,
   type HumanReport,
@@ -8,6 +8,7 @@ import {
   andList,
   countOf,
   kindCounts,
+  kindInText,
   linkFacts,
   linkLines,
   listWithMore,
@@ -24,7 +25,8 @@ const pieces = (n: number): Piece[] =>
   Array.from({ length: n }, (_, i) => ({
     name: `Svc${String(i).padStart(2, "0")}`,
     kind: "ApexClass",
-    role: pieceRole({ kind: "ApexClass", callers: ["ApexTrigger:CaseTrigger"] }),
+    // Each with its own caller, so no two lines read the same (those are merged).
+    role: pieceRole({ kind: "ApexClass", callers: [`ApexTrigger:CaseTrigger${i}`] }),
   }));
 
 const base = (): HumanReport => ({
@@ -158,14 +160,15 @@ describe("pieceRole", () => {
     ).toBe("Apex class (server code), called by `CaseTrigger`; it calls `CaseService`.");
   });
 
-  it("caps callers and callees at 3 each", () => {
+  it("caps callers and callees at 3 each, naming a 4th rather than hiding just one", () => {
     const r = pieceRole({
       kind: "Flow",
       callers: ["A", "B", "C", "D", "E"],
       callees: ["ApexClass:W", "ApexClass:X", "ApexClass:Y", "ApexClass:Z"],
     });
     expect(r).toContain("called by `A`, `B`, `C` and 2 others");
-    expect(r).toContain("it calls `W`, `X`, `Y` and 1 other");
+    expect(r).toContain("it calls `W`, `X`, `Y` and `Z`");
+    expect(r).not.toContain("1 other");
   });
 
   it("names the link that reached it", () => {
@@ -399,5 +402,124 @@ describe("report helpers (cycle 3 T3)", () => {
     ).toBe(
       "1 Apex trigger (code that runs when records change) has no tests, 1 is covered by tests and 1 is a test class; 1 flow (point-and-click automation) and 1 Lightning web component (a screen part) cannot carry Apex test coverage",
     );
+  });
+});
+
+// Cycle 3 T9 fix round 1: what the tool-output judges marked as hard to read.
+describe("report wording (cycle 3 T9 fix 1)", () => {
+  const n = (id: string, label: string) => ({ id, label });
+
+  it("tells Apex `new Foo()` apart from a metadata record of its type", () => {
+    expect(plainRel("INSTANCE_OF", "ApexTrigger")).toBe("creates a new");
+    expect(plainRel("INSTANCE_OF", "ApexClass")).toBe("creates a new");
+    expect(plainRel("INSTANCE_OF", "CustomMetadataRecord")).toBe("is a record of");
+    expect(plainRel("INSTANCE_OF")).toBe("is a record of");
+    const d = reportDiagram(
+      [
+        n("ApexTrigger:T", "ApexTrigger"),
+        n("ApexClass:Batch", "ApexClass"),
+        n("CustomObject:X__c", "CustomObject"),
+      ],
+      [
+        { from: "ApexTrigger:T", to: "ApexClass:Batch", rel: "INSTANCE_OF" },
+        { from: "ApexTrigger:T", to: "CustomObject:X__c", rel: "TRIGGERS_ON" },
+      ],
+    )!;
+    expect(d).toContain("n0 -->|creates a new| n1");
+    expect(
+      pieceRole({
+        kind: "ApexClass",
+        name: "ApexClass:Batch",
+        into: [{ rel: "INSTANCE_OF", names: ["ApexTrigger:T"] }],
+      }),
+    ).toBe("Apex class (server code), created by `T`.");
+    expect(
+      pieceRole({
+        kind: "ApexTrigger",
+        does: [{ rel: "INSTANCE_OF", names: ["ApexClass:Batch"] }],
+      }),
+    ).toContain("it creates a new `Batch`");
+  });
+
+  it("draws one link per pair of boxes, naming every kind of link between them", () => {
+    const d = reportDiagram(
+      [n("ApexClass:T", "ApexClass"), n("ApexClass:S", "ApexClass"), n("Flow:F", "Flow")],
+      [
+        { from: "ApexClass:T", to: "ApexClass:S", rel: "IS_TEST_FOR" },
+        { from: "ApexClass:T", to: "ApexClass:S", rel: "CALLS" },
+        { from: "ApexClass:T", to: "ApexClass:S", rel: "REFERENCES" },
+        { from: "ApexClass:T", to: "ApexClass:S", rel: "CALLS" },
+        { from: "Flow:F", to: "ApexClass:S", rel: "FLOW_INVOKES_APEX" },
+      ],
+    )!;
+    const links = d.split("\n").filter((l) => l.includes("n0 ") && l.includes(" n1"));
+    expect(links).toEqual(["  n0 -->|tests, calls and refers to| n1"]);
+    expect(d).toContain("n2 -->|runs the Apex class| n1");
+  });
+
+  it("keeps a containment link dotted only when every link of the pair is containment", () => {
+    const d = reportDiagram(
+      [
+        n("CustomObject:Case", "CustomObject"),
+        n("CustomField:Case.F__c", "CustomField"),
+        n("Flow:F", "Flow"),
+      ],
+      [
+        { from: "CustomObject:Case", to: "CustomField:Case.F__c", rel: "DEFINES_FIELD" },
+        { from: "Flow:F", to: "CustomField:Case.F__c", rel: "READS_FIELD" },
+        { from: "Flow:F", to: "CustomField:Case.F__c", rel: "WRITES_FIELD" },
+      ],
+    )!;
+    expect(d).toContain("n0 -.->|has the field| n1");
+    expect(d).toContain("n2 -->|reads the field and writes the field| n1");
+  });
+
+  it("writes pieces of one kind that do the same thing as one line", () => {
+    const role = pieceRole({ kind: "LWC", does: [{ rel: "EMBEDS_LWC", names: ["LWC:child"] }] });
+    const r = renderReport({
+      title: "What relies on child",
+      inShort: ["Four pieces rely on `child`."],
+      details: "",
+      pieces: [
+        ...["a", "b", "c"].map((x) => ({ name: `LWC:${x}`, kind: "LWC", role })),
+        {
+          name: "OmniScript:os",
+          kind: "OmniScript",
+          role: pieceRole({
+            kind: "OmniScript",
+            does: [{ rel: "OS_EMBEDS_LWC", names: ["LWC:child"] }],
+          }),
+        },
+      ],
+    });
+    const lines = section(r, "What each piece does")!
+      .split("\n")
+      .filter((l) => l.startsWith("- "));
+    expect(lines).toEqual([
+      "- `a`, `b` and `c`: Lightning web components (screen parts); each shows the Lightning web component `child`.",
+      "- `os`: OmniScript (a guided screen flow); it shows the Lightning web component `child`.",
+    ]);
+  });
+
+  it("keeps a product name capitalised in a plural mid-sentence", () => {
+    expect(kindInText("OmniScript", { plural: true })).toBe("OmniScripts (guided screen flows)");
+    expect(kindInText("DataRaptor", { plural: true })).toMatch(/^DataRaptors /);
+    expect(kindInText("CustomField", { plural: true })).toBe("fields");
+  });
+
+  it("names every piece in a merged line (fix 2: a hidden name is a missed component)", () => {
+    const role = pieceRole({ kind: "ApexClass", callers: ["ApexTrigger:T"] });
+    const names = Array.from({ length: 7 }, (_, i) => ({
+      name: `ApexClass:C${i}`,
+      kind: "ApexClass",
+      role,
+    }));
+    const r = renderReport({ title: "t", inShort: ["x."], pieces: names, details: "" });
+    const lines = section(r, "What each piece does")!
+      .split("\n")
+      .filter((l) => l.startsWith("- "));
+    expect(lines).toEqual([
+      "- `C0`, `C1`, `C2`, `C3`, `C4`, `C5` and `C6`: Apex classes (server code), each called by `T`.",
+    ]);
   });
 });

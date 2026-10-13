@@ -47,7 +47,9 @@ describe("plain-word dictionary covers core", () => {
 
   it("uses the spec's example words", () => {
     expect(plainKind("ApexClass")).toBe("Apex class (server code)");
-    expect(plainKind("OmniScript")).toBe("OmniScript (guided screen flow)");
+    expect(plainKind("OmniScript")).toBe("OmniScript (a guided screen flow)");
+    // Cycle 3 T9 fix 1: a gloss with an article takes a plural gloss.
+    expect(plainKind("OmniScript", { plural: true })).toBe("OmniScripts (guided screen flows)");
     expect(KIND_SHORT.ApexClass).toBe("Apex class");
     expect(plainRel("CALLS")).toBe("calls");
     expect(plainRel("READS_FIELD")).toBe("reads the field");

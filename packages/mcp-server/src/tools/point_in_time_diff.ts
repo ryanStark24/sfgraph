@@ -3,7 +3,7 @@ import { getToolContext } from "../context.js";
 import { defineTool, numeric, z } from "./_define.js";
 import { labelOfQname } from "./_reach_list.js";
 import { NOTES, andList, code, countNoun, kindCounts, renderReport } from "./_report.js";
-import { DIFF_MERMAID_MAX_NODES, isSnapshotEmpty } from "./_snapshot-util.js";
+import { DIFF_MERMAID_MAX_NODES, cachedDiff, isSnapshotEmpty } from "./_snapshot-util.js";
 
 const inputSchema = z.object({
   org: z.string().min(1),
@@ -17,16 +17,23 @@ const inputSchema = z.object({
 defineTool({
   name: "point_in_time_diff",
   description:
-    "Diff the org between two snapshots (`to`: a snapshot id or current): added, removed and changed components; records and configuration apart.",
+    "Diff two org snapshots (`to`: a snapshot id or current): added, removed and changed components; records and config apart.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
-    const nodeDiff = ctx.snapshotStore.diffNodes(ctx.orgId, input.from, input.to);
     const n = input.limit;
-    // Counts are exact; only the first `n` edge rows per bucket are read.
-    const edgeDiff = ctx.snapshotStore.diffEdgesPage(ctx.orgId, input.from, input.to, n);
-    // Component units (members rolled up) and record/config rows, apart.
-    const scoped = analyze.scopeNodeDiff(ctx.graphStore, ctx.orgId, nodeDiff);
+    const { nodeDiff, edgeDiff, scoped } = cachedDiff(
+      ctx,
+      JSON.stringify([String(ctx.orgId), input.from, input.to, n]),
+      () => {
+        const nodeDiff = ctx.snapshotStore.diffNodes(ctx.orgId, input.from, input.to);
+        // Counts are exact; only the first `n` edge rows per bucket are read.
+        const edgeDiff = ctx.snapshotStore.diffEdgesPage(ctx.orgId, input.from, input.to, n);
+        // Component units (members rolled up) and record/config rows, apart.
+        const scoped = analyze.scopeNodeDiff(ctx.graphStore, ctx.orgId, nodeDiff);
+        return { nodeDiff, edgeDiff, scoped };
+      },
+    );
     const sizes = (b: analyze.ChangeBuckets) => ({
       added: b.added.length,
       removed: b.removed.length,
@@ -193,7 +200,7 @@ defineTool({
           removed: nodeDiff.removed.slice(0, n),
           changed: nodeDiff.changed.slice(0, n),
         },
-        edgeDiff: { added: edgeDiff.added, removed: edgeDiff.removed },
+        edgeDiff: { added: [...edgeDiff.added], removed: [...edgeDiff.removed] },
         counts,
         truncated,
         baselineEmpty,

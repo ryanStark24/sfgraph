@@ -63,6 +63,31 @@
   - The SQLite page cache is capped at 64 MB and mmap at 64 MiB. MCP tool latency moved by at most +5.4%.
   - The 256 MB parse-worker heap cap now also holds when the process runs with `--max-old-space-size` (often set in `NODE_OPTIONS` for the `sf` CLI). That V8 flag is process-wide and used to override every worker's cap, so one huge member could grow a worker to gigabytes. The flag is cleared only while a capped worker starts, so the main heap and other workers keep it.
 
+### Readable reports and tool fixes (cycle 3)
+
+- **`find_similar` (free text): a field that two or more of the top matches read or write is no longer listed last.** It is the data those matches share, so it is part of the same process. It is listed right after the later of those matches, and its line names them (`data.hits[].sharedBy`). Other fields, settings records and test code are still listed last.
+- **Reports name a 4th caller or callee instead of writing "and 1 other"**, which took as much room as the name it hid. Five or more are still cut to 3 and "and N others".
+- **The presentation guide asks for only the pieces on the path in question, and for each piece's role once.** It no longer asks the reader to repeat the piece list, and it asks for every Salesforce or Vlocity term to be defined. The guide stays under 1,200 characters.
+- **`find_similar`: the default `min_similarity` rises from 0.3 to 0.4.** On the benchmark's dev and dev2 cases, the weakest expected match scored just above 0.4 and every match between 0.3 and 0.4 was unrelated, so the new default hides that noise without losing an expected match. Pass `min_similarity: 0.3` to get the old results.
+- **`cross_org_diff` hides managed-package and standard Salesforce items found in one org only**, and says how many (`data.hidden`). Set `include_managed: true` or `include_standard: true` to list them again. Items in both orgs with different source are always listed. When every difference is hidden, the report says so rather than "no differences".
+- **`governor_risk_check` takes `min_severity`** (`high`, `medium` or `low`; default `medium`). Spots below it are left out and counted (`data.hiddenBelowSeverity`); `min_severity: "low"` lists the same spots as before. Technical details now always group the spots by class or trigger, with groups ordered by their highest-priority spot.
+- **Apex: a top-level `enum` now gets its `modifiers`**, and the stub stored for Apex whose code the org does not show is marked `bodyUnavailable: true`. Before, a local enum looked like that stub and `cross_org_diff` hid it as a managed-package item. The Apex node hash salt moves to `apex-attrs:v6`, so the next ingest re-stores every Apex class node with the new attributes.
+- **Apex: two more links to objects.** A dynamic query whose `FROM` is a variable, inside a block guarded by `if (v == 'Obj__c')` (or `v.equals('Obj__c')`), now reads its fields from that object. A describe of an object (`Schema.SObjectType.Obj__c…`, `Obj__c.SObjectType`) now gives a `REFERENCES` link to the object, marked `via: "describe"`. The Apex node hash salt moves to `apex-attrs:v8`, because such a query no longer counts in `dynamicSoqlFieldsSkipped`.
+- **`cross_layer_flow_map`: a class reached through one method also lists the objects and fields its other methods read or write.** It still does not follow those methods' calls. This applies only when one of the class's methods is reached. It does not apply when only a constant or enum value of the class is read, or to the class of a method given as the entry. The list stops at 100 items, and the report says when it does.
+- **`point_in_time_diff` remembers its last two diffs** (per org, snapshots and `limit`), so asking the same question again returns at once instead of re-reading the graph (about 1.7 s on a large org). The memory is dropped as soon as the graph file changes, so a new ingest or snapshot is never answered from old data. The first call is unchanged, and the output is identical.
+- **Tool reports read more clearly** (report text only; `data` is unchanged):
+  - The Picture draws one link per pair of boxes and names every kind of link between them ("tests, calls and refers to"), instead of one line per kind.
+  - Apex `new Foo()` reads "creates a new" (and "created by"), not "is a record of".
+  - Pieces of one kind that do the same thing share one line under What each piece does, which names every one of them.
+  - A trace from a flow counts the links of the flow's versions as the flow's own, so a record-triggered flow is drawn linked to its object.
+  - When the technical list counts Apex methods one by one while the In short counts their classes, the list says so and gives its own total (trace and `impact_from_git_diff`).
+  - The `cross_layer_flow_map` path sentence counts standard fields apart.
+  - `explain_code` on a trigger says when it runs ("It runs before `Case` records are created.").
+  - `what_broke` counts changed records and records that rely on a change apart, and drops the empty "At risk" heading.
+  - Plural product names keep their capital mid-sentence ("4 OmniScripts (guided screen flows)").
+  - `governor_risk_check` lists its classes and triggers A to Z, in What each piece does and in Technical details (`limit` still keeps the highest-priority spots, and `data` keeps the documented order). It also names the test classes whose spots were left out, and, past `limit`, the classes and triggers none of whose spots are listed.
+- **The presentation guide** (the server `instructions` and the `present_for_people` prompt) now also asks for counts that match the list, a mermaid diagram of at most 12 boxes, each piece's business purpose and what its code decides or writes (reading the code first when a result can show it), short forms such as SOQL spelled out, "steps away" rather than "hops", gaps stated in terms of the code rather than the steps taken, and no drafting notes.
+
 ### Tool accuracy (readiness round)
 
 These changes follow each tool's description and generic grammar rules (label, rel type, naming). They are not tuned to benchmark cases. The readiness report is `docs/superpowers/reports/2026-10-sfgraph-readiness-report.md`.

@@ -28,9 +28,11 @@
       "cached": false,
       "source": "live",
       "cache": "absent",
-      "excludedTests": 0
+      "excludedTests": 0,
+      "minSeverity": "medium",
+      "hiddenBelowSeverity": 0
     },
-    "markdown": "| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:CaseService.run(0)` | soql_in_loop | [SELECT Id FROM Case] |\n| `ApexMethod:OrderService.load(0)` | soql_in_loop | [SELECT Id FROM Order] |\n| `ApexMethod:CaseService.save(1)` | dml_in_loop | cases |\n\n_source: live_"
+    "markdown": "#### `ApexClass:CaseService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:CaseService.run(0)` | soql_in_loop | [SELECT Id FROM Case] |\n| `ApexMethod:CaseService.save(1)` | dml_in_loop | cases |\n\n#### `ApexClass:OrderService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:OrderService.load(0)` | soql_in_loop | [SELECT Id FROM Order] |\n\n_source: live_"
   },
   "governor_risk_check.limited": {
     "data": {
@@ -47,9 +49,11 @@
       "cached": false,
       "source": "live",
       "cache": "absent",
-      "excludedTests": 0
+      "excludedTests": 0,
+      "minSeverity": "medium",
+      "hiddenBelowSeverity": 0
     },
-    "markdown": "| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:CaseService.run(0)` | soql_in_loop | [SELECT Id FROM Case] |\n\n_showing the 1 highest-priority of 3 risks (+2 more) — raise `limit` or use export_sarif._\n\n_source: live_"
+    "markdown": "#### `ApexClass:CaseService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:CaseService.run(0)` | soql_in_loop | [SELECT Id FROM Case] |\n\n_showing the 1 highest-priority of 3 risks (+2 more) — raise `limit` or use export_sarif._\n\n_source: live_"
   },
   "governor_risk_check.none": {
     "data": {
@@ -60,7 +64,9 @@
       "cached": false,
       "source": "live",
       "cache": "absent",
-      "excludedTests": 0
+      "excludedTests": 0,
+      "minSeverity": "medium",
+      "hiddenBelowSeverity": 0
     },
     "markdown": "_no governor risks surfaced_"
   },
@@ -248,8 +254,8 @@
       "focalText": null,
       "label": null,
       "k": 10,
-      "minSimilarity": 0.3,
-      "cutByFloor": 1,
+      "minSimilarity": 0.4,
+      "cutByFloor": 2,
       "hits": [
         {
           "qname": "ApexClass:OrderService",
@@ -257,17 +263,10 @@
           "distance": 0.5,
           "similarity": 0.875,
           "via": "vector"
-        },
-        {
-          "qname": "ApexClass:OldHelper",
-          "label": "ApexClass",
-          "distance": 1.1,
-          "similarity": 0.3949999999999999,
-          "via": "vector"
         }
       ]
     },
-    "markdown": "**Top 2 nearest neighbours to ApexClass:CaseService:**\n\n| # | qname | label | similarity | via |\n| - | ----- | ----- | ---------- | --- |\n| 1 | `ApexClass:OrderService` | `ApexClass` | 0.875 | vector |\n| 2 | `ApexClass:OldHelper` | `ApexClass` | 0.395 | vector |\n\n_1 weaker vector match(es) hidden below the 0.3 similarity floor — lower `min_similarity` to include them._\n\n_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_"
+    "markdown": "**Top 1 nearest neighbour to ApexClass:CaseService:**\n\n| # | qname | label | similarity | via |\n| - | ----- | ----- | ---------- | --- |\n| 1 | `ApexClass:OrderService` | `ApexClass` | 0.875 | vector |\n\n_2 weaker vector match(es) hidden below the 0.4 similarity floor — lower `min_similarity` to include them._\n\n_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_"
   },
   "find_similar.ghost": {
     "data": {
@@ -335,7 +334,6 @@
         "ApexMethod:OrderService.load(0)",
         "Flow:Old_Flow",
         "LWC:caseCard",
-        "CustomObject:Case",
         "CustomField:Case.Priority__c",
         "CustomField:Account.SSN__c",
         "PermissionSet:Support",
@@ -343,16 +341,24 @@
       ],
       "onlyInB": ["ApexClass:NewThing"],
       "changed": ["ApexClass:CaseService"],
-      "truncated": false
+      "truncated": false,
+      "hidden": {
+        "managed": 0,
+        "standard": 1
+      }
     },
-    "markdown": "| metric | count |\n|---|---|\n| only in A | 11 |\n| only in B | 1 |\n| changed | 1 |\n\n### Only in A (`org1`) (11)\n- ApexClass:OldHelper\n- ApexMethod:CaseService.run(0)\n- ApexMethod:CaseService.save(1)\n- ApexMethod:OrderService.load(0)\n- CustomField:Account.SSN__c\n- CustomField:Case.Priority__c\n- CustomObject:Case\n- Flow:Old_Flow\n- LWC:caseCard\n- PermissionSet:Support\n- SharingRule:Case.OpenAll\n\n### Only in B (`orgB`) (1)\n- ApexClass:NewThing\n\n### Changed (1, in both with different source)\n- ApexClass:CaseService\n\n```mermaid\nflowchart LR\n  ApexClass_NewThing[\"ApexClass:NewThing\"]:::added\n  ApexClass_OldHelper[\"ApexClass:OldHelper\"]:::removed\n  ApexMethod_CaseService_run_0_[\"ApexMethod:CaseService.run(0)\"]:::removed\n  ApexMethod_CaseService_save_1_[\"ApexMethod:CaseService.save(1)\"]:::removed\n  ApexMethod_OrderService_load_0_[\"ApexMethod:OrderService.load(0)\"]:::removed\n  Flow_Old_Flow[\"Flow:Old_Flow\"]:::removed\n  LWC_caseCard[\"LWC:caseCard\"]:::removed\n  CustomObject_Case[\"CustomObject:Case\"]:::removed\n  CustomField_Case_Priority__c[\"CustomField:Case.Priority__c\"]:::removed\n  CustomField_Account_SSN__c[\"CustomField:Account.SSN__c\"]:::removed\n  PermissionSet_Support[\"PermissionSet:Support\"]:::removed\n  SharingRule_Case_OpenAll[\"SharingRule:Case.OpenAll\"]:::removed\n  ApexClass_CaseService[\"ApexClass:CaseService\"]:::changed\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+    "markdown": "| metric | count |\n|---|---|\n| only in A | 10 |\n| only in B | 1 |\n| changed | 1 |\n\n### Only in A (`org1`) (10)\n- ApexClass:OldHelper\n- ApexMethod:CaseService.run(0)\n- ApexMethod:CaseService.save(1)\n- ApexMethod:OrderService.load(0)\n- CustomField:Account.SSN__c\n- CustomField:Case.Priority__c\n- Flow:Old_Flow\n- LWC:caseCard\n- PermissionSet:Support\n- SharingRule:Case.OpenAll\n\n### Only in B (`orgB`) (1)\n- ApexClass:NewThing\n\n### Changed (1, in both with different source)\n- ApexClass:CaseService\n\n```mermaid\nflowchart LR\n  ApexClass_NewThing[\"ApexClass:NewThing\"]:::added\n  ApexClass_OldHelper[\"ApexClass:OldHelper\"]:::removed\n  ApexMethod_CaseService_run_0_[\"ApexMethod:CaseService.run(0)\"]:::removed\n  ApexMethod_CaseService_save_1_[\"ApexMethod:CaseService.save(1)\"]:::removed\n  ApexMethod_OrderService_load_0_[\"ApexMethod:OrderService.load(0)\"]:::removed\n  Flow_Old_Flow[\"Flow:Old_Flow\"]:::removed\n  LWC_caseCard[\"LWC:caseCard\"]:::removed\n  CustomField_Case_Priority__c[\"CustomField:Case.Priority__c\"]:::removed\n  CustomField_Account_SSN__c[\"CustomField:Account.SSN__c\"]:::removed\n  PermissionSet_Support[\"PermissionSet:Support\"]:::removed\n  SharingRule_Case_OpenAll[\"SharingRule:Case.OpenAll\"]:::removed\n  ApexClass_CaseService[\"ApexClass:CaseService\"]:::changed\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
   },
   "cross_org_diff.same": {
     "data": {
       "onlyInA": [],
       "onlyInB": [],
       "changed": [],
-      "truncated": false
+      "truncated": false,
+      "hidden": {
+        "managed": 0,
+        "standard": 0
+      }
     },
     "markdown": "| metric | count |\n|---|---|\n| only in A | 0 |\n| only in B | 0 |\n| changed | 0 |\n\n### Only in A (`org1`) (0)\n_none_\n\n### Only in B (`org1`) (0)\n_none_\n\n### Changed (0, in both with different source)\n_none_\n\n```mermaid\nflowchart LR\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
   },

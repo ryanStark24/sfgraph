@@ -58,7 +58,7 @@ const inputSchema = z.object({
 defineTool({
   name: "analyze_field",
   description:
-    "Use for 'who reads or writes Object.Field'. Lists the Apex, LWC, Flow, DataRaptor, formula, rule, report and workflow components using it; `include_grants` adds access grants.",
+    "Use for 'who reads or writes Object.Field'. Lists the Apex, LWC, Flow, DataRaptor, formula, rule, report and workflow users; `include_grants` adds grants.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

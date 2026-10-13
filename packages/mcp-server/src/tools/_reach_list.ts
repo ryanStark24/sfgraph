@@ -4,6 +4,7 @@ import {
   code,
   kindCounts,
   linkFacts,
+  methodCountNote,
   nameOf,
   notCountedPhrase,
   pieceCount,
@@ -289,8 +290,14 @@ export function traceReport(o: TraceReportOpts): string {
     (a, b) => a.hop - b.hop || a.qualifiedName.localeCompare(b.qualifiedName),
   );
   const labelOf = new Map<string, string>(o.reached.map((e) => [e.qualifiedName, e.label]));
+  // The root's own members (a flow's versions) are the root: their links are the root's links.
+  const rootMembers = new Set(
+    o.reached.filter((e) => e.role === "root-member").map((e) => e.qualifiedName),
+  );
   const mapQ = (q: string) =>
-    unitOf({ qualifiedName: q, label: labelOf.get(q) ?? labelOfQname(q) }, root).qualifiedName;
+    rootMembers.has(q)
+      ? root
+      : unitOf({ qualifiedName: q, label: labelOf.get(q) ?? labelOfQname(q) }, root).qualifiedName;
   const unitEdges = o.edges
     .map((e) => ({ from: mapQ(e.srcQualifiedName), to: mapQ(e.dstQualifiedName), rel: e.relType }))
     .filter((e) => e.from !== e.to);
@@ -351,6 +358,14 @@ export function traceReport(o: TraceReportOpts): string {
       )
     : undefined;
 
+  // The In short counts a method as part of its class; the list counts each method row.
+  const listed = o.reached.filter((e) => !e.role);
+  const countNote =
+    listed.length !== pieces.length &&
+    listed.some((e) => isMethodRow(e) && e.qualifiedName !== root)
+      ? methodCountNote(listed.length)
+      : "";
+
   const next: string[] = [];
   if (o.truncated) next.push("Lower `depth` or start from a narrower piece to get the full list.");
   if (o.structural)
@@ -383,7 +398,7 @@ export function traceReport(o: TraceReportOpts): string {
         role: pieceRole({ kind: p.label, ...f, ...(any ? {} : { via: p.via }) }),
       };
     }),
-    details: o.details,
+    details: countNote ? `${countNote}\n\n${o.details}` : o.details,
     next,
   });
 }

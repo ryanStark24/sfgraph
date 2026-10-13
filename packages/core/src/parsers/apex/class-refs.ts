@@ -4,6 +4,8 @@
  *   - `new Foo(…)` constructors → INSTANCE_OF `ApexClass:Foo`
  *   - `Foo.IDENT` static members (constants, enum values, inner types,
  *     `Foo.class`) → REFERENCES `ApexClass:Foo`
+ *   - object describes (`Schema.SObjectType.Obj`, `SObjectType.Obj`,
+ *     `Obj.SObjectType`) → REFERENCES `CustomObject:Obj`, `via: "describe"`
  *
  * Every scan runs on `stripCommentsAndStrings` output, so commented-out code
  * and string contents never yield edges. Constructor and member rules skip
@@ -360,4 +362,33 @@ export function emitClassRefEdges(
     seen.add(key);
     edges.push(makeEdge(ctx, srcQname, REL_TYPES.REFERENCES, dst, { via: "static-member" }));
   }
+}
+
+const DESCRIBE_TYPE_RE = /(?<![\w.$])(?:Schema\s*\.\s*)?SObjectType\s*\.\s*([A-Za-z_]\w*)/gi;
+const TYPE_TOKEN_RE = /(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*SObjectType(?![\w])/gi;
+const DESCRIBE_OBJECT_SUFFIX_RE = /__(c|mdt|e|x|b|kav)$/i;
+
+/**
+ * Cycle 3 T7: an object describe (`Schema.SObjectType.Obj.getRecordTypeInfosByName()`,
+ * `SObjectType.Obj.fields.F`, `Obj.SObjectType`) reads that object's metadata,
+ * so the code depends on the object → REFERENCES `CustomObject:Obj` with
+ * `via: "describe"`, one per (src, object). Only names shaped like an object
+ * (custom suffix or a standard object); `code` is comment/string-stripped.
+ */
+export function emitDescribeRefEdges(
+  ctx: ParseContext,
+  srcQname: string,
+  code: string,
+  edges: EdgeFact[],
+): void {
+  const seen = new Set<string>();
+  const add = (name: string): void => {
+    if (!DESCRIBE_OBJECT_SUFFIX_RE.test(name) && !isStandardSObject(name.toLowerCase())) return;
+    const dst = `CustomObject:${stripNs(name, ctx.namespace)}`;
+    if (seen.has(dst.toLowerCase())) return;
+    seen.add(dst.toLowerCase());
+    edges.push(makeEdge(ctx, srcQname, REL_TYPES.REFERENCES, dst, { via: "describe" }));
+  };
+  for (const m of code.matchAll(DESCRIBE_TYPE_RE)) add(m[1] ?? "");
+  for (const m of code.matchAll(TYPE_TOKEN_RE)) add(m[1] ?? "");
 }

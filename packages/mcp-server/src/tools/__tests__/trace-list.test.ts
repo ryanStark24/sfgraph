@@ -416,3 +416,81 @@ describe("trace_downstream: dynamic queries are flagged", () => {
     expect(md).not.toContain("Dynamic queries");
   });
 });
+
+// Cycle 3 T9 fix round 1: a root's own members (a flow's versions) are the root in the report, and
+// the technical list says why its count is not the In short count.
+describe("trace report: root members and method counts", () => {
+  it("draws and describes a link from the root's version as the root's own", async () => {
+    fix.addNode({ qualifiedName: "Flow:Req_Flow", label: "Flow" });
+    fix.addNode({ qualifiedName: "FlowVersion:Req_Flow.v3", label: "FlowVersion" });
+    fix.addNode({ qualifiedName: "CustomObject:Req__c", label: "CustomObject" });
+    fix.addNode({ qualifiedName: "CustomField:Req__c.State__c", label: "CustomField" });
+    fix.addEdge({
+      srcQualifiedName: "Flow:Req_Flow",
+      dstQualifiedName: "FlowVersion:Req_Flow.v3",
+      relType: REL_TYPES.CONTAINS,
+    });
+    fix.addEdge({
+      srcQualifiedName: "FlowVersion:Req_Flow.v3",
+      dstQualifiedName: "CustomObject:Req__c",
+      relType: REL_TYPES.TRIGGER_FIRES_ON,
+    });
+    fix.addEdge({
+      srcQualifiedName: "FlowVersion:Req_Flow.v3",
+      dstQualifiedName: "CustomField:Req__c.State__c",
+      relType: REL_TYPES.READS_FIELD,
+    });
+    const r = await callTool("trace_downstream", {
+      org: fix.orgId,
+      qname: "Flow:Req_Flow",
+      depth: 1,
+    });
+    const md = r.markdown as string;
+    expect(md).toMatch(/n0 -->\|runs when records change on\| n\d/);
+    expect(md).toMatch(/n0 -->\|reads the field\| n\d/);
+    expect(md).toContain("the flow `Req_Flow` runs when `Req__c` records change");
+    expect(md).not.toContain('reached through a "runs when records change on" link');
+  });
+
+  it("says the technical list counts methods one by one when the In short counts their classes", async () => {
+    fix.addNode({ qualifiedName: "Flow:Up_Flow", label: "Flow" });
+    fix.addNode({ qualifiedName: "ApexClass:Svc", label: "ApexClass" });
+    for (const m of ["a(0)", "b(1)"]) {
+      fix.addNode({ qualifiedName: `ApexMethod:Svc.${m}`, label: "ApexMethod" });
+      fix.addEdge({
+        srcQualifiedName: "ApexClass:Svc",
+        dstQualifiedName: `ApexMethod:Svc.${m}`,
+        relType: REL_TYPES.CONTAINS_METHOD,
+      });
+    }
+    fix.addEdge({
+      srcQualifiedName: "Flow:Up_Flow",
+      dstQualifiedName: "ApexMethod:Svc.a(0)",
+      relType: REL_TYPES.FLOW_INVOKES_APEX_METHOD,
+    });
+    fix.addEdge({
+      srcQualifiedName: "ApexMethod:Svc.a(0)",
+      dstQualifiedName: "ApexMethod:Svc.b(1)",
+      relType: REL_TYPES.CALLS,
+    });
+    const r = await callTool("trace_downstream", {
+      org: fix.orgId,
+      qname: "Flow:Up_Flow",
+      depth: 2,
+    });
+    const md = r.markdown as string;
+    expect(md).toContain("relies on 1 piece");
+    expect(md).toContain(
+      "The list below counts each Apex method on its own (a method is part of its class above), so it shows 3 entries.",
+    );
+  });
+
+  it("adds no count note when the counts agree", async () => {
+    const r = await callTool("trace_downstream", {
+      org: fix.orgId,
+      qname: "ApexClass:A",
+      depth: 2,
+    });
+    expect(r.markdown as string).not.toContain("counts each Apex method on its own");
+  });
+});

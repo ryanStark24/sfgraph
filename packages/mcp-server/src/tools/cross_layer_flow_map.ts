@@ -211,7 +211,7 @@ export function layerFor(label: string): string {
 defineTool({
   name: "cross_layer_flow_map",
   description:
-    "Use for 'how does X flow from UI to data'. From an `entry` (LWC, Aura, page, Flow, Apex, OmniScript, FlexCard, IP): the UI, logic and data steps.",
+    "Use for 'how does X flow from UI to data'. From an `entry` (LWC, Aura, page, Flow, Apex, OmniScript, FlexCard, IP): UI, logic and data steps.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
@@ -271,11 +271,20 @@ defineTool({
     // A packaged type with no node (`ns.Type`, `ns` from the org's own
     // `ns__X__c` schema) is a pseudo endpoint (Batch R / S2).
     const isManagedNamespace = analyze.managedNamespaceCheck(store, org);
-    // `members: false` = enqueued only as the owner of a reached member (T15
-    // I-2): its own (class-level) edges are followed, not its other members'.
-    const queue: Array<{ q: QualifiedName; members: boolean }> = [{ q: entry, members: true }];
+    // `members: false` = enqueued only for its own (class-level) edges, not
+    // its members' (T15 I-2): a class whose static member (a constant, an
+    // enum value) is read, or the owner of a reached member. `others: true`
+    // marks the second case: the owner also lists the data (objects and
+    // fields) its other members read or write, and follows none of their
+    // other edges (cycle 3 T7).
+    type Item = { q: QualifiedName; members: boolean; others?: boolean };
+    const queue: Item[] = [{ q: entry, members: true }];
     visited.add(entry);
-    const ownerVisited = new Set<string>();
+    // Owners enqueued without members, and whether their others' data was asked for.
+    const ownerVisited = new Map<string, boolean>();
+    // The owner of a member entry lists no other members' data: the caller
+    // asked for that one method's flow, not its class's.
+    const entryOwner = analyze.componentOf(store, org, entry);
 
     /**
      * The participant a qname is drawn as: an ApexMethod rolls up to its
@@ -328,12 +337,17 @@ defineTool({
     const NODE_CAP = 100;
     let truncated = false;
     let enqueued = 1;
-    const enqueue = (q: QualifiedName, members = true): boolean => {
+    const enqueue = (q: QualifiedName, members = true, others = false): boolean => {
       if (visited.has(q)) return true;
       if (members) visited.add(q);
-      else if (ownerVisited.has(q)) return true;
-      else ownerVisited.add(q);
-      queue.push({ q, members });
+      else {
+        // A class first enqueued for a constant read is enqueued again when
+        // one of its members is reached, to list its other members' data.
+        const had = ownerVisited.get(q);
+        if (had === true || (had === false && !others)) return true;
+        ownerVisited.set(q, others);
+      }
+      queue.push({ q, members, others });
       enqueued++;
       if (enqueued >= NODE_CAP) {
         truncated = true;
@@ -345,6 +359,11 @@ defineTool({
     // arrow when the same source already links the object itself; otherwise
     // a containment arrow object -> field, never the field's own rel type.
     const objectLinks: Array<{ from: string; obj: string; field: string }> = [];
+    // The other members' data adds at most this many rows in all; past it the
+    // report says the list was cut.
+    const OTHERS_CAP = 100;
+    let othersAdded = 0;
+    let othersTruncated = false;
     bfs: while (queue.length > 0) {
       const item = queue.shift();
       if (!item) break;
@@ -357,21 +376,47 @@ defineTool({
       const sources: QualifiedName[] = [cur, ...members.filter((m) => !visited.has(m))];
       for (const m of sources) if (m !== cur) visited.add(m);
       const from = rowOf(cur);
-      for (const src of sources) {
+      // An owner reached through one member also lists the data its other
+      // members read or write (objects and fields, which are leaves), but
+      // follows none of their calls (T15 I-2 still holds for callees). For a
+      // Flow reached through one FlowVersion, that is its other versions'
+      // data, as when a Flow is reached directly (every version it holds).
+      const siblings = item.others
+        ? analyze.traversalMembers(store, org, cur).members.filter((m) => !visited.has(m))
+        : [];
+      const walk = [
+        ...sources.map((q) => ({ q, own: true })),
+        ...siblings.map((q) => ({ q, own: false })),
+      ];
+      for (const { q: src, own } of walk) {
         for (const rt of FLOW_RELS) {
           for (const e of store.listEdgesFrom(org, src, rt)) {
             if (!followEdge(e)) continue;
             const dst = e.dstQualifiedName;
+            if (!own && !LEAF_LABELS.has(labelOf(dst))) continue;
             const dstNode = store.getNode(org, dst);
             const kind = analyze.pseudoEndpointKind(dst, dstNode !== null, new Set(), {
               hasClass,
               isManagedNamespace,
             });
             if (kind) {
-              pseudo.set(dst, kind);
+              // Other members' data is never a pseudo endpoint in practice
+              // (objects and fields), so nothing is recorded for it.
+              if (own) pseudo.set(dst, kind);
               continue;
             }
             const to = rowOf(dst);
+            if (!own) {
+              const obj = objectOfField(dst);
+              const fresh =
+                (participants.has(to) ? 0 : 1) +
+                (obj && !participants.has(obj) && store.getNode(org, asQualifiedName(obj)) ? 1 : 0);
+              if (othersAdded + fresh > OTHERS_CAP) {
+                othersTruncated = true;
+                continue;
+              }
+              othersAdded += fresh;
+            }
             addParticipant(to);
             addMessage(from, to, rt);
             // A field read or written on the path puts its object on the path
@@ -383,6 +428,8 @@ defineTool({
               addParticipant(obj);
               objectLinks.push({ from, obj, field: to });
             }
+            // A sibling's data leaf is listed, not enqueued: no visit cap spent.
+            if (!own) continue;
             // A static-member read brings the class's own (class-level)
             // edges only, never its methods'.
             if (!enqueue(dst, !isStaticMemberRead(e))) break bfs;
@@ -392,7 +439,11 @@ defineTool({
             // members' (T15 I-2): reaching ApexMethod:C.m never pulls in the
             // callees of C's sibling methods.
             const owner = analyze.componentOf(store, org, dst);
-            if (owner !== dst && !enqueue(owner, false)) break bfs;
+            if (
+              owner !== dst &&
+              !enqueue(owner, false, owner !== entryOwner || entryOwner === entry)
+            )
+              break bfs;
           }
         }
       }
@@ -455,6 +506,12 @@ defineTool({
         `_truncated_ — BFS hit the ${NODE_CAP}-node ceiling; deeper paths from this entry were not explored.`,
       );
     }
+    if (othersTruncated) {
+      mdLines.push(
+        "",
+        `_truncated_ — the data used by other methods of the classes reached hit the ${OTHERS_CAP}-item ceiling; the rest is not listed.`,
+      );
+    }
     if (pseudo.size > 0) {
       mdLines.push(
         "",
@@ -508,14 +565,22 @@ defineTool({
     }
     if (chain.length > 1) {
       const onPath = new Set(chain);
-      const fieldsBy = (re: RegExp) =>
-        new Set(links.filter((l) => onPath.has(l.from) && re.test(l.rel)).map((l) => l.to)).size;
-      const reads = fieldsBy(/READS_FIELD$/);
-      const writes = fieldsBy(/WRITES_FIELD$/);
-      const uses = [
-        ...(reads ? [`read ${reads} ${reads === 1 ? "field" : "fields"}`] : []),
-        ...(writes ? [`write ${writes}${reads ? "" : writes === 1 ? " field" : " fields"}`] : []),
-      ];
+      // Standard fields are counted apart, as the In short's "Not counted" line does.
+      const standard = new Set(standardFields.map((p) => p.id));
+      const fieldsBy = (re: RegExp, std: boolean) =>
+        new Set(
+          links
+            .filter((l) => onPath.has(l.from) && re.test(l.rel) && standard.has(l.to) === std)
+            .map((l) => l.to),
+        ).size;
+      const fieldWords = (n: number, s: number) =>
+        andList([
+          ...(n ? [`${n} ${n === 1 ? "field" : "fields"}`] : []),
+          ...(s ? [`${s} standard ${s === 1 ? "field" : "fields"}`] : []),
+        ]);
+      const reads = fieldWords(fieldsBy(/READS_FIELD$/, false), fieldsBy(/READS_FIELD$/, true));
+      const writes = fieldWords(fieldsBy(/WRITES_FIELD$/, false), fieldsBy(/WRITES_FIELD$/, true));
+      const uses = [...(reads ? [`read ${reads}`] : []), ...(writes ? [`write ${writes}`] : [])];
       const [first, ...rest] = chain.map((q) => code(nameOf(q)));
       // Branch points: pieces on the path that also call a piece off it (beyond the next step).
       const branches = chain.filter((q, i) =>
@@ -545,6 +610,10 @@ defineTool({
     if (left.length) inShort.push(`Not counted: ${andList(left)}.`);
     if (truncated)
       inShort.push("The search stopped at its size limit, so the flow may go further than shown.");
+    if (othersTruncated)
+      inShort.push(
+        "For the classes reached through one method, not all the data used by their other methods is shown: that list stopped at its size limit.",
+      );
     const report = renderReport({
       title: `Where the flow from ${nameOf(entryRow)} goes`,
       inShort,
@@ -576,6 +645,7 @@ defineTool({
         messages: shownMessages,
         pseudo: pseudoList.map(([id, pseudoKind]) => ({ id, pseudoKind })),
         truncated,
+        ...(othersTruncated ? { otherMethodsDataTruncated: true } : {}),
       },
       follow_up_tools: ["analyze_field", "trace_downstream", "explain_code"],
     };

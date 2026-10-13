@@ -485,7 +485,7 @@ function renderCandidates(
 defineTool({
   name: "dead_code_audit",
   description:
-    "Use for 'what can I delete'. Lists components nothing references, with confidence and reasons; filter by `label`, `pattern` (prefix or glob) or `confidence`.",
+    "Use for 'what can I delete'. Lists unreferenced components with confidence and reasons; filter by `label`, `pattern` (prefix or glob) or `confidence`.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

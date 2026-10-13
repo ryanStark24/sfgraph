@@ -17,7 +17,7 @@ const inputSchema = z.object({
 defineTool({
   name: "wip_impact",
   description:
-    "Use for 'what do my local changes break'. Overlays local source on the org graph (read-only): the changes and their dependents.",
+    "Use for 'what do my local changes break'. Overlays local source on the org graph (read-only): changes and dependents.",
   inputSchema,
   async execute(input) {
     const projectRoot = resolveWipProjectRoot(input.project_root ?? process.cwd());

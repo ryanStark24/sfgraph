@@ -137,3 +137,46 @@ describe("point_in_time_diff edge output pin", () => {
     expect(checked).toBe(24);
   });
 });
+
+describe("point_in_time_diff cache", () => {
+  it("serves a repeated diff from the cache and drops it when the graph changes", async () => {
+    const { diffLoadCount, clearDiffCache } = await import("../_snapshot-util.js");
+    clearDiffCache();
+    const s = await callTool("snapshot_create", { org: fix.orgId });
+    const sid = (s.data as { id: string }).id;
+    const base = diffLoadCount();
+    const first = await callTool("point_in_time_diff", { org: fix.orgId, from: sid });
+    expect(diffLoadCount()).toBe(base + 1);
+    const second = await callTool("point_in_time_diff", { org: fix.orgId, from: sid });
+    expect(diffLoadCount()).toBe(base + 1);
+    expect(second.markdown).toBe(first.markdown);
+    expect(second.data).toEqual(first.data);
+    // A new write is never served stale.
+    fix.addNode({ qualifiedName: "ApexClass:LateArrival", label: "ApexClass" });
+    const third = await callTool("point_in_time_diff", { org: fix.orgId, from: sid });
+    expect(diffLoadCount()).toBe(base + 2);
+    expect((third.data as { nodeDiff: { added: unknown[] } }).nodeDiff.added.length).toBe(1);
+  });
+
+  it("keeps at most two diffs", async () => {
+    const { diffLoadCount, clearDiffCache } = await import("../_snapshot-util.js");
+    clearDiffCache();
+    const ids: string[] = [];
+    for (const name of ["a", "b", "c"]) {
+      ids.push(
+        ((await callTool("snapshot_create", { org: fix.orgId, name })).data as { id: string }).id,
+      );
+    }
+    const ask = (from: string) => callTool("point_in_time_diff", { org: fix.orgId, from });
+    const base = diffLoadCount();
+    await ask(ids[0] as string);
+    await ask(ids[1] as string);
+    await ask(ids[2] as string); // evicts the first
+    expect(diffLoadCount()).toBe(base + 3);
+    await ask(ids[2] as string);
+    await ask(ids[1] as string);
+    expect(diffLoadCount()).toBe(base + 3);
+    await ask(ids[0] as string);
+    expect(diffLoadCount()).toBe(base + 4);
+  });
+});

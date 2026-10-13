@@ -45,6 +45,9 @@ export const HEADINGS = {
 export const PIECES_MAX = 15;
 export const DIAGRAM_MAX = 25;
 const NAMES_MAX = 3;
+/** A merged piece line names every piece in it: the line holds at most PIECES_MAX, and a name left
+ *  out of What each piece does is a component the reader misses (cycle 3 T9 fix 2). */
+const MERGED_NAMES_MAX = PIECES_MAX;
 
 /** `Foo` for `ApexClass:Foo`; a name with no `Label:` prefix is kept. */
 export function nameOf(qnameOrName: string): string {
@@ -62,8 +65,11 @@ const oneLine = (t: string): string => t.replace(/\s*\n\s*/g, " ");
 export const code = (name: string): string => `\`${name.replace(/`/g, "'")}\``;
 
 /** "`A`, `B`, `C` and 2 others". */
-function nameList(names: readonly string[]): string {
-  const shown = names.slice(0, NAMES_MAX).map((n) => code(nameOf(n)));
+function nameList(names: readonly string[], max = NAMES_MAX): string {
+  // "and 1 other" takes as much room as the name it hides, so one over the limit is named (fix 3).
+  const shown = names
+    .slice(0, names.length === max + 1 ? max + 1 : max)
+    .map((n) => code(nameOf(n)));
   const rest = names.length - shown.length;
   if (rest > 0) return `${shown.join(", ")} and ${rest} ${rest === 1 ? "other" : "others"}`;
   if (shown.length <= 1) return shown.join("");
@@ -82,8 +88,9 @@ const STRUCTURAL = new Set([
 export const isStructuralRel = (rel: string): boolean => STRUCTURAL.has(rel);
 
 /** An incoming link in the passive voice: "read by", "written by", "part of". */
-function passiveOf(rel: string): string {
+function passiveOf(rel: string, kind?: string): string {
   if (STRUCTURAL.has(rel)) return "part of";
+  if (rel === "INSTANCE_OF" && kind === "ApexClass") return "created by";
   if (/READS_FIELD$/.test(rel)) return "read by";
   if (/WRITES_FIELD$|UPDATES_FIELD$/.test(rel)) return "written by";
   if (/BINDS_|RENDERS_FIELD/.test(rel)) return "shown by";
@@ -134,7 +141,7 @@ export function pieceRole(facts: {
         triggers.push(...names.filter((q) => !triggers.includes(q)));
         continue;
       }
-      const phrase = passiveOf(i.rel);
+      const phrase = passiveOf(i.rel, facts.kind);
       const g = passive.get(phrase) ?? passive.set(phrase, []).get(phrase)!;
       for (const q of names) if (!g.includes(q) && !callers.includes(q)) g.push(q);
     }
@@ -160,13 +167,19 @@ export function pieceRole(facts: {
   parts.push(head);
   if (triggers.length) {
     const on = facts.name ? code(nameOf(facts.name)) : "its";
-    parts.push(
-      `${triggers.length === 1 ? "the trigger" : "the triggers"} ${nameList(triggers)} ${triggers.length === 1 ? "runs" : "run"} when ${on} records change`,
-    );
+    // A flow can run on record changes too: name what each one is.
+    const flows = triggers.every((q) => labelIn(q) === "Flow");
+    const mixed = !flows && triggers.some((q) => labelIn(q) === "Flow");
+    const one = triggers.length === 1;
+    const what = mixed
+      ? "the triggers and flows"
+      : `the ${flows ? "flow" : "trigger"}${one ? "" : "s"}`;
+    parts.push(`${what} ${nameList(triggers)} ${one ? "runs" : "run"} when ${on} records change`);
   }
   const acts: string[] = [];
   if (callees.length) acts.push(`calls ${nameList(callees)}`);
-  for (const d of does.slice(0, NAMES_MAX)) acts.push(`${plainRel(d.rel)} ${nameList(d.names)}`);
+  for (const d of does.slice(0, NAMES_MAX))
+    acts.push(`${plainRel(d.rel, facts.kind)} ${nameList(d.names)}`);
   if (does.length > NAMES_MAX) acts.push(`has ${does.length - NAMES_MAX} other kinds of link`);
   if (acts.length) parts.push(`it ${andList(acts)}`);
   return `${parts.join("; ")}.`;
@@ -205,6 +218,13 @@ export function testSplit(
 /** "a field", "an Apex trigger", "an OmniScript": a kind with its article. */
 export const aOrAn = (kind: string): string => `${/^[aeiou]/i.test(kind) ? "an" : "a"} ${kind}`;
 
+/**
+ * The line that opens Technical details when its list counts Apex methods one by one while the
+ * report above counts each method as part of its class (so the two totals differ).
+ */
+export const methodCountNote = (listed: number): string =>
+  `The list below counts each Apex method on its own (a method is part of its class above), so it shows ${listed} ${listed === 1 ? "entry" : "entries"}.`;
+
 /** "a", "a and b", "a, b and c". */
 export function andList(items: readonly string[]): string {
   if (items.length <= 1) return items.join("");
@@ -216,7 +236,7 @@ export const isCallRel = (rel: string): boolean => /CALL|INVOKE|RUNS?_/.test(rel
 
 /** Product names keep their capital mid-sentence ("Apex class"); common words do not ("field"). */
 const PROPER =
-  /^(Apex|Lightning|Visualforce|Aura|Omni|OmniScript|Integration|DataRaptor|FlexCard|Agent)\b/;
+  /^(Apex|Lightning|Visualforce|Aura|Omni|OmniScript|Integration|DataRaptor|FlexCard|Agent)s?\b/;
 const midSentence = (kind: string): string =>
   PROPER.test(kind) ? kind : kind.charAt(0).toLowerCase() + kind.slice(1);
 
@@ -327,14 +347,14 @@ export function linkFacts(
     const byRel = new Map<string, string[]>();
     for (const e of outs) {
       if (isCallRel(e.rel)) continue;
-      const verb = plainRel(e.rel);
+      const verb = plainRel(e.rel, labelIn(id));
       const g = byRel.get(verb);
       if (g) {
         if (!g.includes(e.to)) g.push(e.to);
       } else byRel.set(verb, [e.to]);
     }
     // Grouped by the plain verb, so two relationship types that read the same are one phrase.
-    const relOf = new Map(outs.map((e) => [plainRel(e.rel), e.rel]));
+    const relOf = new Map(outs.map((e) => [plainRel(e.rel, labelIn(id)), e.rel]));
     const does = [...byRel].map(([verb, names]) => ({ rel: relOf.get(verb)!, names }));
     // Links into it that are not calls, by relationship type, in the order met.
     const intoBy = new Map<string, string[]>();
@@ -353,6 +373,12 @@ export function linkFacts(
     };
   };
 }
+
+/** The label in a qname's `Label:` prefix, if any. */
+const labelIn = (q: string): string | undefined => {
+  const i = q.indexOf(":");
+  return i > 0 ? q.slice(0, i) : undefined;
+};
 
 /** Technical-details lines listing links in full: "- `A` -> `B` (CALLS)", capped with a count. */
 export function linkLines(
@@ -374,8 +400,8 @@ export function linkLines(
 }
 
 /** A mermaid edge label: plain words with no character that ends the `|...|` span. */
-const edgeText = (rel: string): string =>
-  plainRel(rel)
+const edgeText = (rel: string, fromLabel?: string): string =>
+  plainRel(rel, fromLabel)
     .replace(/[|"[\](){}<>;#]/g, " ")
     .trim();
 
@@ -424,17 +450,23 @@ export function reportDiagram(
     out.push(`  ${ids.get(n.id)}[${render.fenceLabel(`${kind}: ${nameOf(n.id)}`)}]`);
   }
   if (all.length > kept.length) out.push(`  nMore["and ${all.length - kept.length} more"]`);
-  const drawn = new Set<string>();
+  // One link per pair of boxes, naming each kind of link between them in the order met; it is
+  // dotted only when every link of the pair is containment.
+  const pairs = new Map<string, { a: string; b: string; texts: string[]; structural: boolean }>();
   for (const e of links) {
     const a = ids.get(e.from);
     const b = ids.get(e.to);
     if (!a || !b) continue;
-    const text = edgeText(e.rel);
-    const arrow = STRUCTURAL.has(e.rel) ? "-.->" : "-->";
-    const line = text ? `  ${a} ${arrow}|${text}| ${b}` : `  ${a} ${arrow} ${b}`;
-    if (drawn.has(line)) continue;
-    drawn.add(line);
-    out.push(line);
+    const k = `${a} ${b}`;
+    const p = pairs.get(k) ?? pairs.set(k, { a, b, texts: [], structural: true }).get(k)!;
+    const text = edgeText(e.rel, byId.get(e.from)?.label);
+    if (text && !p.texts.includes(text)) p.texts.push(text);
+    if (!STRUCTURAL.has(e.rel)) p.structural = false;
+  }
+  for (const { a, b, texts, structural } of pairs.values()) {
+    const arrow = structural ? "-.->" : "-->";
+    const text = andList(texts);
+    out.push(text ? `  ${a} ${arrow}|${text}| ${b}` : `  ${a} ${arrow} ${b}`);
   }
   return out.join("\n");
 }
@@ -470,10 +502,33 @@ function glossOnce(texts: string[]): string[] {
 
 /** The report as markdown, sections in the fixed order. */
 export function renderReport(r: HumanReport): string {
-  const pieceLines: string[] = [];
+  // Pieces of one kind whose sentence is the same are one line ("`a`, `b` and `c`: Lightning web
+  // components; each shows ..."), placed where the first of them is.
+  const groups = new Map<string, Piece[]>();
   for (const p of (r.pieces ?? []).slice(0, PIECES_MAX)) {
+    const said = oneLine(p.role);
+    const kind = p.kind ? plainKind(p.kind) : "";
+    const mergeable = kind && said.toLowerCase().startsWith(kind.toLowerCase());
+    const key = mergeable ? `${p.kind}\u0000${said}` : `\u0001${groups.size}`;
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(p);
+  }
+  const pieceLines: string[] = [];
+  for (const g of groups.values()) {
+    const p = g[0]!;
     const kind = p.kind ? plainKind(p.kind) : "";
     const said = oneLine(p.role);
+    if (g.length > 1) {
+      const rest = said
+        .slice(kind.length)
+        .replace(/^; it /, "; each ")
+        .replace(/^, (?!each )/, ", each ");
+      const names = nameList(
+        g.map((x) => oneLine(x.name)),
+        MERGED_NAMES_MAX,
+      );
+      pieceLines.push(`- ${names}: ${plainKind(p.kind, { plural: true })}${rest}`);
+      continue;
+    }
     const role =
       kind && !said.toLowerCase().startsWith(kind.toLowerCase()) ? `${kind}: ${said}` : said;
     pieceLines.push(`- ${code(oneLine(nameOf(p.name)))}: ${role}`);
@@ -500,14 +555,15 @@ export function renderReport(r: HumanReport): string {
  * At most 1,200 characters; no tool names and no internal constants.
  */
 export const PRESENTATION_GUIDE = [
-  "How to present these results to people. The reader is a mixed team: a business analyst and a developer.",
-  "1. Lead with the answer in plain words: what was found, counts in words, and how sure it is.",
-  "2. When 3 or more components or 2 or more layers (screen, logic, data) are involved, include one focused diagram of the main path.",
-  "3. Say in one plain line what each main piece does.",
-  '4. Define any Salesforce or Vlocity term on first use, for example "an OmniScript (a guided screen flow)".',
-  "5. Put full technical names, in code style, in a final technical section.",
-  "6. State what was not checked, and what to check next.",
-  "Each result already holds these sections (In short, Picture, What each piece does, Technical details, What to check next); build on them rather than pasting the raw text.",
+  "Present these results for a mixed team: a business analyst and a developer.",
+  "1. Lead with the answer in plain words: what was found, counts in words, and how sure it is. Every count must match the list you give.",
+  "2. List only pieces on the path asked about, not every piece a result names.",
+  "3. When 3 or more components or 2 or more layers (screen, logic, data) are involved, include one focused mermaid diagram of the main path, at most 12 boxes.",
+  "4. Say once, in one plain line, what each main piece does: its business purpose and what its code decides or writes; never repeat it. When a result can show a piece's code, read it first.",
+  '5. Define every Salesforce or Vlocity term on first use, as "an OmniScript (a guided screen flow)"; spell out short forms such as SOQL or DML; say "steps away", not "hops".',
+  "6. Put full technical names, in code style, in a final technical section, each once.",
+  "7. Say what was not checked in terms of the code, not your own steps or tools, and what to check next.",
+  "Write only the finished answer: no drafting notes. Each result holds these sections (In short, Picture, What each piece does, Technical details, What to check next); build on them, do not paste them.",
 ].join("\n");
 
 /** The fill-in-the-blank outline the prompt adds to the guide. */

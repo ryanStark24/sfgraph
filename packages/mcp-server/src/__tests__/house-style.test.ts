@@ -35,6 +35,22 @@ describe("presentation guide", () => {
     ])
       expect(PRESENTATION_GUIDE).toMatch(w);
   });
+
+  // Cycle 3 T9 fix 1: what the judges marked down in the dev round's answers.
+  it("asks for matching counts, a mermaid diagram, spelled-out short forms and no process notes", () => {
+    for (const w of [
+      /count must match the list/i,
+      /mermaid diagram/i,
+      /SOQL or DML/,
+      /not your own steps or tools/i,
+      /no drafting notes/i,
+      /business purpose/i,
+      /steps away/i,
+      /what its code decides or writes/i,
+      /read it first/i,
+    ])
+      expect(PRESENTATION_GUIDE).toMatch(w);
+  });
 });
 
 describe("present_for_people prompt", () => {

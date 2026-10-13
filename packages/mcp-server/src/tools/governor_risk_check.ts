@@ -10,6 +10,7 @@ import {
   code,
   countNoun,
   kindCounts,
+  listWithMore,
   nameOf,
   renderReport,
 } from "./_report.js";
@@ -31,10 +32,18 @@ const RISK_PLAIN: Readonly<Record<Risk["risk"], [string, string]>> = {
   ],
   unbounded_query: ["query with no row limit", "queries with no row limit"],
 };
-/** High risk: the SARIF `error` kinds (a loop or a trigger that uses up a per-transaction limit). */
-const isHigh = (r: Risk): boolean =>
-  (analyze.RULE_CATALOG[`governor.${r.risk.replace(/_/g, "-")}`]?.defaultLevel ?? "warning") ===
-  "error";
+type Severity = "high" | "medium" | "low";
+const SEVERITY_RANK: Readonly<Record<Severity, number>> = { high: 3, medium: 2, low: 1 };
+/**
+ * A risk's severity from its SARIF level: `error` (a loop or a trigger that uses up a
+ * per-transaction limit) is high, `warning` is medium, `note` is low.
+ */
+const severityOf = (r: Risk): Severity => {
+  const level =
+    analyze.RULE_CATALOG[`governor.${r.risk.replace(/_/g, "-")}`]?.defaultLevel ?? "warning";
+  return level === "error" ? "high" : level === "note" ? "low" : "medium";
+};
+const isHigh = (r: Risk): boolean => severityOf(r) === "high";
 const riskText = (kind: Risk["risk"], n: number): string => {
   const w = RISK_PLAIN[kind] ?? [kind.replace(/_/g, " "), kind.replace(/_/g, " ")];
   return `${n} ${n === 1 ? w[0] : w[1]}`;
@@ -47,12 +56,13 @@ function byKind(risks: readonly Risk[]): string {
 }
 /** "3 high-risk spots" / "2 high-risk spots and 1 medium-risk spot". */
 function bySeverity(risks: readonly Risk[]): string {
-  const high = risks.filter(isHigh).length;
-  const medium = risks.length - high;
-  return andList([
-    ...(high ? [countNoun(high, "high-risk spot")] : []),
-    ...(medium ? [countNoun(medium, "medium-risk spot")] : []),
-  ]);
+  const n = { high: 0, medium: 0, low: 0 };
+  for (const r of risks) n[severityOf(r)] += 1;
+  return andList(
+    (["high", "medium", "low"] as const)
+      .filter((s) => n[s] > 0)
+      .map((s) => countNoun(n[s], `${s}-risk spot`)),
+  );
 }
 /** The class or trigger a risk is in: a method's owning class, else the risk's own component. */
 const ownerOf = (q: string) => unitOf({ qualifiedName: q, label: labelOfQname(q) });
@@ -61,6 +71,11 @@ const methodName = (q: string): string => {
   const n = nameOf(q).replace(/\(.*$/, "");
   return n.includes(".") ? n.slice(n.lastIndexOf(".") + 1) : n;
 };
+/** Test classes named in the In short before "and N more". */
+const TEST_NAMES_MAX = 10;
+/** Classes and triggers A to Z by name (case-insensitive), then by qname. */
+const byName = (a: string, b: string): number =>
+  nameOf(a).toLowerCase().localeCompare(nameOf(b).toLowerCase()) || a.localeCompare(b);
 const CHECKED =
   "Checked: Apex methods and triggers, direct only (a loop that calls another method which queries is not counted)";
 
@@ -76,43 +91,77 @@ const inputSchema = z.object({
   /** Include test code (TestMethod / @isTest). Off by default: test code
    *  doesn't run in production, so its loops aren't governor risks there. */
   includeTests: z.boolean().default(false),
+  /** Lowest severity listed. Medium by default: every current check is high or medium. */
+  min_severity: z.enum(["high", "medium", "low"]).default("medium"),
 });
 
 defineTool({
   name: "governor_risk_check",
   description:
-    "Use for 'SOQL in loop / governor limits'. Lists Apex with SOQL, SOSL or DML in a loop, unbounded queries and unbulkified triggers, worst first.",
+    "Use for 'SOQL in loop / governor limits'. Lists SOQL, SOSL or DML in loops, unbounded queries and unbulkified triggers, worst first.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
-    const { risks, source, cache, excludedTests } = collectGovernorRisks(ctx, {
-      includeTests: input.includeTests,
-    });
+    const collected = collectGovernorRisks(ctx, { includeTests: input.includeTests });
+    const { source, cache, excludedTests } = collected;
+    // The classes and triggers whose test-code spots were left out, A to Z (named, so a reader
+    // asking about them sees they were left out rather than clean).
+    const testOwners = [
+      ...new Set(collected.excludedTestQnames.map((q) => ownerOf(q).qualifiedName)),
+    ].sort(byName);
+    // Spots below `min_severity` are left out before `limit`, and counted.
+    const floor = SEVERITY_RANK[input.min_severity];
+    const risks = collected.risks.filter((r) => SEVERITY_RANK[severityOf(r)] >= floor);
+    const belowFloor = collected.risks.filter((r) => SEVERITY_RANK[severityOf(r)] < floor);
+    const hiddenBelowSeverity = belowFloor.length;
+    const lowestHidden = belowFloor.some((r) => severityOf(r) === "low") ? "low" : "medium";
+    const severityNote =
+      hiddenBelowSeverity > 0
+        ? ` ${bySeverity(belowFloor)} ${hiddenBelowSeverity === 1 ? "is" : "are"} not shown (set \`min_severity: "${lowestHidden}"\` to see ${hiddenBelowSeverity === 1 ? "it" : "them"}).`
+        : "";
     const cached = source === "live+cache";
     const meta = {
       source,
       cache: cache.state,
       ...(cache.reason ? { cacheReason: cache.reason } : {}),
       excludedTests,
+      minSeverity: input.min_severity,
+      hiddenBelowSeverity,
     };
+    const testNameList = testOwners.map((q) => code(nameOf(q)));
+    const testNames =
+      testNameList.length > TEST_NAMES_MAX
+        ? listWithMore(testNameList, TEST_NAMES_MAX)
+        : andList(testNameList);
     const testNote =
       excludedTests > 0
-        ? ` ${countNoun(excludedTests, "spot")} in test code ${excludedTests === 1 ? "was" : "were"} left out (set \`includeTests: true\` to see ${excludedTests === 1 ? "it" : "them"}).`
+        ? ` ${countNoun(excludedTests, "spot")} in test code ${excludedTests === 1 ? "was" : "were"} left out, in ${testNames} (set \`includeTests: true\` to see ${excludedTests === 1 ? "it" : "them"}).`
         : "";
+    const testDetails = testOwners.length
+      ? `Left out as test code: ${testOwners.map((q) => `\`${q}\``).join(", ")}.`
+      : "";
     const scanNotes = [
       "Scans the graph live; a cache adds rows only when it is fresh.",
       ...(input.includeTests ? [] : ["Test code is excluded unless `includeTests` is true."]),
     ];
     if (risks.length === 0) {
+      const one = hiddenBelowSeverity === 1;
       return {
-        summary: "no risks detected",
+        summary:
+          hiddenBelowSeverity > 0
+            ? `no risks at or above ${input.min_severity} (${hiddenBelowSeverity} hidden below min_severity)`
+            : "no risks detected",
         markdown: renderReport({
           title: "Code that may hit Salesforce limits",
           inShort: [
-            "No spots found where Apex code may hit Salesforce's per-transaction limits.",
+            hiddenBelowSeverity > 0
+              ? `No spots are shown: the only ${one ? "spot found is" : "spots found are"} ${bySeverity(belowFloor)}, below \`min_severity: "${input.min_severity}"\`; set \`min_severity: "${lowestHidden}"\` to see ${one ? "it" : "them"}.`
+              : "No spots found where Apex code may hit Salesforce's per-transaction limits.",
             `${CHECKED}.${testNote}`,
           ],
-          details: "_no governor risks surfaced_",
+          details: ["_no governor risks surfaced_", ...(testDetails ? ["", testDetails] : [])].join(
+            "\n",
+          ),
           next: ["Use `explain_code` on a class to read its code.", ...scanNotes],
         }),
         data: { risks: [], total: 0, truncated: false, order: ORDER, cached, ...meta },
@@ -121,10 +170,27 @@ defineTool({
     }
     const shown = risks.slice(0, input.limit);
     const truncated = risks.length > shown.length;
+    // The listed spots grouped by the class or trigger they are in, groups A to Z (a reader scans
+    // for a name); each group keeps priority order (`shown` is sorted). `limit` still keeps the
+    // highest-priority spots.
+    const shownByOwner = new Map<string, Risk[]>();
+    for (const r of shown) {
+      const o = ownerOf(r.qualifiedName).qualifiedName;
+      shownByOwner.set(o, [...(shownByOwner.get(o) ?? []), r]);
+    }
     const md = [
-      "| qname | risk | evidence |",
-      "|---|---|---|",
-      ...shown.map((r) => `| \`${r.qualifiedName}\` | ${r.risk} | ${r.evidence} |`),
+      "Grouped by class or trigger, A to Z.",
+      "",
+      ...[...shownByOwner]
+        .sort(([a], [b]) => byName(a, b))
+        .flatMap(([o, rs], i) => [
+          ...(i > 0 ? [""] : []),
+          `#### \`${o}\``,
+          "",
+          "| qname | risk | evidence |",
+          "|---|---|---|",
+          ...rs.map((r) => `| \`${r.qualifiedName}\` | ${r.risk} | ${r.evidence} |`),
+        ]),
       ...(truncated
         ? [
             "",
@@ -133,6 +199,7 @@ defineTool({
         : []),
       "",
       `_source: ${describeSource(source, cache)}${excludedTests > 0 ? `; ${excludedTests} test-code risks excluded (includeTests: true to show)` : ""}_`,
+      ...(testDetails ? ["", testDetails] : []),
     ].join("\n");
     // Group by the class or trigger each spot is in, in priority order (the risks are sorted).
     const owners = new Map<string, { label: string; risks: Risk[] }>();
@@ -147,6 +214,7 @@ defineTool({
     const listed = new Set(shown.map((r) => ownerOf(r.qualifiedName).qualifiedName));
     const pieces: Piece[] = [...owners]
       .filter(([q]) => listed.has(q))
+      .sort(([a], [b]) => byName(a, b))
       .map(([q, g]) => {
         const where = (r: Risk) =>
           r.qualifiedName === q ? "" : ` in ${code(methodName(r.qualifiedName))}`;
@@ -157,19 +225,33 @@ defineTool({
           role: `${plainKind(g.label)} with ${bySeverity(g.risks)}: ${spots.length > 3 ? `${spots.slice(0, 3).join(", ")} and ${spots.length - 3} more` : andList(spots)}.`,
         };
       });
+    // Classes and triggers none of whose spots made the `limit` cut: named, so a reader looking for
+    // one sees it has spots (cycle 3 T9 fix 2).
+    const cutOwners = [...owners].filter(([q]) => !listed.has(q)).sort(([a], [b]) => byName(a, b));
+    const cutSpots = cutOwners.reduce((n, [, g]) => n + g.risks.length, 0);
+    const cutLine = cutOwners.length
+      ? `Not listed below (their spots rank lower), A to Z: ${cutOwners
+          .map(([q, g]) => `\`${q}\` (${countNoun(g.risks.length, "spot")})`)
+          .join(", ")}.`
+      : "";
     const markdown = renderReport({
       title: "Code that may hit Salesforce limits",
       inShort: [
-        `${bySeverity(risks)} in ${kindCounts(ownerLabels)} may hit Salesforce's per-transaction limits: ${byKind(risks)}.`,
+        `${bySeverity(risks)} in ${kindCounts(ownerLabels)} may hit Salesforce's per-transaction limits: ${byKind(risks)}.${severityNote}`,
         ...(truncated
           ? [
-              `Only the ${shown.length === 1 ? "first 1 is" : `first ${shown.length} are`} listed below, highest priority first.`,
+              `Only the ${shown.length === 1 ? "first 1 is" : `first ${shown.length} are`} listed below (the highest priority), grouped by class or trigger, A to Z.`,
+              ...(cutOwners.length
+                ? [
+                    `${countNoun(cutSpots, "other spot")} ${cutSpots === 1 ? "is" : "are"} in ${kindCounts(cutOwners.map(([, g]) => g.label))} not listed below; Technical details names ${cutOwners.length === 1 ? "it" : "them"}.`,
+                  ]
+                : []),
             ]
           : []),
         `${CHECKED}.${testNote}`,
       ],
       pieces,
-      details: md,
+      details: cutLine ? `${cutLine}\n\n${md}` : md,
       next: [
         ...(truncated
           ? ["Raise `limit` to list more, or use `export_sarif` for all of them."]

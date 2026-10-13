@@ -8,6 +8,8 @@ const inputSchema = z.object({
   org_a: z.string().min(1),
   org_b: z.string().min(1),
   category: z.string().default("all"),
+  include_managed: z.boolean().default(false),
+  include_standard: z.boolean().default(false),
 });
 
 /** Max qnames printed per list, so the three lists and the diagram fit the server text budget (TEXT_MAX). */
@@ -53,13 +55,32 @@ defineTool({
     // for both org_a and org_b.
     const ctxA = await getToolContext({ orgId: input.org_a });
     const ctxB = await getToolContext({ orgId: input.org_b });
-    const diff = analyze.diffOrgs({
-      storeA: ctxA.graphStore,
-      orgA: ctxA.orgId,
-      storeB: ctxB.graphStore,
-      orgB: ctxB.orgId,
-      category: input.category,
-    });
+    // Managed-package and standard items present in one org only reflect what was installed or
+    // retrieved, not anyone's change, so they are hidden by default (counted, never dropped silently).
+    const diff = analyze.hideOneSided(
+      analyze.diffOrgs({
+        storeA: ctxA.graphStore,
+        orgA: ctxA.orgId,
+        storeB: ctxB.graphStore,
+        orgB: ctxB.orgId,
+        category: input.category,
+      }),
+      { includeManaged: input.include_managed, includeStandard: input.include_standard },
+    );
+    const { hidden } = diff;
+    const hiddenParts = [
+      ...(hidden.managed ? [countNoun(hidden.managed, "managed-package item")] : []),
+      ...(hidden.standard ? [countNoun(hidden.standard, "standard Salesforce item")] : []),
+    ];
+    const hiddenFlags = [
+      ...(hidden.managed ? ["`include_managed: true`"] : []),
+      ...(hidden.standard ? ["`include_standard: true`"] : []),
+    ];
+    const hiddenTotal = hidden.managed + hidden.standard;
+    const one = hiddenTotal === 1;
+    const hiddenNote = hiddenParts.length
+      ? `${andList(hiddenParts)} that ${one ? "is" : "are"} in only one org ${one ? "is" : "are"} not shown; set ${hiddenFlags.join(" or ")} to list ${one ? "it" : "them"}.`
+      : null;
     const mermaid = render.renderDiff({
       added: diff.onlyInB.slice(0, 30).map((n) => ({ qualifiedName: n.qualifiedName })),
       removed: diff.onlyInA.slice(0, 30).map((n) => ({ qualifiedName: n.qualifiedName })),
@@ -126,11 +147,14 @@ defineTool({
     const markdown = renderReport({
       title: `How ${a} and ${b} differ`,
       inShort: [
-        total === 0
-          ? `No differences found between ${a} and ${b}: no piece is only in one of them, and none has different source.`
-          : `${a} and ${b} differ in ${countNoun(total, "piece")}: ${andList(sides)}.`,
+        total > 0
+          ? `${a} and ${b} differ in ${countNoun(total, "piece")}: ${andList(sides)}.`
+          : hiddenTotal > 0
+            ? `No differences are shown between ${a} and ${b}: the only ${one ? "difference is" : "differences are"} ${andList(hiddenParts)} found in one org only, hidden by default; set ${hiddenFlags.join(" or ")} to see ${one ? "it" : "them"}.`
+            : `No differences found between ${a} and ${b}: no piece is only in one of them, and none has different source.`,
         ...(total > 0 ? [`By kind: ${byKind.join("; ")}.`] : []),
         scope,
+        ...(hiddenNote && total > 0 ? [hiddenNote] : []),
         ...(diff.truncated
           ? [
               "At least one kind hit the row limit, so the comparison is incomplete; narrow it with `category`.",
@@ -148,13 +172,14 @@ defineTool({
       ],
     });
     return {
-      summary: `A-only:${diff.onlyInA.length} B-only:${diff.onlyInB.length} changed:${diff.changed.length}${truncationNote}`,
+      summary: `A-only:${diff.onlyInA.length} B-only:${diff.onlyInB.length} changed:${diff.changed.length}${hiddenTotal > 0 ? ` hidden:${hiddenTotal}` : ""}${truncationNote}`,
       markdown,
       data: {
         onlyInA: diff.onlyInA.map((n) => n.qualifiedName),
         onlyInB: diff.onlyInB.map((n) => n.qualifiedName),
         changed: diff.changed.map((c) => c.a.qualifiedName),
         truncated: diff.truncated ?? false,
+        hidden,
       },
       follow_up_tools: ["point_in_time_diff", "deployment_manifest_gen"],
     };

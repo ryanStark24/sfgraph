@@ -88,6 +88,48 @@ describe("find_similar: down-rank test code and record-level labels for text", (
   });
 });
 
+describe("find_similar: a field two top hits share is kept in place (cycle 3 T9 fix 3)", () => {
+  beforeEach(() => {
+    doc("Flow:Widget_Mark_Stale", "widget stale mark");
+    doc("ApexClass:WidgetSweepBatch", "widget stale sweep");
+    doc("ApexClass:WidgetLogger", "widget stale log");
+    doc("CustomField:Widget__c.Is_Stale__c", "widget stale");
+    doc("CustomField:Widget__c.Colour__c", "widget stale colour");
+    doc("ApexMethod:WidgetSweepBatch.start(1)", "sweep start");
+    e(
+      "ApexClass:WidgetSweepBatch",
+      "ApexMethod:WidgetSweepBatch.start(1)",
+      REL_TYPES.CONTAINS_METHOD,
+    );
+    e("Flow:Widget_Mark_Stale", "CustomField:Widget__c.Is_Stale__c", REL_TYPES.WRITES_FIELD);
+    e(
+      "ApexMethod:WidgetSweepBatch.start(1)",
+      "CustomField:Widget__c.Is_Stale__c",
+      REL_TYPES.READS_FIELD,
+    );
+    e("ApexClass:WidgetLogger", "CustomField:Widget__c.Colour__c", REL_TYPES.READS_FIELD);
+  });
+
+  it("lists the shared field after its users, not last, and names them", async () => {
+    const h = await hits({ text: "widget stale", k: 5 });
+    const q = h.map((x) => x.qname);
+    const field = h.find((x) => x.qname === "CustomField:Widget__c.Is_Stale__c") as Hit & {
+      sharedBy?: string[];
+    };
+    expect(field?.demoted).toBeUndefined();
+    expect(field?.sharedBy?.sort()).toEqual([
+      "ApexClass:WidgetSweepBatch",
+      "Flow:Widget_Mark_Stale",
+    ]);
+    expect(q.indexOf("CustomField:Widget__c.Is_Stale__c")).toBeGreaterThan(
+      Math.max(q.indexOf("Flow:Widget_Mark_Stale"), q.indexOf("ApexClass:WidgetSweepBatch")),
+    );
+    // A field only one top hit uses stays demoted.
+    expect(h.find((x) => x.qname === "CustomField:Widget__c.Colour__c")?.demoted).toBe(true);
+    expect(q[q.length - 1]).toBe("CustomField:Widget__c.Colour__c");
+  });
+});
+
 describe("find_similar: qname mode (fix round 1, I1)", () => {
   beforeEach(() => {
     doc("ApexClass:Bill", "bill run");

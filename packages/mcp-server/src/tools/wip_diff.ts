@@ -14,7 +14,7 @@ const inputSchema = z.object({
 defineTool({
   name: "wip_diff",
   description:
-    "Use to list how local source differs from the org: added, changed and removed components, no dependents.",
+    "Use to list how local source differs from the org: added, changed and removed components.",
   inputSchema,
   async execute(input) {
     const projectRoot = resolveWipProjectRoot(input.project_root ?? process.cwd());

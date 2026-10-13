@@ -4,7 +4,12 @@ import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../.
 import type { SnippetRecord } from "../../storage/interfaces.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
-import { emitClassRefEdges, emitStaticCallEdges, localVarNames } from "./class-refs.js";
+import {
+  emitClassRefEdges,
+  emitDescribeRefEdges,
+  emitStaticCallEdges,
+  localVarNames,
+} from "./class-refs.js";
 import {
   aggregateGovernorFacts,
   computeLoopRanges,
@@ -186,6 +191,7 @@ export class ApexTriggerParser implements Parser<ApexTriggerInput> {
     const triggerVars = localVarNames(decls);
     emitStaticCallEdges(ctx, triggerQname, callCode, undefined, edges, triggerVars);
     emitClassRefEdges(ctx, triggerQname, callCode, { localTypes, localVars: triggerVars }, edges);
+    emitDescribeRefEdges(ctx, triggerQname, callCode, edges);
     setDynamicSoqlSkips(
       nodes.find((n) => String(n.qualifiedName) === triggerQname),
       emitDynamicSoqlEdges(ctx, triggerQname, foldDynamicSoql(input.body), edges, 0),

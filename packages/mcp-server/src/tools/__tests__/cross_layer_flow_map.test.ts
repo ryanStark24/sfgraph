@@ -301,8 +301,28 @@ describe("cross_layer_flow_map: path sentence", () => {
   it("keeps the plain wording when the flow does not branch", async () => {
     const md = (await callTool("cross_layer_flow_map", { org: fix.orgId, entry: "LWC:myCmp" }))
       .markdown;
-    expect(inShortOf(md)).toContain("`myCmp` calls `Ctrl`; together they read 1 field.");
+    expect(inShortOf(md)).toContain("`myCmp` calls `Ctrl`; together they read 1 standard field.");
     expect(inShortOf(md)).not.toContain("One path");
+  });
+
+  // Cycle 3 T9 fix round 1: the path sentence counts standard fields apart, as the In short does.
+  it("counts custom and standard fields apart in the path sentence", async () => {
+    fix.addNode({ qualifiedName: "CustomField:Account.Tier__c", label: "CustomField" });
+    fix.addEdge({
+      srcQualifiedName: "ApexClass:Ctrl",
+      dstQualifiedName: "CustomField:Account.Tier__c",
+      relType: REL_TYPES.READS_FIELD,
+    });
+    fix.addEdge({
+      srcQualifiedName: "ApexClass:Ctrl",
+      dstQualifiedName: "CustomField:Account.Tier__c",
+      relType: REL_TYPES.WRITES_FIELD,
+    });
+    const md = (await callTool("cross_layer_flow_map", { org: fix.orgId, entry: "LWC:myCmp" }))
+      .markdown;
+    expect(inShortOf(md)).toContain(
+      "together they read 1 field and 1 standard field and write 1 field.",
+    );
   });
 
   it("says it is one path, and where the flow branches, when it branches", async () => {
@@ -317,7 +337,7 @@ describe("cross_layer_flow_map: path sentence", () => {
     const md = (await callTool("cross_layer_flow_map", { org: fix.orgId, entry: "LWC:myCmp" }))
       .markdown;
     expect(inShortOf(md)).toContain(
-      "One path through it: `myCmp` calls `Ctrl`, which calls `A`; together they read 1 field (the flow also branches at 1 step; all steps are listed under Technical details).",
+      "One path through it: `myCmp` calls `Ctrl`, which calls `A`; together they read 1 standard field (the flow also branches at 1 step; all steps are listed under Technical details).",
     );
   });
 });

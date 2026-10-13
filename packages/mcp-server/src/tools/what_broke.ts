@@ -45,7 +45,7 @@ const inputSchema = z.object({
 defineTool({
   name: "what_broke",
   description:
-    "Use for 'what broke' after a deploy or sync. Compares with the latest pre-sync snapshot (or `since`): changes and dependents, at risk (no tests) or covered.",
+    "Use for 'what broke' after a deploy or sync. Compares with the last pre-sync snapshot (or `since`): changes and dependents, untested or covered.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
@@ -247,7 +247,7 @@ defineTool({
         `**Changed components** (${changedUnits.length}${changedUnits.length > n ? `, first ${n}` : ""})`,
         ...changedUnits.slice(0, n).map((q) => `- ${q}`),
       );
-      md.push("", "**At risk (no tests)**", ...prod.map((q) => `- ${q}`));
+      if (prod.length) md.push("", "**At risk (no tests)**", ...prod.map((q) => `- ${q}`));
       if (tests.length > 0) {
         md.push("", "**Test classes depending on a change**", ...tests.map((q) => `- ${q}`));
       }
@@ -328,13 +328,11 @@ defineTool({
             },
             "tests",
           )}.`
-        : `Nothing relies on the changes within ${input.depth} ${input.depth === 1 ? "step" : "steps"}.`,
+        : `${ncCounts.dependents ? "No other components rely" : "Nothing relies"} on the changes within ${input.depth} ${input.depth === 1 ? "step" : "steps"}.`,
     ];
     const notes: string[] = [];
-    if (ncChanged + ncCounts.dependents > 0)
-      notes.push(
-        `${ncChanged + ncCounts.dependents} records or settings changed or rely on a change, and were not traced further`,
-      );
+    const records = recordsNote(ncChanged, ncCounts.dependents);
+    if (records) notes.push(records);
     if (seedsTruncated > 0) notes.push(`only the first ${seeds.length} changes were traced`);
     if (truncated) notes.push(`lists are cut at ${n} entries (the \`limit\` option)`);
     if (notes.length) inShort.push(`${andList(notes).replace(/^./, (c) => c.toUpperCase())}.`);
@@ -401,3 +399,17 @@ defineTool({
     };
   },
 });
+
+/**
+ * The In short note on records and settings (not components, not traced further): how many changed
+ * and how many rely on a change, each counted on its own.
+ */
+export function recordsNote(changed: number, depending: number): string | undefined {
+  if (!changed && !depending) return undefined;
+  const first = changed || depending;
+  const what = `${first} ${first === 1 ? "record or setting (not a component)" : "records or settings (not components)"}`;
+  if (changed && depending)
+    return `${what} changed and ${depending} ${depending === 1 ? "relies" : "rely"} on a change; they were not traced further`;
+  if (changed) return `${what} changed and ${changed === 1 ? "was" : "were"} not traced further`;
+  return `${what} ${depending === 1 ? "relies" : "rely"} on a change and ${depending === 1 ? "was" : "were"} not traced further`;
+}

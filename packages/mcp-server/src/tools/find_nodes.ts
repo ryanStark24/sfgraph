@@ -35,7 +35,7 @@ const inputSchema = z.object({
 defineTool({
   name: "find_nodes",
   description:
-    "Find nodes by name glob, case-insensitive: `*` any run (dots too), `?` one character, `{a,b}` alternatives, e.g. `ApexClass:*Handler`. At most 256 characters and 4 `*` runs.",
+    "Find nodes by name glob, case-insensitive: `*` any run (dots too), `?` one char, `{a,b}` alternatives, e.g. `ApexClass:*Handler`. At most 256 characters and 4 `*` runs.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });

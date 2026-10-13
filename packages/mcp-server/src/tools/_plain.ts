@@ -61,7 +61,7 @@ export const PLAIN_KINDS: Readonly<Record<string, KindEntry>> = {
   GenAiPlanner: K("Agent planner", "logic", "how an AI agent picks its steps"),
   GenAiPlugin: K("Agent topic", "logic", "a group of AI agent actions"),
   // OmniStudio / Vlocity.
-  OmniScript: K("OmniScript", "screen", "guided screen flow"),
+  OmniScript: K("OmniScript", "screen", "a guided screen flow"),
   IntegrationProcedure: K("Integration Procedure", "logic", "server-side data steps"),
   DataRaptor: K("DataRaptor", "data", "a data mapper that reads or writes records"),
   VlocityCard: K("FlexCard", "screen", "a summary card on a page"),
@@ -76,8 +76,8 @@ export const PLAIN_KINDS: Readonly<Record<string, KindEntry>> = {
     "logic",
     "standard-runtime server-side data steps",
   ),
-  OmniDataTransform: K("Omni data mapper", "data", "standard-runtime DataRaptor"),
-  OmniUiCard: K("Omni FlexCard", "screen", "standard-runtime summary card"),
+  OmniDataTransform: K("Omni data mapper", "data", "a standard-runtime DataRaptor"),
+  OmniUiCard: K("Omni FlexCard", "screen", "a standard-runtime summary card"),
   Remote: K("Remote action", "integration", "server code called from OmniStudio"),
   // Schema.
   CustomObject: K("Object", "data", "a table of records"),
@@ -287,8 +287,16 @@ export function plainKind(label: string, opts: { plural?: boolean } = {}): strin
   return `${short} (${opts.plural ? pluralGloss(e.gloss) : e.gloss})`;
 }
 
-/** A relationship type in plain words: "calls", "reads the field". */
-export function plainRel(relType: string): string {
+/** Apex code labels: their INSTANCE_OF link is a `new Foo()` in the code, not a record of a type. */
+const APEX_CODE = new Set(["ApexClass", "ApexMethod", "ApexTrigger", "TestMethod"]);
+
+/**
+ * A relationship type in plain words: "calls", "reads the field". With the label of the piece the
+ * link starts from, a link type that reads differently by source gets its own words (Apex
+ * `new Foo()` "creates a new", a metadata record "is a record of" its type).
+ */
+export function plainRel(relType: string, fromLabel?: string): string {
+  if (relType === "INSTANCE_OF" && fromLabel && APEX_CODE.has(fromLabel)) return "creates a new";
   return PLAIN_RELS[relType] ?? (spacedLower(relType) || "is linked to");
 }
 

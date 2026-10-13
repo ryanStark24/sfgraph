@@ -201,6 +201,77 @@ describe("T15 I-2: a reached method does not expand its class's other methods", 
     expect(got).not.toContain("ApexClass:Sibling");
   });
 
+  it("lists the data a sibling method reads or writes, without following its calls (cycle 3 T7)", async () => {
+    node("CustomObject:Acme_Order__c");
+    edge("ApexMethod:Ctrl.b(0)", REL_TYPES.READS_FIELD, "CustomField:Acme_Order__c.Status__c");
+    edge("ApexMethod:Ctrl.b(0)", REL_TYPES.EXECUTES_DML, "CustomObject:Acme_Invoice__c");
+    edge("ApexMethod:Ctrl.b(0)", REL_TYPES.CALLS, "ApexMethod:Sibling.run(0)");
+    edge("ApexMethod:Sibling.run(0)", REL_TYPES.READS_FIELD, "CustomField:Acme_Order__c.Total__c");
+    const got = ids(await map("LWC:e"));
+    expect(got).toEqual(
+      expect.arrayContaining([
+        "CustomField:Acme_Order__c.Status__c",
+        "CustomObject:Acme_Order__c",
+        "CustomObject:Acme_Invoice__c",
+      ]),
+    );
+    expect(got).not.toContain("ApexClass:Sibling");
+    expect(got).not.toContain("CustomField:Acme_Order__c.Total__c");
+  });
+
+  it("a constant or enum read does not list the other methods' data (T7 review I-1)", async () => {
+    node("CustomObject:Acme_X__c");
+    edge("ApexClass:AcmeConsts", REL_TYPES.CONTAINS_METHOD, "ApexMethod:AcmeConsts.load(0)");
+    edge("ApexMethod:AcmeConsts.load(0)", REL_TYPES.READS_FIELD, "CustomField:Acme_X__c.F__c");
+    fix.addEdge({
+      srcQualifiedName: "ApexMethod:Ctrl.a(0)",
+      dstQualifiedName: "ApexClass:AcmeConsts",
+      relType: REL_TYPES.REFERENCES as never,
+      attributes: { via: "static-member" },
+    } as never);
+    const got = ids(await map("LWC:e"));
+    expect(got).toContain("ApexClass:AcmeConsts");
+    expect(got).not.toContain("CustomField:Acme_X__c.F__c");
+    expect(got).not.toContain("CustomObject:Acme_X__c");
+  });
+
+  it("a constant read first, a method reached later: the other methods' data is listed", async () => {
+    edge("ApexClass:AcmeConsts", REL_TYPES.CONTAINS_METHOD, "ApexMethod:AcmeConsts.load(0)");
+    edge("ApexClass:AcmeConsts", REL_TYPES.CONTAINS_METHOD, "ApexMethod:AcmeConsts.run(0)");
+    edge("ApexMethod:AcmeConsts.load(0)", REL_TYPES.READS_FIELD, "CustomField:Acme_X__c.F__c");
+    fix.addEdge({
+      srcQualifiedName: "ApexClass:Ctrl",
+      dstQualifiedName: "ApexClass:AcmeConsts",
+      relType: REL_TYPES.REFERENCES as never,
+      attributes: { via: "static-member" },
+    } as never);
+    edge("ApexClass:OnPath", REL_TYPES.CALLS, "ApexMethod:AcmeConsts.run(0)");
+    expect(ids(await map("LWC:e"))).toContain("CustomField:Acme_X__c.F__c");
+  });
+
+  it("an ApexMethod entry does not list its own class's other methods' data", async () => {
+    edge("ApexClass:Ctrl", REL_TYPES.CONTAINS_METHOD, "ApexMethod:Ctrl.c(0)");
+    edge("ApexMethod:Ctrl.a(0)", REL_TYPES.CALLS, "ApexMethod:Ctrl.c(0)");
+    edge("ApexMethod:Ctrl.c(0)", REL_TYPES.READS_FIELD, "CustomField:Acme_Order__c.Total__c");
+    edge("ApexMethod:Ctrl.b(0)", REL_TYPES.READS_FIELD, "CustomField:Acme_Order__c.Status__c");
+    const got = ids(await map("ApexMethod:Ctrl.a(0)"));
+    // The called method is on the path; the uncalled one is not.
+    expect(got).toContain("CustomField:Acme_Order__c.Total__c");
+    expect(got).not.toContain("CustomField:Acme_Order__c.Status__c");
+  });
+
+  it("caps the other methods' data list and says so", async () => {
+    for (let i = 0; i < 130; i++)
+      edge("ApexMethod:Ctrl.b(0)", REL_TYPES.READS_FIELD, `CustomField:Acme_Order__c.F${i}__c`);
+    const r = await callTool("cross_layer_flow_map", { org: fix.orgId, entry: "LWC:e" });
+    const d = r.data as Data & { otherMethodsDataTruncated?: boolean };
+    const listed = ids(d).filter((q) => q.startsWith("CustomField:Acme_Order__c.F"));
+    expect(listed.length).toBe(100);
+    expect(d.otherMethodsDataTruncated).toBe(true);
+    expect(r.markdown).toContain("_truncated_ — the data used by other methods");
+    expect(r.markdown).toContain("not all the data used by their other methods is shown");
+  });
+
   it("the class as the entry still expands every method", async () => {
     const got = ids(await map("ApexClass:Ctrl"));
     expect(got).toEqual(expect.arrayContaining(["ApexClass:OnPath", "ApexClass:Sibling"]));

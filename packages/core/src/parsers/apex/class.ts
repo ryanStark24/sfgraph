@@ -9,6 +9,7 @@ import {
   NEW_INSTANCE_RE,
   STATIC_CALL_RE,
   emitClassRefEdges,
+  emitDescribeRefEdges,
   emitStaticCallEdges,
   isUserClassName,
   localVarNames,
@@ -200,7 +201,7 @@ function stripAnnotations(text: string): string {
 }
 
 /**
- * Header of the file's OUTER type: the first `class`/`interface` keyword at
+ * Header of the file's OUTER type: the first `class`/`interface`/`enum` keyword at
  * brace depth 0 (so an inner class can never be taken for the outer one),
  * with `extends` / `implements` clauses parsed by a depth-aware split so
  * generic arguments (`Database.Batchable<SObject>`) neither break the match
@@ -226,7 +227,8 @@ function extractClassHeader(src: string): {
     isTest: false,
     modifiers: [],
   };
-  const kwRe = /\b(class|interface)\s+([A-Za-z_]\w*)/gi;
+  // `enum` too: a top-level enum file declares its modifiers like a class does (cycle 3 T6 fix 1).
+  const kwRe = /\b(class|interface|enum)\s+([A-Za-z_]\w*)/gi;
   let depth = 0;
   let scanned = 0;
   let hit: RegExpExecArray | null = null;
@@ -441,8 +443,12 @@ function extractShadowsManaged(metaXml?: string): string[] {
  * v4: inline SOQL ends at its depth-0 `]` (relationship paths from the full
  * query) and `dynamicSoqlFieldsSkipped`.
  * v5: `dynamicSoqlFieldsSkipped` also counts rejected literal-FROM queries.
+ * v6: a top-level enum gets its `modifiers`; the empty-body stub gets `bodyUnavailable`.
+ * v7: a guard-bound dynamic FROM is no longer counted in `dynamicSoqlFieldsSkipped`.
+ * v8: the guard check ignores `(`, `||` and `&&` inside string literals, and
+ * treats `+=` and the like as a reassignment, so the skipped-field count can change.
  */
-export const APEX_NODE_HASH_SALT = "apex-attrs:v5";
+export const APEX_NODE_HASH_SALT = "apex-attrs:v8";
 
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
@@ -902,6 +908,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
             modifiers: [],
             isTest: false,
             apiVersion: extractApiVersion(input.metaXml),
+            bodyUnavailable: true,
             ...shadowAttr,
           },
           fileHash,
@@ -1257,6 +1264,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       };
       emitStaticCallEdges(ctx, methodQname, callCode, effectiveName, edges, methodScope.localVars);
       emitClassRefEdges(ctx, methodQname, callCode, methodScope, edges);
+      emitDescribeRefEdges(ctx, methodQname, callCode, edges);
       const queries = rawDecl === null ? [] : foldDynamicSoql(rawDecl);
       methodQueries.push(...queries);
       setDynamicSoqlSkips(
@@ -1277,6 +1285,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       const rest = outside.join("");
       emitStaticCallEdges(ctx, classQname, rest, effectiveName, edges, refScope.localVars);
       emitClassRefEdges(ctx, classQname, rest, refScope, edges);
+      emitDescribeRefEdges(ctx, classQname, rest, edges);
       // Dynamic SOQL outside method bodies (constants, constructors): every
       // folded query in the file minus those already attributed to a method.
       const left = new Map<string, number>();

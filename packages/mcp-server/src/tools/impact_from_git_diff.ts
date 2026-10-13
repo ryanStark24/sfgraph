@@ -10,6 +10,7 @@ import {
   kindCounts,
   linkFacts,
   listWithMore,
+  methodCountNote,
   nameOf,
   pieceCount,
   pieceRole,
@@ -31,7 +32,7 @@ const MD_LIST_MAX = 100;
 defineTool({
   name: "impact_from_git_diff",
   description:
-    "Use for 'what does this PR break'. Maps a git `diff` to components; lists them and what depends on them, `depth` hops back.",
+    "Use for 'what does this PR break'. Maps a git `diff` to components and their dependents, `depth` hops back.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
@@ -322,7 +323,10 @@ defineTool({
             : role || pieceRole({ kind: u.label });
         return { name: u.qualifiedName, kind: u.label, role: said };
       }),
-      details: mdLines.join("\n"),
+      details:
+        impactedList.length !== units.size && impactedList.some((n) => isMethodRow(n))
+          ? `${methodCountNote(impactedList.length)}\n\n${mdLines.join("\n")}`
+          : mdLines.join("\n"),
       next,
     });
     return {

@@ -162,7 +162,7 @@ describe("explain_code: prose pinned to its ce9bcf4 output (fix round 1, M9) plu
       "## What T does
 
       **In short**
-      \`T\` is an Apex trigger (code that runs when records change), at line 1 of its source; its source is under Technical details. Its code uses 4 pieces directly: 1 Apex class (server code), 1 field, 1 object (a table of records) and 1 flow (point-and-click automation). No explanation is saved yet.
+      \`T\` is an Apex trigger (code that runs when records change), at line 1 of its source; its source is under Technical details. It runs before \`Account\` records are created. Its code uses 4 pieces directly: 1 Apex class (server code), 1 field, 1 object (a table of records) and 1 flow (point-and-click automation). No explanation is saved yet.
 
       **Picture**
 

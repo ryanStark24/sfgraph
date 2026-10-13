@@ -188,7 +188,7 @@ const inputSchema = z.object({
 defineTool({
   name: "explain_code",
   description:
-    "Use to explain an Apex method (`ApexMethod:Svc.run(2)`), trigger or Flow, not a class: its source, a cached explanation and its direct references.",
+    "Use to explain an Apex method (`ApexMethod:Svc.run(2)`), trigger or Flow, not a class: source, cached explanation and direct references.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
@@ -323,6 +323,9 @@ defineTool({
                 : `, at lines ${snippet.startLine} to ${snippet.endLine} of its source`
               : ""
           }; its source is under Technical details.`,
+          ...(kind === "ApexTrigger"
+            ? [triggerWhen(snippet.sourceText) ?? ""].filter(Boolean)
+            : []),
           usesSentence(references),
           showCached
             ? "A saved explanation is shown with the source."
@@ -351,3 +354,35 @@ defineTool({
     };
   },
 });
+
+const TRIGGER_VERB: Readonly<Record<string, string>> = {
+  insert: "created",
+  update: "updated",
+  delete: "deleted",
+  undelete: "restored",
+};
+
+/**
+ * When an Apex trigger runs, in plain words, from its header (`trigger T on Case (before insert,
+ * after update)`): "It runs before `Case` records are created, and after they are updated."
+ * Undefined when the header cannot be read.
+ */
+export function triggerWhen(source: string): string | undefined {
+  const m = /^\s*trigger\s+\w+\s+on\s+([\w.]+)\s*\(([^)]*)\)/im.exec(source);
+  if (!m) return undefined;
+  const byTiming = new Map<string, string[]>();
+  for (const ev of m[2]!.split(",")) {
+    const [timing, op] = ev.trim().toLowerCase().split(/\s+/);
+    const verb = op ? TRIGGER_VERB[op] : undefined;
+    if ((timing !== "before" && timing !== "after") || !verb) continue;
+    const g = byTiming.get(timing) ?? byTiming.set(timing, []).get(timing)!;
+    if (!g.includes(verb)) g.push(verb);
+  }
+  if (!byTiming.size) return undefined;
+  const or = (xs: string[]) =>
+    xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} or ${xs.at(-1)}`;
+  const parts = [...byTiming].map(([timing, verbs], i) =>
+    i === 0 ? `${timing} \`${m[1]}\` records are ${or(verbs)}` : `${timing} they are ${or(verbs)}`,
+  );
+  return `It runs ${parts.join(", and ")}.`;
+}

@@ -15,7 +15,7 @@ const inputSchema = z.object({
 defineTool({
   name: "wip_test_gap",
   description:
-    "Use for 'which local changes lack tests': changed or added Apex classes and triggers, and dependents, no test covers.",
+    "Use for 'which local changes lack tests': changed or added Apex classes and triggers, and dependents, with no test.",
   inputSchema,
   async execute(input) {
     const projectRoot = resolveWipProjectRoot(input.project_root ?? process.cwd());

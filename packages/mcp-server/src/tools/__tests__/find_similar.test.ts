@@ -194,7 +194,7 @@ describe("find_similar", () => {
         results: [
           { qname: "ApexClass:Focal", label: "ApexClass", distance: 0 },
           { qname: "ApexClass:Near", label: "ApexClass", distance: 0.2 }, // cos ≈ 0.98
-          { qname: "ApexClass:Far", label: "ApexClass", distance: 1.5 }, // cos clamps to 0 < 0.3
+          { qname: "ApexClass:Far", label: "ApexClass", distance: 1.5 }, // cos clamps to 0 < 0.4
         ],
       }),
     );
