@@ -206,8 +206,8 @@ export interface GraphStore {
   listFtsDocs?(orgId: OrgId): Iterable<{ qname: string; label: string; body: string }>;
   /** Task 11c: per-member rows of a filesystem source (delta ingest). */
   listMemberRows?(orgId: OrgId): MemberRow[];
-  /** Task 11c: replace every member row of the org (a full ingest). */
-  replaceMemberRows?(orgId: OrgId, rows: readonly MemberRow[]): void;
+  /** Task 11c: replace every member row of the org (a full ingest), stamped with its generation. */
+  replaceMemberRows?(orgId: OrgId, rows: readonly MemberRow[], generation?: string): void;
   /** Task 11c: drop every member row of the org (an aborted full ingest). */
   clearMemberRows?(orgId: OrgId): void;
   /** Task 11c: delete every outgoing edge (any pass) of `srcs`. */

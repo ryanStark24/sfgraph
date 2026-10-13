@@ -15,6 +15,7 @@ import {
   isQuarantinedRow,
   memberContentHash,
   memberFailureStamp,
+  memberRowsGeneration,
   ownedQnames,
   rowHashMatches,
 } from "./member-rows.js";
@@ -65,6 +66,12 @@ export interface DeltaPlan {
   unchanged: number;
   /** The graph has no member rows (built by an older sfgraph, or interrupted). */
   legacy: boolean;
+  /**
+   * The member rows were written by another sfgraph build (or by one that did
+   * not record its build): unchanged members still carry that build's parser
+   * output, so only a full rebuild gives the graph a rebuild would.
+   */
+  staleGeneration: { recorded: string | null; current: string } | null;
   /** Every present member, in source order. */
   members: IndexedMember[];
   /** Loaded content of the added / changed members. */
@@ -92,6 +99,7 @@ export async function planDelta(
   store: SqliteGraphStore,
   orgId: OrgId,
   source: MetadataSource,
+  generation: string = memberRowsGeneration(),
 ): Promise<DeltaPlan> {
   if (!source.iterIndexed) throw new Error("delta: the metadata source cannot be indexed");
   const rows = new Map(store.listMemberRows(orgId).map((r) => [r.key, r]));
@@ -101,6 +109,7 @@ export async function planDelta(
     deleted: [],
     unchanged: 0,
     legacy: rows.size === 0,
+    staleGeneration: null,
     members: [],
     loaded: new Map(),
     refreshed: [],
@@ -108,6 +117,11 @@ export async function planDelta(
     rows,
   };
   if (plan.legacy) return plan;
+  const recorded = store.getMemberRowsGeneration(orgId);
+  if (recorded !== generation) {
+    plan.staleGeneration = { recorded, current: generation };
+    return plan;
+  }
   const seen = new Set<string>();
   for await (const m of source.iterIndexed()) {
     if (seen.has(m.key)) continue;
@@ -539,8 +553,13 @@ export async function runDeltaIngest(opts: RunDeltaOpts): Promise<RunDeltaResult
   try {
     const { lockDir: _l, fullRebuild, report = console.log, ...live } = opts;
     const plan = await planDelta(opts.graphStore, orgId, opts.metadataSource);
-    if (plan.legacy) {
-      report("delta: graph has no member hashes (built by an older sfgraph); running full rebuild");
+    if (plan.legacy || plan.staleGeneration) {
+      const g = plan.staleGeneration;
+      report(
+        g
+          ? `delta: graph was built by ${g.recorded ?? "an earlier sfgraph build"}, not ${g.current}; running full rebuild so every member gets the current parsers`
+          : "delta: graph has no member hashes (built by an older sfgraph); running full rebuild",
+      );
       await fullRebuild();
       return {
         kind: "full",

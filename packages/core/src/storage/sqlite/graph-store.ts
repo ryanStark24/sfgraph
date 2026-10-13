@@ -1908,8 +1908,11 @@ export class SqliteGraphStore implements GraphStore {
   // qnames it owns (nodes it emitted plus the sources of edges it emitted).
   // `_sfgraph_delta_pending` holds the qnames an in-flight delta is
   // rewriting; it is cleared when the delta completes, so a leftover row
-  // means the previous delta was interrupted. Both are created on first use
-  // (no schema-version bump: an older sfgraph simply ignores them).
+  // means the previous delta was interrupted. `_sfgraph_member_generation`
+  // records which sfgraph build wrote the rows: a delta under a different
+  // build would mix old and new parser output, so it rebuilds instead. All
+  // are created on first use (no schema-version bump: an older sfgraph simply
+  // ignores them).
 
   private deltaTablesReady = false;
   private ensureDeltaTables(): void {
@@ -1921,6 +1924,10 @@ export class SqliteGraphStore implements GraphStore {
         hash TEXT NOT NULL,
         owned TEXT NOT NULL,
         PRIMARY KEY (org_id, member_key)
+      );
+      CREATE TABLE IF NOT EXISTS _sfgraph_member_generation (
+        org_id TEXT PRIMARY KEY,
+        generation TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS _sfgraph_delta_pending (
         org_id TEXT PRIMARY KEY,
@@ -1947,13 +1954,33 @@ export class SqliteGraphStore implements GraphStore {
     });
   }
 
-  /** Replace every member row of the org (a full ingest). */
-  replaceMemberRows(orgId: OrgId, rows: readonly MemberRow[]): void {
+  /**
+   * Replace every member row of the org (a full ingest), stamped with the
+   * `generation` (sfgraph build) whose parsers produced them.
+   */
+  replaceMemberRows(orgId: OrgId, rows: readonly MemberRow[], generation?: string): void {
     this.ensureDeltaTables();
     this.db.transaction(() => {
       this.stmt("DELETE FROM _sfgraph_members WHERE org_id = ?").run(orgId);
       this.writeMemberRows(orgId, rows);
+      if (generation === undefined) {
+        this.stmt("DELETE FROM _sfgraph_member_generation WHERE org_id = ?").run(orgId);
+      } else {
+        this.stmt(
+          `INSERT INTO _sfgraph_member_generation(org_id, generation) VALUES (?, ?)
+           ON CONFLICT(org_id) DO UPDATE SET generation = excluded.generation`,
+        ).run(orgId, generation);
+      }
     })();
+  }
+
+  /** The generation the org's member rows were written by, or null when unknown. */
+  getMemberRowsGeneration(orgId: OrgId): string | null {
+    this.ensureDeltaTables();
+    const r = this.stmt("SELECT generation FROM _sfgraph_member_generation WHERE org_id = ?").get(
+      orgId,
+    ) as { generation: string } | undefined;
+    return r?.generation ?? null;
   }
 
   upsertMemberRows(orgId: OrgId, rows: readonly MemberRow[]): void {
@@ -1981,6 +2008,7 @@ export class SqliteGraphStore implements GraphStore {
   clearMemberRows(orgId: OrgId): void {
     this.ensureDeltaTables();
     this.stmt("DELETE FROM _sfgraph_members WHERE org_id = ?").run(orgId);
+    this.stmt("DELETE FROM _sfgraph_member_generation WHERE org_id = ?").run(orgId);
   }
 
   getDeltaPending(orgId: OrgId): string[] | null {

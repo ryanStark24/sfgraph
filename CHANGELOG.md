@@ -95,6 +95,7 @@ These changes follow each tool's description and generic grammar rules (label, r
 - **MCP during a sync or rebuild.** A tool result now warns when a sync or rebuild of the org it read is running. It does not refuse, and direct handler calls get no warning.
 - **Ingest robustness.**
   - A member whose content crashes parse workers repeatedly is quarantined, instead of being retried on every delta.
+  - A delta on a graph whose member rows were written by a different sfgraph build now runs a full rebuild, with a message. Member hashes cover only file content, so after an upgrade a delta used to re-parse only the edited files and keep the old parsers' output for everything else. This matters because `start_ingest_job` defaults to `--delta`. The rows record the `sfgraph-core` version that wrote them.
   - An aborted member stream is reported in the ingest result.
   - A resolver or dead-code failure during a delta is never recorded as a clean sync.
   - The DataRaptor relationship resolver never takes over an edge a parser owns.

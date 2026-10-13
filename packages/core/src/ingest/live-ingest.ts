@@ -60,6 +60,7 @@ import {
   isQuarantinedRow,
   memberContentHash,
   memberFailureStamp,
+  memberRowsGeneration,
   ownedQnames,
   quarantinedOutcome,
 } from "./member-rows.js";
@@ -1979,7 +1980,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     if (deltaHooks) deltaHooks.finalize();
     else if (memberRows && !streamAborted) {
       try {
-        graph.replaceMemberRows?.(resolved.orgId, [...memberRows.values()]);
+        graph.replaceMemberRows?.(resolved.orgId, [...memberRows.values()], memberRowsGeneration());
       } catch (e) {
         logger.warn("live-ingest: member rows write failed", { err: (e as Error).message });
       }

@@ -19,6 +19,7 @@ import { FilesystemMetadataSource } from "../../extractors/filesystem/index.js";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";
 import { type RunDeltaResult, runDeltaIngest } from "../delta.js";
 import { type LiveIngestOpts, liveIngest } from "../live-ingest.js";
+import { memberRowsGeneration } from "../member-rows.js";
 import { offlineResolvedOrg } from "../offline-org.js";
 
 /**
@@ -374,6 +375,37 @@ describe("project delta ingestion: same graph as a full rebuild", () => {
       ),
     ).toBe(true);
     await expectSameAsRebuild(ctx);
+  });
+
+  it("11b. rows from another sfgraph build -> full rebuild, then deltas resume", async () => {
+    const ctx = await baseline();
+    expect(ctx.store.getMemberRowsGeneration(orgId())).toBe(memberRowsGeneration());
+    // An upgrade: rows written by an older build (parsers may have changed).
+    ctx.store.db.prepare("UPDATE _sfgraph_member_generation SET generation = 'core@0.0.1'").run();
+    let rebuilt = 0;
+    const r = await delta(ctx, { onFullRebuild: () => rebuilt++ });
+    expect(r.kind).toBe("full");
+    expect(rebuilt).toBe(1);
+    expect(
+      (console.log as unknown as { mock: { calls: unknown[][] } }).mock.calls.some((c) =>
+        String(c[0]).startsWith("delta: graph was built by core@0.0.1, not "),
+      ),
+    ).toBe(true);
+    // The rebuild stamps the current build, so the next run is a real delta.
+    expect(ctx.store.getMemberRowsGeneration(orgId())).toBe(memberRowsGeneration());
+    w(`${MD}/classes/NewSvc.cls`, "public class NewSvc { }");
+    expect((await delta(ctx)).kind).toBe("delta");
+    await expectSameAsRebuild(ctx);
+  });
+
+  it("11c. rows with no recorded build -> full rebuild", async () => {
+    const ctx = await baseline();
+    ctx.store.db.prepare("DELETE FROM _sfgraph_member_generation").run();
+    let rebuilt = 0;
+    const r = await delta(ctx, { onFullRebuild: () => rebuilt++ });
+    expect(r.kind).toBe("full");
+    expect(rebuilt).toBe(1);
+    await ctx.store.close();
   });
 
   it("12. concurrent: the second run refuses with the lock message", async () => {

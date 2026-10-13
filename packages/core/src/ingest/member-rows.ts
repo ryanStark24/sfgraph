@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ParseResult } from "../parsers/contract.js";
 import type { MemberParse } from "./parse-member.js";
 
@@ -12,6 +15,37 @@ export function ownedQnames(result: Pick<ParseResult, "nodes" | "edges">): strin
   for (const n of result.nodes) out.add(String(n.qualifiedName));
   for (const e of result.edges) out.add(String(e.srcQualifiedName));
   return [...out];
+}
+
+let generation: string | undefined;
+/**
+ * The generation stamped on member rows: the sfgraph-core version. A member's
+ * hash covers only its content, not the parsers that read it, so a delta
+ * under another build would keep the old build's output for every unchanged
+ * member. Delta compares this to the stamp and rebuilds on a mismatch. Any
+ * release can change parser output, so the version (not a hand-bumped salt)
+ * is the safe key; "unknown" never matches, which errs towards a rebuild.
+ */
+export function memberRowsGeneration(): string {
+  if (generation !== undefined) return generation;
+  generation = "unknown";
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  // src/ingest or dist/ingest → ../../package.json
+  for (const p of [
+    path.join(here, "..", "..", "package.json"),
+    path.join(here, "..", "package.json"),
+  ]) {
+    try {
+      const pkg = JSON.parse(readFileSync(p, "utf8")) as { name?: string; version?: string };
+      if (pkg.name === "@ryanstark24/sfgraph-core" && pkg.version) {
+        generation = `core@${pkg.version}`;
+        break;
+      }
+    } catch {
+      // try the next candidate
+    }
+  }
+  return generation;
 }
 
 /** Content hash of a member (what its parse depends on). */
