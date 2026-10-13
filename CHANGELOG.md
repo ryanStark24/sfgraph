@@ -6,6 +6,7 @@
 
 ### Upgrade notes (readiness round: audit fixes + ingest fast path)
 
+- **Node.js 22 or later is required.** Node 20 is end-of-life (April 2026), and `better-sqlite3` ships no prebuilt Windows binary for it, so installs on Windows + Node 20 fail. Every package's `engines` is now `>=22`, and CI tests Node 22 only.
 - **Re-ingest with `sfgraph ingest --rebuild` after upgrading.**
   - Parser hash salts changed: Apex `apex-attrs:v2`, LWC `lwc-attrs:v3`, CustomObject `custom-object-attrs:v2`. Until both sides are re-ingested, `cross_org_diff`, `point_in_time_diff` and the wip-impact tools report every Apex/LWC/CustomObject node as changed when comparing a graph ingested before the upgrade with one ingested after.
   - A full `--project` ingest now removes nodes whose source file was deleted (ghost sweep). It refuses to sweep when the source yields no members, and it keeps the nodes of members that failed to read or parse.

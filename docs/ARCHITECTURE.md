@@ -263,7 +263,7 @@ The `sf-explain-code` skill drives the loop: resolve qname â†’ staleness_check â
 
 ## 9. Windows support
 
-sfgraph runs on Windows under Node 20+. The install path writes `npx.cmd` (not `npx`) into the MCP host configuration so Claude Code / Cursor on Windows invoke the right binary. Paths in the config files use forward slashes, which both Node and the host IDEs handle on Windows.
+sfgraph runs on Windows under Node 22+. The install path writes `npx.cmd` (not `npx`) into the MCP host configuration so Claude Code / Cursor on Windows invoke the right binary. Paths in the config files use forward slashes, which both Node and the host IDEs handle on Windows.
 
 Caveats:
 - `~` expansion is done by sfgraph's `getSfgraphPaths()`; the host IDE never sees a tilde.

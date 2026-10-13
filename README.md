@@ -32,7 +32,7 @@ A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-s
 Verify:
 
 ```bash
-node --version          # v20+ (v22 LTS recommended)
+node --version          # v22+
 sf org list             # at least one org marked as default
 ```
 
