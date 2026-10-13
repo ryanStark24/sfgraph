@@ -70,6 +70,7 @@ describe("applyHeapGrowth (cycle 2 T2)", () => {
       const pct = applyHeapGrowth();
       process.stdout.write(JSON.stringify({ pct, seen }));`;
     const env: NodeJS.ProcessEnv = { ...process.env, SFGRAPH_HEAP_GROWING_PERCENT: "40" };
+    // biome-ignore lint/performance/noDelete: the child must not inherit NODE_OPTIONS at all
     delete env.NODE_OPTIONS;
     const r = spawnSync(
       process.execPath,

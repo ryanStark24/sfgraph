@@ -69,7 +69,10 @@ describe("dead-code score cache is versioned", () => {
     expect(readDeadCodeScores(db, ORG)).toBeNull();
     const r = loadDeadCodeScores(store, ORG, db);
     expect(r.source).toBe("live");
-    expect(r.rows.map((x) => x.qualifiedName)).toEqual(["ApexClass:Orphan", "ApexClass:OrphanTest"]);
+    expect(r.rows.map((x) => x.qualifiedName)).toEqual([
+      "ApexClass:Orphan",
+      "ApexClass:OrphanTest",
+    ]);
   });
 
   it("a stamp from another algorithm version is stale", () => {

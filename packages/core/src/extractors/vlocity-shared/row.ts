@@ -25,7 +25,10 @@ export function tryParseJsonField(value: unknown): unknown {
  *  known JSON-blob fields (`PropertySet`, `Definition`, `Content`,
  *  `DefinitionFileContent`). Returns a plain object the parsers' walk()
  *  can traverse. */
-export function normaliseRow(row: Record<string, unknown>, namespace: string): Record<string, unknown> {
+export function normaliseRow(
+  row: Record<string, unknown>,
+  namespace: string,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(row)) {
     const key = normaliseFieldName(k, namespace);
@@ -47,7 +50,11 @@ export function normaliseRow(row: Record<string, unknown>, namespace: string): R
 /** Canonical DataPack member name for a normalised Vlocity row (keys `Type`,
  *  `SubType`, `Language`). OmniScript/IP are keyed by Type_SubType[_Language]
  *  rather than record Id; other types by Name. */
-export function memberNameFor(vdpType: string, row: Record<string, unknown>, onFallback?: (id: string) => void): string {
+export function memberNameFor(
+  vdpType: string,
+  row: Record<string, unknown>,
+  onFallback?: (id: string) => void,
+): string {
   const s = (k: string) => (typeof row[k] === "string" ? (row[k] as string).trim() : "");
   const fallback = String(row.Name ?? row.Id ?? "");
   if (vdpType === "OmniScript" || vdpType === "IntegrationProcedure") {

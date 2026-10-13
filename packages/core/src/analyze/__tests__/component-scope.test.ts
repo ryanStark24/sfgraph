@@ -52,8 +52,7 @@ describe("component / record-config label split", () => {
   it("the two sides are disjoint and every label carries a reason", () => {
     for (const l of COMPONENT_LABELS) expect(RECORD_CONFIG_LABELS.has(l)).toBe(false);
     for (const [l, why] of Object.entries(COMPONENT_LABEL_REASONS)) expect(why, l).toBeTruthy();
-    for (const [l, why] of Object.entries(RECORD_CONFIG_LABEL_REASONS))
-      expect(why, l).toBeTruthy();
+    for (const [l, why] of Object.entries(RECORD_CONFIG_LABEL_REASONS)) expect(why, l).toBeTruthy();
   });
 
   it("every traversal containment label is a component", () => {

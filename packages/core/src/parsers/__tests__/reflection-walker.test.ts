@@ -2,8 +2,8 @@ import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared"
 import { describe, expect, it } from "vitest";
 import type { NodeFact } from "../../domain/index.js";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";
-import { resolveVlocityNameMatches } from "../vlocity/name-match-resolver.js";
 import { walkBlobsForReferences } from "../generic/reflection-walker.js";
+import { resolveVlocityNameMatches } from "../vlocity/name-match-resolver.js";
 import { makeTestCtx } from "./_harness.js";
 
 const ORG = asOrgId("org_reflection");

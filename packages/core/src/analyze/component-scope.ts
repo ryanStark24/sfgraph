@@ -201,7 +201,11 @@ export function scopeNodeDiff(
   },
 ): ScopedNodeDiff {
   const rows: Array<{ q: string; label: string | undefined; bucket: Bucket }> = [
-    ...diff.added.map((x) => ({ q: String(x.qualifiedName), label: x.label, bucket: "added" as const })),
+    ...diff.added.map((x) => ({
+      q: String(x.qualifiedName),
+      label: x.label,
+      bucket: "added" as const,
+    })),
     ...diff.removed.map((x) => ({
       q: String(x.qualifiedName),
       label: x.label,

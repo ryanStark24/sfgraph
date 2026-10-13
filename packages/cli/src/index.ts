@@ -524,7 +524,9 @@ export function buildProgram(): Command {
 /** Seams for tests; production uses the real heap setting and program. */
 export interface RunDeps {
   applyHeapGrowth?: () => number | null;
-  buildProgram?: () => Pick<Command, "parseAsync"> | { parseAsync(argv: string[]): Promise<unknown> };
+  buildProgram?: () =>
+    | Pick<Command, "parseAsync">
+    | { parseAsync(argv: string[]): Promise<unknown> };
 }
 
 /**

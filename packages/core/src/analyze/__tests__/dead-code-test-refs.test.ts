@@ -1,5 +1,5 @@
-import type Database from "better-sqlite3";
 import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
+import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { EdgeFact, NodeFact } from "../../domain/index.js";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";
@@ -70,10 +70,11 @@ describe("dead code counts test references as references", () => {
     expect(by.has("ApexClass:TestUtil")).toBe(false);
     expect(by.has("ApexClass:Used")).toBe(false);
     expect(by.has("ApexClass:Prod")).toBe(false);
-    expect(findDeadCode(store, ORG).map((n) => String(n.qualifiedName)).sort()).toEqual([
-      "ApexClass:OnlyTestedTest",
-      "ApexClass:Orphan",
-    ]);
+    expect(
+      findDeadCode(store, ORG)
+        .map((n) => String(n.qualifiedName))
+        .sort(),
+    ).toEqual(["ApexClass:OnlyTestedTest", "ApexClass:Orphan"]);
     expect(scoreDeadCode(cls("ApexClass:X", true), Date.now(), 0, true).reasons).toContain(
       "test_class",
     );
@@ -90,7 +91,9 @@ describe("dead code counts test references as references", () => {
     );
     expect(reasons("ApexClass:OnlyTested")).toContain("referenced_only_by_tests");
     expect(reasons("ApexClass:OnlyTested")).not.toContain("no_incoming_edges");
-    const live = loadDeadCodeScores(store, ORG, null).rows.map((r) => r.qualifiedName).sort();
+    const live = loadDeadCodeScores(store, ORG, null)
+      .rows.map((r) => r.qualifiedName)
+      .sort();
     expect(live).toEqual(rows.map((r) => r.qualifiedName).sort());
   });
 });

@@ -35,7 +35,11 @@ beforeEach(async () => {
   fix = await createFixture();
   (fix.ctx as { db?: unknown }).db = db();
   fix.addNode({ qualifiedName: "ApexClass:Orphan", label: "ApexClass", lastModifiedAt: ancient });
-  fix.addNode({ qualifiedName: "ApexClass:OnlyTested", label: "ApexClass", lastModifiedAt: ancient });
+  fix.addNode({
+    qualifiedName: "ApexClass:OnlyTested",
+    label: "ApexClass",
+    lastModifiedAt: ancient,
+  });
   fix.addNode({
     qualifiedName: "ApexClass:OnlyTestedTest",
     label: "ApexClass",
@@ -181,7 +185,13 @@ describe("review N1: data.dead has one row shape on the live and cached paths", 
     expect(d.scored).toBe(false);
     expect(d.live).toBe(true);
     expect(d.dead).toEqual([
-      { qualifiedName: "DataRaptor:Orphan", isTest: false, score: null, confidence: null, reasons: [] },
+      {
+        qualifiedName: "DataRaptor:Orphan",
+        isTest: false,
+        score: null,
+        confidence: null,
+        reasons: [],
+      },
     ]);
   });
 });

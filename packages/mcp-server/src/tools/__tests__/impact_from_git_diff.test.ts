@@ -229,14 +229,26 @@ describe("impact_from_git_diff hub class under component-level hops (cycle 2 T3 
     for (let m = 0; m < METHODS; m++) {
       const method = `ApexMethod:Util.m${m}(0)`;
       fix.addNode({ qualifiedName: method, label: "ApexMethod" });
-      fix.addEdge({ srcQualifiedName: "ApexClass:Util", dstQualifiedName: method, relType: REL_TYPES.CONTAINS_METHOD });
+      fix.addEdge({
+        srcQualifiedName: "ApexClass:Util",
+        dstQualifiedName: method,
+        relType: REL_TYPES.CONTAINS_METHOD,
+      });
       for (let c = 0; c < CALLERS_PER_METHOD; c++) {
         const caller = `ApexClass:Caller_${m}_${c}`;
         fix.addNode({ qualifiedName: caller, label: "ApexClass" });
-        fix.addEdge({ srcQualifiedName: caller, dstQualifiedName: method, relType: REL_TYPES.CALLS });
+        fix.addEdge({
+          srcQualifiedName: caller,
+          dstQualifiedName: method,
+          relType: REL_TYPES.CALLS,
+        });
       }
     }
-    fix.addEdge({ srcQualifiedName: "ApexMethod:Util.m0(0)", dstQualifiedName: "ApexClass:Foo", relType: REL_TYPES.CALLS });
+    fix.addEdge({
+      srcQualifiedName: "ApexMethod:Util.m0(0)",
+      dstQualifiedName: "ApexClass:Foo",
+      relType: REL_TYPES.CALLS,
+    });
   }
 
   it("stays bounded by the hub's real callers at depth 2", async () => {
@@ -264,8 +276,10 @@ describe("impact_from_git_diff hub class under component-level hops (cycle 2 T3 
       expect(r.markdown).toContain("_truncated_");
       expect(data.impacted.length).toBeLessThanOrEqual(60);
     } finally {
-      if (prev === undefined) delete process.env.SFGRAPH_TRAVERSAL_NODE_CAP;
-      else process.env.SFGRAPH_TRAVERSAL_NODE_CAP = prev;
+      if (prev === undefined) {
+        // biome-ignore lint/performance/noDelete: env var restoration requires removing the key
+        delete process.env.SFGRAPH_TRAVERSAL_NODE_CAP;
+      } else process.env.SFGRAPH_TRAVERSAL_NODE_CAP = prev;
     }
   });
 });

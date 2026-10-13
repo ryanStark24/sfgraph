@@ -9,7 +9,9 @@ import { callTool } from "./_runner.js";
  */
 let fix: Fixture;
 
-const diffFor = (cls: string) => `diff --git a/force-app/main/default/classes/${cls}.cls b/force-app/main/default/classes/${cls}.cls
+const diffFor = (
+  cls: string,
+) => `diff --git a/force-app/main/default/classes/${cls}.cls b/force-app/main/default/classes/${cls}.cls
 --- a/force-app/main/default/classes/${cls}.cls
 +++ b/force-app/main/default/classes/${cls}.cls
 @@ -1 +1 @@
