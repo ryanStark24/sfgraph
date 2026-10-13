@@ -1,13 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_HEAP_GROWING_PERCENT, applyHeapGrowth } from "../heap.js";
 import { run } from "../index.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../../../..");
+const tsxLoader = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
 
 function rec() {
   const calls: string[] = [];
@@ -74,7 +76,8 @@ describe("applyHeapGrowth (cycle 2 T2)", () => {
     delete env.NODE_OPTIONS;
     const r = spawnSync(
       process.execPath,
-      ["--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", script],
+      // tsx loads heap.ts on every supported Node; --experimental-strip-types is 22.6+.
+      ["--import", tsxLoader, "--no-warnings", "--input-type=module", "-e", script],
       { env, encoding: "utf8" },
     );
     expect(r.status, r.stderr).toBe(0);
