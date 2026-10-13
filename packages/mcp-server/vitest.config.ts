@@ -14,6 +14,10 @@ export default defineConfig({
     // (a 3,000-node diff timed out at 5 s). Headroom there only; elsewhere
     // keep the default so a real hang still fails fast.
     testTimeout: process.platform === "win32" ? 30_000 : 5_000,
+    // Fewer parallel workers on Windows: the small runner was so overloaded
+    // that vitest's own worker->main reporting timed out ("Timeout calling
+    // onTaskUpdate") even though every test passed.
+    ...(process.platform === "win32" ? { maxWorkers: 2 } : {}),
     env: {
       SFGRAPH_DATA_DIR: path.join(root, "data"),
       SFGRAPH_CACHE_DIR: path.join(root, "cache"),
