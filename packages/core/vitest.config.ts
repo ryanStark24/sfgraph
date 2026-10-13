@@ -10,6 +10,11 @@ const root = mkdtempSync(path.join(tmpdir(), "sfg-core-test-"));
 
 export default defineConfig({
   test: {
+    // GitHub's Windows runners run the timer-heavy extractor tests about 10x
+    // slower than Linux (0.1-0.7 s there; past the 5 s default here, and a
+    // different set each run). Give Windows headroom; elsewhere keep the
+    // default so a real hang still fails fast.
+    testTimeout: process.platform === "win32" ? 30_000 : 5_000,
     env: {
       SFGRAPH_DATA_DIR: path.join(root, "data"),
       SFGRAPH_CACHE_DIR: path.join(root, "cache"),

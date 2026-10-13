@@ -244,10 +244,12 @@ describe("iterLwc — W1.5-04 parallelization", () => {
       { Id: "01pB", DeveloperName: "B" },
       { Id: "01pC", DeveloperName: "C" },
     ];
+    // Gaps well above timer granularity and start skew: on a loaded Windows
+    // runner a 60 ms gap let A finish before C.
     const behaviors: Record<string, FakeBehavior> = {
-      A: { delayMs: 80 },
-      B: { delayMs: 160 },
-      C: { delayMs: 20 },
+      A: { delayMs: 150 },
+      B: { delayMs: 300 },
+      C: { delayMs: 10 },
     };
     const conn = makeConn(bundles, behaviors);
     const out = await collectWithTimings(iterLwc(conn));
