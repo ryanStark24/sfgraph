@@ -182,7 +182,15 @@ describe("early stop entry (N2): first member's refusal, matched count", () => {
     const { conn } = orgWith(
       members,
       (n) => (idx(n) >= 10 && idx(n) < 20 ? new Error("socket hang up (ECONNRESET)") : gack()),
-      (batch) => (batch.some((n) => idx(n) < 10) ? 30 : 0),
+      // Order: batch 1's transient failure (after its retries, one timer
+      // tick each: ~16 ms on Windows), then batch 0's refusals, then the
+      // rest, still pending so the early stop has something to stop. With
+      // batch 0 at 30 ms and the rest at 0, Windows retries overtook batch 0.
+      (batch) => {
+        if (batch.some((n) => idx(n) < 10)) return 120;
+        if (batch.some((n) => idx(n) >= 10 && idx(n) < 20)) return 0;
+        return 240;
+      },
     );
     const { error, stop, failures } = await run(conn);
     expect(failures[0]?.error).toBeInstanceOf(Error);
