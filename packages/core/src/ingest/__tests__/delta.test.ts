@@ -387,6 +387,8 @@ describe("project delta ingestion: same graph as a full rebuild", () => {
     expect(r.kind).toBe("full");
     expect(rebuilt).toBe(1);
     expect(ctx.store.getMemberRowsGeneration(orgId())).toBe(memberRowsGeneration());
+    // Close before afterEach removes the dir: Windows cannot delete an open file (EBUSY).
+    await ctx.store.close();
   });
 
   it("11b. rows from another sfgraph build -> full rebuild, then deltas resume", async () => {
