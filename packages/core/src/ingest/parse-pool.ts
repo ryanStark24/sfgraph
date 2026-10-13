@@ -40,6 +40,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { Logger } from "@ryanstark24/sfgraph-shared";
 import type { RawMember } from "../extractors/interfaces/metadata-source.js";
+import { createHeapCappedWorker } from "../util/worker-heap-cap.js";
 import { type MemberParse, type ParseCtxBase, parseMember } from "./parse-member.js";
 
 /**
@@ -502,10 +503,13 @@ export async function* parsePool<M extends RawMember>(
     const spawn = (): Slot<M> | null => {
       let worker: Worker;
       try {
-        worker = new Worker(url, {
-          workerData: { base } satisfies ParseWorkerData,
-          ...(resourceLimits ? { resourceLimits } : {}),
-        });
+        const make = (): Worker =>
+          new Worker(url, {
+            workerData: { base } satisfies ParseWorkerData,
+            ...(resourceLimits ? { resourceLimits } : {}),
+          });
+        // A process-wide --max-old-space-size would otherwise override the cap.
+        worker = resourceLimits ? createHeapCappedWorker(make) : make();
       } catch (e) {
         // A constructor failure (bad URL, no threads) will not get better.
         logger.warn("live-ingest: parse worker failed to start; parsing on the main thread", {

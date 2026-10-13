@@ -60,6 +60,7 @@
   - The index rebuild at the end of a bulk ingest sorts on disk (`temp_store=FILE`), then restores the previous setting.
   - The dangling-edge audit streams its edges instead of loading every one.
   - The SQLite page cache is capped at 64 MB and mmap at 64 MiB. MCP tool latency moved by at most +5.4%.
+  - The 256 MB parse-worker heap cap now also holds when the process runs with `--max-old-space-size` (often set in `NODE_OPTIONS` for the `sf` CLI). That V8 flag is process-wide and used to override every worker's cap, so one huge member could grow a worker to gigabytes. The flag is cleared only while a capped worker starts, so the main heap and other workers keep it.
 
 ### Tool accuracy (readiness round)
 
