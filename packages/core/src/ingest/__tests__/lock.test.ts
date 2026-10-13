@@ -140,6 +140,14 @@ describe("ingest lock", () => {
         procStartMs: 86_400_000,
       }),
     );
+    if (process.platform === "win32") {
+      // No `ps` start time on Windows (pidStartMs is null): a live pid is
+      // never judged reused, so the lock is conservatively kept.
+      expect(() => acquireIngestLock({ dir, orgId: "00Dabc", orgLabel: "dev" })).toThrow(
+        IngestLockedError,
+      );
+      return;
+    }
     const lock = acquireIngestLock({ dir, orgId: "00Dabc", orgLabel: "dev" });
     expect(JSON.parse(readFileSync(p, "utf8")).pid).toBe(process.pid);
     lock.release();

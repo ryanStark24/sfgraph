@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { asOrgId } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteGraphStore } from "../sqlite/graph-store.js";
@@ -35,7 +35,7 @@ async function killedIngest(): Promise<void> {
   const script = path.join(workDir, "child.mts");
   writeFileSync(
     script,
-    `import { SqliteGraphStore } from ${JSON.stringify(graphStoreTs)};
+    `import { SqliteGraphStore } from ${JSON.stringify(pathToFileURL(graphStoreTs).href)};
 const g = new SqliteGraphStore({ dbPath: ${JSON.stringify(dbPath)}, backupDir: ${JSON.stringify(path.join(workDir, "b"))} });
 await g.init();
 g.upsertOrg(${JSON.stringify(org())});

@@ -49,6 +49,8 @@ function repo(): void {
 }
 
 const mark = (name: string) => path.join(marks, name);
+/** Repo-relative path with `/` separators (gitChangedFiles returns native absolute paths). */
+const rel = (f: string) => path.relative(dir, f).split(path.sep).join("/");
 const touchCmd = (name: string) => `touch '${mark(name)}'`;
 
 describe("gitChangedFiles never runs repo-configured commands", () => {
@@ -58,9 +60,7 @@ describe("gitChangedFiles never runs repo-configured commands", () => {
     writeFileSync(path.join(dir, "force-app/classes/A.cls"), "public class A { }");
     const changed = gitChangedFiles(dir);
     expect(existsSync(mark("fsmonitor"))).toBe(false);
-    expect(changed && [...changed].map((f) => path.relative(dir, f))).toEqual([
-      "force-app/classes/A.cls",
-    ]);
+    expect(changed && [...changed].map(rel)).toEqual(["force-app/classes/A.cls"]);
   });
 
   for (const driver of ["clean", "process"] as const) {
@@ -84,9 +84,7 @@ describe("gitChangedFiles never runs repo-configured commands", () => {
       for (const m of ["filter", "textconv", "extdiff"]) {
         expect(existsSync(mark(m)), m).toBe(false);
       }
-      expect(changed && [...changed].map((f) => path.relative(dir, f)).sort()).toEqual([
-        "force-app/classes/A.cls",
-      ]);
+      expect(changed && [...changed].map(rel).sort()).toEqual(["force-app/classes/A.cls"]);
     });
   }
 
@@ -114,9 +112,7 @@ describe("gitChangedFiles never runs repo-configured commands", () => {
     writeFileSync(path.join(sub, "x.txt"), "3");
     writeFileSync(path.join(dir, "force-app/classes/A.cls"), "public class A { }");
     const changed = gitChangedFiles(dir);
-    expect(changed && [...changed].map((f) => path.relative(dir, f)).sort()).toEqual([
-      "force-app/classes/A.cls",
-    ]);
+    expect(changed && [...changed].map(rel).sort()).toEqual(["force-app/classes/A.cls"]);
   });
 
   it("logs at debug when the git signal is skipped for an unsafe driver name", () => {

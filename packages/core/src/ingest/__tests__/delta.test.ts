@@ -891,7 +891,7 @@ describe("perf scenarios (round 4): a member the parser rejects", () => {
     await delta(ctx);
     await fullIngest(other.store, false);
     const rows = (p: string): string[] =>
-      sideTables(p).members.filter((m) => m.includes("/pages/Portal.page"));
+      sideTables(p).members.filter((m) => /[\\/]pages[\\/]Portal\.page/.test(m));
     expect(rows(ctx.dbPath)).toEqual(rows(other.dbPath));
     // Its hash is recorded (not left empty for a retry every delta).
     expect(rows(ctx.dbPath)[0]?.split("\t")[2]).not.toBe("");
@@ -918,7 +918,7 @@ describe("fix round 5: a parse-pool failure is retried, not hashed (N4-1)", () =
     return { workers: 1, workerUrl: f, minMembers: 0 };
   };
   const utilRow = (dbPath: string): string | undefined =>
-    sideTables(dbPath).members.find((m) => m.includes("/classes/Util.cls\t"));
+    sideTables(dbPath).members.find((m) => /[\\/]classes[\\/]Util\.cls\t/.test(m));
 
   it("full: a member whose worker crashed gets an empty row and the next delta parses it", async () => {
     const dbPath = path.join(dir, "delta.sqlite");
@@ -1053,7 +1053,7 @@ describe("T15 N5-1: repeated worker crashes on one content hash quarantine the m
     return { workers: 1, workerUrl: f, minMembers: 0, ...(stats ? { stats } : {}) };
   };
   const utilRow = (ctx: Ctx) =>
-    ctx.store.listMemberRows(orgId()).find((r) => r.key.endsWith("/classes/Util.cls"));
+    ctx.store.listMemberRows(orgId()).find((r) => /[\\/]classes[\\/]Util\.cls$/.test(r.key));
   const two =
     "public class Util {\n  public static void log(String s) { }\n  public static void two() { }\n}\n";
 
