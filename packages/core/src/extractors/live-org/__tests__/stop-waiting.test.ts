@@ -256,9 +256,16 @@ describe("W1.5-03: integration with keystone (AsyncLocalStorage propagation)", (
     const wrappedA = bulkRetrieveTesting.failSoft("wedge:A", wedgedFactory, undefined, coordinator);
     const wrappedB = bulkRetrieveTesting.failSoft("wedge:B", wedge2Factory, undefined, coordinator);
 
+    // Start B 50 ms after A. Both watchdogs have the same budget, so started
+    // together their order was scheduling jitter, and when B tripped first
+    // the cap evicted B instead of A (seen in CI under parallel load).
+    const later = async function* (src: AsyncIterable<RawMember>): AsyncIterable<RawMember> {
+      await new Promise((r) => setTimeout(r, 50));
+      yield* src;
+    };
     // Drain through the parallel merger with concurrency=2 so both wedges
     // enter their bodies and trip the watchdog.
-    const merger = bulkRetrieveTesting.mergeAsyncIterablesParallel([wrappedA, wrappedB], {
+    const merger = bulkRetrieveTesting.mergeAsyncIterablesParallel([wrappedA, later(wrappedB)], {
       concurrency: 2,
     });
 
