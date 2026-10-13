@@ -48,6 +48,11 @@ export interface VectorSink {
    * always embedding.
    */
   getContentHash?(orgId: OrgId, qname: QualifiedName): Sha256 | null;
+  /**
+   * Run `fn` in one transaction. When present, each batch's vectors are
+   * written in one commit instead of one per vector. Optional.
+   */
+  transaction?<T>(fn: () => T): T;
 }
 
 export interface EmbeddingQueueOpts {
@@ -237,8 +242,8 @@ export class EmbeddingQueue {
     this.buffer = [];
     this.bufferChars = 0;
     const { entries, vectors, misses } = this.prepare(batch);
-    let written = 0;
     const missSet = new Set(misses);
+    const hits: Array<[PreparedEntry, Float32Array]> = [];
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i] as PreparedEntry;
       if (missSet.has(i)) {
@@ -246,9 +251,10 @@ export class EmbeddingQueue {
         this.bufferChars += e.item.text.length;
         continue;
       }
-      if (this.writeOne(e, vectors[i] as Float32Array)) written += 1;
-      this.settle(e.item);
+      hits.push([e, vectors[i] as Float32Array]);
     }
+    const written = this.writeMany(hits).filter(Boolean).length;
+    for (const [e] of hits) this.settle(e.item);
     this.notifyCapacity();
     return written;
   }
@@ -365,12 +371,12 @@ export class EmbeddingQueue {
       // Cache hits are written now: with sequence-based supersede the write
       // order no longer matters, and this keeps them out of abandon().
       const missSet = new Set(misses);
+      const hits: Array<[PreparedEntry, Float32Array]> = [];
       for (let i = 0; i < entries.length; i++) {
-        if (missSet.has(i)) continue;
-        const e = entries[i] as PreparedEntry;
-        this.writeOne(e, vectors[i] as Float32Array);
-        this.settle(e.item);
+        if (!missSet.has(i)) hits.push([entries[i] as PreparedEntry, vectors[i] as Float32Array]);
       }
+      this.writeMany(hits);
+      for (const [e] of hits) this.settle(e.item);
       if (misses.length > 0) {
         // Length-sort (stable) for inference only, to cut padding.
         misses.sort((a, b) => {
@@ -407,15 +413,23 @@ export class EmbeddingQueue {
           const order = [...misses].sort((a, b) => a - b);
           const byIndex = new Map<number, Float32Array | undefined>();
           misses.forEach((i, k) => byIndex.set(i, sorted?.[k]));
+          // Decide, then write the batch in one transaction, then settle.
+          // Only the latest emission of a key is ever written, so settling
+          // after the writes changes nothing.
+          const toWrite: Array<[PreparedEntry, Float32Array]> = [];
           for (const i of order) {
             const e = entries[i] as PreparedEntry;
             const v = byIndex.get(i);
-            if (v && this.isLatest(e.item)) {
-              if (this.writeOne(e, v)) computed.push({ hash: e.hash, vector: v });
-            } else if (v) {
-              this.stats.superseded += 1;
-            }
-            this.settle(e.item);
+            if (v && this.isLatest(e.item)) toWrite.push([e, v]);
+            else if (v) this.stats.superseded += 1;
+          }
+          try {
+            this.writeMany(toWrite).forEach((ok, k) => {
+              const [e, v] = toWrite[k] as [PreparedEntry, Float32Array];
+              if (ok) computed.push({ hash: e.hash, vector: v });
+            });
+          } finally {
+            for (const i of order) this.settle((entries[i] as PreparedEntry).item);
           }
         } catch (e) {
           this.opts.onError?.(e as Error);
@@ -493,6 +507,25 @@ export class EmbeddingQueue {
    *  vector, the embedder's failure fallback: a zero vector sits at a fixed
    *  mid-range similarity and outranks genuine weak matches in find_similar,
    *  so no vector is better than a misleading one. */
+  /**
+   * Write a batch of vectors in one transaction when the sink supports it.
+   * If the transaction fails, the batch is retried row by row (upserts are
+   * idempotent), so a failure behaves as it did before batching: rows before
+   * the bad one are kept and the error propagates.
+   */
+  private writeMany(pairs: ReadonlyArray<[PreparedEntry, Float32Array]>): boolean[] {
+    const run = (): boolean[] => pairs.map(([e, v]) => this.writeOne(e, v));
+    const sink = this.opts.vectorStore;
+    if (pairs.length > 1 && typeof sink.transaction === "function") {
+      try {
+        return sink.transaction(run);
+      } catch {
+        // Fall through to the unbatched path, which surfaces the error.
+      }
+    }
+    return run();
+  }
+
   private writeOne(e: PreparedEntry, v: Float32Array): boolean {
     if (isAllZero(v)) return false;
     this.opts.vectorStore.upsertNodeVector(

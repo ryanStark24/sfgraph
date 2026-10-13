@@ -133,3 +133,45 @@ describe("EmbeddingQueue — content hash + zero-vector guard (audit fixes)", ()
     expect(sink.calls.map((c) => (c as { qname: string }).qname)).toEqual(["A:2"]);
   });
 });
+
+describe("EmbeddingQueue batched writes", () => {
+  it("writes each batch in one sink transaction when the sink has one", async () => {
+    const sink = makeSink();
+    let txns = 0;
+    const tx: VectorSink = {
+      ...sink,
+      upsertNodeVector: sink.upsertNodeVector,
+      transaction: <T>(fn: () => T): T => {
+        txns += 1;
+        return fn();
+      },
+    };
+    const q = new EmbeddingQueue({ vectorStore: tx, batchSize: 8, embed: embedOnes });
+    for (let i = 0; i < 16; i++) q.push({ qname: `A:${i}`, text: `t${i}`, orgId: "o", label: "A" });
+    await q.drain();
+    expect(sink.calls.length).toBe(16);
+    expect(txns).toBe(2);
+  });
+
+  it("falls back to row-by-row writes when the transaction fails", async () => {
+    const sink = makeSink();
+    const errors: Error[] = [];
+    const tx: VectorSink = {
+      ...sink,
+      upsertNodeVector: sink.upsertNodeVector,
+      transaction: () => {
+        throw new Error("SQLITE_BUSY");
+      },
+    };
+    const q = new EmbeddingQueue({
+      vectorStore: tx,
+      batchSize: 4,
+      embed: embedOnes,
+      onError: (e) => errors.push(e),
+    });
+    for (let i = 0; i < 4; i++) q.push({ qname: `A:${i}`, text: `t${i}`, orgId: "o", label: "A" });
+    await q.drain();
+    expect(sink.calls.length).toBe(4);
+    expect(errors).toEqual([]);
+  });
+});

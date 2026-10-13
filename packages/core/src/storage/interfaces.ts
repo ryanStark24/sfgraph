@@ -286,6 +286,8 @@ export interface VectorStore {
   /** content_hash of the node's stored vector, or null. Lets the embedding
    *  queue skip re-running the model when the text is unchanged. */
   getContentHash(orgId: OrgId, qname: QualifiedName): Sha256 | null;
+  /** Run `fn` in one transaction, so a batch of upserts costs one commit. */
+  transaction?<T>(fn: () => T): T;
 }
 
 export interface NodeDiff {

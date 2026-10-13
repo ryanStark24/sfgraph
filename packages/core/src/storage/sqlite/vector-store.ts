@@ -35,6 +35,8 @@ export class SqliteVectorStore implements VectorStore {
   private readonly ownsDb: boolean;
   private readonly opts: SqliteVectorStoreOptions;
   private initialized = false;
+  /** Hot-path statements, prepared once per connection. */
+  private readonly stmts = new Map<string, Database.Statement>();
 
   constructor(opts: SqliteVectorStoreOptions) {
     this.opts = opts;
@@ -99,6 +101,24 @@ export class SqliteVectorStore implements VectorStore {
     if (this.ownsDb) this.db.close();
   }
 
+  private stmt(sql: string): Database.Statement {
+    let st = this.stmts.get(sql);
+    if (!st) {
+      st = this.db.prepare(sql);
+      this.stmts.set(sql, st);
+    }
+    return st;
+  }
+
+  /**
+   * Run `fn` in one transaction (a savepoint when one is already open). The
+   * embedding queue writes each batch through this, so a batch costs one
+   * commit instead of one per vector.
+   */
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
+
   private toBlob(vec: Float32Array): Buffer {
     return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
   }
@@ -111,30 +131,26 @@ export class SqliteVectorStore implements VectorStore {
     contentHash: Sha256,
   ): VectorUpsertResult {
     validateLabel(label);
-    const meta = this.db
-      .prepare(
-        "SELECT content_hash, vec_rowid FROM _sfgraph_node_vector_meta WHERE org_id = ? AND qualified_name = ?",
-      )
-      .get(orgId, qname) as { content_hash: string; vec_rowid: number } | undefined;
+    const meta = this.stmt(
+      "SELECT content_hash, vec_rowid FROM _sfgraph_node_vector_meta WHERE org_id = ? AND qualified_name = ?",
+    ).get(orgId, qname) as { content_hash: string; vec_rowid: number } | undefined;
     if (meta && meta.content_hash === contentHash) {
       return { inserted: false, deduped: true };
     }
     const blob = this.toBlob(vector);
     const apply = this.db.transaction(() => {
       if (meta) {
-        this.db.prepare("DELETE FROM _sfgraph_node_vectors WHERE rowid = ?").run(meta.vec_rowid);
+        this.stmt("DELETE FROM _sfgraph_node_vectors WHERE rowid = ?").run(meta.vec_rowid);
       }
-      const info = this.db
-        .prepare("INSERT INTO _sfgraph_node_vectors(org_id, embedding) VALUES (?, ?)")
-        .run(orgId, blob);
+      const info = this.stmt(
+        "INSERT INTO _sfgraph_node_vectors(org_id, embedding) VALUES (?, ?)",
+      ).run(orgId, blob);
       const newRowid = Number(info.lastInsertRowid);
-      this.db
-        .prepare(
-          `INSERT INTO _sfgraph_node_vector_meta(org_id, qualified_name, content_hash, label, vec_rowid)
+      this.stmt(
+        `INSERT INTO _sfgraph_node_vector_meta(org_id, qualified_name, content_hash, label, vec_rowid)
            VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(org_id, qualified_name) DO UPDATE SET content_hash=excluded.content_hash, label=excluded.label, vec_rowid=excluded.vec_rowid`,
-        )
-        .run(orgId, qname, contentHash, label, newRowid);
+      ).run(orgId, qname, contentHash, label, newRowid);
     });
     apply();
     return { inserted: true, deduped: false };
@@ -212,11 +228,9 @@ export class SqliteVectorStore implements VectorStore {
   }
 
   getContentHash(orgId: OrgId, qname: QualifiedName): Sha256 | null {
-    const row = this.db
-      .prepare(
-        "SELECT content_hash FROM _sfgraph_node_vector_meta WHERE org_id = ? AND qualified_name = ?",
-      )
-      .get(orgId, qname) as { content_hash: string } | undefined;
+    const row = this.stmt(
+      "SELECT content_hash FROM _sfgraph_node_vector_meta WHERE org_id = ? AND qualified_name = ?",
+    ).get(orgId, qname) as { content_hash: string } | undefined;
     return row ? asSha256(row.content_hash) : null;
   }
 

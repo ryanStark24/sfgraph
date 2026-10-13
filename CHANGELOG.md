@@ -55,6 +55,7 @@
   - A full rebuild with a warm cache, embeddings included, takes 57 s.
   - Peak RSS is about 1.95 GB with 4 parse workers (it was 3.0 GB before the memory fixes below).
 - **Results on a large live Vlocity org** (60,376 members, warm embedding cache): graph ready in 429 s and 453 s end to end (was 3,488 s), with a peak RSS of 2.78 GiB (was 4.0 GB).
+- **Embedding vectors are written in one transaction per batch**, with cached statements, instead of one commit and three fresh statement prepares per vector. Writing 5,000 vectors takes ~270 ms instead of ~900 ms. If a batch transaction fails, the batch is retried row by row.
 - **Lower ingest memory.** The graph output is unchanged:
   - Each parse worker clears the Apex parser's ANTLR DFA cache every 50 parses. This was the largest saving, about 1 GB.
   - The index rebuild at the end of a bulk ingest sorts on disk (`temp_store=FILE`), then restores the previous setting.
