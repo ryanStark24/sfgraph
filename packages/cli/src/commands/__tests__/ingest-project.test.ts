@@ -7,7 +7,7 @@ import { ConsoleLogger } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type IngestOpts,
-  buildProjectIngestOpts,
+  buildProjectIngestOpts as buildProjectIngestOptsRaw,
   ingestCmd,
   ingestLocks,
   reportEmbeddingOutcome,
@@ -27,6 +27,17 @@ const vecAvailable = await (async () => {
 
 let proj: string;
 let data: string;
+/**
+ * Stores opened by buildProjectIngestOpts, closed before the temp dirs are
+ * removed: Windows cannot delete an open SQLite file (EBUSY).
+ */
+const opened: Array<{ close(): Promise<void> }> = [];
+const buildProjectIngestOpts: typeof buildProjectIngestOptsRaw = async (...args) => {
+  const o = await buildProjectIngestOptsRaw(...args);
+  if (o.vectorStore) opened.push(o.vectorStore as unknown as { close(): Promise<void> });
+  if (o.graphStore) opened.push(o.graphStore as { close(): Promise<void> });
+  return o;
+};
 beforeEach(() => {
   proj = mkdtempSync(path.join(tmpdir(), "sfg-proj-"));
   data = mkdtempSync(path.join(tmpdir(), "sfg-data-"));
@@ -38,7 +49,8 @@ beforeEach(() => {
   );
   writeFileSync(path.join(proj, "force-app/main/default/classes/Foo.cls"), "public class Foo {}");
 });
-afterEach(() => {
+afterEach(async () => {
+  for (const s of opened.splice(0)) await s.close().catch(() => {});
   vi.restoreAllMocks();
   // biome-ignore lint/performance/noDelete: env var must be truly unset
   delete process.env.SFGRAPH_EMBED_MODEL_PATH;

@@ -20,7 +20,12 @@ vi.mock("node:child_process", async () => {
     ...actual,
     spawn: vi.fn(() => ({ on: () => {}, unref: () => {} })),
     spawnSync: vi.fn((cmd: string) => {
-      if (cmd === "lsof" || cmd === "ss" || cmd === "netstat") {
+      if (cmd === "netstat") {
+        // Windows: serve parses `netstat -ano` LISTENING rows.
+        const row = `  TCP    127.0.0.1:7777         0.0.0.0:0              LISTENING       ${FOREIGN_PID}`;
+        return { status: 0, stdout: `${row}\r\n`, stderr: "", error: undefined };
+      }
+      if (cmd === "lsof" || cmd === "ss") {
         return { status: 0, stdout: `${FOREIGN_PID}\n`, stderr: "", error: undefined };
       }
       // Any process-identity probe (ps, wmic, ...) sees an unrelated dev server.
@@ -35,6 +40,21 @@ vi.mock("node:child_process", async () => {
 });
 
 let killSpy: { mock: { calls: unknown[][] } };
+
+/** Kill attempts on FOREIGN_PID: process.kill signals (Unix) or taskkill (Windows). */
+async function killsOfForeign(): Promise<string[]> {
+  const { spawnSync } = await import("node:child_process");
+  const signals = killSpy.mock.calls
+    .filter((c) => c[0] === FOREIGN_PID && c[1] !== 0 && c[1] !== undefined)
+    .map((c) => String(c[1]));
+  const taskkills = vi
+    .mocked(spawnSync)
+    .mock.calls.filter(
+      (c) => c[0] === "taskkill" && (c[1] as string[] | undefined)?.includes(String(FOREIGN_PID)),
+    )
+    .map(() => "taskkill");
+  return [...signals, ...taskkills];
+}
 
 beforeEach(() => {
   holder.cmd = "node /home/dev/other-app/node_modules/.bin/vite --port 7777\n";
@@ -62,10 +82,7 @@ describe("audit rel-09: serve must not kill a foreign process on the port", () =
       serveCmd({ port: 7777, host: "127.0.0.1", open: false }).catch(() => {}),
       new Promise((r) => setTimeout(r, 3000)),
     ]);
-    const signalled = killSpy.mock.calls.filter(
-      (c) => c[0] === FOREIGN_PID && c[1] !== 0 && c[1] !== undefined,
-    );
-    expect(signalled).toEqual([]);
+    expect(await killsOfForeign()).toEqual([]);
   });
 
   it("reports the foreign pid and exits non-zero instead", async () => {
@@ -87,7 +104,8 @@ describe("audit rel-09: serve must not kill a foreign process on the port", () =
       serveCmd({ port: 7777, host: "127.0.0.1", open: false }).catch(() => {}),
       new Promise((r) => setTimeout(r, 1500)),
     ]);
-    expect(killSpy.mock.calls).toContainEqual([FOREIGN_PID, "SIGTERM"]);
+    // SIGTERM on Unix; Windows has no signals, so serve uses taskkill /F.
+    expect(await killsOfForeign()).toContain(process.platform === "win32" ? "taskkill" : "SIGTERM");
   });
 });
 

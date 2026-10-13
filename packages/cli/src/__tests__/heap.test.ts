@@ -68,7 +68,7 @@ describe("applyHeapGrowth (cycle 2 T2)", () => {
       const seen = [];
       const orig = v8.setFlagsFromString;
       v8.setFlagsFromString = (f) => { seen.push(f); orig(f); };
-      const { applyHeapGrowth } = await import(${JSON.stringify(heapTs)});
+      const { applyHeapGrowth } = await import(${JSON.stringify(pathToFileURL(heapTs).href)});
       const pct = applyHeapGrowth();
       process.stdout.write(JSON.stringify({ pct, seen }));`;
     const env: NodeJS.ProcessEnv = { ...process.env, SFGRAPH_HEAP_GROWING_PERCENT: "40" };
