@@ -10,6 +10,10 @@ const root = mkdtempSync(path.join(tmpdir(), "sfg-mcp-server-test-"));
 
 export default defineConfig({
   test: {
+    // Windows CI runners are several times slower on the heavier store tests
+    // (a 3,000-node diff timed out at 5 s). Headroom there only; elsewhere
+    // keep the default so a real hang still fails fast.
+    testTimeout: process.platform === "win32" ? 30_000 : 5_000,
     env: {
       SFGRAPH_DATA_DIR: path.join(root, "data"),
       SFGRAPH_CACHE_DIR: path.join(root, "cache"),

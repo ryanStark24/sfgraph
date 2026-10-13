@@ -36,6 +36,31 @@ afterEach(async () => {
   vi.resetModules();
 });
 
+/**
+ * What `sfgraph ingest --rebuild` does to the graph file: rename it to a
+ * backup, or unlink it (`--no-backup`), sidecars included. On Windows a file
+ * another connection (the cached tool context) has open cannot be moved, so
+ * the swap these tests cover cannot happen there: the move is refused and the
+ * CLI reports it (onGraphFile). Returns false then.
+ */
+function moveAside(dbPath: string, mode: "rename" | "unlink"): boolean {
+  if (process.platform === "win32") {
+    const move = () =>
+      mode === "unlink" ? unlinkSync(dbPath) : renameSync(dbPath, `${dbPath}.bak`);
+    expect(move).toThrow(/EBUSY|EPERM|EACCES/);
+    return false;
+  }
+  for (const s of ["", "-wal", "-shm"]) {
+    try {
+      if (mode === "unlink") unlinkSync(dbPath + s);
+      else renameSync(dbPath + s, `${dbPath}.bak${s}`);
+    } catch {
+      /* absent */
+    }
+  }
+  return true;
+}
+
 describe("review I2: cached tool context follows a rebuild file swap", () => {
   it("reopens every store on the new file after dbPath is renamed away and recreated", async () => {
     const { getToolContext, setToolContextFactory } = await import("../context.js");
@@ -47,14 +72,7 @@ describe("review I2: cached tool context follows a rebuild file swap", () => {
     expect(ctx1.graphStore.getNode(asOrgId(ORG), asQualifiedName("NewGraph"))).toBeNull();
 
     const dbPath = path.join(workDir, `${ORG}.sqlite`);
-    renameSync(dbPath, `${dbPath}.bak`);
-    for (const s of ["-wal", "-shm"]) {
-      try {
-        renameSync(dbPath + s, `${dbPath}.bak${s}`);
-      } catch {
-        /* absent */
-      }
-    }
+    if (!moveAside(dbPath, "rename")) return;
     await seedIngestedOrgDb(workDir, ORG, "swap");
     const g = new SqliteGraphStore({ dbPath, backupDir: path.join(workDir, "bkp") });
     await g.init();
@@ -115,14 +133,7 @@ describe("review I2: cached tool context follows a rebuild file swap", () => {
       const ctx1 = await getToolContext({ orgId: ORG });
       expect(ctx1.graphStore.getNode(org, asQualifiedName("OldGraph"))).not.toBeNull();
 
-      for (const s of ["", "-wal", "-shm"]) {
-        try {
-          if (mode === "unlink (--no-backup)") unlinkSync(dbPath + s);
-          else renameSync(dbPath + s, `${dbPath}.bak${s}`);
-        } catch {
-          /* absent */
-        }
-      }
+      if (!moveAside(dbPath, mode === "unlink (--no-backup)" ? "unlink" : "rename")) return;
       // The rebuild, in progress: org row, live sync owner, open bulk window.
       await seedIngestedOrgDb(workDir, ORG, "swap");
       const g = new SqliteGraphStore({ dbPath, backupDir: path.join(workDir, "bkp") });

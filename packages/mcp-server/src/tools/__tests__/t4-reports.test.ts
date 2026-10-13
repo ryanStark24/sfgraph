@@ -293,6 +293,8 @@ const detailsOf = (md: string): string => {
 /** Run-time values (timestamps, snapshot ids, temp paths) made equal between runs. */
 const stableText = (t: string): string =>
   (exportsDir ? t.split(exportsDir).join("<exports>") : t)
+    // The saved path uses the native separator (`\` on Windows).
+    .replace(/<exports>\\+/g, "<exports>/")
     .replace(/snap_[0-9a-f-]{36}/g, "snap_X")
     .replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z/g, "T")
     .replace(/\b(manual|scheduled)-T\b/g, "$1-T");
