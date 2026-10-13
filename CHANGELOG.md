@@ -103,6 +103,8 @@ These changes follow each tool's description and generic grammar rules (label, r
 
 ### Accuracy and safety fixes (audit)
 
+- **`ingest --rebuild` on Windows while the graph is open** (by `sfgraph serve` or an MCP client) now fails with a clear message to stop those first, instead of a raw `EBUSY`/`EPERM`. Windows cannot rename or delete a file another process has open. Nothing is moved when it fails.
+- **The vector store closes its database when the sqlite-vec extension fails to load**, instead of leaving the file open (and locked on Windows) behind the `E_VECTOR_EXTENSION` error.
 - **Aura components** (filesystem and project ingests). `AuraComponent:<bundle>` nodes now have these edges:
   - `CONTROLLED_BY` to the Apex controller. A foreign namespace becomes `ApexClass:ns.Cls`.
   - `EMBEDS_AURA` and `EMBEDS_LWC` for `<c:name>`. These resolve against the bundles that exist; letter case is only the tiebreak.

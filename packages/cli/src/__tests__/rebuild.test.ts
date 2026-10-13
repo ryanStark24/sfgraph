@@ -203,3 +203,24 @@ describe("ingest --rebuild file handling", () => {
     }
   });
 });
+
+describe("rebuild: graph file in use (Windows EBUSY/EPERM)", () => {
+  const busy = (code: string) => () => {
+    throw Object.assign(new Error(`${code}: resource busy or locked`), { code });
+  };
+
+  it("explains a locked graph file instead of surfacing the raw error", async () => {
+    const { onGraphFile } = await import("../commands/ingest.js");
+    for (const code of ["EBUSY", "EPERM", "EACCES"]) {
+      expect(() => onGraphFile("/data/00Dx.sqlite", busy(code))).toThrow(
+        /in use by another process \(.+\): \/data\/00Dx\.sqlite\. Stop `sfgraph serve`/,
+      );
+    }
+  });
+
+  it("passes other errors and results through", async () => {
+    const { onGraphFile } = await import("../commands/ingest.js");
+    expect(onGraphFile("/x", () => 42)).toBe(42);
+    expect(() => onGraphFile("/x", busy("ENOENT"))).toThrow("ENOENT: resource busy or locked");
+  });
+});

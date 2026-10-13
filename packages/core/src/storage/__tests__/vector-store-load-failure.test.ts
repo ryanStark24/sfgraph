@@ -42,5 +42,8 @@ describe("SqliteVectorStore extension-load failure", () => {
     }
     expect(caught).toBeInstanceOf(SfgraphError);
     expect((caught as SfgraphError).code).toBe(ErrorCode.E_VECTOR_EXTENSION);
+    // The connection it opened is released, so the file is not left locked.
+    expect(store.db.open).toBe(false);
+    await expect(store.close()).resolves.toBeUndefined();
   });
 });

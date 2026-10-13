@@ -69,11 +69,17 @@ describe("review I2: cache-reading methods resync after a foreign write", () => 
 });
 
 describe("review I2: a rebuild's file swap is detected by dev/ino", () => {
-  it("a long-lived store reopens dbPath after it is renamed away and recreated", async () => {
-    writer.mergeNodes([nf("ApexClass", "OldGraph")]);
-    expect(reader.getNode(ORG, asQualifiedName("OldGraph"))).not.toBeNull();
-    await writer.close();
-    // What `sfgraph ingest --rebuild` does: move the DB aside, build a new file.
+  /**
+   * What `sfgraph ingest --rebuild` does: move the DB (and sidecars) aside.
+   * On Windows a file another connection (the long-lived reader) has open
+   * cannot be renamed, so the swap this suite covers cannot happen there: the
+   * rename is refused and the CLI reports it (onGraphFile). Returns false then.
+   */
+  const moveAside = (): boolean => {
+    if (process.platform === "win32") {
+      expect(() => renameSync(dbPath, `${dbPath}.bak`)).toThrow(/EBUSY|EPERM|EACCES/);
+      return false;
+    }
     renameSync(dbPath, `${dbPath}.bak`);
     for (const s of ["-wal", "-shm"]) {
       try {
@@ -82,6 +88,15 @@ describe("review I2: a rebuild's file swap is detected by dev/ino", () => {
         /* absent */
       }
     }
+    return true;
+  };
+
+  it("a long-lived store reopens dbPath after it is renamed away and recreated", async () => {
+    writer.mergeNodes([nf("ApexClass", "OldGraph")]);
+    expect(reader.getNode(ORG, asQualifiedName("OldGraph"))).not.toBeNull();
+    await writer.close();
+    // What `sfgraph ingest --rebuild` does: move the DB aside, build a new file.
+    if (!moveAside()) return;
     writer = new SqliteGraphStore({ dbPath });
     await writer.init();
     writer.upsertOrg({
@@ -111,14 +126,7 @@ describe("review I2: a rebuild's file swap is detected by dev/ino", () => {
     try {
       writer.mergeNodes([nf("ApexClass", "OldGraph")]);
       await writer.close();
-      renameSync(dbPath, `${dbPath}.bak`);
-      for (const s of ["-wal", "-shm"]) {
-        try {
-          renameSync(dbPath + s, `${dbPath}.bak${s}`);
-        } catch {
-          /* absent */
-        }
-      }
+      if (!moveAside()) return;
       writer = new SqliteGraphStore({ dbPath });
       await writer.init();
       writer.upsertOrg({

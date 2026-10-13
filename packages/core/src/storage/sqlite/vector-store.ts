@@ -87,6 +87,9 @@ export class SqliteVectorStore implements VectorStore {
       // vec0 virtual tables won't work and the store would lie about being
       // initialized — surface that as E_VECTOR_EXTENSION so callers know.
       if (!/already/i.test(msg)) {
+        // Release a connection we opened: the caller gets no usable store, and
+        // an open handle keeps the file locked on Windows.
+        if (this.ownsDb) this.db.close();
         throw new SfgraphError(
           ErrorCode.E_VECTOR_EXTENSION,
           `failed to load sqlite-vec extension: ${msg}`,

@@ -338,6 +338,29 @@ export async function buildProjectIngestOpts(
  */
 const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"];
 
+/**
+ * Run a move/delete of the graph file. On Windows a file another process has
+ * open (`sfgraph serve`, or an MCP client's server) cannot be renamed or
+ * deleted: report that plainly instead of a raw EBUSY/EPERM. Nothing has been
+ * moved when this throws, so the existing graph is untouched.
+ */
+export function onGraphFile<T>(dbPath: string, op: () => T): T {
+  try {
+    return op();
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EBUSY" || code === "EPERM" || code === "EACCES") {
+      const hint =
+        "Stop `sfgraph serve` and any MCP client using sfgraph (Claude Code, Cursor, ...), then re-run with --rebuild.";
+      throw new Error(
+        `rebuild: the graph file is in use by another process (${code}): ${dbPath}. ${hint}`,
+        { cause: e },
+      );
+    }
+    throw e;
+  }
+}
+
 async function applyRebuild(
   dbPath: string,
   orgId: string,
@@ -350,7 +373,7 @@ async function applyRebuild(
     return;
   }
   if (noBackup) {
-    unlinkSync(dbPath);
+    onGraphFile(dbPath, () => unlinkSync(dbPath));
     for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
       const sidecar = `${dbPath}${suffix}`;
       if (existsSync(sidecar)) {
@@ -368,7 +391,7 @@ async function applyRebuild(
   mkdirSync(backupDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(backupDir, `${orgId}.rebuild-${stamp}.sqlite`);
-  renameSync(dbPath, backupPath);
+  onGraphFile(dbPath, () => renameSync(dbPath, backupPath));
   for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
     const sidecar = `${dbPath}${suffix}`;
     if (existsSync(sidecar)) {
