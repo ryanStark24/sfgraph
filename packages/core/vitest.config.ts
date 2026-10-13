@@ -15,6 +15,9 @@ export default defineConfig({
     // different set each run). Give Windows headroom; elsewhere keep the
     // default so a real hang still fails fast.
     testTimeout: process.platform === "win32" ? 30_000 : 5_000,
+    // Same headroom for beforeEach/afterEach: per-test fixture setup (fresh
+    // SQLite graph + seed) passed the 10 s hook default on Windows.
+    hookTimeout: process.platform === "win32" ? 30_000 : 10_000,
     // Fewer parallel workers on Windows: the small runner was so overloaded
     // that vitest's own worker->main reporting timed out ("Timeout calling
     // onTaskUpdate") even though every test passed.

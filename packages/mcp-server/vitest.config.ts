@@ -14,6 +14,9 @@ export default defineConfig({
     // (a 3,000-node diff timed out at 5 s). Headroom there only; elsewhere
     // keep the default so a real hang still fails fast.
     testTimeout: process.platform === "win32" ? 30_000 : 5_000,
+    // Same headroom for beforeEach/afterEach: per-test fixture setup (fresh
+    // SQLite graph + seed) passed the 10 s hook default on Windows.
+    hookTimeout: process.platform === "win32" ? 30_000 : 10_000,
     // Windows: vitest's worker->main reporting kept timing out ("Timeout
     // calling onTaskUpdate", 60 s) with every test passing. No test blocks
     // that long and output is small, so it is the forks pool's child-process
