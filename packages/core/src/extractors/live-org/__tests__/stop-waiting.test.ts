@@ -5,8 +5,10 @@ import { __testing as bulkRetrieveTesting } from "../bulk-retrieve.js";
 import {
   type StopSignal,
   StopWaitingError,
+  queryLimit,
   scheduleQuery,
   soqlWithTimeout,
+  toolingPool,
   withTimeout,
 } from "../rate-limit.js";
 
@@ -93,6 +95,15 @@ describe("W1.5-03: soqlWithTimeout stop-waiting", () => {
 
 describe("W1.5-03: scheduleQuery stop-waiting", () => {
   it("cancels a QUEUED job — callable is never invoked", async () => {
+    // DEBUG (temporary branch): trace where this hangs on Windows.
+    const t0 = Date.now();
+    const state = { started: 0, step: "begin", targetSettled: "pending" };
+    const dbg = (m: string) =>
+      console.error(
+        `DBG +${Date.now() - t0}ms ${m} | step=${state.step} started=${state.started} target=${state.targetSettled} pool=${JSON.stringify(toolingPool.counts())} qlimit=active:${queryLimit.activeCount}/pending:${queryLimit.pendingCount}`,
+      );
+    const watchdog = setInterval(() => dbg("watchdog"), 2000);
+    dbg("enter");
     // Fill the pool with two long-running placeholder jobs (the real pool
     // has maxConcurrent=5 by default, so we exhaust slots with five hangers
     // and then submit a sixth target job whose stopSignal we flip while
@@ -104,6 +115,8 @@ describe("W1.5-03: scheduleQuery stop-waiting", () => {
         scheduleQuery(
           () =>
             new Promise<void>((r) => {
+              state.started += 1;
+              dbg(`filler ${i} started`);
               releaseFillers.push(r);
             }),
         ),
@@ -111,6 +124,8 @@ describe("W1.5-03: scheduleQuery stop-waiting", () => {
     }
     // Yield once so Bottleneck binds the fillers to slots.
     await new Promise((r) => setTimeout(r, 10));
+    state.step = "after-yield";
+    dbg(`after 10ms yield, releasers=${releaseFillers.length}`);
 
     let targetInvoked = false;
     const stopSignal: StopSignal = { value: false };
@@ -119,17 +134,36 @@ describe("W1.5-03: scheduleQuery stop-waiting", () => {
       return "should-not-run";
     }, stopSignal);
 
+    target.then(
+      () => {
+        state.targetSettled = "resolved";
+        dbg("target resolved");
+      },
+      (e) => {
+        state.targetSettled = `rejected:${(e as Error).name}`;
+        dbg("target rejected");
+      },
+    );
     // Flip while queued.
     setTimeout(() => {
       stopSignal.value = true;
+      dbg("stop flipped");
     }, 20);
 
+    state.step = "await-target";
     await expect(target).rejects.toBeInstanceOf(StopWaitingError);
     expect(targetInvoked).toBe(false);
+    state.step = "release";
+    dbg(`releasing ${releaseFillers.length}`);
 
     // Release the fillers so the pool drains cleanly for downstream tests.
     for (const release of releaseFillers) release();
+    slotFillers.forEach((f, i) => f.then(() => dbg(`filler ${i} settled`)));
+    state.step = "await-fillers";
     await Promise.all(slotFillers);
+    state.step = "done";
+    dbg("done");
+    clearInterval(watchdog);
   });
 
   it("cannot cancel an EXECUTING job — caller rejects fast, callable continues", async () => {
