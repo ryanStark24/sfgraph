@@ -49,6 +49,8 @@ If `gitGraph` isn't supported by the client, fall back to a small **`flowchart L
 
 ## Staleness check
 
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
+
 Before calling `point_in_time_diff` with `to='current'`, invoke `staleness_check` for the org. If the report says stale, surface a warning to the user:
 
 > Your ingest is N days old. Run `sfgraph ingest --org <alias>` to refresh, or proceed with the understanding that the graph may not reflect recent changes.

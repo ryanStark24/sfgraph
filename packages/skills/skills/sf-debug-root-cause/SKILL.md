@@ -85,6 +85,8 @@ State a fact about this org or the Salesforce platform **only when evidence back
 
 ## Staleness check
 
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
+
 Call `staleness_check` first. A stale graph misleads root-cause analysis (the change that
 caused the bug may not be ingested yet). If stale, warn and recommend
 `sfgraph ingest --org <alias>` before trusting the upstream/recent-change steps.

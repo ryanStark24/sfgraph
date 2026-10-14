@@ -27,10 +27,10 @@ State a fact about this org or the Salesforce platform **only when evidence back
 
 1. Identify the focal object(s) from the user's question. If they named a domain ("the Order schema"), pick the lead object and include its first-degree neighbours.
 2. Call `staleness_check` for the org. Warn if stale.
-3. For each focal object, call `trace_downstream` with `qname=CustomObject:<name>` to enumerate Lookup/MasterDetail references coming out of it.
+3. For each focal object, call `trace_downstream(qname="CustomObject:<name>", depth=2, rel_types=["DEFINES_FIELD", "REFERENCES_OBJECT"])`. A relationship shows up as two hops: the object defines a lookup field, and the field references the target object (`CustomObject:Invoice__c` → `CustomField:Invoice__c.Account__c` → `CustomObject:Account`). For relationships pointing **into** an object, call `trace_upstream(qname="CustomObject:<name>", depth=1, rel_types=["REFERENCES_OBJECT"])`: it lists the lookup fields on other objects.
 4. Call `trace_upstream` for the same object to find what depends on it (Apex selectors, Flows, LWCs, layouts).
 5. If the user named a specific field, call `analyze_field` to get its readers/writers and a precise role description.
-6. Produce an ERD-like diagram with one entity per object and relationship lines for each Lookup/MasterDetail edge.
+6. Produce an ERD-like diagram with one entity per object and one relationship line per lookup field. The report does not say whether a relationship is a Lookup or a Master-Detail: read the field's metadata (`objects/<Object>/fields/<Field>.field-meta.xml`, `<type>`) when the cardinality matters, or draw it as a plain relationship and say so.
 
 ## Visualization
 
@@ -46,6 +46,8 @@ erDiagram
 When the schema has >20 entities, prune to the focal object's two-hop neighbourhood — a sprawling ERD is unreadable. State that you pruned, and offer to expand on request.
 
 ## Staleness check
+
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
 
 Before tracing, invoke `staleness_check` for the org. New custom objects/fields and recently-added relationships are invisible in a stale graph. If the report says stale, surface a warning to the user:
 

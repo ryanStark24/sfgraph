@@ -79,7 +79,7 @@ The header line lists the API version + per-category log levels. Every subsequen
    - `find_nodes ApexClass:<Name>` / `ApexMethod:<Name>.*` to resolve the anchor to a qname; `explain_code` reads stored source for Apex methods, trigger bodies (`ApexTrigger:<Name>`), and Flows (`Flow:<Name>`). For a **whole class, LWC JS, or managed code the graph has no source** — fetch it (local `force-app/main/default/{classes,triggers,flows}/...` or `sf project retrieve start -m "ApexTrigger:<Name>"`); don't analyse from an empty stub. See `sf-explain-code`.
    - `trace_upstream` — who invokes this unit, and in what context (trigger vs batch vs LWC). Order-of-execution and "why was this even called" answers live here.
    - `trace_downstream` — what it calls/reads/writes; a NullPointer or limit usually originates in a callee.
-   - Governor breach → `governor_risk_check` scoped to the class to pinpoint the SOQL/DML-in-loop **source line** the log proved is hot.
+   - Governor breach → `governor_risk_check` (it scans the whole org; keep the findings for that class) to find the in-loop query or DML the log proved is hot. Its evidence is the query text or DML target, not a line number.
    - Field misbehaviour seen in the log → `analyze_field` for every trigger/Flow/validation that fires on that field (competing automation).
 5. **State a single root-cause hypothesis** backed by *both* the log evidence and the graph evidence, then hand the fix to the right design skill (`sf-architect-apex` / `sf-architect-performance` / `sf-governor-risk-fix`) — grounded, never generic.
 

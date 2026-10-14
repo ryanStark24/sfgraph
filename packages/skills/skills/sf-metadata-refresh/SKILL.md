@@ -25,9 +25,9 @@ State a fact about this org or the Salesforce platform **only when evidence back
 ## Playbook
 
 1. Call `staleness_check` for the target org. Report the exact age in days and whether it's stale.
-2. If stale, call `start_ingest_job` — it does NOT run the ingest. It returns
-   `{ executed: false, run_this_command: "sfgraph ingest --org <alias>" }`.
-   Surface that command verbatim to the user. Do not promise the MCP server
+2. If stale, call `start_ingest_job`. It does NOT run the ingest: its report says
+   nothing was started and shows the command to run (for example
+   `sfgraph ingest --org <alias>`). Surface that command verbatim to the user. Do not promise the MCP server
    will run it. After the user has executed the ingest in a shell, MCP tools
    will see the new data on their next invocation.
 3. Suggest the right shape of the command for their situation:
@@ -57,6 +57,8 @@ State a fact about this org or the Salesforce platform **only when evidence back
 Pair it with the bucketed freshness table from `freshness_report` for the org-side picture.
 
 ## Staleness check
+
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
 
 `staleness_check` _is_ the first step here — the whole skill is the staleness check. If `staleness_check` returns `stale=false`, still continue to `freshness_report` so the user sees the org-side picture.
 

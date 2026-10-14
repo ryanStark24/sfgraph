@@ -41,16 +41,17 @@ Only skip the offer when the user has explicitly scoped the question to source (
 
 ## Playbook
 
-1. Resolve the starting node. If the user gave a field, call `analyze_field` first to canonicalise `SObject.Field` and gather direct readers/writers.
-2. Call `cross_layer_flow_map` with the resolved node. Receive ordered paths across layers (UI -> Controller -> Service -> Selector -> SObject and any Flow / Process Builder branches).
-3. For each distinct path, summarise the layer transitions with the edge type that bridges them (`@wire`, `@AuraEnabled`, `READS_FIELD`, `UPDATES_FIELD`, `INVOKES_FLOW`).
+1. Resolve the starting node. `cross_layer_flow_map` walks **downstream only**, from an `entry` (LWC, Aura, page, Flow, Apex, OmniScript, FlexCard, Integration Procedure) toward the data it touches. A field or object entry reaches nothing.
+   - **"Where is this field / component used"** is an upstream question: call `analyze_field(object, field)` for a field's direct readers and writers, or `trace_upstream` on the component's qname for the pages and components that reach it. Then run step 2 from each UI or automation entry you found.
+2. Call `cross_layer_flow_map(entry=…)` with the resolved entry. Receive ordered paths across layers (UI -> Controller -> Service -> Selector -> SObject and any Flow / Process Builder branches).
+3. For each distinct path, summarise the layer transitions with the edge type that bridges them (`@wire`, `@AuraEnabled`, `READS_FIELD`, `WRITES_FIELD`, `FLOW_INVOKES_APEX`).
 4. Surface anything anomalous: cycles, missing `with sharing`, fields read by multiple LWCs but written only by Flow, etc.
 5. Render the Mermaid layered diagram from `cross_layer_flow_map`. If the graph has more than 30 nodes, ask whether to filter to a single layer pair.
 6. End with a one-line recommendation of which related skill to invoke next (e.g. `sf-security-audit` if FLS gaps appear).
 
 ## Visualization
 
-Render a **`flowchart TD`** layered diagram with one subgraph per layer (UI / Controller / Service / Selector / Data). Edges are labelled with the edge type that bridges layers (`@wire`, `@AuraEnabled`, `READS_FIELD`, `UPDATES_FIELD`, `INVOKES_FLOW`).
+Render a **`flowchart TD`** layered diagram with one subgraph per layer (UI / Controller / Service / Selector / Data). Edges are labelled with the edge type that bridges layers (`@wire`, `@AuraEnabled`, `READS_FIELD`, `WRITES_FIELD`, `FLOW_INVOKES_APEX`).
 
 ```
 flowchart TD
@@ -75,6 +76,8 @@ If you drop down to `trace_upstream` / `trace_downstream` for a raw dependency w
 
 ## Staleness check
 
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
+
 Before calling `cross_layer_flow_map`, invoke `staleness_check` for the target org. If the report says stale, surface a warning to the user:
 
 > Your ingest is N days old. Run `sfgraph ingest --org <alias>` to refresh, or proceed with the understanding that the graph may not reflect recent changes.
@@ -92,7 +95,7 @@ Then continue with the playbook.
 ## Don't
 
 - Do not collapse layers — the value of this skill is showing the layer boundaries explicitly.
-- Do not include nodes outside the requested traversal depth; defer breadth to a follow-up call.
+- `cross_layer_flow_map` has no depth parameter; if its map is too broad, narrow by starting from a nearer entry, or use `trace_downstream` with `depth`.
 - Do not modify anything. Pure read.
 - Do not assume the starting node exists; if `analyze_field` returns empty, ask the user to refine.
 - Do not stop at a source-only answer for LWC / Aura / ApexPage / field / Apex method questions without at least *offering* the cross-layer trace. Repo grep misses FlexiPage bindings, Quick Action targets, and the Apex→SObject tail — say so and offer to fill it in.

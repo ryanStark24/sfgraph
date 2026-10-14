@@ -34,7 +34,7 @@ State a fact about this org or the Salesforce platform **only when evidence back
 
 ## Visualization
 
-`what_broke` returns tables, not a diagram. If a visual helps, build a simple **`flowchart LR`** yourself from the at-risk set: changed node → its untested dependents. Don't claim the tool emitted it.
+`what_broke` draws a Mermaid diagram of the changed pieces and their dependents by default (`mermaid: true`; `mermaid: false` hides it). Embed the tool's diagram rather than redrawing it. If you need a different view (for example only the untested dependents), build a simple **`flowchart LR`** yourself and say you drew it.
 
 ```
 flowchart LR
@@ -45,6 +45,8 @@ flowchart LR
 ```
 
 ## Staleness check
+
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
 
 Before calling `what_broke`, invoke `staleness_check` for the target org. If the report says stale, surface a warning to the user:
 

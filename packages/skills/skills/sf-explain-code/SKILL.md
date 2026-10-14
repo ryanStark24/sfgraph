@@ -26,10 +26,10 @@ State a fact about this org or the Salesforce platform **only when evidence back
 
 ## Playbook
 
-1. **Resolve the target qname — it must be METHOD-level.** Snippets are stored only for Apex methods, so `explain_code` needs `ApexMethod:AccountSvc.calculate(N)` (N = arity), **not** a class qname like `ApexClass:AccountSvc` (that returns "No snippet stored"). If the user names a class, first enumerate its methods with `find_nodes(pattern="ApexMethod:AccountSvc.*")` and either pick the method they meant or explain each in turn. For declarative metadata (fields, objects, Flows) there is no snippet — redirect to `analyze_field` / `sf-cross-layer-trace` instead. If the arity is unknown or the name is ambiguous, use `find_nodes` to enumerate candidates and confirm with the user.
+1. **Resolve the target qname.** Snippets are stored for Apex methods (`ApexMethod:AccountSvc.calculate(N)`, N = arity), Apex triggers (`ApexTrigger:AccountTrigger`) and Flows (`Flow:Lead_Router`, the Flow XML). A class qname like `ApexClass:AccountSvc` has no snippet of its own (it returns "No snippet stored"): enumerate its methods with `find_nodes(pattern="ApexMethod:AccountSvc.*")` and either pick the method the user meant or explain each in turn. For fields and objects there is no snippet: redirect to `analyze_field` / `sf-cross-layer-trace` instead. If the arity is unknown or the name is ambiguous, use `find_nodes` to enumerate candidates and confirm with the user.
 2. **`staleness_check`** for the linked org. If stale, surface a warning so the user knows the cached source may not reflect production.
 3. **`explain_code(qname=X)`** — pull the stored snippet and any prior cached explanation. The tool returns the source text in a fenced code block.
-   - **If the graph doesn't have the full source, FETCH it — don't explain from a stub.** The ingest stores source ONLY for Apex *methods*; it stores **no body for Apex triggers, no logic for Flows, and nothing for managed/`(hidden)` code**. When `explain_code` returns "No snippet stored", an empty body, or you need a trigger/Flow/whole-class that isn't in a snippet, get the real source in this order:
+   - **If the graph doesn't have the full source, FETCH it — don't explain from a stub.** The ingest stores source for Apex methods, Apex triggers and Flows, and **nothing for managed/`(hidden)` code**. When `explain_code` returns "No snippet stored" or an empty body, or you need a whole class, get the real source in this order:
      1. **Local sfdx working tree** (fastest, reflects un-deployed changes) — read the file directly:
         - Apex class → `force-app/main/default/classes/<Name>.cls`
         - Apex trigger → `force-app/main/default/triggers/<Name>.trigger`
@@ -58,6 +58,8 @@ flowchart TD
 ```
 
 ## Staleness check
+
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
 
 Before reading the snippet, call `staleness_check` for the org. If the ingest is stale:
 
@@ -91,4 +93,4 @@ If the user says yes, hand off to `sf-find-similar` with mode=qname and the same
 - Don't write anything to Salesforce.
 - Always render the source inside a fenced code block tagged with the `sourceFormat` returned by `explain_code` (`apex`, `js`, `html`, etc.).
 - Don't fabricate behaviour — if the source is empty or stubbed, say so plainly.
-- Don't pass a class/trigger/field qname expecting source — only `ApexMethod:...(N)` has a snippet. On "No snippet stored", resolve to a method qname rather than reporting failure.
+- Don't pass a class or field qname expecting source: only `ApexMethod:...(N)`, `ApexTrigger:...` and `Flow:...` have a snippet. On "No snippet stored" for a class, resolve to a method qname rather than reporting failure.
