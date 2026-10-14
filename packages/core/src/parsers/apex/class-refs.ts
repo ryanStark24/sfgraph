@@ -364,6 +364,80 @@ export function emitClassRefEdges(
   }
 }
 
+// `Foo x;` / `Foo x = …` / `Foo[] xs,` / `Foo x)` (param) / `Foo x :` (loop) /
+// `Foo name(` (return type). Each quantifier is separated by a fixed token,
+// so the scan stays linear.
+const TYPE_DECL_RE = /(?<![\w.$])([A-Za-z_]\w*)(?:\s*\[\s*\])?\s+([A-Za-z_]\w*)\s*[=;,:)(]/g;
+const TYPE_CAST_RE = /\(\s*([A-Z]\w*)\s*\)\s*[\w(]/g;
+const INSTANCEOF_RE = /\binstanceof\s+([A-Za-z_]\w*)\b/gi;
+
+/** Identifiers in the type-argument lists of `code` (`Map<Id, Foo>`). Linear:
+ *  a failed list is skipped past its failure point, never rescanned. */
+function genericArgNames(code: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] !== "<" || !/[A-Za-z0-9_]/.test(code[i - 1] ?? "")) continue;
+    let d = 0;
+    let j = i;
+    for (; j < code.length; j++) {
+      const c = code[j] ?? "";
+      if (c === "<") d += 1;
+      else if (c === ">") {
+        d -= 1;
+        if (d === 0) break;
+      } else if (!/[\w.,\s[\]]/.test(c)) break;
+    }
+    if (d === 0 && j < code.length) {
+      for (const m of code.slice(i + 1, j).matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) out.push(m[0]);
+    }
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * Type-only uses (declarations, parameters, return types, loop variables,
+ * generic arguments, casts, `instanceof`) → REFERENCES `ApexClass:T` or, for a
+ * custom-suffixed SObject, `CustomObject:T`, both `via: "type"`. Only
+ * UpperCamel user class names (same filter as the constructor rule, never
+ * the enclosing class); a (src, dst) already holding an INSTANCE_OF or a
+ * REFERENCES in `edges` since `fromIdx` is skipped. `code` is comment/string-masked.
+ */
+export function emitTypeRefEdges(
+  ctx: ParseContext,
+  srcQname: string,
+  code: string,
+  scope: ClassRefScope,
+  edges: EdgeFact[],
+  fromIdx = 0,
+): void {
+  const masked = maskInlineQueries(code);
+  const seen = new Set<string>();
+  for (let i = fromIdx; i < edges.length; i++) {
+    const e = edges[i];
+    if (!e || String(e.srcQualifiedName) !== srcQname) continue;
+    if (e.relType === REL_TYPES.REFERENCES || e.relType === REL_TYPES.INSTANCE_OF)
+      seen.add(String(e.dstQualifiedName).toLowerCase());
+  }
+  const add = (name: string, castLike = false): void => {
+    let dst: string;
+    if (DESCRIBE_OBJECT_SUFFIX_RE.test(name)) dst = `CustomObject:${stripNs(name, ctx.namespace)}`;
+    // UpperCamel only: `MAX_SIZE` is a constant, not a type.
+    else if (/^[A-Z]\w*[a-z]/.test(name) && isUserClassName(name, scope)) {
+      // A cast or `instanceof` operand could be a capitalised variable.
+      if (castLike && scope.localVars.has(name.toLowerCase())) return;
+      dst = `ApexClass:${stripNs(name, ctx.namespace)}`;
+    } else return;
+    if (seen.has(dst.toLowerCase())) return;
+    seen.add(dst.toLowerCase());
+    edges.push(makeEdge(ctx, srcQname, REL_TYPES.REFERENCES, dst, { via: "type" }));
+  };
+  for (const m of masked.matchAll(TYPE_DECL_RE)) add(m[1] ?? "");
+  for (const n of genericArgNames(masked)) add(n);
+  for (const m of masked.matchAll(TYPE_CAST_RE)) add(m[1] ?? "", true);
+  for (const m of masked.matchAll(INSTANCEOF_RE)) add(m[1] ?? "", true);
+}
+
 const DESCRIBE_TYPE_RE = /(?<![\w.$])(?:Schema\s*\.\s*)?SObjectType\s*\.\s*([A-Za-z_]\w*)/gi;
 const TYPE_TOKEN_RE = /(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*SObjectType(?![\w])/gi;
 const DESCRIBE_OBJECT_SUFFIX_RE = /__(c|mdt|e|x|b|kav)$/i;

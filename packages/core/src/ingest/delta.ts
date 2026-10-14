@@ -118,7 +118,8 @@ export async function planDelta(
   };
   if (plan.legacy) return plan;
   const recorded = store.getMemberRowsGeneration(orgId);
-  if (recorded !== generation) {
+  // A bare "unknown" stamp carries no salts, so it can never prove the rows are current.
+  if (recorded !== generation || recorded === "unknown") {
     plan.staleGeneration = { recorded, current: generation };
     return plan;
   }

@@ -156,4 +156,48 @@ describe("governor_risk_check", () => {
     const all = await callTool("governor_risk_check", { org: fix.orgId });
     expect(all.markdown as string).not.toContain("Not listed below");
   });
+
+  // Cycle 3 T9 review M2/M3: one over a cap is named, and Technical details lists are capped.
+  it("names one spot over the cap instead of writing and 1 more", async () => {
+    for (const n of ["a", "b", "c", "d"]) {
+      const m = `ApexMethod:Four.${n}(0)`;
+      fix.addNode({ qualifiedName: m, label: "ApexMethod" });
+      fix.addEdge({
+        srcQualifiedName: m,
+        dstQualifiedName: "DML:update",
+        relType: "EXECUTES_DML",
+        attributes: { inLoop: true, target: "acc" },
+      });
+    }
+    const md = (await callTool("governor_risk_check", { org: fix.orgId })).markdown as string;
+    expect(md).not.toContain("and 1 more");
+    expect(md).toMatch(/in `a`, .*in `b`, .*in `c` and .*in `d`\./);
+  });
+
+  it("caps the Technical details name lists at 50", async () => {
+    const add = (cls: string, isTest: boolean) => {
+      const m = `ApexMethod:${cls}.run(0)`;
+      fix.addNode({
+        qualifiedName: m,
+        label: "ApexMethod",
+        ...(isTest ? { attributes: { isTest } } : {}),
+      });
+      fix.addEdge({
+        srcQualifiedName: m,
+        dstQualifiedName: "DML:update",
+        relType: "EXECUTES_DML",
+        attributes: { inLoop: true, target: "acc" },
+      });
+    };
+    for (let i = 0; i < 60; i++) add(`C${String(i).padStart(2, "0")}`, false);
+    for (let i = 0; i < 60; i++) add(`T${String(i).padStart(2, "0")}Test`, true);
+    const md = (await callTool("governor_risk_check", { org: fix.orgId, limit: 1 }))
+      .markdown as string;
+    const cut = md.split("\n").find((l) => l.startsWith("Not listed below"));
+    expect(cut).toMatch(/ and 9 more \(`export_sarif` lists them all\)\.$/);
+    expect(cut?.match(/`ApexClass:/g)).toHaveLength(50);
+    const tests = md.split("\n").find((l) => l.startsWith("Left out as test code:"));
+    expect(tests).toMatch(/ and 10 more\.$/);
+    expect(tests?.match(/`ApexClass:/g)).toHaveLength(50);
+  });
 });

@@ -139,6 +139,9 @@ function rrfFuse(vec: VecHit[], kw: Array<{ qname: string; label: string }>): Fu
   );
 }
 
+/** Shared fields moved up into the top `k`: a quarter of it, at least 1. */
+export const sharedFieldsMax = (k: number): number => Math.max(1, Math.ceil(k / 4));
+
 /**
  * Result shaping after fusion (all fused candidates in, top `k` out):
  *  - `collapse`: a member folds into its component (`ApexMethod:C.m` into
@@ -151,6 +154,9 @@ function rrfFuse(vec: VecHit[], kw: Array<{ qname: string; label: string }>): Fu
  *    more of the top `k` kept hits read or write is the data those hits
  *    share, so it is part of the same process: it is not demoted, and it is
  *    listed right after the later of those hits (`sharedBy` names them).
+ *    At most {@link sharedFieldsMax} fields are moved up (the best-ranked
+ *    first); the rest stay demoted, so shared fields cannot crowd the code
+ *    and automation hits out of the top `k`.
  */
 function shapeHits(
   store: GraphStore,
@@ -206,6 +212,7 @@ function shapeHits(
       const pos = new Map(top.map((h, i) => [h.qname.toLowerCase(), i]));
       const after = new Map<number, FusedHit[]>();
       const stay: FusedHit[] = [];
+      let promoted = 0;
       for (const h of late) {
         if (h.label !== "CustomField" || classify(h.qname).isTest) {
           stay.push(h);
@@ -217,10 +224,11 @@ function shapeHits(
           const unit = String(analyze.componentOf(store, orgId, e.srcQualifiedName));
           if (pos.has(unit.toLowerCase())) users.add(unit);
         }
-        if (users.size < 2) {
+        if (users.size < 2 || promoted >= sharedFieldsMax(k)) {
           stay.push(h);
           continue;
         }
+        promoted += 1;
         const sharedBy = [...users].sort(
           (a, b) => pos.get(a.toLowerCase())! - pos.get(b.toLowerCase())!,
         );

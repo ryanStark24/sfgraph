@@ -6,7 +6,7 @@ export { SqliteGraphStore, graphFileReadiness } from "./sqlite/graph-store.js";
 export type { GraphFileReadiness, SqliteGraphStoreOptions } from "./sqlite/graph-store.js";
 export { SqliteVectorStore } from "./sqlite/vector-store.js";
 export type { SqliteVectorStoreOptions } from "./sqlite/vector-store.js";
-export { SqliteSnapshotStore } from "./sqlite/snapshot-store.js";
+export { SqliteSnapshotStore, snapshotCountInFile } from "./sqlite/snapshot-store.js";
 export type { SqliteSnapshotStoreOptions } from "./sqlite/snapshot-store.js";
 export {
   isAbiMismatch,

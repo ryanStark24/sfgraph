@@ -6,7 +6,7 @@ import type { GraphStore } from "../../storage/interfaces.js";
 import { makeEdge } from "../common.js";
 import type { ParseContext } from "../contract.js";
 import { pruneStaleResolverEdges } from "../resolver-prune.js";
-import type { ApexRelationshipPath } from "./class.js";
+import type { ApexChildRelationship, ApexRelationshipPath } from "./class.js";
 
 /**
  * Post-merge resolution of two things the Apex parsers can only record,
@@ -26,7 +26,15 @@ import type { ApexRelationshipPath } from "./class.js";
  *     field, REFERENCES to every related object traversed. A final segment
  *     that is itself a relationship maps to its lookup field when the graph
  *     knows it, and is otherwise skipped and counted.
- *  2. `testTargetCandidates` (test ApexClass nodes): lowercase-initial names a
+ *  2. `apexChildRelationships`: child-relationship subqueries
+ *     (`(SELECT Status__c FROM Requests__r)` in a query on Account). The child
+ *     object is the one with a lookup to the parent whose source-format
+ *     `relationshipName` (the child relationship name) matches, without
+ *     `__r`; it must be unique. Without metadata a plural of a standard object
+ *     (`Contacts`, `Opportunities`) is that object. Output: REFERENCES to the
+ *     child object (`via: "child-relationship"`) and READS_FIELD to each
+ *     subquery field. Anything else is counted, never guessed.
+ *  3. `testTargetCandidates` (test ApexClass nodes): lowercase-initial names a
  *     test instantiates or calls; IS_TEST_FOR to the ApexClass whose name
  *     matches case-insensitively. No naming-convention fallback.
  *
@@ -39,6 +47,8 @@ export const APEX_REF_RESOLVER = "apex-ref-resolver";
 export interface ApexRefResolveResult {
   pathsResolved: number;
   pathsUnresolved: number;
+  childRelationshipsResolved: number;
+  childRelationshipsUnresolved: number;
   testTargetsResolved: number;
   testTargetsUnresolved: number;
   /** Parse stat, summed from the nodes: dynamic SOQL clause fields not
@@ -75,6 +85,8 @@ export function resolveApexReferences(
   const result: ApexRefResolveResult = {
     pathsResolved: 0,
     pathsUnresolved: 0,
+    childRelationshipsResolved: 0,
+    childRelationshipsUnresolved: 0,
     testTargetsResolved: 0,
     testTargetsUnresolved: 0,
     dynamicSoqlFieldsSkipped: 0,
@@ -239,6 +251,62 @@ export function resolveApexReferences(
             via: "relationship-path",
             path: p.path,
           });
+      }
+    }
+  }
+
+  // Child-relationship subqueries → the child object. Lookups by parent,
+  // built on first use: lower-cased parent → child relationship name → children.
+  let childIndex: Map<string, Map<string, Set<string>>> | null = null;
+  const childOf = (parent: string, relationship: string): string | null => {
+    if (!childIndex) {
+      childIndex = new Map();
+      for (const f of store.listNodesByLabel(orgId, "CustomField")) {
+        const rn = (f.attributes as Record<string, unknown>).relationshipName;
+        if (typeof rn !== "string" || !rn) continue;
+        const qn = String(f.qualifiedName);
+        const child = qn.slice(qn.indexOf(":") + 1, qn.indexOf("."));
+        for (const t of targetsOf(f)) {
+          const byName = childIndex.get(t.toLowerCase()) ?? new Map<string, Set<string>>();
+          const key = rn.toLowerCase().replace(/__r$/, "");
+          const set = byName.get(key) ?? new Set<string>();
+          set.add(child);
+          byName.set(key, set);
+          childIndex.set(t.toLowerCase(), byName);
+        }
+      }
+    }
+    const lower = relationship.toLowerCase();
+    const hits = childIndex.get(parent.toLowerCase())?.get(lower.replace(/__r$/, ""));
+    if (hits) return hits.size === 1 ? ([...hits][0] ?? null) : null;
+    if (lower.endsWith("__r")) return null;
+    const single = lower.endsWith("ies") ? `${lower.slice(0, -3)}y` : lower.replace(/s$/, "");
+    return single !== lower ? (STANDARD_BY_LOWER.get(single) ?? null) : null;
+  };
+  for (const label of PATH_LABELS) {
+    for (const n of store.listNodesByLabel(orgId, label)) {
+      const rels = (n.attributes as Record<string, unknown>).apexChildRelationships;
+      if (!Array.isArray(rels)) continue;
+      for (const r of rels as ApexChildRelationship[]) {
+        if (!r || typeof r.object !== "string" || typeof r.relationship !== "string") continue;
+        const child = childOf(r.object, r.relationship);
+        if (!child) {
+          result.childRelationshipsUnresolved += 1;
+          continue;
+        }
+        result.childRelationshipsResolved += 1;
+        const attrs = { via: "child-relationship", relationship: r.relationship };
+        push(n, REL_TYPES.REFERENCES, `CustomObject:${child}`, attrs);
+        for (const f of Array.isArray(r.fields) ? r.fields : []) {
+          if (typeof f !== "string" || !f) continue;
+          const fin = fieldNode(child, f);
+          push(
+            n,
+            REL_TYPES.READS_FIELD,
+            fin ? String(fin.qualifiedName) : `CustomField:${child}.${f}`,
+            attrs,
+          );
+        }
       }
     }
   }

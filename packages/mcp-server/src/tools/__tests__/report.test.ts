@@ -537,4 +537,19 @@ describe("report wording (cycle 3 T9 fix 1)", () => {
       "- `A` and `B`: Apex classes (server code), each with 2 database queries inside a loop.",
     ]);
   });
+
+  it("a digit inside a name is not a count, so a merged line does not say each", () => {
+    const pieces = ["A", "B"].map((x) => ({
+      name: `ApexClass:${x}`,
+      kind: "ApexClass",
+      role: "Apex class (server code) that calls `Util2` and `V3Handler`.",
+    }));
+    const r = renderReport({ title: "t", inShort: ["x."], pieces, details: "" });
+    const lines = section(r, "What each piece does")!
+      .split("\n")
+      .filter((l) => l.startsWith("- "));
+    expect(lines).toEqual([
+      "- `A` and `B`: Apex classes (server code) that calls `Util2` and `V3Handler`.",
+    ]);
+  });
 });

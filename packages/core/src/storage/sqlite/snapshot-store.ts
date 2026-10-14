@@ -30,6 +30,29 @@ function isSqliteFile(filePath: string): boolean {
   }
 }
 
+/**
+ * Rows in a graph file's `_sfgraph_snapshots` table; 0 when the file is not a
+ * database or has no such table, -1 when it cannot be read (callers should
+ * then assume it may hold history). Not opened read-only: a WAL-mode backup
+ * whose -shm is missing cannot be read that way.
+ */
+export function snapshotCountInFile(filePath: string): number {
+  if (!isSqliteFile(filePath)) return 0;
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(filePath, { fileMustExist: true });
+    const t = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sfgraph_snapshots'")
+      .get();
+    if (!t) return 0;
+    return (db.prepare("SELECT COUNT(*) AS c FROM _sfgraph_snapshots").get() as { c: number }).c;
+  } catch {
+    return -1;
+  } finally {
+    db?.close();
+  }
+}
+
 // any[]: statements take positional or named (@param) bindings.
 type Statement = Database.Statement<any[]>;
 type Side = typeof CURRENT | { seq: number };

@@ -269,10 +269,13 @@ export function kindCounts(labels: readonly string[], max = 4): string {
 /** "1 piece" / "3 pieces". */
 export const pieceCount = (n: number): string => `${n} ${n === 1 ? "piece" : "pieces"}`;
 
-/** `A, B, C and N more`: a list cut at `max`, saying how many were left out. */
+/**
+ * `A, B, C and N more`: a list cut at `max`, saying how many were left out. One over `max` is
+ * named instead: "and 1 more" takes as much room as the name it hides (as in nameList).
+ */
 export function listWithMore(items: readonly string[], max: number, sep = ", "): string {
-  const shown = items.slice(0, max).join(sep);
-  return items.length > max ? `${shown} and ${items.length - max} more` : shown;
+  if (items.length <= max + 1) return items.join(sep);
+  return `${items.slice(0, max).join(sep)} and ${items.length - max} more`;
 }
 
 /** Plain words for each kind of not-counted endpoint: [singular, plural]. */
@@ -504,6 +507,11 @@ function glossOnce(texts: string[]): string[] {
   );
 }
 
+/** The text holds a count: a whole number token outside `code` spans. */
+function hasCount(text: string): boolean {
+  return /(?:^|[\s(])\d+(?=[\s.,;:)]|$)/.test(text.replace(/`[^`]*`/g, ""));
+}
+
 /** The report as markdown, sections in the fixed order. */
 export function renderReport(r: HumanReport): string {
   // Pieces of one kind whose sentence is the same are one line ("`a`, `b` and `c`: Lightning web
@@ -527,7 +535,8 @@ export function renderReport(r: HumanReport): string {
         .replace(/^; it /, "; each ")
         .replace(/^, (?!each )/, ", each ")
         // A count in a merged line is per piece, not a total ("Apex classes, each with 2 ...").
-        .replace(/^ (?=\S)(?=.*\d)/, ", each ");
+        // Only a standalone number outside code spans counts: `Handler2` is a name, not a count.
+        .replace(/^ (?=\S)/, (m, _i, all: string) => (hasCount(all) ? ", each " : m));
       const names = nameList(
         g.map((x) => oneLine(x.name)),
         MERGED_NAMES_MAX,

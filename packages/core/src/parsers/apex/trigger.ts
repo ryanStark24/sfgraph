@@ -8,6 +8,7 @@ import {
   emitClassRefEdges,
   emitDescribeRefEdges,
   emitStaticCallEdges,
+  emitTypeRefEdges,
   localVarNames,
 } from "./class-refs.js";
 import {
@@ -190,7 +191,9 @@ export class ApexTriggerParser implements Parser<ApexTriggerInput> {
     const callCode = open >= 0 ? masked.slice(open) : masked;
     const triggerVars = localVarNames(decls);
     emitStaticCallEdges(ctx, triggerQname, callCode, undefined, edges, triggerVars);
-    emitClassRefEdges(ctx, triggerQname, callCode, { localTypes, localVars: triggerVars }, edges);
+    const triggerScope = { localTypes, localVars: triggerVars };
+    emitClassRefEdges(ctx, triggerQname, callCode, triggerScope, edges);
+    emitTypeRefEdges(ctx, triggerQname, callCode, triggerScope, edges);
     emitDescribeRefEdges(ctx, triggerQname, callCode, edges);
     setDynamicSoqlSkips(
       nodes.find((n) => String(n.qualifiedName) === triggerQname),

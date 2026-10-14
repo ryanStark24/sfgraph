@@ -15,6 +15,7 @@ import {
   liveIngest,
   multiOrgIngest,
   resolveEmbedModelId,
+  snapshotCountInFile,
 } from "@ryanstark24/sfgraph-core";
 import type { IngestLock, LiveIngestOpts, MultiOrgIngestEntry } from "@ryanstark24/sfgraph-core";
 import {
@@ -433,7 +434,10 @@ function carrySnapshots(store: SqliteSnapshotStore, backupPath: string, orgId: s
 /**
  * Delete all but the newest {@link REBUILD_BACKUPS_KEPT} rebuild backups of
  * one org (with their sidecars). The names carry an ISO stamp, so name order
- * is time order. Best-effort.
+ * is time order. The newest backup that still holds snapshot history is always
+ * kept too: a rebuild whose snapshot copy failed leaves a backup without
+ * history, and two of those in a row must not push the real history out.
+ * Best-effort.
  */
 export async function pruneRebuildBackups(backupDir: string, orgId: string): Promise<string[]> {
   const { readdirSync, unlinkSync } = await import("node:fs");
@@ -444,7 +448,10 @@ export async function pruneRebuildBackups(backupDir: string, orgId: string): Pro
   } catch {
     return [];
   }
-  const old = names.sort().reverse().slice(REBUILD_BACKUPS_KEPT);
+  const newestFirst = names.sort().reverse();
+  // -1 (unreadable) counts as holding history.
+  const history = newestFirst.find((f) => snapshotCountInFile(path.join(backupDir, f)) !== 0);
+  const old = newestFirst.slice(REBUILD_BACKUPS_KEPT).filter((f) => f !== history);
   for (const f of old) {
     for (const suffix of ["", ...SQLITE_SIDECAR_SUFFIXES]) {
       try {

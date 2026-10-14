@@ -36,8 +36,9 @@ export const OBJECT_NODE_HASH_SALT = "custom-object-attrs:v2";
  * v7: a guard-bound dynamic FROM is no longer counted in `dynamicSoqlFieldsSkipped`.
  * v8: the guard check ignores `(`, `||` and `&&` inside string literals, and
  * treats `+=` and the like as a reassignment, so the skipped-field count can change.
+ * v9: `apexChildRelationships` (child-relationship subqueries).
  */
-export const APEX_NODE_HASH_SALT = "apex-attrs:v8";
+export const APEX_NODE_HASH_SALT = "apex-attrs:v9";
 
 // vlocity/data-raptor.ts
 /**

@@ -53,12 +53,17 @@ export function saltsHash(salts: readonly string[] = HASH_SALTS): string {
  * build would keep the old build's output for every unchanged member. Delta compares this to the
  * stamp and rebuilds on a mismatch. Any release can change parser output, so the version is part
  * of the key; a salt bump inside one version changes it too (cycle 3 final review I-1). An older
- * stamp (`core@1.6.0`, no salts part) never matches, so it rebuilds; "unknown" never matches either,
- * which errs towards a rebuild.
+ * stamp (`core@1.6.0`, no salts part) never matches, so it rebuilds. When the version cannot be
+ * read the stamp is `core@unknown+<salts>`, so a salt bump still rebuilds; a bare "unknown" stamp
+ * (written by builds before this) never matches, so it rebuilds once and the new stamp is recorded.
  */
 export function memberRowsGeneration(salts: readonly string[] = HASH_SALTS): string {
-  const v = readCoreVersion();
-  return v === "unknown" ? "unknown" : `core@${v}+${saltsHash(salts)}`;
+  return generationFor(readCoreVersion(), salts);
+}
+
+/** The member-row generation for a core version and salt list. */
+export function generationFor(version: string, salts: readonly string[] = HASH_SALTS): string {
+  return `core@${version}+${saltsHash(salts)}`;
 }
 
 /** Content hash of a member (what its parse depends on). */

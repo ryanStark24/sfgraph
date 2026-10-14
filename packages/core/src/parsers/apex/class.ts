@@ -12,6 +12,7 @@ import {
   emitClassRefEdges,
   emitDescribeRefEdges,
   emitStaticCallEdges,
+  emitTypeRefEdges,
   isUserClassName,
   localVarNames,
 } from "./class-refs.js";
@@ -673,6 +674,7 @@ export function emitInlineSoqlEdges(
   inLoopAt: (idx: number) => boolean,
   edges: EdgeFact[],
   paths: ApexRelationshipPath[],
+  children?: ApexChildRelationship[],
 ): void {
   for (const sq of findInlineQueries(code)) {
     // Bind expressions (`:ids[0]`, an inline query held in a bind) are Apex,
@@ -691,7 +693,57 @@ export function emitInlineSoqlEdges(
     for (const f of refs.fields)
       edges.push(makeEdge(ctx, srcQname, REL_TYPES.READS_FIELD, `CustomField:${obj}.${f}`));
     for (const p of refs.paths) paths.push({ object: obj, path: p, rel: REL_TYPES.READS_FIELD });
+    if (children) addChildRelationships(children, obj, parseSoql(inner).selectClause);
   }
+}
+
+/** A child-relationship subquery (`(SELECT … FROM Contacts)` in the SELECT
+ *  list of a query on `object`), resolved to the child object post-merge
+ *  (parsers/apex/ref-resolver.ts). `fields` are the subquery's plain fields. */
+export interface ApexChildRelationship {
+  object: string;
+  relationship: string;
+  fields: string[];
+}
+
+/** Append the depth-1 `(SELECT …)` groups of `selectClause`, deduped on
+ *  (object, relationship) with their fields merged. One linear pass. */
+function addChildRelationships(
+  into: ApexChildRelationship[],
+  object: string,
+  selectClause: string,
+): void {
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < selectClause.length; i++) {
+    const c = selectClause[i];
+    if (c === "(") {
+      depth += 1;
+      if (depth === 1) start = i + 1;
+    } else if (c === ")" && depth > 0) {
+      depth -= 1;
+      if (depth !== 0) continue;
+      const sub = /^\s*select\b/i.exec(selectClause.slice(start, i));
+      if (!sub) continue;
+      const refs = soqlFieldRefs(selectClause.slice(start + sub[0].length, i));
+      if (!refs.object || refs.object.includes(".")) continue;
+      const hit = into.find(
+        (r) =>
+          r.object.toLowerCase() === object.toLowerCase() &&
+          r.relationship.toLowerCase() === refs.object?.toLowerCase(),
+      );
+      const rec = hit ?? { object, relationship: refs.object, fields: [] };
+      if (!hit) into.push(rec);
+      for (const f of refs.fields)
+        if (!rec.fields.some((x) => x.toLowerCase() === f.toLowerCase())) rec.fields.push(f);
+    }
+  }
+}
+
+/** Store child-relationship subqueries on a node (only when there are any). */
+function setChildRelationships(node: NodeFact | undefined, rels: ApexChildRelationship[]): void {
+  if (!node || rels.length === 0) return;
+  (node.attributes as Record<string, unknown>).apexChildRelationships = rels;
 }
 
 /** Append `add` to `into`, deduped on (object, path, rel) case-insensitively. */
@@ -1078,6 +1130,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
     const methodQueries: string[] = [];
     const methodNodes = new Map<string, NodeFact>();
     const classPaths: ApexRelationshipPath[] = [];
+    const classChildren: ApexChildRelationship[] = [];
     const declRanges: Array<{ text: string; start: number }> = [];
     for (const m of methods) {
       const methodEdgeStart = edges.length;
@@ -1192,7 +1245,9 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         loopRanges.some((r) => idx > r.start && idx < r.end);
 
       // SOQL: EXECUTES_SOQL + READS_FIELD for the outer query's fields.
-      emitInlineSoqlEdges(ctx, methodQname, body, inLoopAt, edges, methodPaths);
+      const methodChildren: ApexChildRelationship[] = [];
+      emitInlineSoqlEdges(ctx, methodQname, body, inLoopAt, edges, methodPaths, methodChildren);
+      setChildRelationships(methodNode, methodChildren);
       mergePaths(methodPaths, accessPaths);
       setRelationshipPaths(methodNode, methodPaths);
 
@@ -1250,6 +1305,10 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       };
       emitStaticCallEdges(ctx, methodQname, callCode, effectiveName, edges, methodScope.localVars);
       emitClassRefEdges(ctx, methodQname, callCode, methodScope, edges);
+      // The signature is outside `callCode`: prepend it so parameter and
+      // return types count for the method too.
+      const sig = `${m.returnType} ${m.name}(${m.params.join(", ")});\n`;
+      emitTypeRefEdges(ctx, methodQname, sig + callCode, methodScope, edges, methodEdgeStart);
       emitDescribeRefEdges(ctx, methodQname, callCode, edges);
       const queries = rawDecl === null ? [] : foldDynamicSoql(rawDecl);
       methodQueries.push(...queries);
@@ -1271,6 +1330,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       const rest = outside.join("");
       emitStaticCallEdges(ctx, classQname, rest, effectiveName, edges, refScope.localVars);
       emitClassRefEdges(ctx, classQname, rest, refScope, edges);
+      emitTypeRefEdges(ctx, classQname, rest, refScope, edges);
       emitDescribeRefEdges(ctx, classQname, rest, edges);
       // Dynamic SOQL outside method bodies (constants, constructors): every
       // folded query in the file minus those already attributed to a method.
@@ -1295,6 +1355,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         (idx) => restLoops.some((r) => idx > r.start && idx < r.end),
         edges,
         classPaths,
+        classChildren,
       );
     }
 
@@ -1393,6 +1454,10 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       }
     }
 
+    setChildRelationships(
+      nodes.find((n) => String(n.qualifiedName) === classQname),
+      classChildren,
+    );
     if (classPaths.length > 0) {
       const classNode = nodes.find((n) => String(n.qualifiedName) === classQname);
       if (classNode) setRelationshipPaths(classNode, classPaths);

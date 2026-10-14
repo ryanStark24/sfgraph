@@ -130,6 +130,27 @@ describe("find_similar: a field two top hits share is kept in place (cycle 3 T9 
   });
 });
 
+describe("find_similar: shared fields are capped in the top k (cycle 3 T9 review M1)", () => {
+  beforeEach(() => {
+    doc("ApexClass:GizmoA", "gizmo gizmo gizmo");
+    doc("ApexClass:GizmoB", "gizmo gizmo gizmo b");
+    doc("ApexClass:GizmoC", "gizmo handler for the nightly run of every open order");
+    for (const f of ["One__c", "Two__c", "Three__c"]) {
+      doc(`CustomField:Gizmo__c.${f}`, "gizmo field");
+      e("ApexClass:GizmoA", `CustomField:Gizmo__c.${f}`, REL_TYPES.READS_FIELD);
+      e("ApexClass:GizmoB", `CustomField:Gizmo__c.${f}`, REL_TYPES.WRITES_FIELD);
+    }
+  });
+
+  it("moves at most a quarter of k up, so code hits are not pushed out", async () => {
+    const h = await hits({ text: "gizmo", k: 4 });
+    const shared = h.filter((x) => (x as Hit & { sharedBy?: string[] }).sharedBy);
+    expect(shared).toHaveLength(1);
+    expect(h.map((x) => x.qname)).toContain("ApexClass:GizmoC");
+    expect(h).toHaveLength(4);
+  });
+});
+
 describe("find_similar: qname mode (fix round 1, I1)", () => {
   beforeEach(() => {
     doc("ApexClass:Bill", "bill run");

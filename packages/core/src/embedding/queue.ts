@@ -53,6 +53,8 @@ export interface VectorSink {
    * written in one commit instead of one per vector. Optional.
    */
   transaction?<T>(fn: () => T): T;
+  /** A transaction is open on the sink's connection. Optional. */
+  readonly inTransaction?: boolean;
 }
 
 export interface EmbeddingQueueOpts {
@@ -517,10 +519,17 @@ export class EmbeddingQueue {
     const run = (): boolean[] => pairs.map(([e, v]) => this.writeOne(e, v));
     const sink = this.opts.vectorStore;
     if (pairs.length > 1 && typeof sink.transaction === "function") {
+      const outer = sink.inTransaction === true;
       try {
         return sink.transaction(run);
-      } catch {
-        // Fall through to the unbatched path, which surfaces the error.
+      } catch (e) {
+        // Inside an outer transaction the batch is a savepoint. Some errors
+        // (SQLITE_FULL, IOERR) roll the outer transaction back too; row-by-row
+        // writes would then autocommit outside it, so surface the error.
+        // (Read through a fresh lookup: TS narrows the property after `outer`.)
+        const stillIn = (sink as { readonly inTransaction?: boolean }).inTransaction;
+        if (outer && stillIn === false) throw e;
+        // Otherwise fall through to the unbatched path, which surfaces the error.
       }
     }
     return run();

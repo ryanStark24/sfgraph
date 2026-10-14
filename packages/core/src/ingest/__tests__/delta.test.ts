@@ -412,6 +412,18 @@ describe("project delta ingestion: same graph as a full rebuild", () => {
     await expectSameAsRebuild(ctx);
   });
 
+  it('11d. rows stamped "unknown" (version unreadable) -> one full rebuild, then the real stamp', async () => {
+    const ctx = await baseline();
+    ctx.store.db.prepare("UPDATE _sfgraph_member_generation SET generation = 'unknown'").run();
+    let rebuilt = 0;
+    const r = await delta(ctx, { onFullRebuild: () => rebuilt++ });
+    expect(r.kind).toBe("full");
+    expect(rebuilt).toBe(1);
+    expect(ctx.store.getMemberRowsGeneration(orgId())).toBe(memberRowsGeneration());
+    expect((await delta(ctx)).kind).toBe("delta");
+    await ctx.store.close();
+  });
+
   it("11c. rows with no recorded build -> full rebuild", async () => {
     const ctx = await baseline();
     ctx.store.db.prepare("DELETE FROM _sfgraph_member_generation").run();

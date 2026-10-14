@@ -74,6 +74,10 @@ const methodName = (q: string): string => {
 };
 /** Test classes named in the In short before "and N more". */
 const TEST_NAMES_MAX = 10;
+/** Spots named on a piece's line before "and N more". */
+const SPOTS_NAMED_MAX = 3;
+/** Names in one Technical details list before "and N more" (a large org has hundreds). */
+const DETAILS_NAMES_MAX = 50;
 /** Classes and triggers A to Z by name (case-insensitive), then by qname. */
 const byName = (a: string, b: string): number =>
   nameOf(a).toLowerCase().localeCompare(nameOf(b).toLowerCase()) || a.localeCompare(b);
@@ -131,7 +135,7 @@ defineTool({
     };
     const testNameList = testOwners.map((q) => code(nameOf(q)));
     const testNames =
-      testNameList.length > TEST_NAMES_MAX
+      testNameList.length > TEST_NAMES_MAX + 1
         ? listWithMore(testNameList, TEST_NAMES_MAX)
         : andList(testNameList);
     const testNote =
@@ -139,7 +143,10 @@ defineTool({
         ? ` ${countNoun(excludedTests, "spot")} in test code ${excludedTests === 1 ? "was" : "were"} left out, in ${testNames} (set \`includeTests: true\` to see ${excludedTests === 1 ? "it" : "them"}).`
         : "";
     const testDetails = testOwners.length
-      ? `Left out as test code: ${testOwners.map((q) => `\`${q}\``).join(", ")}.`
+      ? `Left out as test code: ${listWithMore(
+          testOwners.map((q) => `\`${q}\``),
+          DETAILS_NAMES_MAX,
+        )}.`
       : "";
     const scanNotes = [
       "Scans the graph live; a cache adds rows only when it is fresh.",
@@ -223,7 +230,7 @@ defineTool({
         return {
           name: q,
           kind: g.label,
-          role: `${plainKind(g.label)} with ${bySeverity(g.risks)}: ${spots.length > 3 ? `${spots.slice(0, 3).join(", ")} and ${spots.length - 3} more` : andList(spots)}.`,
+          role: `${plainKind(g.label)} with ${bySeverity(g.risks)}: ${spots.length > SPOTS_NAMED_MAX + 1 ? listWithMore(spots, SPOTS_NAMED_MAX) : andList(spots)}.`,
         };
       });
     // Classes and triggers none of whose spots made the `limit` cut: named, so a reader looking for
@@ -231,9 +238,10 @@ defineTool({
     const cutOwners = [...owners].filter(([q]) => !listed.has(q)).sort(([a], [b]) => byName(a, b));
     const cutSpots = cutOwners.reduce((n, [, g]) => n + g.risks.length, 0);
     const cutLine = cutOwners.length
-      ? `Not listed below (their spots rank lower), A to Z: ${cutOwners
-          .map(([q, g]) => `\`${q}\` (${countNoun(g.risks.length, "spot")})`)
-          .join(", ")}.`
+      ? `Not listed below (their spots rank lower), A to Z: ${listWithMore(
+          cutOwners.map(([q, g]) => `\`${q}\` (${countNoun(g.risks.length, "spot")})`),
+          DETAILS_NAMES_MAX,
+        )}${cutOwners.length > DETAILS_NAMES_MAX + 1 ? " (`export_sarif` lists them all)" : ""}.`
       : "";
     const markdown = renderReport({
       title: "Code that may hit Salesforce limits",

@@ -122,6 +122,10 @@ export class SqliteVectorStore implements VectorStore {
     return this.db.transaction(fn)();
   }
 
+  get inTransaction(): boolean {
+    return this.db.inTransaction;
+  }
+
   private toBlob(vec: Float32Array): Buffer {
     return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
   }

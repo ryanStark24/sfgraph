@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { APEX_NODE_HASH_SALT } from "../../parsers/apex/class.js";
 import { HASH_SALTS } from "../../parsers/hash-salts.js";
 import { LWC_NODE_HASH_SALT } from "../../parsers/lwc/bundle.js";
-import { memberRowsGeneration, saltsHash } from "../member-rows.js";
+import { generationFor, memberRowsGeneration, saltsHash } from "../member-rows.js";
 
 // Cycle 3 final review I-1: a salt bump inside one core version must change the member-row
 // generation, so a delta rebuilds instead of keeping old output for unchanged members.
@@ -21,6 +21,12 @@ describe("memberRowsGeneration", () => {
     expect(memberRowsGeneration(bumped)).not.toBe(memberRowsGeneration());
     const base = memberRowsGeneration().split("+")[0];
     expect(memberRowsGeneration(bumped).split("+")[0]).toBe(base);
+  });
+
+  it("an unreadable core version still changes with the salts", () => {
+    const bumped = HASH_SALTS.map((s) => (s === APEX_NODE_HASH_SALT ? `${s}-next` : s));
+    expect(generationFor("unknown")).toBe(`core@unknown+${saltsHash()}`);
+    expect(generationFor("unknown", bumped)).not.toBe(generationFor("unknown"));
   });
 
   it("holds every exported parser salt", () => {

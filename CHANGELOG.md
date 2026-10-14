@@ -79,12 +79,14 @@
 - **Report text fixes** (`data` is unchanged):
   - A multi-line or `|`-holding query in the `governor_risk_check` evidence column stays in its table row.
   - Long or multi-line `find_similar` free text is shown as one line of at most 80 characters.
-  - Merged piece lines with counts say "each".
+  - Merged piece lines with counts say "each". A number inside a name (`Handler2`) is not read as a count, so such lines no longer get a stray "each".
   - When the server shortens a long report, the "N more pieces" count includes every piece of a dropped merged line.
   - Diagram labels stay on one line, escape `#`, and are cut on whole characters.
   - `cross_org_diff` and `point_in_time_diff` diagram boxes get generated ids (`n0`, `n1`), so two names that differ only in non-ASCII letters no longer merge into one box.
 - **`find_similar` (free text): a field that two or more of the top matches read or write is no longer listed last.** It is the data those matches share, so it is part of the same process. It is listed right after the later of those matches, and its line names them (`data.hits[].sharedBy`). Other fields, settings records and test code are still listed last.
-- **Reports name a 4th caller or callee instead of writing "and 1 other"**, which took as much room as the name it hid. Five or more are still cut to 3 and "and N others".
+- **Reports name a 4th caller or callee instead of writing "and 1 other"**, which took as much room as the name it hid. Five or more are still cut to 3 and "and N others". Every cut list now follows this rule, so no report says "and 1 more".
+- **`find_similar` (free text) moves at most a quarter of `k` shared fields up** (at least 1), so fields shared by the top matches can no longer push code and automation matches out of the results. The other shared fields are listed last, as before.
+- **`governor_risk_check` Technical details name at most 50 classes or triggers per list** (the test classes left out, and those past `limit`), then say how many more; on a large org these lists used to run to hundreds of names.
 - **The presentation guide asks for only the pieces on the path in question, and for each piece's role once.** It no longer asks the reader to repeat the piece list, and it asks for every Salesforce or Vlocity term to be defined. The guide stays under 1,200 characters.
 - **`find_similar`: the default `min_similarity` rises from 0.3 to 0.4.** On the benchmark's dev and dev2 cases, the weakest expected match scored just above 0.4 and every match between 0.3 and 0.4 was unrelated, so the new default hides that noise without losing an expected match. Pass `min_similarity: 0.3` to get the old results.
 - **`cross_org_diff` hides managed-package and standard Salesforce items found in one org only**, and says how many (`data.hidden`). Set `include_managed: true` or `include_standard: true` to list them again. Items in both orgs with different source are always listed. When every difference is hidden, the report says so rather than "no differences".
@@ -105,6 +107,9 @@
   - Plural product names keep their capital mid-sentence ("4 OmniScripts (guided screen flows)").
   - `governor_risk_check` lists its classes and triggers A to Z, in What each piece does and in Technical details (`limit` still keeps the highest-priority spots, and `data` keeps the documented order). It also names the test classes whose spots were left out, and, past `limit`, the classes and triggers none of whose spots are listed.
 - **The presentation guide** (the server `instructions` and the `present_for_people` prompt) now also asks for counts that match the list, a mermaid diagram of at most 12 boxes, each piece's business purpose and what its code decides or writes (reading the code first when a result can show it), short forms such as SOQL spelled out, "steps away" rather than "hops", gaps stated in terms of the code rather than the steps taken, and no drafting notes.
+- **`--rebuild` always keeps the newest backup that still holds snapshot history.** When copying the history into a rebuilt graph failed, the new backup had none; two such rebuilds in a row could delete the only backup that did. Other backups are still cut to the newest 2.
+- **`--delta` rebuilds after a parser change even when sfgraph cannot read its own version.** Such a graph used to be stamped just "unknown", which hid parser changes, so unchanged files kept old parser output. That stamp now triggers one full rebuild, and the new stamp records the parser versions.
+- **Apex code that only names a class or custom object as a type now links to it.** That covers variables, parameters, return types, loop variables, `Map<Id, Foo>`, casts and `instanceof`. Before, `explain_code` and impact checks missed classes that were never built with `new` or called. Child-record subqueries such as `(SELECT Status__c FROM Requests__r)` now link to the child object and its fields, found through the lookup field's relationship name. Re-ingest to pick this up; every Apex class is stored again once.
 
 ### Tool accuracy (readiness round)
 

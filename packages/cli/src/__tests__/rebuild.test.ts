@@ -204,6 +204,43 @@ describe("ingest --rebuild file handling", () => {
   });
 });
 
+describe("pruneRebuildBackups keeps the snapshot history", () => {
+  it("two history-less backups in a row do not delete the only one with snapshots", async () => {
+    const { SqliteGraphStore, SqliteSnapshotStore } = await import("@ryanstark24/sfgraph-core");
+    const { asOrgId } = await import("@ryanstark24/sfgraph-shared");
+    const orgId = "00Dxxprune01";
+    const dir = join(tmpDataDir, "backups");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(dir, { recursive: true });
+    const name = (n: number) => `${orgId}.rebuild-2026-01-0${n}T00-00-00-000Z.sqlite`;
+    // Oldest: a real graph with one snapshot. Newer: failed rebuilds, no history.
+    const dbPath = join(dir, name(1));
+    const g = new SqliteGraphStore({ dbPath });
+    await g.init();
+    const s = new SqliteSnapshotStore({ dbPath, db: g.db, skipMigrations: true });
+    await s.init();
+    s.createSnapshot(asOrgId(orgId), "keep-me", false);
+    await g.close();
+    for (const n of [2, 3, 4]) writeFileSync(join(dir, name(n)), "stub");
+
+    const { pruneRebuildBackups } = await import("../commands/ingest.js");
+    const pruned = await pruneRebuildBackups(dir, orgId);
+    expect(pruned).toEqual([name(2)]);
+    const left = readdirSync(dir).filter((f) => f.endsWith(".sqlite"));
+    expect(left.sort()).toEqual([name(1), name(3), name(4)]);
+
+    // Once a newer backup has history, the old one is pruned as usual.
+    const p5 = join(dir, name(5));
+    const g5 = new SqliteGraphStore({ dbPath: p5 });
+    await g5.init();
+    const s5 = new SqliteSnapshotStore({ dbPath: p5, db: g5.db, skipMigrations: true });
+    await s5.init();
+    s5.createSnapshot(asOrgId(orgId), "newer", false);
+    await g5.close();
+    expect((await pruneRebuildBackups(dir, orgId)).sort()).toEqual([name(1), name(3)]);
+  });
+});
+
 describe("rebuild: graph file in use (Windows EBUSY/EPERM)", () => {
   const busy = (code: string) => () => {
     throw Object.assign(new Error(`${code}: resource busy or locked`), { code });
