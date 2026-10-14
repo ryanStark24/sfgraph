@@ -3,6 +3,7 @@ import type { GraphStore } from "@ryanstark24/sfgraph-core";
 import { type OrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, numeric, z } from "./_define.js";
+import { nearCopies } from "./_near_copies.js";
 import { labelOfQname } from "./_reach_list.js";
 import {
   type Piece,
@@ -70,7 +71,7 @@ interface VecHit {
   similarity: number;
   distance: number;
 }
-interface FusedHit {
+export interface FusedHit {
   qname: string;
   label: string;
   similarity: number | null; // vector cosine, or null for keyword-only hits
@@ -86,6 +87,49 @@ interface FusedHit {
 /** Record-level labels: rows inside a component (a CMDT record, a field),
  *  not the code or automation a free-text concept query asks for. */
 const RECORD_LEVEL_LABELS: ReadonlySet<string> = new Set(["CustomMetadataRecord", "CustomField"]);
+
+/**
+ * Cycle 3 C4 cutoffs, applied to a `text` search's top k when `min_similarity` > 0 (0 turns every floor off):
+ *  - DATA_LABEL_FLOOR: a field, object or settings record with a similarity score must reach 0.45. Data rows
+ *    share words with almost any query about their process, so they need a higher bar than code.
+ *  - RELATIVE_CUTOFF: a match found by meaning only (not also by name) must reach 0.85 of the closest match.
+ * Chosen by an offline sweep on the dev cases (floors 0.43-0.55, ratios 0.6-0.85) and confirmed on dev2.
+ * Matches found by name only carry no score and are never cut.
+ */
+export const DATA_LABEL_FLOOR = 0.45;
+export const RELATIVE_CUTOFF = 0.85;
+const DATA_LABELS: ReadonlySet<string> = new Set([
+  "CustomObject",
+  "CustomField",
+  "CustomMetadataRecord",
+]);
+
+/** The fused hits that pass the C4 cutoffs, and how many were cut. */
+export function applyCutoffs(fused: FusedHit[]): { kept: FusedHit[]; cut: number } {
+  const top = fused.reduce((m, h) => Math.max(m, h.similarity ?? 0), 0);
+  const kept = fused.filter((h, i) => {
+    // The best-ranked hit always stays, so a cutoff never empties the answer.
+    if (i === 0 || h.similarity == null) return true;
+    if (DATA_LABELS.has(h.label) && h.similarity < DATA_LABEL_FLOOR) return false;
+    if (h.via === "vector" && h.similarity < RELATIVE_CUTOFF * top) return false;
+    return true;
+  });
+  return { kept, cut: fused.length - kept.length };
+}
+
+/** The text a hit is fingerprinted by: its source, or for a class its methods' source. Capped at 64 kB. */
+function copyText(store: GraphStore, orgId: OrgId, h: FusedHit): string {
+  const MAX = 65_536;
+  const own = store.getSnippet(orgId, asQualifiedName(h.qname))?.sourceText;
+  if (own) return own.slice(0, MAX);
+  if (h.label !== "ApexClass" && h.label !== "ApexTrigger") return "";
+  let out = "";
+  for (const e of store.listEdgesFrom(orgId, asQualifiedName(h.qname), REL_TYPES.CONTAINS_METHOD)) {
+    out += `${store.getSnippet(orgId, e.dstQualifiedName)?.sourceText ?? ""}\n`;
+    if (out.length >= MAX) break;
+  }
+  return out.slice(0, MAX);
+}
 
 /** Rels by which a component reads or writes a field (as analyze_field counts them). */
 const FIELD_USE_RELS: ReadonlySet<string> = new Set(
@@ -407,7 +451,7 @@ defineTool({
     const focalIsTest =
       focalQname !== undefined &&
       analyze.makeCoverageClassifier(ctx.graphStore, ctx.orgId)(focalQname).isTest;
-    const fused = shapeHits(ctx.graphStore, ctx.orgId, rrfFuse(vec, kw), input.k, {
+    const shaped = shapeHits(ctx.graphStore, ctx.orgId, rrfFuse(vec, kw), input.k, {
       collapse: label === undefined && !memberFocal,
       demote:
         label !== undefined
@@ -419,6 +463,12 @@ defineTool({
               : "tests",
       focalUnit,
     });
+    // C4 cutoffs on the shaped top k (not backfilled: a cut row is a weak match, not a free slot).
+    // Text search only: they were chosen on text cases, and a focal piece's neighbours score much higher.
+    const { kept: fused, cut: cutByCutoff } =
+      input.text !== undefined && input.min_similarity > 0
+        ? applyCutoffs(shaped)
+        : { kept: shaped, cut: 0 };
 
     // Nothing to return — explain why, preferring the most specific cause. Note
     // these only fire when BOTH legs are empty; a populated keyword leg means the
@@ -524,10 +574,27 @@ defineTool({
       "| # | qname | label | similarity | via |",
       "| - | ----- | ----- | ---------- | --- |",
     ];
+    // Near-copies (display only): data.hits keeps every row; the report lists a copy under the
+    // first (best-ranked) member of its group.
+    const copyOf = nearCopies(
+      fused.map((h) => ({ id: h.qname, kind: h.label, text: copyText(ctx.graphStore, ctx.orgId, h) })),
+    );
+    const copiesOf = new Map<string, string[]>();
+    for (const [c, rep] of copyOf) copiesOf.set(rep, [...(copiesOf.get(rep) ?? []), c]);
+    const rowOf = new Map(fused.map((h, i) => [h.qname, i + 1]));
     fused.forEach((h, i) => {
       const sim = h.similarity == null ? "—" : h.similarity.toFixed(3);
-      md.push(`| ${i + 1} | \`${h.qname}\` | \`${h.label}\` | ${sim} | ${h.via} |`);
+      const rep = copyOf.get(h.qname);
+      md.push(
+        `| ${i + 1} | \`${h.qname}\` | \`${h.label}\` | ${sim} | ${h.via}${rep ? `; near-copy of #${rowOf.get(rep)}` : ""} |`,
+      );
     });
+    if (cutByCutoff > 0) {
+      md.push(
+        "",
+        `_${cutByCutoff} weak match(es) cut: a field, object or settings record below ${DATA_LABEL_FLOOR}, or a meaning-only match below ${RELATIVE_CUTOFF} of the closest. \`min_similarity: 0\` keeps them._`,
+      );
+    }
     if (cutByFloor > 0) {
       md.push(
         "",
@@ -544,19 +611,27 @@ defineTool({
     const hidden = cutByFloor
       ? `${countNoun(cutByFloor, "weaker match", "weaker matches")} ${cutByFloor === 1 ? "was" : "were"} hidden below the similarity floor of ${input.min_similarity}`
       : "";
-    const pieces: Piece[] = fused.map((h) => ({
-      name: h.qname,
-      kind: h.label,
-      role: `${h.similarity == null ? "no similarity score" : `similarity ${h.similarity.toFixed(3)}`}, found ${VIA_PLAIN[h.via]}${h.demoted ? `; listed last (${input.text !== undefined ? "test code, a field or a settings record" : "test code"})` : ""}${h.sharedBy ? `; used by ${andList(h.sharedBy.map((q) => code(q.slice(q.indexOf(":") + 1))))}, so it is part of the same process` : ""}.`,
-    }));
+    const pieces: Piece[] = fused
+      .filter((h) => !copyOf.has(h.qname))
+      .map((h) => {
+        const copies = copiesOf.get(h.qname);
+        return {
+          name: h.qname,
+          kind: h.label,
+          role: `${h.similarity == null ? "no similarity score" : `similarity ${h.similarity.toFixed(3)}`}, found ${VIA_PLAIN[h.via]}${h.demoted ? `; listed last (${input.text !== undefined ? "test code, a field or a settings record" : "test code"})` : ""}${h.sharedBy ? `; used by ${andList(h.sharedBy.map((q) => code(q.slice(q.indexOf(":") + 1))))}, so it is part of the same process` : ""}${copies ? `; ${countNoun(copies.length, "near-copy", "near-copies")} (almost the same code): ${andList(copies.map((q) => code(q.slice(q.indexOf(":") + 1))))}` : ""}.`,
+        };
+      });
+    const cutLine = cutByCutoff
+      ? `${countNoun(cutByCutoff, "weak match", "weak matches")} ${cutByCutoff === 1 ? "was" : "were"} left out for scoring well below the closest match`
+      : "";
     const markdown = renderReport({
       title: TITLE,
       inShort: [
-        `Found ${countNoun(fused.length, "piece")} similar to ${focalPlain}${among}: ${kindCounts(fused.map((h) => h.label))}.`,
+        `Found ${countNoun(fused.length, "piece")} similar to ${focalPlain}${among}: ${kindCounts(fused.map((h) => h.label))}${copyOf.size ? `; ${countNoun(copyOf.size, "of them is a near-copy", "of them are near-copies")} of another match, listed under it` : ""}.`,
         `The closest is ${shown(top.qname)}${top.similarity == null ? ", found by name" : ` (similarity ${top.similarity.toFixed(3)} out of 1)`}${keywordOnly ? `; ${countNoun(keywordOnly, "match", "matches")} ${keywordOnly === 1 ? "was" : "were"} found by name only` : ""}.`,
-        ...(hidden || demoted
+        ...(hidden || demoted || cutLine
           ? [
-              `${[hidden, demoted ? `${countNoun(demoted, "match", "matches")} ${demoted === 1 ? "is" : "are"} ${input.text !== undefined ? "test code, fields or settings records" : "test code"}, listed last` : ""].filter(Boolean).join("; ")}.`.replace(
+              `${[hidden, cutLine, demoted ? `${countNoun(demoted, "match", "matches")} ${demoted === 1 ? "is" : "are"} ${input.text !== undefined ? "test code, fields or settings records" : "test code"}, listed last` : ""].filter(Boolean).join("; ")}.`.replace(
                 /^./,
                 (c) => c.toUpperCase(),
               ),
@@ -569,7 +644,7 @@ defineTool({
       pieces,
       details: md.join("\n"),
       next: [
-        ...(cutByFloor ? ["Lower `min_similarity` to see weaker matches."] : []),
+        ...(cutByFloor || cutByCutoff ? ["Lower `min_similarity` (0 turns every cut off) to see weaker matches."] : []),
         "Use `explain_code` on a match to read its code.",
         "Set `label` to compare with one kind only.",
         "Matches are listed per component (a method as its class), never the starting component itself.",
@@ -585,6 +660,8 @@ defineTool({
         k: input.k,
         minSimilarity: input.min_similarity,
         cutByFloor,
+        // Text searches only (the cutoffs do not apply to a focal piece).
+        ...(input.text !== undefined ? { cutByCutoff } : {}),
         ...(warming ? { vectorIndexWarming: warming } : {}),
         hits: fused.map((h) => ({
           qname: h.qname,
@@ -594,6 +671,7 @@ defineTool({
           via: h.via,
           ...(h.demoted ? { demoted: true } : {}),
           ...(h.sharedBy ? { sharedBy: h.sharedBy } : {}),
+          ...(copyOf.has(h.qname) ? { nearCopyOf: copyOf.get(h.qname) } : {}),
         })),
       },
     };

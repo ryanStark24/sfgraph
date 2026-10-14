@@ -33,6 +33,13 @@ The graph is the starting point, not the last word. Call the tool first, then sp
 ## Recipe: find_similar
 1. Call `find_similar`. Open the top few hits and keep only those that do the same job (same inputs and effect), not just similar names.
 
+## Complete the set, then verify each layer
+Before you answer a "list every ..." question:
+1. Write the candidate list, each with its source: the tool, a grep hit, or a file you read.
+2. Go layer by layer (UI, Apex, Flow, OmniStudio, objects and fields) and confirm each candidate in that layer, or drop it with a reason.
+3. Compare your count with the count the tool states (the "Found N" line, the trace total, any "N hidden" note). If they differ, name the difference.
+4. Names built in strings (`'Obj__c'`, `put('Field__c', ...)`, a class name in a variable) can be missing from the graph. Grep for the name before you call the list complete.
+
 ## Always
 - Say which parts came from the graph and which you confirmed in source.
 - If the two disagree, trust the source you actually read and say so in a short sentence.
