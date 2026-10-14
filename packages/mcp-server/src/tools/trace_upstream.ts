@@ -1,7 +1,7 @@
 import { analyze } from "@ryanstark24/sfgraph-core";
 import { asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
-import { defineTool, numeric, z } from "./_define.js";
+import { defineTool, numeric, relTypes, z } from "./_define.js";
 import { findNodesSuggestion, notFoundReport } from "./_not-found.js";
 import { renderReachList, shapeTrace, traceReport } from "./_reach_list.js";
 import { nameOf } from "./_report.js";
@@ -23,7 +23,7 @@ const inputSchema = z.object({
    *  is listed as a leaf (containment is not a dependency). */
   include_structure: z.boolean().default(false),
   /** Restrict to these relationship types (e.g. ["CALLS","IS_TEST_FOR"]). */
-  rel_types: z.array(z.string()).optional(),
+  rel_types: relTypes(),
   /** Only list entries with these labels (traversal is unchanged). */
   labels: z.array(z.string()).optional(),
   /** Show the Picture (a diagram of at most 25 components); false hides it. */
