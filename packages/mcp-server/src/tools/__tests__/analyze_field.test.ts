@@ -62,6 +62,26 @@ describe("analyze_field", () => {
     expect(g.markdown).toContain("- PermissionSet:Sales");
   });
 
+  it("does not list a profile whose entry denies the field as giving access", async () => {
+    fix.addNode({ qualifiedName: "Profile:Guest", label: "Profile" });
+    fix.addEdge({
+      srcQualifiedName: "Profile:Guest",
+      dstQualifiedName: "CustomField:Account.Name",
+      relType: REL_TYPES.GRANTS_FIELD_ACCESS,
+      attributes: { readable: false, editable: false },
+    });
+    const r = await callTool("analyze_field", {
+      org: fix.orgId,
+      object: "Account",
+      field: "Name",
+      include_grants: true,
+    });
+    const d = r.data as { grants: string[]; grants_count: number };
+    expect(d.grants).toEqual(["PermissionSet:Sales"]);
+    expect(d.grants_count).toBe(1);
+    expect(r.markdown).not.toContain("Profile:Guest");
+  });
+
   it("includes DataRaptor and every other *_READS_FIELD / *_WRITES_FIELD rel", async () => {
     fix.addNode({ qualifiedName: "DataRaptor:Loader", label: "DataRaptor" });
     fix.addNode({ qualifiedName: "DataRaptor:Extractor", label: "DataRaptor" });

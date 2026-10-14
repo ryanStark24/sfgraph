@@ -3,6 +3,9 @@ import type { NodeFact } from "../domain/index.js";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import { REL_TYPES } from "../domain/rel-types.js";
 import type { GraphStore } from "../storage/interfaces.js";
+import { isEffectiveGrant } from "./edge-filters.js";
+
+export { isEffectiveGrant };
 
 export interface SecurityAudit {
   sharingFullAccess: string[];
@@ -123,7 +126,10 @@ export function securityAudit(
     const grantors = store.listNodesByLabel(orgId, grantorLabel, SECURITY_PER_LABEL_CAP);
     if (grantors.length >= SECURITY_PER_LABEL_CAP) truncated = true;
     for (const n of grantors) {
-      const grants = store.listEdgesFrom(orgId, n.qualifiedName, REL_TYPES.GRANTS_FIELD_ACCESS);
+      // An all-false entry (`<readable>false</readable>`) grants nothing.
+      const grants = store
+        .listEdgesFrom(orgId, n.qualifiedName, REL_TYPES.GRANTS_FIELD_ACCESS)
+        .filter(isEffectiveGrant);
       for (const e of grants) {
         let set = fieldAccessMatrix.get(e.dstQualifiedName);
         if (!set) {

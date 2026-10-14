@@ -1,4 +1,4 @@
-import { REL_TYPES } from "@ryanstark24/sfgraph-core";
+import { REL_TYPES, analyze } from "@ryanstark24/sfgraph-core";
 
 import { asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
@@ -81,7 +81,10 @@ defineTool({
     }
     const readers = incoming.filter((e) => READ_RELS.has(e.relType));
     const writers = incoming.filter((e) => WRITE_RELS.has(e.relType));
-    const grants = incoming.filter((e) => e.relType === REL_TYPES.GRANTS_FIELD_ACCESS);
+    // An all-false Profile/PermissionSet entry (`<readable>false</readable>`) grants nothing.
+    const grants = incoming.filter(
+      (e) => e.relType === REL_TYPES.GRANTS_FIELD_ACCESS && analyze.isEffectiveGrant(e),
+    );
     // No field node (no field metadata in the source) but edges still target
     // the qname: report them, plus any other inbound rel (layouts etc.),
     // since those edges are the only evidence the field exists.

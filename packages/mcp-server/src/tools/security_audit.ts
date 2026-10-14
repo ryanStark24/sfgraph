@@ -48,6 +48,8 @@ function fieldSecurityAudit(
     ...new Set(
       ctx.graphStore
         .listEdgesTo(ctx.orgId, field as never, REL_TYPES.GRANTS_FIELD_ACCESS as never)
+        // An all-false entry (`<readable>false</readable>`) grants nothing.
+        .filter(analyze.isEffectiveGrant)
         .map((e) => String(e.srcQualifiedName))
         .filter((q) => {
           const label = ctx.graphStore.getNode(ctx.orgId, q as never)?.label;
