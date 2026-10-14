@@ -52,7 +52,7 @@ After install, `sfgraph` is on your PATH.
 sfgraph install
 ```
 
-Idempotent. Copies 20 skill playbooks into `~/.claude/skills/` + `~/.cursor/rules/` and adds a `sfgraph` entry to your editor's MCP config. Existing MCP entries are preserved. Use `--target=claude|cursor|vscode` to wire only one, or `--dry-run` to preview. Start with **`sf-graph-router`** — it routes intent to the right skill and enforces grounding answers in the org graph before generating Salesforce code.
+Idempotent. Copies 21 skill playbooks into `~/.claude/skills/` + `~/.cursor/rules/` and adds a `sfgraph` entry to your editor's MCP config. Existing MCP entries are preserved. Use `--target=claude|cursor|vscode` to wire only one, or `--dry-run` to preview. Start with **`sf-graph-router`** — it routes intent to the right skill and enforces grounding answers in the org graph before generating Salesforce code.
 
 #### Using a different IDE or LLM client?
 

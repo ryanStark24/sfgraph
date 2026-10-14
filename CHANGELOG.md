@@ -63,6 +63,10 @@
   - The SQLite page cache is capped at 64 MB and mmap at 64 MiB. MCP tool latency moved by at most +5.4%.
   - The 256 MB parse-worker heap cap now also holds when the process runs with `--max-old-space-size` (often set in `NODE_OPTIONS` for the `sf` CLI). That V8 flag is process-wide and used to override every worker's cap, so one huge member could grow a worker to gigabytes. The flag is cleared only while a capped worker starts, so the main heap and other workers keep it.
 
+### Graph plus source skill (experimental)
+
+- New skill `sf-graph-plus-source` (21 skills now): per-task recipes for using sfgraph results together with a few source reads. A small dev-only check showed no clear accuracy gain and more tokens, so treat it as experimental.
+
 ### Readable reports and tool fixes (cycle 3)
 
 - **`export_sarif` now writes the SARIF file itself.** By default it writes `<data dir>/exports/<org>.sarif`, and it overwrites that file on each run. `out_path` picks another file inside the exports folder, and `SFGRAPH_EXPORTS_DIR` moves the folder. The report and the summary end with "saved to <file>". The SARIF `data.report` now carries the sfgraph package version as the tool version.
