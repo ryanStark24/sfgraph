@@ -577,7 +577,11 @@ defineTool({
     // Near-copies (display only): data.hits keeps every row; the report lists a copy under the
     // first (best-ranked) member of its group.
     const copyOf = nearCopies(
-      fused.map((h) => ({ id: h.qname, kind: h.label, text: copyText(ctx.graphStore, ctx.orgId, h) })),
+      fused.map((h) => ({
+        id: h.qname,
+        kind: h.label,
+        text: copyText(ctx.graphStore, ctx.orgId, h),
+      })),
     );
     const copiesOf = new Map<string, string[]>();
     for (const [c, rep] of copyOf) copiesOf.set(rep, [...(copiesOf.get(rep) ?? []), c]);
@@ -644,7 +648,9 @@ defineTool({
       pieces,
       details: md.join("\n"),
       next: [
-        ...(cutByFloor || cutByCutoff ? ["Lower `min_similarity` (0 turns every cut off) to see weaker matches."] : []),
+        ...(cutByFloor || cutByCutoff
+          ? ["Lower `min_similarity` (0 turns every cut off) to see weaker matches."]
+          : []),
         "Use `explain_code` on a match to read its code.",
         "Set `label` to compare with one kind only.",
         "Matches are listed per component (a method as its class), never the starting component itself.",

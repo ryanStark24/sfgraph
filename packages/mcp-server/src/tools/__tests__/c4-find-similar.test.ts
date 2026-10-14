@@ -51,7 +51,11 @@ async function setup(results: Array<{ qname: string; label: string; sim: number 
     countNodeVectors: () => 1,
     getNodeVector: (_o: unknown, q: string) => vectors.get(q as never) ?? null,
     searchNodes: () =>
-      results.map((r) => ({ qname: asQualifiedName(r.qname), label: r.label, distance: dist(r.sim) })),
+      results.map((r) => ({
+        qname: asQualifiedName(r.qname),
+        label: r.label,
+        distance: dist(r.sim),
+      })),
   } as unknown as VectorStore;
   const orgId = asOrgId(ORG);
   for (const q of ["ApexClass:Focal", ...results.map((r) => r.qname)]) {
@@ -95,7 +99,11 @@ describe("near-copy fingerprints", () => {
   it("identical text has estimate 1, unrelated text near 0", () => {
     const a = minhash(shingles(BODY));
     expect(estimate(a, minhash(shingles(BODY)))).toBe(1);
-    const b = minhash(shingles("public with sharing class Mailer { void send(String to) { Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ build(to) }); } }"));
+    const b = minhash(
+      shingles(
+        "public with sharing class Mailer { void send(String to) { Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ build(to) }); } }",
+      ),
+    );
     expect(estimate(a, b)).toBeLessThan(0.2);
   });
 
@@ -118,7 +126,12 @@ describe("near-copy fingerprints", () => {
 });
 
 describe("cutoffs", () => {
-  const hit = (qname: string, label: string, similarity: number | null, via: "vector" | "keyword" | "both") => ({
+  const hit = (
+    qname: string,
+    label: string,
+    similarity: number | null,
+    via: "vector" | "keyword" | "both",
+  ) => ({
     qname,
     label,
     similarity,
@@ -155,7 +168,11 @@ describe("cutoffs", () => {
     expect(d.hits.map((h) => h.qname)).toEqual(["ApexClass:Close", "CustomObject:Obj__c"]);
     expect(d.cutByCutoff).toBe(1);
     expect(r.markdown).toMatch(/1 weak match was left out/);
-    const all = await callTool("find_similar", { org: ORG, text: "close match", min_similarity: 0 });
+    const all = await callTool("find_similar", {
+      org: ORG,
+      text: "close match",
+      min_similarity: 0,
+    });
     expect((all.data as { hits: unknown[] }).hits).toHaveLength(3);
     // A focal piece's neighbours are not cut (the cutoffs were chosen on text searches).
     const byPiece = await callTool("find_similar", { org: ORG, qname: "ApexClass:Focal" });
@@ -198,10 +215,17 @@ describe("near-copies in the report", () => {
       ]);
       snippet(`ApexMethod:${c}.execute(2)`, BODY);
     }
-    snippet("ApexClass:Other", "public class Other { void send(String to) { Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ build(to) }); } }");
+    snippet(
+      "ApexClass:Other",
+      "public class Other { void send(String to) { Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ build(to) }); } }",
+    );
     const r = await callTool("find_similar", { org: ORG, qname: "ApexClass:Focal" });
     const d = r.data as { hits: Array<{ qname: string; nearCopyOf?: string }> };
-    expect(d.hits.map((h) => h.qname)).toEqual(["ApexClass:BatchQuote", "ApexClass:BatchOpp", "ApexClass:Other"]);
+    expect(d.hits.map((h) => h.qname)).toEqual([
+      "ApexClass:BatchQuote",
+      "ApexClass:BatchOpp",
+      "ApexClass:Other",
+    ]);
     expect(d.hits[1]?.nearCopyOf).toBe("ApexClass:BatchQuote");
     expect(d.hits[2]?.nearCopyOf).toBeUndefined();
     expect(r.markdown).toMatch(/1 near-copy \(almost the same code\): `BatchOpp`/);

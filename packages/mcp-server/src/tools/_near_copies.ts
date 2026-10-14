@@ -74,7 +74,8 @@ export function nearCopies(
   threshold = NEAR_COPY_THRESHOLD,
 ): Map<string, string> {
   const parent = items.map((_, i) => i);
-  const find = (i: number): number => {
+  const find = (start: number): number => {
+    let i = start;
     while (parent[i] !== i) {
       parent[i] = parent[parent[i]!]!;
       i = parent[i]!;
