@@ -223,7 +223,7 @@ describe("explain_code: prose pinned to its ce9bcf4 output (fix round 1, M9) plu
 
       **Technical details**
 
-      > No snippet stored for \`ApexClass:Svc\`. Snippets are emitted only for code parsers (currently Apex methods). For declarative metadata, use \`analyze_field\` or \`trace_upstream\` instead.
+      > No snippet stored for \`ApexClass:Svc\`. Snippets are stored for Apex methods, Apex triggers and Flows; for a class, explain one of its methods. For other metadata, use \`analyze_field\` or \`trace_upstream\` instead.
 
       **What to check next**
       - Run \`analyze_field\` for a field, or \`trace_upstream\` and \`trace_downstream\` for other kinds.

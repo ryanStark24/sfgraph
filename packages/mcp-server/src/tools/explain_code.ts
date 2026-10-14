@@ -273,7 +273,7 @@ defineTool({
               : `${who} is ${aOrAn(kindInText(kind))} with no stored source code, so there is no code to explain.`,
             ...(references.length ? [usesSentence(references, false)] : []),
           ],
-          `> No snippet stored for \`${input.qname}\`. Snippets are emitted only for code parsers (currently Apex methods). For declarative metadata, use \`analyze_field\` or \`trace_upstream\` instead.`,
+          `> No snippet stored for \`${input.qname}\`. Snippets are stored for Apex methods, Apex triggers and Flows; for a class, explain one of its methods. For other metadata, use \`analyze_field\` or \`trace_upstream\` instead.`,
           noSource,
         ),
         data: {

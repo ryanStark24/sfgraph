@@ -1038,7 +1038,7 @@
       "stored": false,
       "references": []
     },
-    "markdown": "> No snippet stored for `CustomField:Case.Priority__c`. Snippets are emitted only for code parsers (currently Apex methods). For declarative metadata, use `analyze_field` or `trace_upstream` instead."
+    "markdown": "> No snippet stored for `CustomField:Case.Priority__c`. Snippets are stored for Apex methods, Apex triggers and Flows; for a class, explain one of its methods. For other metadata, use `analyze_field` or `trace_upstream` instead."
   },
   "analyze_field.tier": {
     "data": {

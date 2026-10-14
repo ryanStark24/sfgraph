@@ -120,6 +120,22 @@ defineTool({
             `- _…${audit.flsGaps.length - input.limit} more (raise \`limit\` or filter by \`object\`)_`,
           ]
         : []),
+      // One field: name who grants access, so the reader (and a skill) need not read `data`.
+      ...(input.field !== undefined && audit.fieldAccessMatrix[0]
+        ? [
+            "",
+            `**Granted by (read or edit):** ${audit.fieldAccessMatrix[0].grantedBy.length}`,
+            ...[...audit.fieldAccessMatrix[0].grantedBy]
+              .sort()
+              .slice(0, input.limit)
+              .map((q) => `- \`${q}\``),
+            ...(audit.fieldAccessMatrix[0].grantedBy.length > input.limit
+              ? [
+                  `- _…${audit.fieldAccessMatrix[0].grantedBy.length - input.limit} more (raise \`limit\`)_`,
+                ]
+              : []),
+          ]
+        : []),
     ].join("\n");
     const fieldName = input.field !== undefined ? nameOf(input.field) : undefined;
     const fieldNode =
