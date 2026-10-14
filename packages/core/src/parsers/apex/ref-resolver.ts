@@ -6,11 +6,7 @@ import type { GraphStore } from "../../storage/interfaces.js";
 import { makeEdge } from "../common.js";
 import type { ParseContext } from "../contract.js";
 import { pruneStaleResolverEdges } from "../resolver-prune.js";
-import type {
-  ApexChildRelationship,
-  ApexFieldNameLiteral,
-  ApexRelationshipPath,
-} from "./class.js";
+import type { ApexChildRelationship, ApexFieldNameLiteral, ApexRelationshipPath } from "./class.js";
 
 /**
  * Post-merge resolution of two things the Apex parsers can only record,

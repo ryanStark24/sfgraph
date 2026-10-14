@@ -264,7 +264,9 @@ describe("resolveApexReferences: field names passed as text", () => {
       edge("DEFINES_FIELD", "CustomObject:Maker__c", "CustomField:Maker__c.Built_By__c"),
     ]);
     const res = resolveApexReferences(store, orgId, makeTestCtx());
-    expect(out(store, "ApexMethod:Svc.fill(2)")).toEqual(["READS_FIELD CustomField:Widget__c.Maker__c"]);
+    expect(out(store, "ApexMethod:Svc.fill(2)")).toEqual([
+      "READS_FIELD CustomField:Widget__c.Maker__c",
+    ]);
     const e = store.listEdgesFrom(orgId, asQualifiedName("ApexMethod:Svc.fill(2)"))[0];
     expect((e?.attributes as Record<string, unknown>).via).toBe("field-name-literal");
     expect(res.fieldLiteralsResolved).toBe(1);

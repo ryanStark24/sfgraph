@@ -404,8 +404,25 @@ function genericArgNames(code: string): string[] {
  * REFERENCES in `edges` since `fromIdx` is skipped. `code` is comment/string-masked.
  */
 const APEX_STATEMENT_WORDS = new Set([
-  "insert", "update", "upsert", "delete", "undelete", "merge", "return", "new", "throw", "else",
-  "case", "when", "do", "try", "catch", "finally", "break", "continue", "system",
+  "insert",
+  "update",
+  "upsert",
+  "delete",
+  "undelete",
+  "merge",
+  "return",
+  "new",
+  "throw",
+  "else",
+  "case",
+  "when",
+  "do",
+  "try",
+  "catch",
+  "finally",
+  "break",
+  "continue",
+  "system",
 ]);
 
 export function emitTypeRefEdges(

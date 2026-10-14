@@ -18,10 +18,10 @@ import {
 } from "./class-refs.js";
 import { parseAnnotations, stripCommentsAndStrings } from "./common.js";
 import {
+  PLACEHOLDER,
   dynamicSoqlClauseFields,
   foldDynamicSoql,
   maskApex,
-  PLACEHOLDER,
   parseDynamicSoql,
 } from "./dynamic-soql.js";
 import {
@@ -1282,11 +1282,10 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       for (const d of vc.drNames)
         edges.push(makeEdge(ctx, methodQname, REL_TYPES.APEX_CALLS_DR, `DataRaptor:${d}`));
       if (rawDecl !== null) {
-        setFieldNameLiterals(
-          methodNode,
-          rawDecl,
-          [...paramDecls(m.params), ...collectDecls(m.body)],
-        );
+        setFieldNameLiterals(methodNode, rawDecl, [
+          ...paramDecls(m.params),
+          ...collectDecls(m.body),
+        ]);
       }
 
       // Body analysis (regex path — gated when parserMode === "ast").
