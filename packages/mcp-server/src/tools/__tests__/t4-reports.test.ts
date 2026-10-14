@@ -633,7 +633,9 @@ if (CAPTURE) {
 
     it("deployment_manifest_gen counts what each file lists", async () => {
       const inShort = await inShortOf("deployment_manifest_gen.ab");
-      expect(inShort).toContain("lists 9 components to deploy");
+      expect(inShort).toContain("lists 8 components to deploy");
+      // The fixture's standard Case object exists in org1 only: left out, and said so.
+      expect(inShort).toContain("1 standard Salesforce item found in only one org");
       expect(inShort).toContain("lists 1 component to remove");
     });
   });

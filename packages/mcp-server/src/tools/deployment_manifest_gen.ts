@@ -1,7 +1,7 @@
 import { analyze } from "@ryanstark24/sfgraph-core";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
-import { code, countNoun, renderReport } from "./_report.js";
+import { andList, code, countNoun, renderReport } from "./_report.js";
 
 /** How many `<members>` entries a manifest XML lists. */
 const memberCount = (xml: string): number => (xml.match(/<members>/g) ?? []).length;
@@ -10,6 +10,8 @@ const inputSchema = z.object({
   from_org: z.string().min(1),
   to_org: z.string().min(1),
   category: z.string().optional(),
+  include_managed: z.boolean().default(false),
+  include_standard: z.boolean().default(false),
 });
 
 defineTool({
@@ -28,7 +30,25 @@ defineTool({
       storeB: ctxB.graphStore,
       orgB: ctxB.orgId,
       category: input.category ?? "all",
+      // Managed-package and standard items in one org only are left out by default, as in
+      // cross_org_diff: in destructiveChanges.xml they would delete a package's or
+      // Salesforce's own component from the target.
+      includeManaged: input.include_managed,
+      includeStandard: input.include_standard,
     });
+    const { hidden } = manifest;
+    const hiddenParts = [
+      ...(hidden.managed ? [countNoun(hidden.managed, "managed-package item")] : []),
+      ...(hidden.standard ? [countNoun(hidden.standard, "standard Salesforce item")] : []),
+    ];
+    const hiddenFlags = [
+      ...(hidden.managed ? ["`include_managed: true`"] : []),
+      ...(hidden.standard ? ["`include_standard: true`"] : []),
+    ];
+    const hiddenOne = hidden.managed + hidden.standard === 1;
+    const hiddenNote = hiddenParts.length
+      ? `Left out of both files: ${andList(hiddenParts)} found in only one org (what each org installed or retrieved, not a change). Set ${hiddenFlags.join(" or ")} to include ${hiddenOne ? "it" : "them"}.`
+      : null;
     const unmapped = Object.entries(manifest.incomplete.unmappedLabels);
     const incompleteNote =
       manifest.incomplete.diffTruncated || unmapped.length > 0
@@ -71,6 +91,7 @@ defineTool({
               `${countNoun(droppedN, "changed component")} ${droppedN === 1 ? "has" : "have"} no deployment type and ${droppedN === 1 ? "was" : "were"} left out of the files.`,
             ]
           : []),
+        ...(hiddenNote ? [hiddenNote] : []),
       ],
       details: [
         "### package.xml",

@@ -63,6 +63,10 @@
   - The SQLite page cache is capped at 64 MB and mmap at 64 MiB. MCP tool latency moved by at most +5.4%.
   - The 256 MB parse-worker heap cap now also holds when the process runs with `--max-old-space-size` (often set in `NODE_OPTIONS` for the `sf` CLI). That V8 flag is process-wide and used to override every worker's cap, so one huge member could grow a worker to gigabytes. The flag is cleared only while a capped worker starts, so the main heap and other workers keep it.
 
+### Pre-release review fixes
+
+- **`deployment_manifest_gen` no longer deletes managed-package or standard components.** Items found in one org only were all written to `destructiveChanges.xml`, including a package's own components and standard objects and fields that the source org simply had not retrieved. Deploying that file could delete them from the target. The manifest now applies the same filter as `cross_org_diff`: such items are left out of both files, counted in `hidden`, and named in the report. Set `include_managed: true` or `include_standard: true` to include them. Items that exist in both orgs and differ are still listed.
+
 ### Graph plus source skill (experimental)
 
 - New skill `sf-graph-plus-source` (21 skills now): per-task recipes for using sfgraph results together with a few source reads. A small dev-only check showed no clear accuracy gain and more tokens, so treat it as experimental.

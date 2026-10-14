@@ -994,17 +994,16 @@
   },
   "deployment_manifest_gen.ab": {
     "data": {
-      "packageXml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>CaseService</members>\n    <members>OldHelper</members>\n    <name>ApexClass</name>\n  </types>\n  <types>\n    <members>Account.SSN__c</members>\n    <members>Case.Priority__c</members>\n    <name>CustomField</name>\n  </types>\n  <types>\n    <members>Case</members>\n    <name>CustomObject</name>\n  </types>\n  <types>\n    <members>Old_Flow</members>\n    <name>Flow</name>\n  </types>\n  <types>\n    <members>caseCard</members>\n    <name>LightningComponentBundle</name>\n  </types>\n  <types>\n    <members>Support</members>\n    <name>PermissionSet</name>\n  </types>\n  <types>\n    <members>Case</members>\n    <name>SharingRules</name>\n  </types>\n  <version>59.0</version>\n</Package>\n",
+      "packageXml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>CaseService</members>\n    <members>OldHelper</members>\n    <name>ApexClass</name>\n  </types>\n  <types>\n    <members>Account.SSN__c</members>\n    <members>Case.Priority__c</members>\n    <name>CustomField</name>\n  </types>\n  <types>\n    <members>Old_Flow</members>\n    <name>Flow</name>\n  </types>\n  <types>\n    <members>caseCard</members>\n    <name>LightningComponentBundle</name>\n  </types>\n  <types>\n    <members>Support</members>\n    <name>PermissionSet</name>\n  </types>\n  <types>\n    <members>Case</members>\n    <name>SharingRules</name>\n  </types>\n  <version>59.0</version>\n</Package>\n",
       "destructiveXml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>NewThing</members>\n    <name>ApexClass</name>\n  </types>\n  <version>59.0</version>\n</Package>\n",
       "summary": {
         "apiVersion": "59.0",
-        "addedOrChanged": 12,
+        "addedOrChanged": 11,
         "removed": 1,
         "byType": {
           "ApexClass": 3,
           "Flow": 1,
           "LightningComponentBundle": 1,
-          "CustomObject": 1,
           "CustomField": 2,
           "PermissionSet": 1,
           "SharingRules": 1
@@ -1013,9 +1012,13 @@
       "incomplete": {
         "diffTruncated": false,
         "unmappedLabels": {}
+      },
+      "hidden": {
+        "managed": 0,
+        "standard": 1
       }
     },
-    "markdown": "### package.xml\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>CaseService</members>\n    <members>OldHelper</members>\n    <name>ApexClass</name>\n  </types>\n  <types>\n    <members>Account.SSN__c</members>\n    <members>Case.Priority__c</members>\n    <name>CustomField</name>\n  </types>\n  <types>\n    <members>Case</members>\n    <name>CustomObject</name>\n  </types>\n  <types>\n    <members>Old_Flow</members>\n    <name>Flow</name>\n  </types>\n  <types>\n    <members>caseCard</members>\n    <name>LightningComponentBundle</name>\n  </types>\n  <types>\n    <members>Support</members>\n    <name>PermissionSet</name>\n  </types>\n  <types>\n    <members>Case</members>\n    <name>SharingRules</name>\n  </types>\n  <version>59.0</version>\n</Package>\n```\n\n### destructiveChanges.xml\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>NewThing</members>\n    <name>ApexClass</name>\n  </types>\n  <version>59.0</version>\n</Package>\n```"
+    "markdown": "### package.xml\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>CaseService</members>\n    <members>OldHelper</members>\n    <name>ApexClass</name>\n  </types>\n  <types>\n    <members>Account.SSN__c</members>\n    <members>Case.Priority__c</members>\n    <name>CustomField</name>\n  </types>\n  <types>\n    <members>Old_Flow</members>\n    <name>Flow</name>\n  </types>\n  <types>\n    <members>caseCard</members>\n    <name>LightningComponentBundle</name>\n  </types>\n  <types>\n    <members>Support</members>\n    <name>PermissionSet</name>\n  </types>\n  <types>\n    <members>Case</members>\n    <name>SharingRules</name>\n  </types>\n  <version>59.0</version>\n</Package>\n```\n\n### destructiveChanges.xml\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>NewThing</members>\n    <name>ApexClass</name>\n  </types>\n  <version>59.0</version>\n</Package>\n```"
   },
   "ping.ok": {
     "data": {
