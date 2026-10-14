@@ -243,3 +243,31 @@ describe("resolveApexReferences: lowercase test targets", () => {
     expect(res.testTargetsUnresolved).toBe(3);
   });
 });
+
+describe("resolveApexReferences: field names passed as text", () => {
+  it("reads the field when exactly one declared sObject defines it; otherwise counts it", async () => {
+    const store = await seed([]);
+    store.mergeNodes([
+      node("CustomField:Maker__c.Built_By__c", "CustomField"),
+      node("ApexMethod:Svc.fill(2)", "ApexMethod", {
+        apexFieldNameLiterals: [
+          // Only Widget__c defines Maker__c: resolved.
+          { field: "Maker__c", objects: ["Maker__c", "Widget__c"] },
+          // Both declared objects define Built_By__c: ambiguous, skipped.
+          { field: "Built_By__c", objects: ["Maker__c", "Widget__c"] },
+          // No declared object defines it: skipped.
+          { field: "Nowhere__c", objects: ["Widget__c"] },
+        ],
+      }),
+    ]);
+    store.mergeEdges([
+      edge("DEFINES_FIELD", "CustomObject:Maker__c", "CustomField:Maker__c.Built_By__c"),
+    ]);
+    const res = resolveApexReferences(store, orgId, makeTestCtx());
+    expect(out(store, "ApexMethod:Svc.fill(2)")).toEqual(["READS_FIELD CustomField:Widget__c.Maker__c"]);
+    const e = store.listEdgesFrom(orgId, asQualifiedName("ApexMethod:Svc.fill(2)"))[0];
+    expect((e?.attributes as Record<string, unknown>).via).toBe("field-name-literal");
+    expect(res.fieldLiteralsResolved).toBe(1);
+    expect(res.fieldLiteralsUnresolved).toBe(2);
+  });
+});

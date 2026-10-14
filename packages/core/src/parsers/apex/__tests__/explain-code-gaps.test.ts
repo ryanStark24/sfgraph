@@ -81,6 +81,22 @@ describe("type-only references", () => {
     ]);
   });
 
+  it("does not read a DML statement after an if() as a declaration of a type named Update", async () => {
+    const r = await new ApexTriggerParser().parse(
+      {
+        triggerName: "DmlTrigger",
+        body: `trigger DmlTrigger on Order (before insert) {
+          List<Order> qliList = new List<Order>();
+          if(!test.isRunningTest())
+            Update qliList;
+        }`,
+      },
+      makeTestCtx(),
+    );
+    const dsts = (r.edges as unknown as Edge[]).map((e) => String(e.dstQualifiedName));
+    expect(dsts).not.toContain("ApexClass:Update");
+  });
+
   it("does not add a type reference next to a constructor edge for the same class", async () => {
     const { edges } = await parse("Orders", body);
     const fresh = edges.filter((e) => String(e.dstQualifiedName) === "ApexClass:Fresh");

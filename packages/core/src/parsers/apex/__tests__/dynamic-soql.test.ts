@@ -210,3 +210,97 @@ describe("ApexTriggerParser: dynamic SOQL READS_FIELD", () => {
     ]);
   });
 });
+
+describe("dynamic SOQL links to the object it reads", () => {
+  const soqlTo = (edges: Edge[], src: string) =>
+    edges.filter((e) => e.relType === "EXECUTES_SOQL" && String(e.srcQualifiedName) === src);
+
+  it("emits EXECUTES_SOQL dynamic=true for a literal FROM", async () => {
+    const edges = await parseClass(
+      "WidgetQuery",
+      `public class WidgetQuery {
+        public List<SObject> load(String w) {
+          return Database.query('SELECT Id, Name FROM Widget__c WHERE Name = :w');
+        }
+      }`,
+    );
+    const out = soqlTo(edges, "ApexMethod:WidgetQuery.load(1)");
+    expect(out.map((e) => String(e.dstQualifiedName))).toEqual(["CustomObject:Widget__c"]);
+    expect(out[0]?.attributes.dynamic).toBe(true);
+    expect(out[0]?.attributes.inLoop).toBeUndefined();
+  });
+
+  it("links a guard-proven FROM variable to its object", async () => {
+    const edges = await parseClass(
+      "LovLookup",
+      `public class LovLookup {
+        public static List<SObject> find(String objectName, String key) {
+          String query;
+          if (objectName == 'City_LOV__c') {
+            query = 'SELECT Id, Name FROM ' + objectName + ' WHERE Name LIKE :key';
+          }
+          return Database.query(query);
+        }
+      }`,
+    );
+    expect(
+      soqlTo(edges, "ApexMethod:LovLookup.find(2)").map((e) => String(e.dstQualifiedName)),
+    ).toEqual(["CustomObject:City_LOV__c"]);
+  });
+
+  it("emits nothing for a computed FROM", async () => {
+    const edges = await parseClass(
+      "AnyQuery",
+      `public class AnyQuery {
+        public List<SObject> load(String obj) {
+          return Database.query('SELECT Id FROM ' + obj);
+        }
+      }`,
+    );
+    expect(soqlTo(edges, "ApexMethod:AnyQuery.load(1)")).toEqual([]);
+  });
+
+  it("keeps the static edge alone when the method also queries the object inline", async () => {
+    const edges = await parseClass(
+      "Both",
+      `public class Both {
+        public void run(List<Id> ids) {
+          for (Id i : ids) { Widget__c w = [SELECT Id FROM Widget__c WHERE Id = :i]; }
+          Database.query('SELECT Name FROM Widget__c');
+        }
+      }`,
+    );
+    const out = soqlTo(edges, "ApexMethod:Both.run(1)");
+    expect(out).toHaveLength(1);
+    expect(out[0]?.attributes.inLoop).toBe(true);
+    expect(out[0]?.attributes.dynamic).toBeUndefined();
+  });
+});
+
+describe("field names passed as text are recorded for the resolver", () => {
+  it("records exact custom-field literals with the method's declared sObject types", async () => {
+    const r = await new ApexClassParser().parse(
+      {
+        className: "Filler",
+        body: `public class Filler {
+          public static void fill(Account acc, Widget__c w, String s) {
+            setIfNull(acc, 'Tier__c', 1);
+            String label = 'Tier__c is set'; // not an exact name
+            // setIfNull(acc, 'Old__c', 1);
+            Object x = w.get('ns__Size__c');
+          }
+          public static void none(String s) { System.debug('Tier__c'); }
+        }`,
+      },
+      makeTestCtx(),
+    );
+    const attrs = (q: string) =>
+      r.nodes.find((n) => String(n.qualifiedName) === q)?.attributes as Record<string, unknown>;
+    expect(attrs("ApexMethod:Filler.fill(3)").apexFieldNameLiterals).toEqual([
+      { field: "Tier__c", objects: ["Account", "Widget__c"] },
+      { field: "ns__Size__c", objects: ["Account", "Widget__c"] },
+    ]);
+    // No sObject declared in the method: nothing recorded.
+    expect(attrs("ApexMethod:Filler.none(1)").apexFieldNameLiterals).toBeUndefined();
+  });
+});

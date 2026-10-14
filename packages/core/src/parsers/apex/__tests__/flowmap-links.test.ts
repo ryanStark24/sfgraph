@@ -130,7 +130,7 @@ describe("foldDynamicSoql: a FROM variable fixed by an enclosing guard", () => {
   });
 
   it("bumps the Apex hash salt: the skipped-field count on the node changes", () => {
-    expect(APEX_NODE_HASH_SALT).toBe("apex-attrs:v9");
+    expect(APEX_NODE_HASH_SALT).toBe("apex-attrs:v12");
   });
 
   it("still skips a guard naming something that is not an object", async () => {

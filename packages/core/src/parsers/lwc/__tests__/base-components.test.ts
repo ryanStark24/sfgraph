@@ -26,4 +26,18 @@ describe("LWC template: base components", () => {
       "EMBEDS_LWC LWC:accountDetail",
     ]);
   });
+
+  it("links a record form's literal object-api-name to its object, not a bound one", () => {
+    const html = `<template>
+      <lightning-record-view-form record-id={recordId} object-api-name="Order"></lightning-record-view-form>
+      <lightning-record-edit-form object-api-name="Order"></lightning-record-edit-form>
+      <lightning-record-form object-api-name={objectApiName}></lightning-record-form>
+      <c-lookup object-api-name="City__c"></c-lookup>
+    </template>`;
+    const { extraEdges } = extractHtmlEdges(html, "LWC:host", makeTestCtx());
+    const got = extraEdges
+      .filter((e) => e.relType === "REFERENCES_OBJECT")
+      .map((e) => `${String(e.dstQualifiedName)} ${String(e.attributes.via)}`);
+    expect(got).toEqual(["CustomObject:Order record-form"]);
+  });
 });

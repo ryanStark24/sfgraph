@@ -403,6 +403,11 @@ function genericArgNames(code: string): string[] {
  * the enclosing class); a (src, dst) already holding an INSTANCE_OF or a
  * REFERENCES in `edges` since `fromIdx` is skipped. `code` is comment/string-masked.
  */
+const APEX_STATEMENT_WORDS = new Set([
+  "insert", "update", "upsert", "delete", "undelete", "merge", "return", "new", "throw", "else",
+  "case", "when", "do", "try", "catch", "finally", "break", "continue", "system",
+]);
+
 export function emitTypeRefEdges(
   ctx: ParseContext,
   srcQname: string,
@@ -420,6 +425,8 @@ export function emitTypeRefEdges(
       seen.add(String(e.dstQualifiedName).toLowerCase());
   }
   const add = (name: string, castLike = false): void => {
+    // `Update qliList;` is a DML statement, not a declaration of type Update.
+    if (APEX_STATEMENT_WORDS.has(name.toLowerCase())) return;
     let dst: string;
     if (DESCRIBE_OBJECT_SUFFIX_RE.test(name)) dst = `CustomObject:${stripNs(name, ctx.namespace)}`;
     // UpperCamel only: `MAX_SIZE` is a constant, not a type.

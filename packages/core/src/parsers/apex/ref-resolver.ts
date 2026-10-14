@@ -6,7 +6,11 @@ import type { GraphStore } from "../../storage/interfaces.js";
 import { makeEdge } from "../common.js";
 import type { ParseContext } from "../contract.js";
 import { pruneStaleResolverEdges } from "../resolver-prune.js";
-import type { ApexChildRelationship, ApexRelationshipPath } from "./class.js";
+import type {
+  ApexChildRelationship,
+  ApexFieldNameLiteral,
+  ApexRelationshipPath,
+} from "./class.js";
 
 /**
  * Post-merge resolution of two things the Apex parsers can only record,
@@ -34,7 +38,11 @@ import type { ApexChildRelationship, ApexRelationshipPath } from "./class.js";
  *     (`Contacts`, `Opportunities`) is that object. Output: REFERENCES to the
  *     child object (`via: "child-relationship"`) and READS_FIELD to each
  *     subquery field. Anything else is counted, never guessed.
- *  3. `testTargetCandidates` (test ApexClass nodes): lowercase-initial names a
+ *  3. `apexFieldNameLiterals` (method nodes): a string literal that is exactly a
+ *     custom field name (`setFieldIfNull(acc, 'Tier__c', v)`). READS_FIELD
+ *     `{via: "field-name-literal"}` when exactly one sObject type the method
+ *     declares defines that field; none or several is counted, never guessed.
+ *  4. `testTargetCandidates` (test ApexClass nodes): lowercase-initial names a
  *     test instantiates or calls; IS_TEST_FOR to the ApexClass whose name
  *     matches case-insensitively. No naming-convention fallback.
  *
@@ -51,6 +59,8 @@ export interface ApexRefResolveResult {
   childRelationshipsUnresolved: number;
   testTargetsResolved: number;
   testTargetsUnresolved: number;
+  fieldLiteralsResolved: number;
+  fieldLiteralsUnresolved: number;
   /** Parse stat, summed from the nodes: dynamic SOQL clause fields not
    *  attributed because the query's FROM is computed. */
   dynamicSoqlFieldsSkipped: number;
@@ -89,6 +99,8 @@ export function resolveApexReferences(
     childRelationshipsUnresolved: 0,
     testTargetsResolved: 0,
     testTargetsUnresolved: 0,
+    fieldLiteralsResolved: 0,
+    fieldLiteralsUnresolved: 0,
     dynamicSoqlFieldsSkipped: 0,
     edgesEmitted: 0,
   };
@@ -307,6 +319,30 @@ export function resolveApexReferences(
             attrs,
           );
         }
+      }
+    }
+  }
+
+  // Field names passed as text → the one declared sObject that defines the field.
+  for (const label of ["ApexMethod", "TestMethod"] as const) {
+    for (const n of store.listNodesByLabel(orgId, label)) {
+      const lits = (n.attributes as Record<string, unknown>).apexFieldNameLiterals;
+      if (!Array.isArray(lits)) continue;
+      for (const l of lits as ApexFieldNameLiteral[]) {
+        if (!l || typeof l.field !== "string" || !Array.isArray(l.objects)) continue;
+        const hits = new Map<string, NodeFact>();
+        for (const o of l.objects) {
+          if (typeof o !== "string") continue;
+          const f = fieldNode(o, l.field);
+          if (f) hits.set(String(f.qualifiedName).toLowerCase(), f);
+        }
+        const only = hits.size === 1 ? [...hits.values()][0] : undefined;
+        if (!only) {
+          result.fieldLiteralsUnresolved += 1;
+          continue;
+        }
+        result.fieldLiteralsResolved += 1;
+        push(n, REL_TYPES.READS_FIELD, String(only.qualifiedName), { via: "field-name-literal" });
       }
     }
   }

@@ -19,6 +19,11 @@ function walk(node: any, visit: (n: any) => void): void {
   for (const c of kids) walk(c, visit);
 }
 
+/** `lightning-record-form` / `-view-form` / `-edit-form`: their `object-api-name` is the record's object. */
+const RECORD_FORMS = new Set(["record-form", "record-view-form", "record-edit-form"]);
+/** A literal object API name (a `{binding}` is not). */
+const OBJECT_NAME_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
+
 const BINDING_RE = /\{([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)\}/g;
 
 export function extractHtmlEdges(
@@ -34,6 +39,7 @@ export function extractHtmlEdges(
   const seenEvt = new Set<string>();
   const seenField = new Set<string>();
   const seenProperty = new Set<string>();
+  const seenObject = new Set<string>();
 
   // Directive attribute names — both the modern `lwc:*` family and the
   // legacy template:1 forms. Each maps to a label recorded on the emitted
@@ -149,7 +155,25 @@ export function extractHtmlEdges(
       const bundleName = rest.replace(/-([a-z0-9])/g, (_x, l) => String(l).toUpperCase());
       if (ns === "lightning") {
         // Salesforce base components (lightning-card, lightning-input): part
-        // of the platform, not bundles in the org. No edge.
+        // of the platform, not bundles in the org. No edge, except that a
+        // record form with a literal `object-api-name` works on that object.
+        if (RECORD_FORMS.has(rest)) {
+          const obj = (n?.attrs ?? []).find(
+            (a: { name?: string }) => a?.name === "object-api-name",
+          )?.value;
+          if (typeof obj === "string" && OBJECT_NAME_RE.test(obj)) {
+            const dst = `CustomObject:${stripNs(obj, ctx.namespace)}`;
+            if (!seenObject.has(dst)) {
+              seenObject.add(dst);
+              extraEdges.push(
+                makeEdge(ctx, lwcQname, REL_TYPES.REFERENCES_OBJECT, dst, {
+                  via: "record-form",
+                  tag,
+                }),
+              );
+            }
+          }
+        }
       } else if (ns === "c") {
         const dst = `LWC:${bundleName}`;
         if (!seenLwc.has(dst)) {

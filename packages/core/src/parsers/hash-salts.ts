@@ -37,8 +37,11 @@ export const OBJECT_NODE_HASH_SALT = "custom-object-attrs:v2";
  * v8: the guard check ignores `(`, `||` and `&&` inside string literals, and
  * treats `+=` and the like as a reassignment, so the skipped-field count can change.
  * v9: `apexChildRelationships` (child-relationship subqueries).
+ * v10: a dynamic SOQL string with a literal (or guard-proven) FROM also links
+ * to its object (EXECUTES_SOQL `{dynamic: true}`).
+ * v11: `apexFieldNameLiterals` (custom field names passed as text).
  */
-export const APEX_NODE_HASH_SALT = "apex-attrs:v9";
+export const APEX_NODE_HASH_SALT = "apex-attrs:v12";
 
 // vlocity/data-raptor.ts
 /**
@@ -61,8 +64,9 @@ export const AURA_NODE_HASH_SALT = "aura-attrs:v1";
  * Folded into the LWC / LWCBundle node hash. Bump it when the node attributes
  * change so a plain re-ingest re-merges unchanged bundles. v2: recordFieldKeys.
  * v3: recordObjects (static object context for the field-key resolver).
+ * v4: a lightning record form's literal `object-api-name` links to its object.
  */
-export const LWC_NODE_HASH_SALT = "lwc-attrs:v3";
+export const LWC_NODE_HASH_SALT = "lwc-attrs:v4";
 
 // generic/opaque-node-parser.ts
 export const OPAQUE_DATAPACK_HASH_SALT = "vlocity-datapack-refs:v2";

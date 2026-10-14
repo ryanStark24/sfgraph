@@ -21,6 +21,7 @@ import {
   dynamicSoqlClauseFields,
   foldDynamicSoql,
   maskApex,
+  PLACEHOLDER,
   parseDynamicSoql,
 } from "./dynamic-soql.js";
 import {
@@ -35,6 +36,7 @@ import {
   classStringConstants,
   extractVlocityCalls,
   extractVlocityDispatch,
+  stripCommentsOnly,
 } from "./vlocity-calls.js";
 export { APEX_NODE_HASH_SALT } from "../hash-salts.js";
 
@@ -697,6 +699,49 @@ export function emitInlineSoqlEdges(
   }
 }
 
+/**
+ * A string literal that is exactly a custom field API name (`'Tier__c'`), with
+ * the sObject types the same method declares (parameters and locals). Resolved
+ * post-merge (parsers/apex/ref-resolver.ts): READS_FIELD `{via:
+ * "field-name-literal"}` when exactly one of those objects defines the field.
+ * Covers helpers such as `setFieldIfNull(acc, 'Tier__c', v)` and `rec.get('Tier__c')`.
+ */
+export interface ApexFieldNameLiteral {
+  field: string;
+  objects: string[];
+}
+
+/** Literal custom-field names: `'Name__c'` (optional namespace), nothing else in the quotes. */
+const FIELD_LITERAL_RE = /'((?:[A-Za-z][A-Za-z0-9]*__)?[A-Za-z][A-Za-z0-9_]*__c)'/g;
+/** Declared types that are never an sObject. */
+const NOT_SOBJECT = new Set(["sobject", "string", "object", "id", "map", "list", "set"]);
+
+/** Records `apexFieldNameLiterals` on a method node (see ApexFieldNameLiteral). */
+function setFieldNameLiterals(
+  node: NodeFact,
+  rawDecl: string,
+  decls: ReadonlyArray<{ type: string | null; elem: string | null }>,
+): void {
+  const objects = new Set<string>();
+  for (const d of decls) {
+    for (const t of [d.type, d.elem]) {
+      if (!t || t.includes(".") || NOT_SOBJECT.has(t.toLowerCase())) continue;
+      if (/^[A-Za-z]\w*$/.test(t)) objects.add(t);
+    }
+  }
+  if (objects.size === 0) return;
+  const fields = new Set<string>();
+  for (const m of stripCommentsOnly(rawDecl).matchAll(FIELD_LITERAL_RE)) {
+    if (m[1]) fields.add(m[1]);
+  }
+  if (fields.size === 0) return;
+  const objs = [...objects].sort().slice(0, 20);
+  (node.attributes as Record<string, unknown>).apexFieldNameLiterals = [...fields]
+    .sort()
+    .slice(0, 200)
+    .map((field) => ({ field, objects: objs }));
+}
+
 /** A child-relationship subquery (`(SELECT … FROM Contacts)` in the SELECT
  *  list of a query on `object`), resolved to the child object post-merge
  *  (parsers/apex/ref-resolver.ts). `fields` are the subquery's plain fields. */
@@ -808,10 +853,16 @@ export function emitDynamicSoqlEdges(
   fromIdx: number,
 ): number {
   const seen = new Set<string>();
+  // Objects this source already queries (static SOQL): an added dynamic edge
+  // would replace that edge (the store merges last-wins) and could drop its
+  // `inLoop`, so those keep the static edge alone.
+  const queried = new Set<string>();
   for (let i = fromIdx; i < edges.length; i++) {
     const e = edges[i];
-    if (e && e.relType === REL_TYPES.READS_FIELD && String(e.srcQualifiedName) === srcQname)
-      seen.add(String(e.dstQualifiedName).toLowerCase());
+    if (!e || String(e.srcQualifiedName) !== srcQname) continue;
+    if (e.relType === REL_TYPES.READS_FIELD) seen.add(String(e.dstQualifiedName).toLowerCase());
+    else if (e.relType === REL_TYPES.EXECUTES_SOQL)
+      queried.add(String(e.dstQualifiedName).toLowerCase());
   }
   let skipped = 0;
   for (const q of queries) {
@@ -820,6 +871,18 @@ export function emitDynamicSoqlEdges(
     skipped += clause.skipped;
     if (!parsed) continue;
     const obj = stripNs(parsed.object, ctx.namespace);
+    // The object the query reads, like a static `[SELECT …]`. No `inLoop`:
+    // loop detection for dynamic queries is `dynamicQueryInLoop` on the node.
+    const objDst = `CustomObject:${obj}`;
+    if (!queried.has(objDst.toLowerCase())) {
+      queried.add(objDst.toLowerCase());
+      edges.push(
+        makeEdge(ctx, srcQname, REL_TYPES.EXECUTES_SOQL, objDst, {
+          query: q.split(PLACEHOLDER).join("…").trim().slice(0, 500),
+          dynamic: true,
+        }),
+      );
+    }
     for (const fname of [...parsed.fields, ...clause.fields]) {
       const dst = `CustomField:${obj}.${fname}`;
       if (seen.has(dst.toLowerCase())) continue;
@@ -1218,6 +1281,13 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         );
       for (const d of vc.drNames)
         edges.push(makeEdge(ctx, methodQname, REL_TYPES.APEX_CALLS_DR, `DataRaptor:${d}`));
+      if (rawDecl !== null) {
+        setFieldNameLiterals(
+          methodNode,
+          rawDecl,
+          [...paramDecls(m.params), ...collectDecls(m.body)],
+        );
+      }
 
       // Body analysis (regex path — gated when parserMode === "ast").
       const body = m.body;
