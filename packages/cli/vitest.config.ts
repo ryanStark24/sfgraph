@@ -10,6 +10,13 @@ const root = mkdtempSync(path.join(tmpdir(), "sfg-cli-test-"));
 
 export default defineConfig({
   test: {
+    // Same Windows headroom as core and mcp-server: the diagnose and --rebuild
+    // integration tests (real SQLite files, ingest end to end) take 5-9 s on
+    // GitHub's Windows runners, past the 5 s default. Elsewhere keep the
+    // default so a real hang still fails fast.
+    testTimeout: process.platform === "win32" ? 30_000 : 5_000,
+    hookTimeout: process.platform === "win32" ? 30_000 : 10_000,
+    ...(process.platform === "win32" ? { maxWorkers: 2 } : {}),
     env: {
       SFGRAPH_DATA_DIR: path.join(root, "data"),
       SFGRAPH_CACHE_DIR: path.join(root, "cache"),
