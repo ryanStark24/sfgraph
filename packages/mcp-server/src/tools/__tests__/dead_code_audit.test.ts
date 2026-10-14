@@ -186,6 +186,34 @@ describe("dead_code_audit", () => {
       expect(md).not.toContain("no dead code detected");
     });
 
+    it("finds unused fields: the object defining a field is not a use of it", async () => {
+      fix.addNode({ qualifiedName: "CustomObject:Account", label: "CustomObject" });
+      fix.addNode({ qualifiedName: "CustomField:Account.Unused__c", label: "CustomField" });
+      fix.addNode({ qualifiedName: "CustomField:Account.Read__c", label: "CustomField" });
+      fix.addNode({ qualifiedName: "ApexClass:Svc", label: "ApexClass" });
+      fix.addNode({ qualifiedName: "PermissionSet:Sales", label: "PermissionSet" });
+      for (const f of ["Unused__c", "Read__c"]) {
+        fix.addEdge({
+          srcQualifiedName: "CustomObject:Account",
+          dstQualifiedName: `CustomField:Account.${f}`,
+          relType: REL_TYPES.DEFINES_FIELD,
+        });
+        fix.addEdge({
+          srcQualifiedName: "PermissionSet:Sales",
+          dstQualifiedName: `CustomField:Account.${f}`,
+          relType: REL_TYPES.GRANTS_FIELD_ACCESS,
+          attributes: { readable: true, editable: true },
+        });
+      }
+      fix.addEdge({
+        srcQualifiedName: "ApexClass:Svc",
+        dstQualifiedName: "CustomField:Account.Read__c",
+        relType: REL_TYPES.READS_FIELD,
+      });
+      const r = await callTool("dead_code_audit", { org: fix.orgId, label: "CustomField" });
+      expect(deadNames(r)).toEqual(["CustomField:Account.Unused__c"]);
+    });
+
     it("keeps saying no dead code for a scored label with no cached candidates", async () => {
       seedCache();
       fix.addNode({ qualifiedName: "Flow:Fresh", label: "Flow", lastModifiedAt: Date.now() });

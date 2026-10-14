@@ -67,6 +67,7 @@
 
 - **`deployment_manifest_gen` no longer deletes managed-package or standard components.** Items found in one org only were all written to `destructiveChanges.xml`, including a package's own components and standard objects and fields that the source org simply had not retrieved. Deploying that file could delete them from the target. The manifest now applies the same filter as `cross_org_diff`: such items are left out of both files, counted in `hidden`, and named in the report. Set `include_managed: true` or `include_standard: true` to include them. Items that exist in both orgs and differ are still listed.
 - **A Profile or PermissionSet entry that grants nothing no longer counts as access.** Retrieved profiles list most fields, objects and classes with every flag false (`<readable>false</readable>`, `<enabled>false</enabled>`). Those entries were counted as grants, so `security_audit` reported "no FLS gaps" for fields nobody can read, and `analyze_field include_grants` and the traces listed denied profiles as "gives access". The flags were already stored on the edges; every consumer now honours them (`isEffectiveGrant`). No re-ingest is needed.
+- **`dead_code_audit label: CustomField` finds unused fields again.** The object's own `DEFINES_FIELD` edge counted as a use, so every field looked used and the audit always reported none. An object's edges to its own fields, validation rules and record types are now structure, not usage. Scores for Apex, LWC, Flow and Visualforce are unchanged.
 
 ### Graph plus source skill (experimental)
 

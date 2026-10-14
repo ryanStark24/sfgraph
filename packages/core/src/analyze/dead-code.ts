@@ -73,10 +73,19 @@ function isCmdtClassReflection(e: EdgeLike): boolean {
   );
 }
 
+/** An object's edges to its own parts: the field, validation rule or record type exists on the
+ *  object; nothing uses it through these. Counting them kept every field "in use". */
+const OWNER_STRUCTURE_RELTYPES: ReadonlySet<string> = new Set([
+  REL_TYPES.DEFINES_FIELD,
+  REL_TYPES.HAS_VALIDATION_RULE,
+  REL_TYPES.HAS_RECORD_TYPE,
+]);
+
 /** Grants, reflection guesses (bar CMDT-named classes), own-bundle and member
- *  containment are never usage. */
+ *  containment, and an object's own structure are never usage. */
 function isRealRef(e: EdgeLike): boolean {
   if (String(e.relType).startsWith("GRANTS_")) return false;
+  if (OWNER_STRUCTURE_RELTYPES.has(String(e.relType))) return false;
   if (
     (e.attributes as Record<string, unknown>)?.source === "reflection" &&
     !isCmdtClassReflection(e)
@@ -135,7 +144,9 @@ export interface IncomingRefs {
  *  - reflection-sourced edges (`attributes.source === 'reflection'`) — these are
  *    low-confidence, pattern-matched guesses, not proof the node is invoked;
  *  - the component's own bundle `CONTAINS_COMPONENT` (every LWC has one);
- *  - member containment (`CONTAINS_METHOD`): a method's own class is structure.
+ *  - member containment (`CONTAINS_METHOD`): a method's own class is structure;
+ *  - an object's own structure (`DEFINES_FIELD`, `HAS_VALIDATION_RULE`,
+ *    `HAS_RECORD_TYPE`): a field is not used by the object that defines it.
  * Counting any of these as a reference kept genuinely dead code "alive" in the audit.
  *
  * References from test code (`IS_TEST_FOR`, @isTest classes, test methods and
