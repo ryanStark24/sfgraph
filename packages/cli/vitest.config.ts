@@ -16,9 +16,7 @@ export default defineConfig({
     // default so a real hang still fails fast.
     testTimeout: process.platform === "win32" ? 30_000 : 5_000,
     hookTimeout: process.platform === "win32" ? 30_000 : 10_000,
-    // One worker on Windows, as in core and mcp-server: two overload the runner
-    // ("Timeout calling onTaskUpdate" with every test passing).
-    ...(process.platform === "win32" ? { maxWorkers: 1 } : {}),
+    ...(process.platform === "win32" ? { maxWorkers: 2 } : {}),
     env: {
       SFGRAPH_DATA_DIR: path.join(root, "data"),
       SFGRAPH_CACHE_DIR: path.join(root, "cache"),
