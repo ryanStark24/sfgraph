@@ -79,7 +79,7 @@ defineTool({
     const hiddenTotal = hidden.managed + hidden.standard;
     const one = hiddenTotal === 1;
     const hiddenNote = hiddenParts.length
-      ? `${andList(hiddenParts)} that ${one ? "is" : "are"} in only one org ${one ? "is" : "are"} not shown; set ${hiddenFlags.join(" or ")} to list ${one ? "it" : "them"}.`
+      ? `${andList(hiddenParts)} that ${one ? "is" : "are"} in only one org ${one ? "is" : "are"} not shown, though ${one ? "it counts" : "they count"} if the question is what exists in one org but not the other; call again with ${hiddenFlags.join(" or ")} to list ${one ? "it" : "them"}.`
       : null;
     const mermaid = render.renderDiff({
       added: diff.onlyInB.slice(0, 30).map((n) => ({ qualifiedName: n.qualifiedName })),
@@ -154,7 +154,7 @@ defineTool({
           : total > 0
             ? `${a} and ${b} differ in ${countNoun(total, "piece")}: ${andList(sides)}.`
             : hiddenTotal > 0
-              ? `No differences are shown between ${a} and ${b}: the only ${one ? "difference is" : "differences are"} ${andList(hiddenParts)} found in one org only, hidden by default; set ${hiddenFlags.join(" or ")} to see ${one ? "it" : "them"}.`
+              ? `No differences are shown between ${a} and ${b}: the only ${one ? "difference is" : "differences are"} ${andList(hiddenParts)} found in one org only, hidden by default, though ${one ? "it counts" : "they count"} if the question is what exists in one org but not the other; call again with ${hiddenFlags.join(" or ")} to see ${one ? "it" : "them"}.`
               : `No differences found between ${a} and ${b}: no piece is only in one of them, and none has different source.`,
         ...(total > 0 ? [`By kind: ${byKind.join("; ")}.`] : []),
         scope,

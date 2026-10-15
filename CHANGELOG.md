@@ -67,6 +67,10 @@
 
 - A DML line such as `Update qliList;` after an `if (...)` is no longer read as a reference to a class called `Update`. The Apex parser salt moved to v12, so the next ingest stores Apex classes and triggers again.
 
+### Cross-org diff hint
+
+- When `cross_org_diff` hides managed-package or standard items found in one org only, its note now says they count if the question is what exists in one org but not the other, and tells the caller to call again with `include_managed` or `include_standard`. The defaults are unchanged. In a dev check, an agent that had skipped the hidden items on a custom-objects question now lists all 27 expected ones.
+
 ### Pre-release review fixes
 
 - **`deployment_manifest_gen` no longer deletes managed-package or standard components.** Items found in one org only were all written to `destructiveChanges.xml`, including a package's own components and standard objects and fields that the source org simply had not retrieved. Deploying that file could delete them from the target. The manifest now applies the same filter as `cross_org_diff`: such items are left out of both files, counted in `hidden`, and named in the report. Set `include_managed: true` or `include_standard: true` to include them. Items that exist in both orgs and differ are still listed.

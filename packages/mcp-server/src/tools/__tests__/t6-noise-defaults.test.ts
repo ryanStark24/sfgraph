@@ -112,7 +112,7 @@ describe("cross_org_diff: managed and standard items in one org only are hidden 
     const inShort = section(r.markdown, "In short") ?? "";
     expect(inShort).not.toContain("No differences found");
     expect(inShort).toContain(
-      "No differences are shown between `repoOrg` and `liveOrg`: the only differences are 2 managed-package items and 1 standard Salesforce item found in one org only, hidden by default; set `include_managed: true` or `include_standard: true` to see them.",
+      "No differences are shown between `repoOrg` and `liveOrg`: the only differences are 2 managed-package items and 1 standard Salesforce item found in one org only, hidden by default, though they count if the question is what exists in one org but not the other; call again with `include_managed: true` or `include_standard: true` to see them.",
     );
     expect(inShort.match(/hidden by default|not shown/g)).toHaveLength(1);
     expect(r.summary).toContain("hidden:3");
