@@ -71,6 +71,10 @@
 
 - When `cross_org_diff` hides managed-package or standard items found in one org only, its note now says they count if the question is what exists in one org but not the other, and tells the caller to call again with `include_managed` or `include_standard`. The defaults are unchanged. In a dev check, an agent that had skipped the hidden items on a custom-objects question now lists all 27 expected ones.
 
+### Answers state findings as fact
+
+- The house-style guide the server sends to the model now says to state what the results show as fact, not to open with doubts or hedge every piece, and to say once, at the end, what was not checked. In a small dev check this lifted how often readers preferred the answers, with no change in accuracy or tokens; the gain was within the noise of that check.
+
 ### Pre-release review fixes
 
 - **`deployment_manifest_gen` no longer deletes managed-package or standard components.** Items found in one org only were all written to `destructiveChanges.xml`, including a package's own components and standard objects and fields that the source org simply had not retrieved. Deploying that file could delete them from the target. The manifest now applies the same filter as `cross_org_diff`: such items are left out of both files, counted in `hidden`, and named in the report. Set `include_managed: true` or `include_standard: true` to include them. Items that exist in both orgs and differ are still listed.

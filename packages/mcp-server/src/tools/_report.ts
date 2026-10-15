@@ -570,15 +570,15 @@ export function renderReport(r: HumanReport): string {
  * At most 1,200 characters; no tool names and no internal constants.
  */
 export const PRESENTATION_GUIDE = [
-  "Present these results for a mixed team: a business analyst and a developer.",
-  "1. Lead with the answer in plain words: what was found, counts in words, and how sure it is. Every count must match the list you give.",
-  "2. List only pieces on the path asked about, not every piece a result names.",
-  "3. When 3 or more components or 2 or more layers (screen, logic, data) are involved, include one focused mermaid diagram of the main path, at most 12 boxes.",
-  "4. Say once, in one plain line, what each main piece does: its business purpose and what its code decides or writes; never repeat it. When a result can show a piece's code, read it first.",
-  '5. Define every Salesforce or Vlocity term on first use, as "an OmniScript (a guided screen flow)"; spell out short forms such as SOQL or DML; say "steps away", not "hops".',
+  "Present these results for a business analyst and a developer.",
+  "1. Lead with the answer in plain words: what was found, counts in words, how sure. Every count must match the list you give.",
+  "2. List only pieces on the path asked about, not every piece named.",
+  "3. With 3 or more components or 2 or more layers (screen, logic, data), include one mermaid diagram of the main path, at most 12 boxes.",
+  "4. Say once, in one plain line, what each main piece does: its business purpose and what its code decides or writes. When a result can show a piece's code, read it first.",
+  '5. Define each Salesforce or Vlocity term on first use, as "an OmniScript (a guided screen flow)"; spell out SOQL or DML; say "steps away", not "hops".',
   "6. Put full technical names, in code style, in a final technical section, each once.",
-  "7. Say what was not checked in terms of the code, not your own steps or tools, and what to check next.",
-  "Write only the finished answer: no drafting notes. Each result holds these sections (In short, Picture, What each piece does, Technical details, What to check next); build on them, do not paste them.",
+  "7. State what the results show as fact; do not open with doubts or hedge each piece. Say once, at the end, what was not checked (about the code, not your own steps or tools) and what to check next.",
+  "Write only the finished answer, no drafting notes. Each result holds the sections In short, Picture, What each piece does, Technical details, What to check next; build on them, do not paste them.",
 ].join("\n");
 
 /** The fill-in-the-blank outline the prompt adds to the guide. */
