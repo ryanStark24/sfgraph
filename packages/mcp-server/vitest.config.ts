@@ -17,12 +17,13 @@ export default defineConfig({
     // Same headroom for beforeEach/afterEach: per-test fixture setup (fresh
     // SQLite graph + seed) passed the 10 s hook default on Windows.
     hookTimeout: process.platform === "win32" ? 30_000 : 10_000,
-    // Windows: vitest's worker->main reporting kept timing out ("Timeout
-    // calling onTaskUpdate", 60 s) with every test passing. No test blocks
-    // that long and output is small, so it is the forks pool's child-process
-    // IPC over Windows pipes; worker threads avoid it. The suite passes under
-    // threads (verified on Linux). Fewer workers for the small runner too.
-    ...(process.platform === "win32" ? { pool: "threads" as const, maxWorkers: 2 } : {}),
+    // Windows: one forked worker. With two, the small runner was so loaded that
+    // vitest's worker->main reporting timed out ("Timeout calling onTaskUpdate",
+    // 60 s) with every test passing. The threads pool avoided that but crashed
+    // the run with a native access violation (0xC0000005) on 536d313: every
+    // test loads better-sqlite3 / sqlite-vec, and vitest documents that native
+    // modules can segfault under worker threads. A single fork has neither problem.
+    ...(process.platform === "win32" ? { pool: "forks" as const, maxWorkers: 1 } : {}),
     env: {
       SFGRAPH_DATA_DIR: path.join(root, "data"),
       SFGRAPH_CACHE_DIR: path.join(root, "cache"),
