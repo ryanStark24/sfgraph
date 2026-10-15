@@ -18,10 +18,11 @@ export default defineConfig({
     // Same headroom for beforeEach/afterEach: per-test fixture setup (fresh
     // SQLite graph + seed) passed the 10 s hook default on Windows.
     hookTimeout: process.platform === "win32" ? 30_000 : 10_000,
-    // Fewer parallel workers on Windows: the small runner was so overloaded
+    // One worker on Windows: with two, the small runner was so overloaded
     // that vitest's own worker->main reporting timed out ("Timeout calling
-    // onTaskUpdate") even though every test passed.
-    ...(process.platform === "win32" ? { maxWorkers: 2 } : {}),
+    // onTaskUpdate") even though every test passed (again on 2a3b325, 1576/1576
+    // passed). Forks, not threads: the tests load native SQLite modules.
+    ...(process.platform === "win32" ? { maxWorkers: 1 } : {}),
     env: {
       SFGRAPH_DATA_DIR: path.join(root, "data"),
       SFGRAPH_CACHE_DIR: path.join(root, "cache"),
