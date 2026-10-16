@@ -106,7 +106,7 @@ const MANAGED_NAMESPACES = new Set([
   "blng",
 ]);
 
-function isStandardSObject(lower: string): boolean {
+export function isStandardSObject(lower: string): boolean {
   if (STANDARD_LOWER.has(lower) || EXTRA_STANDARD_SOBJECTS.has(lower)) return true;
   const d = lower.match(DERIVED_SOBJECT_RE);
   const base = d?.[1] ?? "";
@@ -300,7 +300,7 @@ export function emitStaticCallEdges(
  * relationship paths (`Owner.Name`) aren't read as class member access.
  * Length-preserving.
  */
-function maskInlineQueries(code: string): string {
+export function maskInlineQueries(code: string): string {
   // Each query spans `[SELECT` / `[FIND` to its depth-0 `]` (findInlineQueries),
   // so a bind like `:ids[0]` does not end it early. Queries are disjoint or
   // nested, and an outer query's text holds a nested one's binds, so every

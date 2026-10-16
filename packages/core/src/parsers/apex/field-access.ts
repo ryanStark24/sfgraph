@@ -253,7 +253,9 @@ export interface RelationshipPathAccess {
   rel: "READS_FIELD" | "WRITES_FIELD";
 }
 
-function resolve(name: string, at: number, opts: ExtractOpts): VarDecl | undefined {
+/** The declaration of `name` in scope at `at`: the nearest earlier local or a
+ *  parameter, else an unambiguous `outer` field. */
+export function resolveDecl(name: string, at: number, opts: ExtractOpts): VarDecl | undefined {
   const lower = name.toLowerCase();
   let best: VarDecl | undefined;
   for (const d of opts.decls) {
@@ -354,7 +356,7 @@ export function extractFieldAccesses(code: string, opts: ExtractOpts): FieldAcce
       i = next;
       object = opts.triggerObject;
     } else {
-      const decl = resolve(name, start, opts);
+      const decl = resolveDecl(name, start, opts);
       if (!decl) continue;
       const next = consumeIndexOrGet(code, i);
       if (next >= 0) {

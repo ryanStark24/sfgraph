@@ -135,6 +135,16 @@
     },
     {
       "srcQualifiedName": "ApexMethod:AccountController.updateAccountStatus(2)",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "EXECUTES_DML",
+      "attributes": {
+        "ops": [
+          "update"
+        ]
+      }
+    },
+    {
+      "srcQualifiedName": "ApexMethod:AccountController.updateAccountStatus(2)",
       "dstQualifiedName": "DML:update",
       "relType": "EXECUTES_DML",
       "attributes": {

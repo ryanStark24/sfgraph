@@ -12,6 +12,11 @@
  *     literal values are never fields.
  *   - GROUP BY (incl. ROLLUP / CUBE) and ORDER BY lists.
  *
+ * A SELECT-list `TYPEOF Rel WHEN T THEN f1, f2 … [ELSE …] END` reads the
+ * polymorphic lookup field (`What` -> `WhatId`, `Foo__r` -> `Foo__c`) of the
+ * FROM object and each branch's fields on that branch's type (`typeOf`); the
+ * ELSE branch's object is unknown and is skipped.
+ *
  * A leading FROM alias (`FROM Contact c` … `c.Name`) is stripped. Single
  * names are `fields` of the FROM object; dotted names are relationship
  * `paths` (`Account.Name`), resolved later through lookup metadata.
@@ -51,6 +56,53 @@ export interface SoqlFieldRefs {
   /** The plain field operands of WHERE / HAVING / GROUP BY / ORDER BY only
    *  (a subset of `fields` plus any also in the SELECT list), deduped. */
   clauseFields: string[];
+  /** Fields read per WHEN type of SELECT-list `TYPEOF` blocks, one entry per type. */
+  typeOf: SoqlTypeOfBranch[];
+}
+
+/** One `WHEN <object> THEN …` type of a `TYPEOF` block. */
+export interface SoqlTypeOfBranch {
+  object: string;
+  fields: string[];
+  paths: string[];
+}
+
+const TYPEOF_RE = new RegExp(`(?<![\\w.])typeof\\s+(${IDENT})\\s+([\\s\\S]*?)\\bend\\b`, "gi");
+const WHEN_RE = new RegExp(
+  `\\bwhen\\s+(${IDENT})\\s+then\\s+([\\s\\S]*?)(?=\\bwhen\\b|\\belse\\b|$)`,
+  "gi",
+);
+
+/**
+ * Replace each depth-0 `TYPEOF … END` of a SELECT list with its lookup field
+ * name (`What` -> `WhatId`), keeping the list's item order, and collect the
+ * WHEN branches' fields into `into`.
+ */
+function extractTypeOf(selectClause: string, into: SoqlTypeOfBranch[]): string {
+  const flat = blankParens(selectClause);
+  let out = "";
+  let last = 0;
+  for (const m of flat.matchAll(TYPEOF_RE)) {
+    const rel = m[1] ?? "";
+    const lookup = /__r$/i.test(rel) ? rel.replace(/__r$/i, "__c") : `${rel}Id`;
+    out += `${selectClause.slice(last, m.index ?? 0)}${lookup}`;
+    last = (m.index ?? 0) + m[0].length;
+    for (const w of (m[2] ?? "").matchAll(WHEN_RE)) {
+      const object = w[1] ?? "";
+      let branch = into.find((b) => b.object.toLowerCase() === object.toLowerCase());
+      if (!branch) {
+        branch = { object, fields: [], paths: [] };
+        into.push(branch);
+      }
+      for (const item of (w[2] ?? "").split(",")) {
+        const f = item.trim();
+        if (!PATH_RE.test(f)) continue;
+        const list = f.includes(".") ? branch.paths : branch.fields;
+        if (!list.some((x) => x.toLowerCase() === f.toLowerCase())) list.push(f);
+      }
+    }
+  }
+  return out + selectClause.slice(last);
 }
 
 /** Blank every parenthesised group (keeps length; nested subqueries vanish). */
@@ -130,13 +182,14 @@ export function soqlFieldRefs(inner: string): SoqlFieldRefs {
     }
   };
 
+  const typeOf: SoqlTypeOfBranch[] = [];
   const fromAt = topLevelIndex(inner, /(?<![\w.])from\s+/i);
-  if (fromAt < 0) return { object: null, fields, paths, clauseFields };
-  const selectClause = inner.slice(0, fromAt);
+  if (fromAt < 0) return { object: null, fields, paths, clauseFields, typeOf };
+  const selectClause = extractTypeOf(inner.slice(0, fromAt), typeOf);
   const afterFrom = inner.slice(fromAt).replace(/^from\s+/i, "");
   const objM = afterFrom.match(new RegExp(`^(${IDENT}(?:\\.${IDENT})*)`));
   const object = objM?.[1] ?? null;
-  if (!object) return { object: null, fields, paths, clauseFields };
+  if (!object) return { object: null, fields, paths, clauseFields, typeOf: [] };
   let tail = afterFrom.slice(object.length);
   const aliasM = tail.match(new RegExp(`^\\s+(?:as\\s+)?(${IDENT})\\b`, "i"));
   if (aliasM?.[1] && !CLAUSE_KW.has(aliasM[1].toLowerCase())) {
@@ -193,7 +246,7 @@ export function soqlFieldRefs(inner: string): SoqlFieldRefs {
   if (order.trim()) {
     for (const item of order.split(",")) add(item.trim().split(/\s+/)[0] ?? "", true);
   }
-  return { object, fields, paths, clauseFields };
+  return { object, fields, paths, clauseFields, typeOf };
 }
 
 /** One inline query found by findInlineQueries. */

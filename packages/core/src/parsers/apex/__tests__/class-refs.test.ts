@@ -91,6 +91,9 @@ describe("ApexClassParser: constructor and static-member references", () => {
       "ApexClass:Outer",
       "ApexClass:WidgetConstants",
       "ApexClass:WidgetKind",
+      // Field tokens (name-refs.ts), not class references.
+      "CustomField:Account.Name",
+      "CustomField:Gadget__c.Size__c",
     ]);
   });
 
@@ -164,6 +167,8 @@ describe("ApexTriggerParser: static calls, constructors and static members", () 
       "ApexMethod:RecursionGuard.runOnce(0)",
       "ApexMethod:System.debug(1)",
       "ApexMethod:WidgetHelper.apply(2)",
+      // `new WidgetTriggerHandler().run()`: an instance call (name-refs.ts).
+      "ApexMethod:WidgetTriggerHandler.run(0)",
     ]);
     expect(dsts(edges, "INSTANCE_OF", t)).toEqual(["ApexClass:WidgetTriggerHandler"]);
     expect(dsts(edges, "REFERENCES", t)).toEqual(["ApexClass:WidgetConstants"]);
@@ -189,6 +194,9 @@ describe("round-3 fix 1: skip lists, case-insensitive variables, dotted chains",
     );
     expect(dsts(edges, "REFERENCES", "ApexMethod:Widgets.run(0)")).toEqual([
       "ApexClass:WidgetConstants",
+      // Field tokens on the derived standard objects (name-refs.ts), not classes.
+      "CustomField:CaseFeed.Body",
+      "CustomField:OpportunityHistory.Field",
     ]);
     expect(dsts(edges, "INSTANCE_OF", "ApexMethod:Widgets.run(0)")).toEqual([]);
   });
