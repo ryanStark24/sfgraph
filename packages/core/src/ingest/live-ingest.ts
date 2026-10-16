@@ -747,8 +747,13 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         });
         bulkOpen = true;
       } else if (batchWrites && !batchOpen) {
-        graph.beginBatch?.();
-        batchOpen = true;
+        try {
+          graph.beginBatch?.();
+          batchOpen = true;
+        } catch (e) {
+          // e.g. the caller holds a transaction: keep per-member commits.
+          logger.debug("live-ingest: write batching unavailable", { err: (e as Error).message });
+        }
       }
     };
     const closeBulk = (): void => {
