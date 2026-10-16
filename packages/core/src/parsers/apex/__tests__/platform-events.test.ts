@@ -5,8 +5,8 @@ import { ApexTriggerParser } from "../trigger.js";
 
 /**
  * Platform events: `EventBus.publish(x)` with an `X__e`-typed argument
- * (record, list, `new X__e(…)`) -> PUBLISHES_EVENT `CustomObject:X__e` (the
- * object parser's PlatformEvent node); a trigger on an `X__e` object ->
+ * (record, list, `new X__e(…)`) -> PUBLISHES_EVENT `PlatformEvent:X__e` (the
+ * object parser's PlatformEvent node, shared with Flow / LWC / Aura event edges); a trigger on an `X__e` object ->
  * SUBSCRIBES_TO_EVENT to it.
  */
 type Edge = {
@@ -35,10 +35,10 @@ describe("EventBus.publish", () => {
     }`;
     const r = await new ApexClassParser().parse({ className: "Pub", body }, makeTestCtx());
     expect(dsts(r.edges as unknown as Edge[], "PUBLISHES_EVENT", "ApexMethod:Pub.run(1)")).toEqual([
-      "CustomObject:Audit_Event__e",
-      "CustomObject:Invoice_Event__e",
-      "CustomObject:Order_Event__e",
-      "CustomObject:Ship_Event__e",
+      "PlatformEvent:Audit_Event__e",
+      "PlatformEvent:Invoice_Event__e",
+      "PlatformEvent:Order_Event__e",
+      "PlatformEvent:Ship_Event__e",
     ]);
   });
 
@@ -68,7 +68,7 @@ describe("EventBus.publish", () => {
       makeTestCtx(),
     );
     expect(dsts(r.edges as unknown as Edge[], "PUBLISHES_EVENT", "ApexTrigger:AccTrg")).toEqual([
-      "CustomObject:Account_Changed__e",
+      "PlatformEvent:Account_Changed__e",
     ]);
   });
 });
@@ -84,7 +84,7 @@ describe("platform event triggers", () => {
     );
     const edges = r.edges as unknown as Edge[];
     expect(dsts(edges, "SUBSCRIBES_TO_EVENT", "ApexTrigger:OrderEvtTrg")).toEqual([
-      "CustomObject:Order_Event__e",
+      "PlatformEvent:Order_Event__e",
     ]);
     expect(dsts(edges, "TRIGGERS_ON", "ApexTrigger:OrderEvtTrg")).toEqual([
       "CustomObject:Order_Event__e",

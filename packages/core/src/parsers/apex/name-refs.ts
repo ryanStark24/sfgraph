@@ -14,7 +14,7 @@
  *   - field tokens: `SObjectType.Obj.fields.F`, `Obj.F` (a describe or an
  *     `SObjectField`) → REFERENCES `CustomField:Obj.F`;
  *   - `EventBus.publish(x)` with an `X__e`-typed argument → PUBLISHES_EVENT
- *     `CustomObject:X__e`.
+ *     `PlatformEvent:X__e` (the node Flow, LWC and Aura event edges use too).
  *
  * Every rule emits only what the text pins down: an untyped or unknown
  * receiver, a computed name or an ambiguous namespace yields nothing.
@@ -492,6 +492,6 @@ export function emitNameRefEdges(
       excludedTypes: opts.scope.localTypes,
     });
     if (!t || !/__e$/i.test(t)) continue;
-    push(REL_TYPES.PUBLISHES_EVENT, `CustomObject:${stripNs(t, ctx.namespace)}`, {});
+    push(REL_TYPES.PUBLISHES_EVENT, `PlatformEvent:${stripNs(t, ctx.namespace)}`, {});
   }
 }

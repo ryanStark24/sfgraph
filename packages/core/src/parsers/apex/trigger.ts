@@ -156,7 +156,7 @@ export class ApexTriggerParser implements Parser<ApexTriggerInput> {
     // A trigger on a platform event object is that event's subscriber.
     if (/__e$/i.test(object)) {
       edges.push(
-        makeEdge(ctx, triggerQname, REL_TYPES.SUBSCRIBES_TO_EVENT, `CustomObject:${object}`),
+        makeEdge(ctx, triggerQname, REL_TYPES.SUBSCRIBES_TO_EVENT, `PlatformEvent:${object}`),
       );
     }
 
