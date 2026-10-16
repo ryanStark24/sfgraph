@@ -24,7 +24,11 @@ export class OpaqueNodeParser implements Parser<OpaqueInput> {
   readonly type = "OpaqueMetadata";
 
   async parse(input: OpaqueInput, ctx: ParseContext): Promise<ParseResult> {
-    const name = stripNs(input.name, ctx.namespace);
+    let name = stripNs(input.name, ctx.namespace);
+    // A message channel is `Foo__c` in imports (and possibly the Metadata API)
+    // but `Foo` in source files: one name, so LWC / Aura edges meet the node
+    // whichever way the org was ingested.
+    if (input.metadataType === "LightningMessageChannel") name = name.replace(/__c$/, "");
     const qname = `${input.metadataType}:${name}`;
     const edges: EdgeFact[] = [];
     let candidates: string[] = [];
