@@ -88,6 +88,35 @@
 - **The MCP server reports its real version.** `initialize` answered with `serverInfo.version: "0.0.0"`. It now sends the `@ryanstark24/sfgraph-server` package version.
 - **Packaging.** Published tarballs no longer ship the compiled tests under `dist/**/__tests__` (about 400 files in core alone). `sfgraph-core` depends on the 1.6.0 models package (`workspace:*`, rewritten at publish) instead of `^1.1.0`. Every package now refuses `npm publish` (pnpm must rewrite `workspace:*`), and `pnpm preflight:publish` fails when the vendored embedding model is a Git LFS pointer or does not match `CHECKSUM.json`.
 
+### Parser accuracy (pre-release)
+
+These add edges the graph was missing, so impact, trace, field and dead-code answers cover more of an org. Existing graphs pick them up on the next ingest: the Apex, Aura and LWC salts moved and Flow has a new one, so `--delta` rebuilds instead of keeping old output.
+
+- **Apex calls on objects are traced.** `svc.process()` on a typed variable, parameter or field, `new Service().run()`, same-class calls (`helper()`, `this.helper()`) and `super.method()` are now CALLS edges, in the format static calls use. A receiver whose type is unknown, a system type, a collection or another class's inner class emits nothing. (Before, only `ClassName.method()` was traced, so most real call traffic was missing.)
+- **DML links to the object it changes.** `update accounts;`, `insert new Contact(...)`, `delete [SELECT … FROM Case]`, `Database.update(list)`, `upsert x Ext_Id__c` and `Trigger.new` now add an EXECUTES_DML edge to the object (`ops: [...]`), next to the existing `DML:<op>` edge. `delete [SELECT …]` used to emit no DML edge at all.
+- **Apex names used as text.** `Label.X` / `System.Label.X` → REFERENCES_LABEL; `Type.forName('X')` → REFERENCES the class, so a class loaded only that way is no longer reported unused; `rec.get('F')` / `rec.put('F', v)` on an sObject-typed record → READS_FIELD / WRITES_FIELD; field tokens (`Account.Industry`, `Schema.SObjectType.Account.fields.Industry`) → REFERENCES the field.
+- **SOQL `TYPEOF`** attributes each WHEN branch's fields to that branch's object and reads the polymorphic lookup (`Event.WhatId`). The bogus `Event.TYPEOF` field read is gone.
+- **Platform events are traced end to end.** `EventBus.publish(...)`, Flow Create Records on an `__e` object, LWC `lightning/empApi` `subscribe('/event/X__e')`, Aura `<lightning:empApi>`, Apex triggers on `__e` objects and platform-event-triggered Flows now give PUBLISHES_EVENT / SUBSCRIBES_TO_EVENT. Every one of them points at `PlatformEvent:X__e`, so one event's publishers and subscribers meet on one node.
+- **Lightning Message Service.** LWC `publish` / `subscribe` from `lightning/messageService` and Aura `<lightning:messageChannel>` link to `LightningMessageChannel:<name>`. Source-format projects now get message-channel nodes (`messageChannels/`), and the node name drops `__c` whether it came from a file or the org.
+- **Flows.**
+  - The bulk-update pattern (loop, set a field, add the record to a list, save the list) is now a WRITES_FIELD, not a read.
+  - Related-record paths such as `{!$Record.Account.Region__c}` link to `Account.Region__c` and to the lookup field used to reach it (standard relationships and custom `__r` lookups; an unresolvable hop emits nothing).
+  - `inputReference=$Record.Account` no longer reports a read of a field named `Account`; an update of a related record now shows the related fields it writes.
+- **Visualforce.** `{!Account.Name}` on a `standardController` page, `$ObjectType.Account.fields.Name` and `$Label.X` now give field, object and label edges (input tags count as writes). `<c:MyComp>`, `<apex:include>`, `<apex:composition template>`, `$Page.X` and Apex `Page.X` now reference the component or page, so the dead-code audit no longer reports pages and components used only that way. Fields reached through a typed controller property (`{!acc.Industry}`) are not linked yet.
+- **Aura server actions.** `component.get("c.method")` links the component to the controller's Apex method (the edge LWC `@salesforce/apex` imports get), so controller methods used only from Aura are no longer reported unused.
+- **LWC fields named as text.** `'Account.Tier__c'` in `@wire` `fields` / `optionalFields`, `getFieldValue` / `getFieldDisplayValue`, and the fields `createRecord` / `updateRecord` save (as writes) are now linked, as are `lightning-record-form` field lists and the input / output fields inside record forms when the object is known statically.
+
+### Ingest and query speed (pre-release)
+
+Every change below leaves graph contents and tool output identical; equivalence tests compare each against the old path.
+
+- **Normal syncs and `--delta` write about 2.5x faster.** Members are written in batches (up to 250, committed at least every 200 ms, write lock taken up front). A running MCP server or `sfgraph serve` now sees each member completely or not at all (before, it could see a member's nodes before its edges). A crash loses at most the open batch; `SFGRAPH_DISABLE_FASTPATH=1` turns batching off.
+- Edge reconcile reads each member's existing edges once and updates unchanged edges per table (about 20% less time there).
+- The dead-code pass after each ingest reads in batches: about 1.5x faster, so small `--delta` runs finish sooner.
+- Ingests skip the Apex field-reference resolver when no node carries anything for it to resolve.
+- `find_nodes` reads names only (about 4x faster on the test graph).
+- Untyped edge lookups (`trace_upstream`, `trace_downstream` and other walks) run as one query over all edge tables instead of one per table: about 2x faster, same rows in the same order.
+
 ### Graph plus source skill (experimental)
 
 - New skill `sf-graph-plus-source` (21 skills now): per-task recipes for using sfgraph results together with a few source reads. A small dev-only check showed no clear accuracy gain and more tokens, so treat it as experimental.
