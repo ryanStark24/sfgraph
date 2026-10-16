@@ -724,17 +724,45 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     const vectorDb = (opts.vectorStore as { db?: unknown } | undefined)?.db;
     const graphDb = (graph as unknown as { db?: unknown }).db;
     const sharedConnection = vectorDb === undefined || vectorDb === graphDb;
+    // Every other full ingest (a normal sync, a delta's merge) writes into a
+    // graph that MCP servers may be reading, so the bulk window's relaxed
+    // pragmas and dropped indexes are not an option. It still groups members
+    // into plain transactions (store.beginBatch: BEGIN IMMEDIATE, committed
+    // only between members, at most ~200 ms each), which removes most of the
+    // per-member commit cost. Same SQLITE_BUSY rule as the bulk window: a
+    // vector store on its own connection keeps per-member commits.
+    const batchWrites =
+      !fastPathDisabled &&
+      !graphEmptyAtStart &&
+      mode === "full" &&
+      sharedConnection &&
+      typeof graph.beginBatch === "function" &&
+      typeof graph.endBatch === "function";
     let bulkOpen = false;
+    let batchOpen = false;
     let bulkFailure: Error | null = null;
     const openBulk = (): void => {
-      if (!graphEmptyAtStart || bulkOpen) return;
-      graph.beginBulk?.({
-        freshOrgId: resolved.orgId,
-        ...(sharedConnection ? {} : { batchTransactions: false }),
-      });
-      bulkOpen = true;
+      if (graphEmptyAtStart && !bulkOpen) {
+        graph.beginBulk?.({
+          freshOrgId: resolved.orgId,
+          ...(sharedConnection ? {} : { batchTransactions: false }),
+        });
+        bulkOpen = true;
+      } else if (batchWrites && !batchOpen) {
+        try {
+          graph.beginBatch?.();
+          batchOpen = true;
+        } catch (e) {
+          // e.g. the caller holds a transaction: keep per-member commits.
+          logger.debug("live-ingest: write batching unavailable", { err: (e as Error).message });
+        }
+      }
     };
     const closeBulk = (): void => {
+      if (batchOpen) {
+        batchOpen = false;
+        graph.endBatch?.();
+      }
       if (!bulkOpen) return;
       bulkOpen = false;
       graph.endBulk?.();
@@ -1354,6 +1382,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           });
           for await (const { member, outcome } of parsed) {
             const errorsBefore = parseErrors;
+            if (batchOpen) graph.batchMemberStart?.();
             try {
               applyMember(member.ref, outcome);
               if (profiler.enabled) {
@@ -1378,12 +1407,14 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
             else if (memberRows && member.fingerprint !== undefined) {
               recordMemberRow(member, outcome, errored);
             }
-            if (bulkOpen) {
+            if (bulkOpen || batchOpen) {
               // Outside the per-member catch: if SQLite rolled back the bulk
               // transaction (SQLITE_FULL / IOERR / NOMEM), up to 2,000 earlier
               // members are gone, so the ingest must fail, not count one error.
+              // The same holds for a live-graph batch.
               try {
-                graph.bulkMemberDone?.();
+                if (bulkOpen) graph.bulkMemberDone?.();
+                else graph.batchMemberDone?.();
               } catch (e) {
                 bulkFailure = e as Error;
                 break;
@@ -1799,7 +1830,12 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       const tPhase = performance.now();
       try {
         const { resolveApexReferences } = await import("../parsers/apex/ref-resolver.js");
-        const ar = resolveApexReferences(graph, resolved.orgId, postCtx);
+        const { apexRefNoWorkResult } = await import("./resolver-gates.js");
+        // Skip its whole-graph reads when it provably has no input and no
+        // earlier output to prune (same result object it would return).
+        const ar =
+          apexRefNoWorkResult(graph, resolved.orgId) ??
+          resolveApexReferences(graph, resolved.orgId, postCtx);
         if (ar.edgesEmitted > 0 || ar.pathsUnresolved > 0 || ar.dynamicSoqlFieldsSkipped > 0)
           logger.info("live-ingest: apex ref resolver", { ...ar });
       } catch (e) {
@@ -2117,7 +2153,13 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     };
   } catch (e) {
     embedQueue?.abandon();
-    // Never leave a bulk window (open transaction, dropped indexes) behind.
+    // Never leave a bulk window (open transaction, dropped indexes) or a
+    // batch window (open transaction) behind.
+    try {
+      graph.endBatch?.();
+    } catch {
+      /* best-effort */
+    }
     try {
       graph.endBulk?.();
     } catch {

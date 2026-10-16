@@ -141,8 +141,20 @@ export interface GraphStore {
   mergeEdges(facts: EdgeFact[], opts?: MergeEdgesOptions): MergeResult;
   getNode(orgId: OrgId, qname: QualifiedName): NodeFact | null;
   listNodesByLabel(orgId: OrgId, label: string, limit?: number): NodeFact[];
+  /** The qualified names `listNodesByLabel` would return, in the same order,
+   *  without reading the rest of each row. Optional. */
+  listQnamesByLabel?(orgId: OrgId, label: string, limit?: number): QualifiedName[];
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[];
   listEdgesTo(orgId: OrgId, dst: QualifiedName, relType?: RelType): EdgeFact[];
+  /** Edges (any rel type) whose dst is one of `dsts` (NOCASE, like listEdgesTo).
+   *  Optional: callers fall back to one listEdgesTo per dst. */
+  listEdgesToAny?(orgId: OrgId, dsts: Iterable<string>): EdgeFact[];
+  /** Edges of `relType` whose src is one of `srcs` (NOCASE, like listEdgesFrom).
+   *  Optional: callers fall back to one listEdgesFrom per src. */
+  listEdgesFromAny?(orgId: OrgId, srcs: Iterable<string>, relType: RelType): EdgeFact[];
+  /** Stored qnames of nodes whose `attributes[attr]` is JSON `true` (the nodes
+   *  for which `getNode(q)?.attributes[attr] === true`). Optional. */
+  listNodesWithTrueAttribute?(orgId: OrgId, attr: string): Set<string>;
   /** Find edges whose dst_qname matches a SQL LIKE pattern (e.g. `ApexMethod:%(?)`).
    *  Optional relType narrows the search to a single edge table; otherwise every
    *  known table is scanned. Used by post-merge resolvers (arity, dangling-edge audit). */
@@ -196,6 +208,15 @@ export interface GraphStore {
   endBulk?(): void;
   /** Advance the bulk window by one member (commits every 2,000). */
   bulkMemberDone?(): void;
+  /** Live-graph write batches for non-rebuild ingests. Optional, like the bulk
+   *  window. See SqliteGraphStore.beginBatch. */
+  beginBatch?(opts?: { maxMembers?: number; maxMs?: number }): void;
+  /** Open the batch transaction (if none is open) before a member's writes. */
+  batchMemberStart?(): void;
+  /** After a member's writes: commit when the batch is full or old enough. */
+  batchMemberDone?(): void;
+  /** Close the batch window, committing the open transaction. */
+  endBatch?(): void;
   /** True when the org has no nodes, edges or FTS docs. */
   isOrgEmpty?(orgId: OrgId): boolean;
   /** Task 11a: flag the org's vectors as still being written. */

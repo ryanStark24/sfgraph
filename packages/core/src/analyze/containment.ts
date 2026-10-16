@@ -41,6 +41,41 @@ export function listMembers(
   return out;
 }
 
+/**
+ * `listMembers` for many owners from one read per containment rel type
+ * (`listEdgesFromAny`, NOCASE like listEdgesFrom), or per-owner reads when the
+ * store lacks it. Each owner gets the members its own `listMembers` would,
+ * in the same order.
+ */
+export function membersReader(
+  store: GraphStore,
+  orgId: OrgId,
+  owners: readonly QualifiedName[],
+): (owner: QualifiedName) => QualifiedName[] {
+  if (typeof store.listEdgesFromAny !== "function") {
+    return (owner) => listMembers(store, orgId, owner);
+  }
+  const fold = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const uniq = new Set(owners.map(String));
+  const perRel = MEMBER_CONTAINMENT_RELTYPES.map((rel) => {
+    const bySrc = new Map<string, QualifiedName[]>();
+    for (const e of store.listEdgesFromAny?.(orgId, uniq, rel) ?? []) {
+      const k = fold(String(e.srcQualifiedName));
+      const list = bySrc.get(k);
+      if (list) list.push(e.dstQualifiedName);
+      else bySrc.set(k, [e.dstQualifiedName]);
+    }
+    return bySrc;
+  });
+  return (owner) => {
+    const out: QualifiedName[] = [];
+    for (const bySrc of perRel) {
+      for (const dst of bySrc.get(fold(String(owner))) ?? []) if (dst !== owner) out.push(dst);
+    }
+    return out;
+  };
+}
+
 /** The owner containing `member`, or null when it is not a member. */
 export function ownerOf(
   store: GraphStore,

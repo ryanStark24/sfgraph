@@ -1,8 +1,8 @@
 import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
-import { type NodeFact, REL_TYPES } from "../domain/index.js";
+import { type EdgeFact, type NodeFact, REL_TYPES } from "../domain/index.js";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import type { GraphStore } from "../storage/interfaces.js";
-import { isMemberContainmentEdge, listMembers, ownerOf } from "./containment.js";
+import { isMemberContainmentEdge, listMembers, membersReader, ownerOf } from "./containment.js";
 import { freshnessScore } from "./freshness.js";
 
 /** The LWC parser (filesystem and live-org ingest alike) labels component
@@ -39,6 +39,9 @@ const nameOf = (q: unknown): string => {
   const s = String(q);
   return s.slice(s.indexOf(":") + 1);
 };
+
+/** ASCII-only lowercase: what the store's NOCASE qname columns fold. */
+const nocase = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
 const labelOf = (q: unknown): string => {
   const s = String(q);
@@ -115,9 +118,33 @@ export type TestSourceCheck = (src: QualifiedName) => boolean;
  */
 export function makeTestSourceCheck(store: GraphStore, orgId: OrgId): TestSourceCheck {
   const memo = new Map<string, boolean>();
+  // Memoised too: every method of a class asks about the same owner.
+  const taggedMemo = new Map<string, boolean>();
+  // Every `isTest: true` node of the org, read once (NOCASE keys, like
+  // getNode's lookup). Null: the store cannot list them (or the read failed),
+  // so each node is read on its own.
+  let testTagged: Set<string> | null | undefined;
   const tagged = (q: QualifiedName): boolean => {
-    const n = store.getNode(orgId, q);
-    return n !== null && isTestClass(n);
+    const key = String(q);
+    let v = taggedMemo.get(key);
+    if (v === undefined) {
+      if (testTagged === undefined) {
+        try {
+          const s = store.listNodesWithTrueAttribute?.(orgId, "isTest");
+          testTagged = s ? new Set([...s].map(nocase)) : null;
+        } catch {
+          testTagged = null;
+        }
+      }
+      if (testTagged) {
+        v = testTagged.has(nocase(key));
+      } else {
+        const n = store.getNode(orgId, q);
+        v = n !== null && isTestClass(n);
+      }
+      taggedMemo.set(key, v);
+    }
+    return v;
   };
   return (src) => {
     const key = String(src);
@@ -168,13 +195,35 @@ export function incomingRefs(
   qname: QualifiedName,
   isTestSource: TestSourceCheck = makeTestSourceCheck(store, orgId),
 ): IncomingRefs {
-  const targets = [qname, ...listMembers(store, orgId, qname)];
+  return countIncomingRefs(
+    store,
+    orgId,
+    qname,
+    [qname, ...listMembers(store, orgId, qname)],
+    (target) => store.listEdgesTo(orgId, target),
+    isTestSource,
+  );
+}
+
+/**
+ * incomingRefs over given `targets` (the node and its members), with every
+ * target's incoming edges from `edgesTo` (the rows `listEdgesTo` returns,
+ * in any order: only counts come out).
+ */
+function countIncomingRefs(
+  store: GraphStore,
+  orgId: OrgId,
+  qname: QualifiedName,
+  targets: readonly QualifiedName[],
+  edgesTo: (target: QualifiedName) => readonly EdgeFact[],
+  isTestSource: TestSourceCheck,
+): IncomingRefs {
   const self = new Set<string>(targets);
   const out: IncomingRefs = { real: 0, testOnly: 0 };
   const fromTest = (e: EdgeLike & { srcQualifiedName: QualifiedName }) =>
     String(e.relType) === REL_TYPES.IS_TEST_FOR || isTestSource(e.srcQualifiedName);
   for (const target of targets) {
-    for (const e of store.listEdgesTo(orgId, target)) {
+    for (const e of edgesTo(target)) {
       if (self.has(String(e.srcQualifiedName))) continue;
       if (!isRealRef(e)) continue;
       if (
@@ -248,14 +297,59 @@ export function deadCodeCandidates(store: GraphStore, orgId: OrgId): DeadCodeCan
   const isTestSource = makeTestSourceCheck(store, orgId);
   const out: DeadCodeCandidate[] = [];
   for (const lbl of DEAD_CODE_LABELS) {
-    for (const n of store.listNodesByLabel(orgId, lbl, DEAD_CODE_NODE_CAP)) {
-      const isTest = isTestClass(n);
-      const refs = incomingRefs(store, orgId, n.qualifiedName, isTestSource);
-      const kind = deadCodeKind(refs, isTest);
-      if (kind) out.push({ node: n, kind, isTest, testOnlyRefs: refs.testOnly });
+    const nodes = store.listNodesByLabel(orgId, lbl, DEAD_CODE_NODE_CAP);
+    for (let i = 0; i < nodes.length; i += INCOMING_CHUNK) {
+      const chunk = nodes.slice(i, i + INCOMING_CHUNK);
+      const membersOf = membersReader(
+        store,
+        orgId,
+        chunk.map((n) => n.qualifiedName),
+      );
+      const targetsOf = chunk.map((n) => [n.qualifiedName, ...membersOf(n.qualifiedName)]);
+      const edgesTo = incomingEdgeReader(store, orgId, targetsOf.flat());
+      chunk.forEach((n, j) => {
+        const isTest = isTestClass(n);
+        const refs = countIncomingRefs(
+          store,
+          orgId,
+          n.qualifiedName,
+          targetsOf[j] as QualifiedName[],
+          edgesTo,
+          isTestSource,
+        );
+        const kind = deadCodeKind(refs, isTest);
+        if (kind) out.push({ node: n, kind, isTest, testOnlyRefs: refs.testOnly });
+      });
     }
   }
   return out;
+}
+
+/** Candidates whose incoming edges are read together (one read per edge table). */
+const INCOMING_CHUNK = 256;
+
+/**
+ * `target -> listEdgesTo(target)` for a set of targets, from one batched read
+ * (`listEdgesToAny`: `dst IN (...)`, NOCASE like `dst = ?`) grouped by the
+ * NOCASE dst, so each target gets exactly the rows its own `listEdgesTo`
+ * would. Stores without the batched read fall back to per-target reads.
+ */
+function incomingEdgeReader(
+  store: GraphStore,
+  orgId: OrgId,
+  targets: readonly QualifiedName[],
+): (target: QualifiedName) => readonly EdgeFact[] {
+  if (typeof store.listEdgesToAny !== "function") {
+    return (target) => store.listEdgesTo(orgId, target);
+  }
+  const byDst = new Map<string, EdgeFact[]>();
+  for (const e of store.listEdgesToAny(orgId, new Set(targets.map(String)))) {
+    const k = nocase(String(e.dstQualifiedName));
+    const list = byDst.get(k);
+    if (list) list.push(e);
+    else byDst.set(k, [e]);
+  }
+  return (target) => byDst.get(nocase(String(target))) ?? [];
 }
 
 /** The dead nodes of `deadCodeCandidates` (no inbound reference of any kind). */

@@ -57,6 +57,19 @@ export const SQLITE_MMAP_SIZE_BYTES = 64 * 1024 * 1024;
 /** Members per bulk transaction (beginBulk/endBulk). */
 export const BULK_TXN_MEMBERS = 2000;
 
+/**
+ * Live-graph write batches (beginBatch): members per transaction, and the
+ * longest one transaction holds the write lock. A non-rebuild ingest writes
+ * into a graph that MCP servers may be reading (and, rarely, writing): readers
+ * are never blocked in WAL mode, and another writer waits at most about this
+ * long, far inside BUSY_TIMEOUT_MS.
+ */
+export const BATCH_TXN_MEMBERS = 250;
+export const BATCH_TXN_MAX_MS = 200;
+
+/** Edge tables per UNION ALL statement (SQLite's default compound-SELECT cap is 500). */
+const MAX_UNION_ARMS = 200;
+
 /** Unit separator; cannot occur in a qname or org id. */
 const KSEP = String.fromCharCode(31);
 
@@ -103,7 +116,13 @@ function chunks<T>(xs: readonly T[], n: number): T[][] {
 
 /** ASCII-only lowercase — exactly what SQLite's NOCASE collation folds. */
 function nocaseKey(s: string): string {
-  return s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  // toLowerCase is exactly the ASCII fold on an ASCII-only string (the common
+  // case, and ~10x cheaper than a replace callback); non-ASCII letters must
+  // stay as they are, so those strings fold A-Z only.
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) > 0x7f) return s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  }
+  return s.toLowerCase();
 }
 
 export interface BeginBulkOptions {
@@ -148,6 +167,32 @@ interface BulkState {
   stats: BulkStats;
 }
 
+export interface BeginBatchOptions {
+  /** Members per transaction. Default BATCH_TXN_MEMBERS. */
+  maxMembers?: number;
+  /** Commit once a transaction has been open this long (ms). Default BATCH_TXN_MAX_MS. */
+  maxMs?: number;
+}
+
+export interface BatchStats {
+  active: boolean;
+  members: number;
+  commits: number;
+  /** batchMemberStart could not take the write lock; that member ran per statement. */
+  beginFailures: number;
+}
+
+interface BatchState {
+  maxMembers: number;
+  maxMs: number;
+  /** A BEGIN IMMEDIATE issued by this window is open. */
+  open: boolean;
+  openedAt: number;
+  inTxn: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  stats: BatchStats;
+}
+
 export interface SqliteGraphStoreOptions {
   dbPath: string;
   backupDir?: string;
@@ -178,6 +223,15 @@ interface RawEdgeRow {
   attributes: string;
   first_seen_at: number;
   last_seen_at: number;
+}
+
+/** A prior outgoing edge read by mergeEdges' reconcile (t = edge-table index). */
+interface PriorEdgeRow {
+  t: number;
+  id: number;
+  s: string;
+  d: string;
+  a: string;
 }
 
 function rowToNode(row: RawNodeRow, label: string): NodeFact {
@@ -314,6 +368,21 @@ export class SqliteGraphStore implements GraphStore {
   private initialized = false;
   private closed = false;
   private bulk: BulkState | null = null;
+  private batch: BatchState | null = null;
+  /** edgesAllTables' SQL per column, for the current edge tables. */
+  private readonly unionEdgeQueries: Partial<
+    Record<
+      "src_qname" | "dst_qname",
+      { map: Map<string, string>; size: number; rels: RelType[]; sqls: string[] }
+    >
+  > = {};
+  /** priorOutgoingEdges' SQL for the current edge tables. */
+  private priorEdgesQuery: {
+    map: Map<string, string>;
+    size: number;
+    rels: string[];
+    sqls: string[];
+  } | null = null;
   private readonly stmtCache = new Map<string, Database.Statement<unknown[]>>();
   private ftsUpsertTx:
     | ((orgId: string, qname: string, label: string, body: string) => void)
@@ -410,7 +479,7 @@ export class SqliteGraphStore implements GraphStore {
     const now = Date.now();
     if (every > 0 && now - this.lastFileCheck < every) return;
     this.lastFileCheck = now;
-    if (this.bulk || this.conn.inTransaction) return;
+    if (this.bulk || this.batch || this.conn.inTransaction) return;
     const id = this.readFileId();
     if (id === null || id === this.fileId) return;
     // review R1-1: keep serving the old (complete) graph until the new file's
@@ -471,6 +540,13 @@ export class SqliteGraphStore implements GraphStore {
         this.endBulk();
       } catch {
         /* best-effort; the next init() heals any missing indexes */
+      }
+    }
+    if (this.batch) {
+      try {
+        this.endBatch();
+      } catch {
+        /* best-effort */
       }
     }
     this.closed = true;
@@ -1003,6 +1079,30 @@ export class SqliteGraphStore implements GraphStore {
     let unchanged = 0;
     let deleted = 0;
     const apply = this.db.transaction(() => {
+      // Reconcile: read every prior outgoing edge of the owned sources once,
+      // across all edge tables (one UNION ALL statement per org), BEFORE this
+      // batch writes. It answers the per-fact existence probe for those
+      // sources (kept current as the batch inserts / updates, so a repeat
+      // within the batch sees the earlier write, as the probe would) and is
+      // the prune candidate set below. Rows this batch inserts are always in
+      // batchEdgeKeys, so pruning against the pre-write snapshot deletes
+      // exactly the rows the old post-write scan deleted.
+      const prior = new Map<string, { attributes: string; id?: number }>();
+      const priorRows: Array<{ org: string; relType: string; r: PriorEdgeRow }> = [];
+      const covered = new Set<string>();
+      const deferredSeen = new Map<string, Map<number, number>>();
+      if (reconcile && srcByOrg.size > 0) {
+        for (const [org, srcSet] of srcByOrg) {
+          for (const src of srcSet) covered.add(`${org}${KSEP}${nocaseKey(src)}`);
+          for (const { relType, r } of this.priorOutgoingEdges(org, [...srcSet])) {
+            priorRows.push({ org, relType, r });
+            prior.set(`${org}${RSEP}${nocaseKey(r.s)}${RSEP}${nocaseKey(r.d)}${RSEP}${relType}`, {
+              attributes: r.a,
+              id: r.id,
+            });
+          }
+        }
+      }
       for (const [relType, bucket] of buckets) {
         const tbl = this.ensureEdgeTable(relType);
         const selectStmt = this.stmt(
@@ -1031,12 +1131,25 @@ export class SqliteGraphStore implements GraphStore {
             )
           : null;
         for (const fact of bucket) {
-          const existing = selectStmt.get(
-            fact.orgId,
-            fact.srcQualifiedName,
-            fact.dstQualifiedName,
-          ) as { attributes: string; first_seen_at: number } | undefined;
+          const org = String(fact.orgId);
+          const src = String(fact.srcQualifiedName);
+          const priorKey = covered.has(`${org}${KSEP}${nocaseKey(src)}`)
+            ? `${org}${RSEP}${nocaseKey(src)}${RSEP}${nocaseKey(String(fact.dstQualifiedName))}${RSEP}${relType}`
+            : null;
+          const existing = (
+            priorKey !== null
+              ? prior.get(priorKey)
+              : selectStmt.get(fact.orgId, fact.srcQualifiedName, fact.dstQualifiedName)
+          ) as { attributes: string; id?: number } | undefined;
           const attrsJson = JSON.stringify(fact.attributes);
+          if (priorKey !== null && existing?.attributes !== attrsJson) {
+            prior.set(
+              priorKey,
+              existing?.id !== undefined
+                ? { attributes: attrsJson, id: existing.id }
+                : { attributes: attrsJson },
+            );
+          }
           if (!existing) {
             let firstSeenAt = fact.firstSeenAt;
             if (
@@ -1069,6 +1182,8 @@ export class SqliteGraphStore implements GraphStore {
             );
             inserted += 1;
           } else if (existing.attributes !== attrsJson) {
+            // Runs now, so an earlier deferred last_seen_at write is moot.
+            if (existing.id !== undefined) deferredSeen.get(relType)?.delete(existing.id);
             updateChangedStmt.run(
               attrsJson,
               fact.lastSeenAt,
@@ -1077,6 +1192,17 @@ export class SqliteGraphStore implements GraphStore {
               fact.dstQualifiedName,
             );
             updated += 1;
+          } else if (existing.id !== undefined) {
+            // A prior row re-emitted unchanged: its last_seen_at is written
+            // below, in one statement per table (Map order = last write wins).
+            let ids = deferredSeen.get(relType);
+            if (!ids) {
+              ids = new Map();
+              deferredSeen.set(relType, ids);
+            }
+            ids.delete(existing.id);
+            ids.set(existing.id, fact.lastSeenAt);
+            unchanged += 1;
           } else {
             updateSeenStmt.run(
               fact.lastSeenAt,
@@ -1086,6 +1212,27 @@ export class SqliteGraphStore implements GraphStore {
             );
             unchanged += 1;
           }
+        }
+      }
+      // Deferred last_seen_at writes, grouped by value. Nothing in this call
+      // reads last_seen_at, and a later changed-attributes update of the same
+      // row dropped its entry above, so the rows end exactly as per-fact
+      // UPDATEs would leave them.
+      for (const [relType, ids] of deferredSeen) {
+        const tbl = this.edgeRelCache.get(relType) as string;
+        const byValue = new Map<number, number[]>();
+        for (const [id, seen] of ids) {
+          let list = byValue.get(seen);
+          if (!list) {
+            list = [];
+            byValue.set(seen, list);
+          }
+          list.push(id);
+        }
+        for (const [seen, list] of byValue) {
+          this.stmt(
+            `UPDATE ${tbl} SET last_seen_at = @seen WHERE rowid IN (SELECT value FROM json_each(@ids))`,
+          ).run({ seen, ids: JSON.stringify(list) });
         }
       }
 
@@ -1099,45 +1246,68 @@ export class SqliteGraphStore implements GraphStore {
       // contains them, and the pre-fan-out MCD pass never re-adds them, so
       // pruning them would silently destroy long-tail dependency coverage.
       // Inbound edges (dst = source) are left intact regardless.
-      if (reconcile && srcByOrg.size > 0) {
-        const CHUNK = 400; // keep the IN(...) list under SQLite's variable cap
-        for (const [relType, tbl] of this.edgeRelCache) {
-          const delStmt = this.stmt(
-            `DELETE FROM ${tbl} WHERE org_id = ? AND src_qname = ? AND dst_qname = ?`,
-          );
-          for (const [org, srcSet] of srcByOrg) {
-            const srcs = [...srcSet];
-            for (let i = 0; i < srcs.length; i += CHUNK) {
-              const slice = srcs.slice(i, i + CHUNK);
-              const placeholders = slice.map(() => "?").join(",");
-              const rows = this.stmt(
-                `SELECT src_qname, dst_qname, attributes FROM ${tbl} WHERE org_id = ? AND src_qname IN (${placeholders})`,
-              ).all(org, ...slice) as Array<{
-                src_qname: string;
-                dst_qname: string;
-                attributes: string;
-              }>;
-              for (const r of rows) {
-                const k = `${org}${RSEP}${nocaseKey(r.src_qname)}${RSEP}${nocaseKey(r.dst_qname)}${RSEP}${relType}`;
-                if (batchEdgeKeys.has(k)) continue; // re-emitted this batch — keep
-                let attrs: Record<string, unknown> = {};
-                try {
-                  attrs = r.attributes ? (JSON.parse(r.attributes) as Record<string, unknown>) : {};
-                } catch {
-                  attrs = {};
-                }
-                // Foreign-pass edge (MCD/reflection/arity) — not this parser's to prune.
-                if (attrs.source != null || attrs.resolvedBy != null) continue;
-                delStmt.run(org, r.src_qname, r.dst_qname);
-                deleted += 1;
-              }
-            }
-          }
+      // Candidates are the pre-write snapshot read above (see there).
+      for (const { org, relType, r } of priorRows) {
+        const k = `${org}${RSEP}${nocaseKey(r.s)}${RSEP}${nocaseKey(r.d)}${RSEP}${relType}`;
+        if (batchEdgeKeys.has(k)) continue; // re-emitted this batch — keep
+        let attrs: Record<string, unknown> = {};
+        try {
+          attrs = r.a ? (JSON.parse(r.a) as Record<string, unknown>) : {};
+        } catch {
+          attrs = {};
         }
+        // Foreign-pass edge (MCD/reflection/arity) — not this parser's to prune.
+        if (attrs.source != null || attrs.resolvedBy != null) continue;
+        const tbl = this.edgeRelCache.get(relType) as string;
+        this.stmt(`DELETE FROM ${tbl} WHERE org_id = ? AND src_qname = ? AND dst_qname = ?`).run(
+          org,
+          r.s,
+          r.d,
+        );
+        deleted += 1;
       }
     });
     apply();
     return { inserted, updated, unchanged, ...(reconcile ? { deleted } : {}) };
+  }
+
+  /**
+   * Every outgoing edge of `srcs` (NOCASE, like the src_qname column) in every
+   * edge table, in one statement: a UNION ALL of per-table PK range lookups
+   * with the sources passed once as a JSON array, materialized as a CTE (no
+   * IN-list variable cap, one cached statement whatever the number of
+   * sources). Measured ~1.4x faster than one IN-list query per table.
+   */
+  private priorOutgoingEdges(
+    org: string,
+    srcs: readonly string[],
+  ): Array<{ relType: string; r: PriorEdgeRow }> {
+    if (this.edgeRelCache.size === 0 || srcs.length === 0) return [];
+    let q = this.priorEdgesQuery;
+    if (!q || q.map !== this.edgeRelCache || q.size !== this.edgeRelCache.size) {
+      const tables = [...this.edgeRelCache];
+      const sqls = chunks(
+        tables.map(
+          ([, tbl], i) =>
+            `SELECT ${i} AS t, rowid AS id, src_qname AS s, dst_qname AS d, attributes AS a FROM ${tbl} WHERE org_id = @org AND src_qname IN q`,
+        ),
+        MAX_UNION_ARMS,
+      ).map(
+        (arms) =>
+          `WITH q(v) AS MATERIALIZED (SELECT value FROM json_each(@srcs)) ${arms.join(" UNION ALL ")}`,
+      );
+      q = { map: this.edgeRelCache, size: tables.length, rels: tables.map(([r]) => r), sqls };
+      this.priorEdgesQuery = q;
+    }
+    const rels = q.rels;
+    const params = { org, srcs: JSON.stringify(srcs) };
+    const out: Array<{ relType: string; r: PriorEdgeRow }> = [];
+    for (const sql of q.sqls) {
+      for (const r of this.stmt(sql).all(params) as PriorEdgeRow[]) {
+        out.push({ relType: rels[r.t] as string, r });
+      }
+    }
+    return out;
   }
 
   getNode(orgId: OrgId, qname: QualifiedName): NodeFact | null {
@@ -1167,10 +1337,70 @@ export class SqliteGraphStore implements GraphStore {
     return rows.map((r) => rowToNode(r, label));
   }
 
+  /**
+   * listNodesByLabel's qualified names, without the attributes JSON (~6x
+   * cheaper on attribute-heavy labels). `ORDER BY rowid` pins the order
+   * listNodesByLabel gets from its `<tbl>_org` index scan: selecting only
+   * qualified_name would otherwise make the covering PK index the cheapest
+   * plan, which yields NOCASE name order (and a different LIMIT subset).
+   */
+  listQnamesByLabel(orgId: OrgId, label: string, limit?: number): QualifiedName[] {
+    validateLabel(label);
+    this.syncCaches();
+    const tbl = this.nodeLabelCache.get(label);
+    if (!tbl) return [];
+    const sql = `SELECT qualified_name FROM ${tbl} WHERE org_id = ? ORDER BY rowid${typeof limit === "number" ? " LIMIT ?" : ""}`;
+    const params: unknown[] = [orgId];
+    if (typeof limit === "number") params.push(limit);
+    const rows = this.stmt(sql).all(...params) as Array<{ qualified_name: string }>;
+    return rows.map((r) => asQualifiedName(r.qualified_name));
+  }
+
+  /**
+   * Every edge table's rows with `col = @q`, as ONE statement: a UNION ALL of
+   * the per-table queries listEdgesFrom / listEdgesTo used to run one by one,
+   * in edgeRelCache order. SQLite runs a UNION ALL's arms in order, each with
+   * the plan it gets on its own, so the rows (and their order) are exactly
+   * the concatenation of the per-table results. One statement step per
+   * traversal node instead of one per edge table (~2x faster traces).
+   */
+  private edgesAllTables(
+    col: "src_qname" | "dst_qname",
+    orgId: OrgId,
+    q: QualifiedName,
+  ): EdgeFact[] {
+    let u = this.unionEdgeQueries[col];
+    if (!u || u.map !== this.edgeRelCache || u.size !== this.edgeRelCache.size) {
+      const tables = [...this.edgeRelCache];
+      u = {
+        map: this.edgeRelCache,
+        size: tables.length,
+        rels: tables.map(([r]) => r as RelType),
+        // Consecutive groups of tables, run in order (SQLite caps compound arms).
+        sqls: chunks(
+          tables.map(
+            ([, tbl], i) =>
+              `SELECT ${i} AS t, org_id, src_qname, dst_qname, attributes, first_seen_at, last_seen_at FROM ${tbl} WHERE org_id = @org AND ${col} = @q`,
+          ),
+          MAX_UNION_ARMS,
+        ).map((arms) => arms.join(" UNION ALL ")),
+      };
+      this.unionEdgeQueries[col] = u;
+    }
+    const rels = u.rels;
+    const out: EdgeFact[] = [];
+    for (const sql of u.sqls) {
+      const rows = this.stmt(sql).all({ org: orgId, q }) as Array<RawEdgeRow & { t: number }>;
+      for (const r of rows) out.push(rowToEdge(r, rels[r.t] as RelType));
+    }
+    return out;
+  }
+
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[] {
     this.syncCaches();
+    if (!relType) return this.edgesAllTables("src_qname", orgId, src);
     const out: EdgeFact[] = [];
-    const types = relType ? [relType] : Array.from(this.edgeRelCache.keys());
+    const types = [relType];
     for (const t of types) {
       const tbl = this.edgeRelCache.get(t);
       if (!tbl) continue;
@@ -1185,8 +1415,9 @@ export class SqliteGraphStore implements GraphStore {
 
   listEdgesTo(orgId: OrgId, dst: QualifiedName, relType?: RelType): EdgeFact[] {
     this.syncCaches();
+    if (!relType) return this.edgesAllTables("dst_qname", orgId, dst);
     const out: EdgeFact[] = [];
-    const types = relType ? [relType] : Array.from(this.edgeRelCache.keys());
+    const types = [relType];
     for (const t of types) {
       const tbl = this.edgeRelCache.get(t);
       if (!tbl) continue;
@@ -1717,6 +1948,7 @@ export class SqliteGraphStore implements GraphStore {
    */
   beginBulk(opts: BeginBulkOptions = {}): void {
     if (this.bulk) throw new StorageError("beginBulk: a bulk window is already open");
+    if (this.batch) throw new StorageError("beginBulk: a batch window is open");
     if (this.db.inTransaction) throw new StorageError("beginBulk: called inside a transaction");
     this.syncCaches();
     const fresh =
@@ -1865,6 +2097,120 @@ export class SqliteGraphStore implements GraphStore {
       reconcileProbed: 0,
       ftsDeleteSkipped: 0,
     };
+  }
+
+  // ─── Live-graph write batches (non-rebuild ingests) ────────────────────────
+
+  /**
+   * Group a non-rebuild ingest's per-member writes into one transaction per
+   * BATCH_TXN_MEMBERS members or BATCH_TXN_MAX_MS, whichever comes first.
+   * Unlike beginBulk nothing about durability changes: indexes stay, and
+   * synchronous / journal_mode keep their values, so a crash loses at most the
+   * open (uncommitted) batch and leaves the last committed state intact.
+   *
+   * Each transaction starts lazily at batchMemberStart with BEGIN IMMEDIATE (the
+   * write lock is taken up front, waiting up to BUSY_TIMEOUT_MS; a deferred
+   * BEGIN could fail every later member with SQLITE_BUSY_SNAPSHOT after another
+   * connection's commit) and is committed only between members, so a
+   * concurrent reader sees each member whole or not at all. An idle timer
+   * commits a transaction left open while the member stream is slow (a live
+   * org's retrieve), so the lock is never held much past maxMs. The writes are
+   * the same statements as without a batch, so the graph is identical.
+   */
+  beginBatch(opts: BeginBatchOptions = {}): void {
+    if (this.bulk) throw new StorageError("beginBatch: a bulk window is open");
+    if (this.batch) throw new StorageError("beginBatch: a batch window is already open");
+    if (this.db.inTransaction) throw new StorageError("beginBatch: called inside a transaction");
+    this.batch = {
+      maxMembers: Math.max(1, opts.maxMembers ?? BATCH_TXN_MEMBERS),
+      maxMs: Math.max(1, opts.maxMs ?? BATCH_TXN_MAX_MS),
+      open: false,
+      openedAt: 0,
+      inTxn: 0,
+      timer: null,
+      stats: { active: true, members: 0, commits: 0, beginFailures: 0 },
+    };
+  }
+
+  /** Before a member's writes: open the batch transaction if none is open. */
+  batchMemberStart(): void {
+    const batch = this.batch;
+    if (!batch || batch.open || this.db.inTransaction) return;
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+    } catch {
+      // Another writer kept the lock past busy_timeout: this member is
+      // written per statement, exactly as without a batch.
+      batch.stats.beginFailures += 1;
+      return;
+    }
+    batch.open = true;
+    batch.openedAt = Date.now();
+    batch.inTxn = 0;
+    const timer = setTimeout(() => {
+      batch.timer = null;
+      // Fires only while the event loop is idle, i.e. between members.
+      if (this.batch === batch && batch.open && this.db.inTransaction) {
+        try {
+          this.commitBatch(batch);
+        } catch {
+          /* retried at the next member boundary */
+        }
+      }
+    }, batch.maxMs);
+    timer.unref?.();
+    batch.timer = timer;
+  }
+
+  /** After a member's writes: commit when the batch is full or old enough. */
+  batchMemberDone(): void {
+    const batch = this.batch;
+    if (!batch) return;
+    batch.stats.members += 1;
+    if (!batch.open) return;
+    if (!this.db.inTransaction) {
+      // SQLite rolled back the batch (SQLITE_FULL / IOERR / NOMEM inside a
+      // member's savepoint): every member since the last commit is lost.
+      this.clearBatchTimer(batch);
+      batch.open = false;
+      throw new StorageError(
+        "batch transaction was rolled back by SQLite; members written since the last commit were lost",
+      );
+    }
+    batch.inTxn += 1;
+    if (batch.inTxn >= batch.maxMembers || Date.now() - batch.openedAt >= batch.maxMs) {
+      this.commitBatch(batch);
+    }
+  }
+
+  private clearBatchTimer(batch: BatchState): void {
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+      batch.timer = null;
+    }
+  }
+
+  private commitBatch(batch: BatchState): void {
+    this.clearBatchTimer(batch);
+    if (batch.open && this.db.inTransaction) {
+      this.db.exec("COMMIT");
+      batch.stats.commits += 1;
+    }
+    batch.open = false;
+  }
+
+  /** Close the batch window, committing the open transaction. No-op when closed. */
+  endBatch(): void {
+    const batch = this.batch;
+    if (!batch) return;
+    this.batch = null;
+    this.commitBatch(batch);
+  }
+
+  /** Snapshot of the current batch window's counters (inactive zeros when closed). */
+  batchStats(): BatchStats {
+    if (this.batch) return { ...this.batch.stats };
+    return { active: false, members: 0, commits: 0, beginFailures: 0 };
   }
 
   searchNodesFts(
@@ -2200,6 +2546,107 @@ export class SqliteGraphStore implements GraphStore {
         ).all(orgId, ...slice) as RawEdgeRow[];
         for (const r of rows) out.push(rowToEdge(r, relType as RelType));
       }
+    }
+    return out;
+  }
+
+  /** Edges of `relType` whose src is one of `srcs` (NOCASE, like listEdgesFrom). */
+  listEdgesFromAny(orgId: OrgId, srcs: Iterable<string>, relType: RelType): EdgeFact[] {
+    this.syncCaches();
+    const out: EdgeFact[] = [];
+    const tbl = this.edgeRelCache.get(relType);
+    const all = [...srcs];
+    if (!tbl || all.length === 0) return out;
+    for (const slice of chunks(all, 400)) {
+      const rows = this.stmt(
+        `SELECT org_id, src_qname, dst_qname, attributes, first_seen_at, last_seen_at FROM ${tbl} WHERE org_id = ? AND src_qname IN (${slice.map(() => "?").join(",")})`,
+      ).all(orgId, ...slice) as RawEdgeRow[];
+      for (const r of rows) out.push(rowToEdge(r, relType));
+    }
+    return out;
+  }
+
+  /**
+   * Whether any node of `labels` has attributes JSON text containing one of
+   * `needles` (a plain substring test, so a superset of "has that key").
+   * Reads the text only, no JSON parse; stops at the first hit.
+   */
+  anyNodeAttributesContain(
+    orgId: OrgId,
+    labels: readonly string[],
+    needles: readonly string[],
+  ): boolean {
+    this.syncCaches();
+    if (needles.length === 0) return false;
+    const cond = needles.map(() => "instr(attributes, ?) > 0").join(" OR ");
+    for (const label of labels) {
+      const tbl = this.nodeLabelCache.get(label);
+      if (!tbl) continue;
+      if (
+        this.stmt(`SELECT 1 FROM ${tbl} WHERE org_id = ? AND (${cond}) LIMIT 1`).get(
+          orgId,
+          ...needles,
+        )
+      )
+        return true;
+    }
+    return false;
+  }
+
+  /** `anyNodeAttributesContain` for the edges of `relTypes`. */
+  anyEdgeAttributesContain(orgId: OrgId, relTypes: readonly string[], needle: string): boolean {
+    this.syncCaches();
+    for (const rel of relTypes) {
+      const tbl = this.edgeRelCache.get(rel);
+      if (!tbl) continue;
+      if (
+        this.stmt(`SELECT 1 FROM ${tbl} WHERE org_id = ? AND instr(attributes, ?) > 0 LIMIT 1`).get(
+          orgId,
+          needle,
+        )
+      )
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Sum of `attributes[attr]` over the nodes of `labels` where it is a
+   * number > 0, in listNodesByLabel order (label by label).
+   */
+  sumPositiveNodeAttribute(orgId: OrgId, labels: readonly string[], attr: string): number {
+    this.syncCaches();
+    const path = `$.${JSON.stringify(attr)}`;
+    let sum = 0;
+    for (const label of labels) {
+      const tbl = this.nodeLabelCache.get(label);
+      if (!tbl) continue;
+      const rows = this.stmt(
+        `SELECT json_type(attributes, ?) AS t, json_extract(attributes, ?) AS v FROM ${tbl} WHERE org_id = ? AND instr(attributes, ?) > 0`,
+      ).all(path, path, orgId, JSON.stringify(attr)) as Array<{ t: string | null; v: unknown }>;
+      for (const r of rows) {
+        if ((r.t === "integer" || r.t === "real") && typeof r.v === "number" && r.v > 0) sum += r.v;
+      }
+    }
+    return sum;
+  }
+
+  /**
+   * Stored qnames (as `_sfgraph_node_index` spells them) of the org's nodes
+   * whose `attributes[attr]` is JSON `true` — exactly the nodes for which
+   * `getNode(q)?.attributes[attr] === true`, read in one pass per label.
+   */
+  listNodesWithTrueAttribute(orgId: OrgId, attr: string): Set<string> {
+    this.syncCaches();
+    const out = new Set<string>();
+    const path = `$.${JSON.stringify(attr)}`;
+    for (const [label, tbl] of this.nodeLabelCache) {
+      const rows = this.stmt(
+        `SELECT i.qualified_name AS q FROM _sfgraph_node_index i
+           JOIN ${tbl} t ON t.org_id = i.org_id AND t.qualified_name = i.qualified_name
+          WHERE i.org_id = ? AND i.label = ? AND json_type(t.attributes, ?) = 'true'`,
+      ).all(orgId, label, path) as Array<{ q: string }>;
+      for (const r of rows) out.add(r.q);
     }
     return out;
   }
