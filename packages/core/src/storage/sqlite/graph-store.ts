@@ -67,6 +67,9 @@ export const BULK_TXN_MEMBERS = 2000;
 export const BATCH_TXN_MEMBERS = 250;
 export const BATCH_TXN_MAX_MS = 200;
 
+/** Edge tables per UNION ALL statement (SQLite's default compound-SELECT cap is 500). */
+const MAX_UNION_ARMS = 200;
+
 /** Unit separator; cannot occur in a qname or org id. */
 const KSEP = String.fromCharCode(31);
 
@@ -366,12 +369,19 @@ export class SqliteGraphStore implements GraphStore {
   private closed = false;
   private bulk: BulkState | null = null;
   private batch: BatchState | null = null;
+  /** edgesAllTables' SQL per column, for the current edge tables. */
+  private readonly unionEdgeQueries: Partial<
+    Record<
+      "src_qname" | "dst_qname",
+      { map: Map<string, string>; size: number; rels: RelType[]; sqls: string[] }
+    >
+  > = {};
   /** priorOutgoingEdges' SQL for the current edge tables. */
   private priorEdgesQuery: {
     map: Map<string, string>;
     size: number;
     rels: string[];
-    sql: string;
+    sqls: string[];
   } | null = null;
   private readonly stmtCache = new Map<string, Database.Statement<unknown[]>>();
   private ftsUpsertTx:
@@ -1276,18 +1286,28 @@ export class SqliteGraphStore implements GraphStore {
     let q = this.priorEdgesQuery;
     if (!q || q.map !== this.edgeRelCache || q.size !== this.edgeRelCache.size) {
       const tables = [...this.edgeRelCache];
-      const sql = `WITH q(v) AS MATERIALIZED (SELECT value FROM json_each(@srcs)) ${tables
-        .map(
+      const sqls = chunks(
+        tables.map(
           ([, tbl], i) =>
             `SELECT ${i} AS t, rowid AS id, src_qname AS s, dst_qname AS d, attributes AS a FROM ${tbl} WHERE org_id = @org AND src_qname IN q`,
-        )
-        .join(" UNION ALL ")}`;
-      q = { map: this.edgeRelCache, size: tables.length, rels: tables.map(([r]) => r), sql };
+        ),
+        MAX_UNION_ARMS,
+      ).map(
+        (arms) =>
+          `WITH q(v) AS MATERIALIZED (SELECT value FROM json_each(@srcs)) ${arms.join(" UNION ALL ")}`,
+      );
+      q = { map: this.edgeRelCache, size: tables.length, rels: tables.map(([r]) => r), sqls };
       this.priorEdgesQuery = q;
     }
     const rels = q.rels;
-    const rows = this.stmt(q.sql).all({ org, srcs: JSON.stringify(srcs) }) as PriorEdgeRow[];
-    return rows.map((r) => ({ relType: rels[r.t] as string, r }));
+    const params = { org, srcs: JSON.stringify(srcs) };
+    const out: Array<{ relType: string; r: PriorEdgeRow }> = [];
+    for (const sql of q.sqls) {
+      for (const r of this.stmt(sql).all(params) as PriorEdgeRow[]) {
+        out.push({ relType: rels[r.t] as string, r });
+      }
+    }
+    return out;
   }
 
   getNode(orgId: OrgId, qname: QualifiedName): NodeFact | null {
@@ -1336,10 +1356,51 @@ export class SqliteGraphStore implements GraphStore {
     return rows.map((r) => asQualifiedName(r.qualified_name));
   }
 
+  /**
+   * Every edge table's rows with `col = @q`, as ONE statement: a UNION ALL of
+   * the per-table queries listEdgesFrom / listEdgesTo used to run one by one,
+   * in edgeRelCache order. SQLite runs a UNION ALL's arms in order, each with
+   * the plan it gets on its own, so the rows (and their order) are exactly
+   * the concatenation of the per-table results. One statement step per
+   * traversal node instead of one per edge table (~2x faster traces).
+   */
+  private edgesAllTables(
+    col: "src_qname" | "dst_qname",
+    orgId: OrgId,
+    q: QualifiedName,
+  ): EdgeFact[] {
+    let u = this.unionEdgeQueries[col];
+    if (!u || u.map !== this.edgeRelCache || u.size !== this.edgeRelCache.size) {
+      const tables = [...this.edgeRelCache];
+      u = {
+        map: this.edgeRelCache,
+        size: tables.length,
+        rels: tables.map(([r]) => r as RelType),
+        // Consecutive groups of tables, run in order (SQLite caps compound arms).
+        sqls: chunks(
+          tables.map(
+            ([, tbl], i) =>
+              `SELECT ${i} AS t, org_id, src_qname, dst_qname, attributes, first_seen_at, last_seen_at FROM ${tbl} WHERE org_id = @org AND ${col} = @q`,
+          ),
+          MAX_UNION_ARMS,
+        ).map((arms) => arms.join(" UNION ALL ")),
+      };
+      this.unionEdgeQueries[col] = u;
+    }
+    const rels = u.rels;
+    const out: EdgeFact[] = [];
+    for (const sql of u.sqls) {
+      const rows = this.stmt(sql).all({ org: orgId, q }) as Array<RawEdgeRow & { t: number }>;
+      for (const r of rows) out.push(rowToEdge(r, rels[r.t] as RelType));
+    }
+    return out;
+  }
+
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[] {
     this.syncCaches();
+    if (!relType) return this.edgesAllTables("src_qname", orgId, src);
     const out: EdgeFact[] = [];
-    const types = relType ? [relType] : Array.from(this.edgeRelCache.keys());
+    const types = [relType];
     for (const t of types) {
       const tbl = this.edgeRelCache.get(t);
       if (!tbl) continue;
@@ -1354,8 +1415,9 @@ export class SqliteGraphStore implements GraphStore {
 
   listEdgesTo(orgId: OrgId, dst: QualifiedName, relType?: RelType): EdgeFact[] {
     this.syncCaches();
+    if (!relType) return this.edgesAllTables("dst_qname", orgId, dst);
     const out: EdgeFact[] = [];
-    const types = relType ? [relType] : Array.from(this.edgeRelCache.keys());
+    const types = [relType];
     for (const t of types) {
       const tbl = this.edgeRelCache.get(t);
       if (!tbl) continue;
