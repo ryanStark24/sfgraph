@@ -57,6 +57,16 @@ export const SQLITE_MMAP_SIZE_BYTES = 64 * 1024 * 1024;
 /** Members per bulk transaction (beginBulk/endBulk). */
 export const BULK_TXN_MEMBERS = 2000;
 
+/**
+ * Live-graph write batches (beginBatch): members per transaction, and the
+ * longest one transaction holds the write lock. A non-rebuild ingest writes
+ * into a graph that MCP servers may be reading (and, rarely, writing): readers
+ * are never blocked in WAL mode, and another writer waits at most about this
+ * long, far inside BUSY_TIMEOUT_MS.
+ */
+export const BATCH_TXN_MEMBERS = 250;
+export const BATCH_TXN_MAX_MS = 200;
+
 /** Unit separator; cannot occur in a qname or org id. */
 const KSEP = String.fromCharCode(31);
 
@@ -146,6 +156,32 @@ interface BulkState {
   /** Secondary-index CREATE statements to (re)run at endBulk, in order. */
   deferredIndexes: Array<{ name: string; table: string; sql: string }>;
   stats: BulkStats;
+}
+
+export interface BeginBatchOptions {
+  /** Members per transaction. Default BATCH_TXN_MEMBERS. */
+  maxMembers?: number;
+  /** Commit once a transaction has been open this long (ms). Default BATCH_TXN_MAX_MS. */
+  maxMs?: number;
+}
+
+export interface BatchStats {
+  active: boolean;
+  members: number;
+  commits: number;
+  /** batchMemberStart could not take the write lock; that member ran per statement. */
+  beginFailures: number;
+}
+
+interface BatchState {
+  maxMembers: number;
+  maxMs: number;
+  /** A BEGIN IMMEDIATE issued by this window is open. */
+  open: boolean;
+  openedAt: number;
+  inTxn: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  stats: BatchStats;
 }
 
 export interface SqliteGraphStoreOptions {
@@ -314,6 +350,7 @@ export class SqliteGraphStore implements GraphStore {
   private initialized = false;
   private closed = false;
   private bulk: BulkState | null = null;
+  private batch: BatchState | null = null;
   private readonly stmtCache = new Map<string, Database.Statement<unknown[]>>();
   private ftsUpsertTx:
     | ((orgId: string, qname: string, label: string, body: string) => void)
@@ -410,7 +447,7 @@ export class SqliteGraphStore implements GraphStore {
     const now = Date.now();
     if (every > 0 && now - this.lastFileCheck < every) return;
     this.lastFileCheck = now;
-    if (this.bulk || this.conn.inTransaction) return;
+    if (this.bulk || this.batch || this.conn.inTransaction) return;
     const id = this.readFileId();
     if (id === null || id === this.fileId) return;
     // review R1-1: keep serving the old (complete) graph until the new file's
@@ -471,6 +508,13 @@ export class SqliteGraphStore implements GraphStore {
         this.endBulk();
       } catch {
         /* best-effort; the next init() heals any missing indexes */
+      }
+    }
+    if (this.batch) {
+      try {
+        this.endBatch();
+      } catch {
+        /* best-effort */
       }
     }
     this.closed = true;
@@ -1717,6 +1761,7 @@ export class SqliteGraphStore implements GraphStore {
    */
   beginBulk(opts: BeginBulkOptions = {}): void {
     if (this.bulk) throw new StorageError("beginBulk: a bulk window is already open");
+    if (this.batch) throw new StorageError("beginBulk: a batch window is open");
     if (this.db.inTransaction) throw new StorageError("beginBulk: called inside a transaction");
     this.syncCaches();
     const fresh =
@@ -1865,6 +1910,120 @@ export class SqliteGraphStore implements GraphStore {
       reconcileProbed: 0,
       ftsDeleteSkipped: 0,
     };
+  }
+
+  // ─── Live-graph write batches (non-rebuild ingests) ────────────────────────
+
+  /**
+   * Group a non-rebuild ingest's per-member writes into one transaction per
+   * BATCH_TXN_MEMBERS members or BATCH_TXN_MAX_MS, whichever comes first.
+   * Unlike beginBulk nothing about durability changes: indexes stay, and
+   * synchronous / journal_mode keep their values, so a crash loses at most the
+   * open (uncommitted) batch and leaves the last committed state intact.
+   *
+   * Each transaction starts lazily at batchMemberStart with BEGIN IMMEDIATE (the
+   * write lock is taken up front, waiting up to BUSY_TIMEOUT_MS; a deferred
+   * BEGIN could fail every later member with SQLITE_BUSY_SNAPSHOT after another
+   * connection's commit) and is committed only between members, so a
+   * concurrent reader sees each member whole or not at all. An idle timer
+   * commits a transaction left open while the member stream is slow (a live
+   * org's retrieve), so the lock is never held much past maxMs. The writes are
+   * the same statements as without a batch, so the graph is identical.
+   */
+  beginBatch(opts: BeginBatchOptions = {}): void {
+    if (this.bulk) throw new StorageError("beginBatch: a bulk window is open");
+    if (this.batch) throw new StorageError("beginBatch: a batch window is already open");
+    if (this.db.inTransaction) throw new StorageError("beginBatch: called inside a transaction");
+    this.batch = {
+      maxMembers: Math.max(1, opts.maxMembers ?? BATCH_TXN_MEMBERS),
+      maxMs: Math.max(1, opts.maxMs ?? BATCH_TXN_MAX_MS),
+      open: false,
+      openedAt: 0,
+      inTxn: 0,
+      timer: null,
+      stats: { active: true, members: 0, commits: 0, beginFailures: 0 },
+    };
+  }
+
+  /** Before a member's writes: open the batch transaction if none is open. */
+  batchMemberStart(): void {
+    const batch = this.batch;
+    if (!batch || batch.open || this.db.inTransaction) return;
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+    } catch {
+      // Another writer kept the lock past busy_timeout: this member is
+      // written per statement, exactly as without a batch.
+      batch.stats.beginFailures += 1;
+      return;
+    }
+    batch.open = true;
+    batch.openedAt = Date.now();
+    batch.inTxn = 0;
+    const timer = setTimeout(() => {
+      batch.timer = null;
+      // Fires only while the event loop is idle, i.e. between members.
+      if (this.batch === batch && batch.open && this.db.inTransaction) {
+        try {
+          this.commitBatch(batch);
+        } catch {
+          /* retried at the next member boundary */
+        }
+      }
+    }, batch.maxMs);
+    timer.unref?.();
+    batch.timer = timer;
+  }
+
+  /** After a member's writes: commit when the batch is full or old enough. */
+  batchMemberDone(): void {
+    const batch = this.batch;
+    if (!batch) return;
+    batch.stats.members += 1;
+    if (!batch.open) return;
+    if (!this.db.inTransaction) {
+      // SQLite rolled back the batch (SQLITE_FULL / IOERR / NOMEM inside a
+      // member's savepoint): every member since the last commit is lost.
+      this.clearBatchTimer(batch);
+      batch.open = false;
+      throw new StorageError(
+        "batch transaction was rolled back by SQLite; members written since the last commit were lost",
+      );
+    }
+    batch.inTxn += 1;
+    if (batch.inTxn >= batch.maxMembers || Date.now() - batch.openedAt >= batch.maxMs) {
+      this.commitBatch(batch);
+    }
+  }
+
+  private clearBatchTimer(batch: BatchState): void {
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+      batch.timer = null;
+    }
+  }
+
+  private commitBatch(batch: BatchState): void {
+    this.clearBatchTimer(batch);
+    if (batch.open && this.db.inTransaction) {
+      this.db.exec("COMMIT");
+      batch.stats.commits += 1;
+    }
+    batch.open = false;
+  }
+
+  /** Close the batch window, committing the open transaction. No-op when closed. */
+  endBatch(): void {
+    const batch = this.batch;
+    if (!batch) return;
+    this.batch = null;
+    this.commitBatch(batch);
+  }
+
+  /** Snapshot of the current batch window's counters (inactive zeros when closed). */
+  batchStats(): BatchStats {
+    if (this.batch) return { ...this.batch.stats };
+    return { active: false, members: 0, commits: 0, beginFailures: 0 };
   }
 
   searchNodesFts(

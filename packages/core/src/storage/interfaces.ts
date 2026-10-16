@@ -196,6 +196,15 @@ export interface GraphStore {
   endBulk?(): void;
   /** Advance the bulk window by one member (commits every 2,000). */
   bulkMemberDone?(): void;
+  /** Live-graph write batches for non-rebuild ingests. Optional, like the bulk
+   *  window. See SqliteGraphStore.beginBatch. */
+  beginBatch?(opts?: { maxMembers?: number; maxMs?: number }): void;
+  /** Open the batch transaction (if none is open) before a member's writes. */
+  batchMemberStart?(): void;
+  /** After a member's writes: commit when the batch is full or old enough. */
+  batchMemberDone?(): void;
+  /** Close the batch window, committing the open transaction. */
+  endBatch?(): void;
   /** True when the org has no nodes, edges or FTS docs. */
   isOrgEmpty?(orgId: OrgId): boolean;
   /** Task 11a: flag the org's vectors as still being written. */
