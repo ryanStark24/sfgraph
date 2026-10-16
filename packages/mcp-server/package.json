@@ -45,9 +45,10 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "sfgraph MCP server: 19 tools over stdio",
+  "description": "sfgraph MCP server: 28 tools over stdio",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "README.md"
   ],
   "keywords": [

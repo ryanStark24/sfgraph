@@ -47,6 +47,7 @@
   "description": "sfgraph CLI: install, ingest, snapshot, telemetry",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "README.md"
   ],
   "keywords": [

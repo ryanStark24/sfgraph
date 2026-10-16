@@ -16,7 +16,8 @@
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "node ../../scripts/assert-pnpm-publish.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
@@ -38,6 +39,7 @@
   "description": "sfgraph SKILL.md playbooks for Cursor and Claude",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "skills",
     "README.md"
   ],

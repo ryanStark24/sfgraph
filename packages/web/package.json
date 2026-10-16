@@ -16,7 +16,8 @@
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "node ../../scripts/assert-pnpm-publish.mjs"
   },
   "dependencies": {
     "@ryanstark24/sfgraph-core": "workspace:*",
@@ -42,6 +43,7 @@
   "description": "sfgraph local web visualiser — graph explorer for ingested orgs",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "README.md"
   ]
 }

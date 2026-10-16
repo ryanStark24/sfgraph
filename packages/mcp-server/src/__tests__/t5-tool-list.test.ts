@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SfgraphMcpServer } from "../server.js";
 import { CORE_TOOLS, toolList, toolProfile } from "../tool-registry.js";
+import { getServerVersion } from "../version.js";
 
 /**
  * Cycle 3 T5: every agent pays for tools/list on every call, so the list has a size budget:
@@ -74,6 +75,9 @@ describe("tools/list size budget", () => {
       await Promise.all([server.connect(a), client.connect(b)]);
       const { tools } = await client.listTools();
       expect(tools).toEqual(toolList(s.registry, profile));
+      // serverInfo carries the real package version, not a placeholder.
+      expect(client.getServerVersion()?.version).toBe(getServerVersion());
+      expect(client.getServerVersion()?.version).not.toBe("0.0.0");
       await client.close();
     }
   });

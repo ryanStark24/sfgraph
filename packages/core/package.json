@@ -53,7 +53,7 @@
   },
   "optionalDependencies": {
     "@xenova/transformers": "^2.17.2",
-    "@ryanstark24/sfgraph-models": "^1.1.0"
+    "@ryanstark24/sfgraph-models": "workspace:*"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
@@ -78,6 +78,7 @@
   "description": "sfgraph engine: storage, parsers, extractors, analyze, render",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "README.md"
   ],
   "keywords": [

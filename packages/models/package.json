@@ -16,7 +16,8 @@
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "node ../../scripts/assert-pnpm-publish.mjs"
   },
   "dependencies": {
     "@ryanstark24/sfgraph-shared": "workspace:*"
@@ -44,6 +45,7 @@
   "description": "Vendored MiniLM ONNX embedding model for sfgraph",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "data",
     "README.md"
   ],

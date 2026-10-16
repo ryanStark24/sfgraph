@@ -10,6 +10,7 @@ import {
 } from "./tool-registry.js";
 import { HEADINGS, PRESENTATION_GUIDE, PRESENTATION_OUTLINE } from "./tools/_report.js";
 import { pingTool } from "./tools/ping.js";
+import { getServerVersion } from "./version.js";
 
 /**
  * Cycle 2 T5: the most characters of result text one tool call returns. An MCP client sees only
@@ -279,7 +280,7 @@ export class SfgraphMcpServer {
     const typesMod = await import("@modelcontextprotocol/sdk/types.js");
 
     const server = new sdk.Server(
-      { name: "sfgraph", version: "0.0.0" },
+      { name: "sfgraph", version: getServerVersion() },
       { capabilities: { tools: {}, prompts: {} }, instructions: PRESENTATION_GUIDE },
     );
 
