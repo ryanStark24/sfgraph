@@ -22,14 +22,14 @@ describe("audit tools-06: point_in_time_diff payload bound", () => {
     const snap = fix.ctx.snapshotStore.createSnapshot(fix.orgId, "pre-sync", true);
     const N = 3000;
     const nodes = Array.from({ length: N }, (_, i) => `ApexClass:C${i}`);
-    for (const q of nodes) fix.addNode({ qualifiedName: q, label: "ApexClass" });
-    for (let i = 1; i < N; i++) {
-      fix.addEdge({
-        srcQualifiedName: nodes[i] as string,
-        dstQualifiedName: nodes[i - 1] as string,
+    fix.addNodes(nodes.map((q) => ({ qualifiedName: q, label: "ApexClass" })));
+    fix.addEdges(
+      nodes.slice(1).map((q, i) => ({
+        srcQualifiedName: q,
+        dstQualifiedName: nodes[i] as string,
         relType: "CALLS",
-      });
-    }
+      })),
+    );
     const r = await callTool("point_in_time_diff", { org: fix.orgId, from: snap.id });
     // The summary still reports the true total.
     expect(r.summary).toContain(`+${N}`);
