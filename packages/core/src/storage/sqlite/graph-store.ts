@@ -2469,6 +2469,42 @@ export class SqliteGraphStore implements GraphStore {
     return out;
   }
 
+  /** Edges of `relType` whose src is one of `srcs` (NOCASE, like listEdgesFrom). */
+  listEdgesFromAny(orgId: OrgId, srcs: Iterable<string>, relType: RelType): EdgeFact[] {
+    this.syncCaches();
+    const out: EdgeFact[] = [];
+    const tbl = this.edgeRelCache.get(relType);
+    const all = [...srcs];
+    if (!tbl || all.length === 0) return out;
+    for (const slice of chunks(all, 400)) {
+      const rows = this.stmt(
+        `SELECT org_id, src_qname, dst_qname, attributes, first_seen_at, last_seen_at FROM ${tbl} WHERE org_id = ? AND src_qname IN (${slice.map(() => "?").join(",")})`,
+      ).all(orgId, ...slice) as RawEdgeRow[];
+      for (const r of rows) out.push(rowToEdge(r, relType));
+    }
+    return out;
+  }
+
+  /**
+   * Stored qnames (as `_sfgraph_node_index` spells them) of the org's nodes
+   * whose `attributes[attr]` is JSON `true` — exactly the nodes for which
+   * `getNode(q)?.attributes[attr] === true`, read in one pass per label.
+   */
+  listNodesWithTrueAttribute(orgId: OrgId, attr: string): Set<string> {
+    this.syncCaches();
+    const out = new Set<string>();
+    const path = `$.${JSON.stringify(attr)}`;
+    for (const [label, tbl] of this.nodeLabelCache) {
+      const rows = this.stmt(
+        `SELECT i.qualified_name AS q FROM _sfgraph_node_index i
+           JOIN ${tbl} t ON t.org_id = i.org_id AND t.qualified_name = i.qualified_name
+          WHERE i.org_id = ? AND i.label = ? AND json_type(t.attributes, ?) = 'true'`,
+      ).all(orgId, label, path) as Array<{ q: string }>;
+      for (const r of rows) out.add(r.q);
+    }
+    return out;
+  }
+
   /**
    * Delete reflection-walker edges (`source: "reflection"` REFERENCES) of the
    * org: those FROM `srcs` and/or INTO `dsts`; with neither, all of them.
