@@ -57,7 +57,10 @@ export const DATARAPTOR_NODE_HASH_SALT = "dataraptor-attrs:v2";
 export const VLOCITY_ELEMENT_HASH_SALT = "vlocity-elements:v3";
 
 // aura/bundle.ts
-export const AURA_NODE_HASH_SALT = "aura-attrs:v1";
+/** Folded into the AuraComponent node hash. Bump it when the parser emits new
+ *  output for an unchanged bundle so `--delta` re-parses it. v2: server-action
+ *  IMPORTS_APEX edges, empApi / lightning:messageChannel event edges. */
+export const AURA_NODE_HASH_SALT = "aura-attrs:v2";
 
 // lwc/bundle.ts
 /**
@@ -65,8 +68,10 @@ export const AURA_NODE_HASH_SALT = "aura-attrs:v1";
  * change so a plain re-ingest re-merges unchanged bundles. v2: recordFieldKeys.
  * v3: recordObjects (static object context for the field-key resolver).
  * v4: a lightning record form's literal `object-api-name` links to its object.
+ * v5: `'Object.Field'` string fields (uiRecordApi, record forms) link to their
+ * field; empApi / Lightning Message Service event edges.
  */
-export const LWC_NODE_HASH_SALT = "lwc-attrs:v4";
+export const LWC_NODE_HASH_SALT = "lwc-attrs:v5";
 
 // generic/opaque-node-parser.ts
 export const OPAQUE_DATAPACK_HASH_SALT = "vlocity-datapack-refs:v2";

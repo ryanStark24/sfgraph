@@ -3,7 +3,7 @@ import type { EdgeFact, NodeFact } from "../../domain/index.js";
 import { REL_TYPES } from "../../domain/index.js";
 import { makeEdge, stripNs } from "../common.js";
 import type { ParseContext } from "../contract.js";
-import type { LwcBindings } from "./js-visitor.js";
+import { type LwcBindings, stringFieldQname } from "./js-visitor.js";
 
 export interface HtmlExtractResult {
   extraEdges: EdgeFact[];
@@ -24,6 +24,9 @@ const RECORD_FORMS = new Set(["record-form", "record-view-form", "record-edit-fo
 /** A literal object API name (a `{binding}` is not). */
 const OBJECT_NAME_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
 
+/** `{prop}`: a whole attribute value bound to one component property. */
+const PROP_BINDING_RE = /^\{\s*([A-Za-z_$][\w$]*)\s*\}$/;
+
 const BINDING_RE = /\{([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)\}/g;
 
 export function extractHtmlEdges(
@@ -40,6 +43,48 @@ export function extractHtmlEdges(
   const seenField = new Set<string>();
   const seenProperty = new Set<string>();
   const seenObject = new Set<string>();
+  const seenFormField = new Set<string>();
+
+  const attrOf = (n: any, name: string): string | undefined =>
+    (n?.attrs ?? []).find((a: { name?: string }) => a?.name === name)?.value;
+  /** Static value(s) of an attribute: a literal, or `{prop}` with a known JS value. */
+  const staticValues = (raw: string | undefined): string[] => {
+    if (raw === undefined) return [];
+    const b = PROP_BINDING_RE.exec(raw.trim());
+    if (!b) return raw.includes("{") ? [] : [raw];
+    return bindings?.propertyValues?.get(b[1] ?? "") ?? [];
+  };
+  const formField = (text: string, obj: string | undefined, tag: string, writes: boolean) => {
+    const dst = stringFieldQname(text, obj, ctx.namespace);
+    if (!dst) return;
+    const rels = writes ? [REL_TYPES.READS_FIELD, REL_TYPES.WRITES_FIELD] : [REL_TYPES.READS_FIELD];
+    for (const rel of rels) {
+      const key = `${rel}|${dst.toLowerCase()}`;
+      if (seenFormField.has(key)) continue;
+      seenFormField.add(key);
+      extraEdges.push(makeEdge(ctx, lwcQname, rel, dst, { via: "record-form", tag }));
+    }
+  };
+  /**
+   * Fields of a lightning record form. `lightning-record-form fields={prop}`
+   * reads them and, unless `mode="readonly"`, can save them; a
+   * `lightning-input-field` inside a `-edit-form` reads and writes, a
+   * `lightning-output-field` reads. Bare names need the form's static object.
+   */
+  const recordFormFields = (form: any, rest: string, obj: string | undefined) => {
+    const tag = String(form.tagName);
+    if (rest === "record-form") {
+      const writes = (attrOf(form, "mode") ?? "").trim().toLowerCase() !== "readonly";
+      for (const f of staticValues(attrOf(form, "fields"))) formField(f, obj, tag, writes);
+      return;
+    }
+    walk(form, (n: any) => {
+      const t = n?.tagName;
+      if (t !== "lightning-input-field" && t !== "lightning-output-field") return;
+      const writes = t === "lightning-input-field" && rest === "record-edit-form";
+      for (const f of staticValues(attrOf(n, "field-name"))) formField(f, obj, t, writes);
+    });
+  };
 
   // Directive attribute names — both the modern `lwc:*` family and the
   // legacy template:1 forms. Each maps to a label recorded on the emitted
@@ -158,9 +203,15 @@ export function extractHtmlEdges(
         // of the platform, not bundles in the org. No edge, except that a
         // record form with a literal `object-api-name` works on that object.
         if (RECORD_FORMS.has(rest)) {
-          const obj = (n?.attrs ?? []).find(
-            (a: { name?: string }) => a?.name === "object-api-name",
-          )?.value;
+          const obj = attrOf(n, "object-api-name");
+          const staticObj = staticValues(obj);
+          recordFormFields(
+            n,
+            rest,
+            staticObj.length === 1 && OBJECT_NAME_RE.test(staticObj[0] ?? "")
+              ? staticObj[0]
+              : undefined,
+          );
           if (typeof obj === "string" && OBJECT_NAME_RE.test(obj)) {
             const dst = `CustomObject:${stripNs(obj, ctx.namespace)}`;
             if (!seenObject.has(dst)) {

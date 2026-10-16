@@ -67,6 +67,7 @@ export class LwcBundleParser implements Parser<LwcBundleInput> {
       wireToSObject: new Map(),
       schemaFieldImports: new Map(),
       schemaObjectImports: new Map(),
+      propertyValues: new Map(),
     };
     const recordFieldKeys = new Set<string>();
     for (const [fname, source] of Object.entries(input.files)) {
@@ -93,6 +94,7 @@ export class LwcBundleParser implements Parser<LwcBundleInput> {
         for (const [k, v] of b.wireToSObject) mergedBindings.wireToSObject.set(k, v);
         for (const [k, v] of b.schemaFieldImports) mergedBindings.schemaFieldImports.set(k, v);
         for (const [k, v] of b.schemaObjectImports) mergedBindings.schemaObjectImports.set(k, v);
+        for (const [k, v] of b.propertyValues ?? []) mergedBindings.propertyValues?.set(k, v);
       }
     }
     if (recordFieldKeys.size > 0) {

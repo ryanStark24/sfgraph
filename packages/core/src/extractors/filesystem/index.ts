@@ -329,6 +329,14 @@ const LEAF_SPECS: MdLeafDirSpec[] = [
     memberType: "DuplicateRule",
     category: METADATA_CATEGORY.DUPLICATE_RULE,
   },
+  {
+    // Opaque node `LightningMessageChannel:<name>`, as the live extractor
+    // makes: the target of LWC / Aura Lightning Message Service edges.
+    segment: "messageChannels",
+    suffix: ".messageChannel-meta.xml",
+    memberType: "LightningMessageChannel",
+    category: METADATA_CATEGORY.OPAQUE,
+  },
 ];
 
 const BUNDLE_SPECS = [
@@ -384,6 +392,7 @@ function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<Inde
         e.name === "workflows" ||
         e.name === "approvalProcesses" ||
         e.name === "duplicateRules" ||
+        e.name === "messageChannels" ||
         e.name === "tabs"
       ) {
         foundMdFolder = true;

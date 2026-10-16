@@ -6,7 +6,7 @@ import {
   REL_TYPES,
   type RelType,
 } from "../../domain/index.js";
-import { makeEdge, makeNode, stripNs } from "../common.js";
+import { makeEdge, makeNode, messageChannelQname, platformEventQname, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
 import { AURA_NODE_HASH_SALT } from "../hash-salts.js";
 export { AURA_NODE_HASH_SALT } from "../hash-salts.js";
@@ -25,8 +25,18 @@ export { AURA_NODE_HASH_SALT } from "../hash-salts.js";
  *    lowercase); `resolveAuraEmbeds` re-targets it after the merge against
  *    the bundles that exist (review I4);
  *  - REFERENCES_LABEL -> `CustomLabel:<name>` for `$Label.<ns>.<name>` in
- *    markup and in the controller/helper/renderer JS.
- * Not covered: server-action calls (`c.method` in JS), events, `extends`.
+ *    markup and in the controller/helper/renderer JS;
+ *  - IMPORTS_APEX -> `ApexMethod:<cls>.<method>(?)` for each server action
+ *    `<any>.get("c.<method>")` in the bundle JS, `<cls>` being the root tag's
+ *    controller (the edge an LWC `@salesforce/apex` import gets; the arity
+ *    resolver binds `(?)` after the merge). No controller, or a foreign
+ *    namespace one, gives no edge;
+ *  - SUBSCRIBES_TO_EVENT -> `PlatformEvent:<name>__e` for each `'/event/<name>__e'`
+ *    string in a bundle that uses `<lightning:empApi>` (empApi only subscribes);
+ *  - SUBSCRIBES_TO_EVENT / PUBLISHES_EVENT -> `LightningMessageChannel:<name>`
+ *    for `<lightning:messageChannel type="<name>__c">` with an `onMessage`
+ *    handler / whose `aura:id` the JS calls `.find("<id>").publish(` on.
+ * Not covered: component and application events, `extends`.
  */
 export interface AuraBundleInput {
   bundleName: string;
@@ -41,6 +51,18 @@ const ROOT_TAG_RE =
 const CONTROLLER_ATTR_RE = /(?<![\w-])controller\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
 const TAG_RE = /<([A-Za-z][\w]*):([A-Za-z][\w]*)\b/g;
 const LABEL_RE = /\$Label\.([A-Za-z]\w*)\.([A-Za-z]\w*)/g;
+/** `cmp.get("c.method")`: a server action (not `$A.get`, a global value provider). */
+const SERVER_ACTION_RE = /(?<!\$A)\.get\s*\(\s*(["'])c\.([A-Za-z_]\w*)\1\s*\)/g;
+const EMP_API_TAG_RE = /<lightning:empApi\b/i;
+const EVENT_CHANNEL_RE = /(["'])(\/event\/[A-Za-z]\w*__e)\1/g;
+const MESSAGE_CHANNEL_TAG_RE = /<lightning:messageChannel\b((?:"[^"]*"|'[^']*'|[^>"'])*)>/gi;
+
+/** Value of attribute `name` in a tag body (`aura:id` is not `id`). */
+function attrValue(body: string, name: string): string | undefined {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(`(?<![\\w:-])${esc}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(body);
+  return m ? (m[1] ?? m[2]) : undefined;
+}
 
 function bundleContentHash(files: Record<string, string>): string {
   const h = createHash("sha256");
@@ -180,6 +202,12 @@ export class AuraBundleParser implements Parser<AuraBundleInput> {
     };
 
     let bundleKind: string | undefined;
+    // `ApexClass` qname part of a local controller; null when there is none
+    // or it is a foreign namespace's (its methods aren't in this org).
+    let apexController: string | null = null;
+    const serverActions = new Set<string>();
+    const scripts: string[] = [];
+    const markups: string[] = [];
     for (const fname of Object.keys(input.files).sort()) {
       const raw = input.files[fname] ?? "";
       if (MARKUP_EXT.test(fname)) {
@@ -201,6 +229,7 @@ export class AuraBundleParser implements Parser<AuraBundleInput> {
                 REL_TYPES.CONTROLLED_BY,
                 `ApexClass:${local ? stripNs(cls, ctx.namespace) : cls}`,
               );
+              if (local) apexController ??= stripNs(cls, ctx.namespace);
             }
           }
         }
@@ -216,8 +245,56 @@ export class AuraBundleParser implements Parser<AuraBundleInput> {
           }
         }
         labelRefs(src);
+        markups.push(src);
       } else if (fname.endsWith(".js")) {
-        labelRefs(stripJsComments(raw));
+        const js = stripJsComments(raw);
+        labelRefs(js);
+        scripts.push(js);
+        SERVER_ACTION_RE.lastIndex = 0;
+        for (let m = SERVER_ACTION_RE.exec(js); m !== null; m = SERVER_ACTION_RE.exec(js)) {
+          serverActions.add(m[2] ?? "");
+        }
+      }
+    }
+    if (apexController) {
+      for (const methodName of [...serverActions].sort()) {
+        add(REL_TYPES.IMPORTS_APEX, `ApexMethod:${apexController}.${methodName}(?)`, {
+          className: apexController,
+          methodName,
+          via: "aura-action",
+        });
+      }
+    }
+    // empApi only subscribes, so every `/event/` channel the bundle names is one.
+    if (markups.some((m) => EMP_API_TAG_RE.test(m))) {
+      for (const text of [...markups, ...scripts]) {
+        EVENT_CHANNEL_RE.lastIndex = 0;
+        for (let m = EVENT_CHANNEL_RE.exec(text); m !== null; m = EVENT_CHANNEL_RE.exec(text)) {
+          const dst = platformEventQname(m[2] ?? "", ctx.namespace);
+          if (dst) add(REL_TYPES.SUBSCRIBES_TO_EVENT, dst, { via: "empApi" });
+        }
+      }
+    }
+    for (const markup of markups) {
+      MESSAGE_CHANNEL_TAG_RE.lastIndex = 0;
+      for (
+        let m = MESSAGE_CHANNEL_TAG_RE.exec(markup);
+        m !== null;
+        m = MESSAGE_CHANNEL_TAG_RE.exec(markup)
+      ) {
+        const body = m[1] ?? "";
+        const dst = messageChannelQname(attrValue(body, "type") ?? "", ctx.namespace);
+        if (!dst) continue;
+        if (attrValue(body, "onMessage")) {
+          add(REL_TYPES.SUBSCRIBES_TO_EVENT, dst, { via: "messageChannel" });
+        }
+        const id = attrValue(body, "aura:id");
+        if (id && /^[\w-]+$/.test(id)) {
+          const publishes = new RegExp(`\\.find\\(\\s*(["'])${id}\\1\\s*\\)\\s*\\.publish\\s*\\(`);
+          if (scripts.some((js) => publishes.test(js))) {
+            add(REL_TYPES.PUBLISHES_EVENT, dst, { via: "messageChannel" });
+          }
+        }
       }
     }
 

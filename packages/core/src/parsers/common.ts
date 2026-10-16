@@ -62,3 +62,23 @@ export function stripNs(name: string, namespace: string | null): string {
   const prefix = `${namespace}__`;
   return name.startsWith(prefix) ? name.slice(prefix.length) : name;
 }
+
+/** `/event/Order__e` (an empApi channel) -> the platform event's API name. */
+const PLATFORM_EVENT_CHANNEL_RE = /^\/event\/([A-Za-z]\w*__e)$/;
+
+/** `PlatformEvent:<name>` for an empApi `/event/<name>__e` channel, else null
+ *  (CDC `/data/...`, PushTopic `/topic/...` and custom channels have no node). */
+export function platformEventQname(channel: string, namespace: string | null): string | null {
+  const m = PLATFORM_EVENT_CHANNEL_RE.exec(channel.trim());
+  return m ? `PlatformEvent:${stripNs(m[1] ?? "", namespace)}` : null;
+}
+
+/**
+ * `LightningMessageChannel:<name>` for a message channel as code names it
+ * (`@salesforce/messageChannel/Name__c`, `<lightning:messageChannel type="Name__c">`).
+ * The metadata member (and so the node) has no `__c` suffix.
+ */
+export function messageChannelQname(name: string, namespace: string | null): string | null {
+  const bare = stripNs(name.trim(), namespace).replace(/__c$/, "");
+  return /^[A-Za-z]\w*$/.test(bare) ? `LightningMessageChannel:${bare}` : null;
+}
