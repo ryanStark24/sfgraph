@@ -28,6 +28,10 @@ export {
   resolveFlowApexMethods,
   type FlowInvocableResolveResult,
 } from "./flow/invocable-resolver.js";
+export {
+  resolveFlowRelationshipPaths,
+  type FlowRelationshipResolveResult,
+} from "./flow/relationship-resolver.js";
 export { ParserWorkerPool } from "./worker-pool.js";
 export { loadAllRules } from "./rules/_loader.js";
 export { RuleBasedParser } from "./rules/_engine.js";

@@ -193,6 +193,8 @@ export interface LiveIngestOpts {
   disableVlocityApexResolve?: boolean;
   /** Skip the post-merge DataRaptor `Rel__r.Field` relationship-path resolver pass. */
   disableDrRelationshipResolve?: boolean;
+  /** Skip the post-merge Flow `$Record.Account.Field` relationship-path resolver pass. */
+  disableFlowRelationshipResolve?: boolean;
   /** Skip the post-merge Vlocity DataPack name-match resolver pass. */
   disableVlocityNameMatchResolve?: boolean;
   /** Skip the post-merge Apex relationship-path / lowercase test-target resolver pass. */
@@ -1745,6 +1747,22 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         wedgeWarnings.push(`dr-relationship-resolver:failed:${(e as Error).message}`);
       }
       profiler.phase("resolver:dr-relationship", performance.now() - tPhase);
+    }
+
+    if (!opts.disableFlowRelationshipResolve) {
+      const tPhase = performance.now();
+      try {
+        const { resolveFlowRelationshipPaths } = await import(
+          "../parsers/flow/relationship-resolver.js"
+        );
+        const fr = resolveFlowRelationshipPaths(graph, resolved.orgId, postCtx);
+        if (fr.scanned > 0) logger.info("live-ingest: flow relationship-path resolver", { ...fr });
+      } catch (e) {
+        postFailures.push("flow-relationship-resolver");
+        logger.warn(`flow-relationship-resolver:failed:${(e as Error).message}`);
+        wedgeWarnings.push(`flow-relationship-resolver:failed:${(e as Error).message}`);
+      }
+      profiler.phase("resolver:flow-relationship", performance.now() - tPhase);
     }
 
     if (!opts.disableLwcFieldKeyResolve) {
