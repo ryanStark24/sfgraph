@@ -191,3 +191,143 @@ describe("review R1-5: keyword before a regex", () => {
     expect(r.edges.map((e) => String(e.dstQualifiedName)).sort()).toEqual(["CustomLabel:Kept4"]);
   });
 });
+
+// Server actions: `<anything>.get("c.method")` in the bundle JS names a method
+// of the root tag's Apex controller, linked like an LWC `@salesforce/apex` import.
+describe("Aura server actions link to the controller's Apex methods", () => {
+  const apex = async (
+    files: Record<string, string>,
+    namespace: string | null = null,
+  ): Promise<string[]> =>
+    (
+      await new AuraBundleParser().parse(
+        { bundleName: "Cmp", files },
+        { ...makeTestCtx(), namespace },
+      )
+    ).edges
+      .filter((e) => e.relType === "IMPORTS_APEX")
+      .map((e) => {
+        const a = e.attributes;
+        return `${String(e.dstQualifiedName)} ${String(a.className)}.${String(a.methodName)} ${String(a.via)}`;
+      })
+      .sort();
+  const cmp = (ctrl: string) => `<aura:component controller="${ctrl}"></aura:component>`;
+  const edge = (cls: string, m: string) => `ApexMethod:${cls}.${m}(?) ${cls}.${m} aura-action`;
+
+  it("links component.get / cmp.get / any receiver, single or double quotes", async () => {
+    expect(
+      await apex({
+        "Cmp.cmp": cmp("MyApexCtrl"),
+        "CmpController.js": `({ init: function (component, event, helper) {
+          var action = component.get("c.getAccounts");
+          $A.enqueueAction(action);
+          helper.save(component);
+        } })`,
+        "CmpHelper.js": `({ save: function (cmp) {
+          var a = cmp.get('c.saveAccount'); a.setParams({ x: cmp.get("v.record") });
+          var b = someOther.get( "c.getAccounts" );
+          $A.enqueueAction(a);
+        } })`,
+      }),
+    ).toEqual([edge("MyApexCtrl", "getAccounts"), edge("MyApexCtrl", "saveAccount")]);
+  });
+
+  it("ignores v. attributes, `c.` strings not passed to get(), comments and $A.get", async () => {
+    expect(
+      await apex({
+        "Cmp.cmp": cmp("MyApexCtrl"),
+        "CmpController.js": `({ init: function (component) {
+          var r = component.get("v.record");
+          var s = "c.notAnAction";
+          console.log('c.alsoNot');
+          // component.get("c.commentedOut")
+          /* cmp.get('c.blockComment') */
+          var g = $A.get("c.notServer");
+          var dyn = component.get("c." + name);
+          var t = component.getNot("c.wrongMethod");
+        } })`,
+      }),
+    ).toEqual([]);
+  });
+
+  it("emits nothing without a controller, or for a foreign-namespace controller", async () => {
+    const js = { "CmpController.js": '({ a: function (c) { c.get("c.load"); } })' };
+    expect(await apex({ "Cmp.cmp": "<aura:component></aura:component>", ...js })).toEqual([]);
+    expect(await apex({ "Cmp.cmp": cmp("vlocity_cmt.Foreign"), ...js })).toEqual([]);
+    expect(await apex({ "Cmp.cmp": cmp("acme.OwnCtrl"), ...js }, "acme")).toEqual([
+      edge("OwnCtrl", "load"),
+    ]);
+    expect(await apex({ "Cmp.cmp": cmp("c.LocalCtrl"), ...js })).toEqual([
+      edge("LocalCtrl", "load"),
+    ]);
+  });
+
+  it("does not depend on file order", async () => {
+    expect(
+      await apex({
+        "A_first.js": '({ a: function (c) { c.get("c.early"); } })',
+        "Cmp.cmp": cmp("Ctrl"),
+      }),
+    ).toEqual([edge("Ctrl", "early")]);
+  });
+});
+
+// Platform events (lightning:empApi) and Lightning Message Service
+// (lightning:messageChannel) in Aura bundles.
+describe("Aura empApi and message channels", () => {
+  const evts = async (files: Record<string, string>) =>
+    (await new AuraBundleParser().parse({ bundleName: "Cmp", files }, makeTestCtx())).edges
+      .filter((e) => e.relType === "PUBLISHES_EVENT" || e.relType === "SUBSCRIBES_TO_EVENT")
+      .map((e) => `${e.relType}|${String(e.dstQualifiedName)}`)
+      .sort();
+
+  it("an empApi bundle subscribes to the /event/ channels it names", async () => {
+    expect(
+      await evts({
+        "Cmp.cmp": `<aura:component>
+          <aura:attribute name="channel" type="String" default="/event/Order_Placed__e"/>
+          <lightning:empApi aura:id="empApi"/>
+        </aura:component>`,
+        "CmpController.js": `({ init: function (cmp) {
+          var empApi = cmp.find("empApi");
+          empApi.subscribe('/event/Shipment__e', -1, function () {});
+          empApi.subscribe(cmp.get("v.channel"), -1, function () {});
+          var cdc = "/data/AccountChangeEvent";
+          // '/event/Commented__e'
+        } })`,
+      }),
+    ).toEqual([
+      "SUBSCRIBES_TO_EVENT|PlatformEvent:Order_Placed__e",
+      "SUBSCRIBES_TO_EVENT|PlatformEvent:Shipment__e",
+    ]);
+  });
+
+  it("an /event/ string without lightning:empApi is not a subscription", async () => {
+    expect(
+      await evts({
+        "Cmp.cmp": "<aura:component></aura:component>",
+        "CmpController.js": "({ a: function () { var x = '/event/Foo__e'; } })",
+      }),
+    ).toEqual([]);
+  });
+
+  it("lightning:messageChannel subscribes with onMessage, publishes via find().publish()", async () => {
+    expect(
+      await evts({
+        "Cmp.cmp": `<aura:component>
+          <lightning:messageChannel type="Record_Selected__c" onMessage="{!c.handle}"/>
+          <lightning:messageChannel type="Cart_Update__c" aura:id="cartChannel"/>
+          <lightning:messageChannel type="Unused__c" aura:id="unused"/>
+          <!-- <lightning:messageChannel type="Commented__c" onMessage="{!c.x}"/> -->
+        </aura:component>`,
+        "CmpController.js": `({ go: function (cmp) {
+          cmp.find("cartChannel").publish({ id: 1 });
+          cmp.find("unknownId").publish({ id: 2 });
+        } })`,
+      }),
+    ).toEqual([
+      "PUBLISHES_EVENT|LightningMessageChannel:Cart_Update",
+      "SUBSCRIBES_TO_EVENT|LightningMessageChannel:Record_Selected",
+    ]);
+  });
+});
