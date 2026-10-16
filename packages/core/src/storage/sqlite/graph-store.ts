@@ -2486,6 +2486,71 @@ export class SqliteGraphStore implements GraphStore {
   }
 
   /**
+   * Whether any node of `labels` has attributes JSON text containing one of
+   * `needles` (a plain substring test, so a superset of "has that key").
+   * Reads the text only, no JSON parse; stops at the first hit.
+   */
+  anyNodeAttributesContain(
+    orgId: OrgId,
+    labels: readonly string[],
+    needles: readonly string[],
+  ): boolean {
+    this.syncCaches();
+    if (needles.length === 0) return false;
+    const cond = needles.map(() => "instr(attributes, ?) > 0").join(" OR ");
+    for (const label of labels) {
+      const tbl = this.nodeLabelCache.get(label);
+      if (!tbl) continue;
+      if (
+        this.stmt(`SELECT 1 FROM ${tbl} WHERE org_id = ? AND (${cond}) LIMIT 1`).get(
+          orgId,
+          ...needles,
+        )
+      )
+        return true;
+    }
+    return false;
+  }
+
+  /** `anyNodeAttributesContain` for the edges of `relTypes`. */
+  anyEdgeAttributesContain(orgId: OrgId, relTypes: readonly string[], needle: string): boolean {
+    this.syncCaches();
+    for (const rel of relTypes) {
+      const tbl = this.edgeRelCache.get(rel);
+      if (!tbl) continue;
+      if (
+        this.stmt(`SELECT 1 FROM ${tbl} WHERE org_id = ? AND instr(attributes, ?) > 0 LIMIT 1`).get(
+          orgId,
+          needle,
+        )
+      )
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Sum of `attributes[attr]` over the nodes of `labels` where it is a
+   * number > 0, in listNodesByLabel order (label by label).
+   */
+  sumPositiveNodeAttribute(orgId: OrgId, labels: readonly string[], attr: string): number {
+    this.syncCaches();
+    const path = `$.${JSON.stringify(attr)}`;
+    let sum = 0;
+    for (const label of labels) {
+      const tbl = this.nodeLabelCache.get(label);
+      if (!tbl) continue;
+      const rows = this.stmt(
+        `SELECT json_type(attributes, ?) AS t, json_extract(attributes, ?) AS v FROM ${tbl} WHERE org_id = ? AND instr(attributes, ?) > 0`,
+      ).all(path, path, orgId, JSON.stringify(attr)) as Array<{ t: string | null; v: unknown }>;
+      for (const r of rows) {
+        if ((r.t === "integer" || r.t === "real") && typeof r.v === "number" && r.v > 0) sum += r.v;
+      }
+    }
+    return sum;
+  }
+
+  /**
    * Stored qnames (as `_sfgraph_node_index` spells them) of the org's nodes
    * whose `attributes[attr]` is JSON `true` — exactly the nodes for which
    * `getNode(q)?.attributes[attr] === true`, read in one pass per label.

@@ -1807,7 +1807,12 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       const tPhase = performance.now();
       try {
         const { resolveApexReferences } = await import("../parsers/apex/ref-resolver.js");
-        const ar = resolveApexReferences(graph, resolved.orgId, postCtx);
+        const { apexRefNoWorkResult } = await import("./resolver-gates.js");
+        // Skip its whole-graph reads when it provably has no input and no
+        // earlier output to prune (same result object it would return).
+        const ar =
+          apexRefNoWorkResult(graph, resolved.orgId) ??
+          resolveApexReferences(graph, resolved.orgId, postCtx);
         if (ar.edgesEmitted > 0 || ar.pathsUnresolved > 0 || ar.dynamicSoqlFieldsSkipped > 0)
           logger.info("live-ingest: apex ref resolver", { ...ar });
       } catch (e) {
