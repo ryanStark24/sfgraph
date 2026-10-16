@@ -38,7 +38,11 @@ describe("ApexPage / ApexComponent controllers from markup", () => {
         "StdPage",
         `<apex:page standardController="Account" extensions="AccExt"><apex:detail/></apex:page>`,
       ),
-    ).toEqual(["EXTENDS_CONTROLLER ApexClass:AccExt"]);
+    ).toEqual([
+      "EXTENDS_CONTROLLER ApexClass:AccExt",
+      // The standard controller's object (vf-references.test.ts), not a class.
+      "REFERENCES_OBJECT CustomObject:Account",
+    ]);
     expect(
       await parse(
         "ApexPage",

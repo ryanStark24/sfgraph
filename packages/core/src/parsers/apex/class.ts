@@ -38,6 +38,7 @@ import {
   makeTypeLookup,
   recordTypeAt,
 } from "./name-refs.js";
+import { emitPageRefEdges } from "./page-refs.js";
 import { blankBracketGroups, findInlineQueries, soqlFieldRefs } from "./soql-fields.js";
 import {
   classStringConstants,
@@ -1241,6 +1242,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       declared.set(m.name.toLowerCase(), d);
     }
     const parentName = header.isInterface ? null : header.extendsClass;
+    emitPageRefEdges(ctx, classQname, cleaned, edges);
     const methodQueries: string[] = [];
     const methodNodes = new Map<string, NodeFact>();
     const classPaths: ApexRelationshipPath[] = [];
