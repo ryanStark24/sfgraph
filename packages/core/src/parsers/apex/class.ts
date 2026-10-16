@@ -31,6 +31,13 @@ import {
   extractFieldAccesses,
   paramDecls,
 } from "./field-access.js";
+import {
+  type RecordTypeOpts,
+  emitInstanceCallEdges,
+  emitNameRefEdges,
+  makeTypeLookup,
+  recordTypeAt,
+} from "./name-refs.js";
 import { blankBracketGroups, findInlineQueries, soqlFieldRefs } from "./soql-fields.js";
 import {
   classStringConstants,
@@ -615,7 +622,7 @@ export function parseSoql(inner: string): { object: string | null; selectClause:
   }
   return { object: null, selectClause: inner };
 }
-export const DML_RE = /\b(insert|update|delete|upsert|undelete|merge)\s+([A-Za-z_][\w.]*)/gi;
+export const DML_RE = /\b(insert|update|delete|upsert|undelete|merge)\s+([A-Za-z_][\w.]*|\[)/gi;
 /** `Database.insert(recs)`, `Database.update(recs, false)`, `Database.INSERT(…)`:
  *  the Database class DML methods (Apex is case-insensitive). Group 2 is the
  *  first argument when it is a plain name. */
@@ -623,10 +630,17 @@ export const DATABASE_DML_RE =
   /\bDatabase\s*\.\s*(insert|update|upsert|delete|undelete|merge)\s*\(\s*([A-Za-z_][\w.]*)?/gi;
 
 /**
- * EXECUTES_DML `DML:<op>` for DML statements (`insert x;`) and Database DML
- * calls (`Database.insert(x)`) in `code` (strings/comments stripped), stamped
- * `inLoop` when inside a loop body. `target` is the record expression's name
- * when there is one.
+ * EXECUTES_DML `DML:<op>` for DML statements (`insert x;`, `delete [SELECT …]`)
+ * and Database DML calls (`Database.insert(x)`) in `code` (strings/comments
+ * stripped), stamped `inLoop` when inside a loop body. `target` is the record
+ * expression's name when there is one.
+ *
+ * When the record expression's sObject type is known (see `recordTypeAt`:
+ * `new T(…)`, an inline query, a variable `objects.lookup` types, or
+ * `Trigger.new` / `Trigger.old`), also EXECUTES_DML `CustomObject:<T>`, like
+ * EXECUTES_SOQL, one per object with the sorted operations in `ops`. That edge
+ * carries no `inLoop`: the governor checks read the `DML:<op>` marker, so a
+ * statement in a loop is reported once.
  */
 export function emitDmlEdges(
   ctx: ParseContext,
@@ -634,20 +648,41 @@ export function emitDmlEdges(
   code: string,
   inLoopAt: (idx: number) => boolean,
   edges: EdgeFact[],
+  objects: RecordTypeOpts = {},
 ): void {
-  const found: Array<{ i: number; op: string; target: string | undefined }> = [];
-  for (const m of code.matchAll(new RegExp(DML_RE.source, "gi")))
-    found.push({ i: m.index ?? 0, op: (m[1] ?? "").toLowerCase(), target: m[2] });
+  const found: Array<{ i: number; op: string; target: string | undefined; arg: number }> = [];
+  for (const m of code.matchAll(new RegExp(DML_RE.source, "gi"))) {
+    const raw = m[2] ?? "";
+    const i = m.index ?? 0;
+    const target = raw === "[" || raw.toLowerCase() === "new" ? undefined : raw;
+    found.push({ i, op: (m[1] ?? "").toLowerCase(), target, arg: i + m[0].length - raw.length });
+  }
   for (const m of code.matchAll(new RegExp(DATABASE_DML_RE.source, "gi"))) {
     const t = m[2] && m[2].toLowerCase() !== "new" ? m[2] : undefined;
-    found.push({ i: m.index ?? 0, op: (m[1] ?? "").toLowerCase(), target: t });
+    const i = m.index ?? 0;
+    const arg = i + m[0].length - (m[2] ?? "").length;
+    found.push({ i, op: (m[1] ?? "").toLowerCase(), target: t, arg });
   }
   found.sort((a, b) => a.i - b.i);
+  const byObject = new Map<string, { object: string; ops: Set<string> }>();
   for (const f of found) {
     edges.push(
       makeEdge(ctx, srcQname, REL_TYPES.EXECUTES_DML, `DML:${f.op}`, {
         ...(f.target !== undefined ? { target: f.target } : {}),
         ...(inLoopAt(f.i) ? { inLoop: true } : {}),
+      }),
+    );
+    const object = recordTypeAt(code, f.arg, objects);
+    if (!object) continue;
+    const obj = stripNs(object, ctx.namespace);
+    const hit = byObject.get(obj.toLowerCase()) ?? { object: obj, ops: new Set<string>() };
+    hit.ops.add(f.op);
+    byObject.set(obj.toLowerCase(), hit);
+  }
+  for (const { object, ops } of byObject.values()) {
+    edges.push(
+      makeEdge(ctx, srcQname, REL_TYPES.EXECUTES_DML, `CustomObject:${object}`, {
+        ops: [...ops].sort(),
       }),
     );
   }
@@ -695,6 +730,13 @@ export function emitInlineSoqlEdges(
     for (const f of refs.fields)
       edges.push(makeEdge(ctx, srcQname, REL_TYPES.READS_FIELD, `CustomField:${obj}.${f}`));
     for (const p of refs.paths) paths.push({ object: obj, path: p, rel: REL_TYPES.READS_FIELD });
+    // `TYPEOF What WHEN Account THEN Name …`: branch fields are read on the branch's type.
+    for (const b of refs.typeOf) {
+      const bObj = stripNs(b.object, ctx.namespace);
+      for (const f of b.fields)
+        edges.push(makeEdge(ctx, srcQname, REL_TYPES.READS_FIELD, `CustomField:${bObj}.${f}`));
+      for (const p of b.paths) paths.push({ object: bObj, path: p, rel: REL_TYPES.READS_FIELD });
+    }
     if (children) addChildRelationships(children, obj, parseSoql(inner).selectClause);
   }
 }
@@ -1190,6 +1232,15 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         ...methods.flatMap((m) => paramDecls(m.params)),
       ]),
     };
+    // Methods declared in this file (inner classes' too: all are qnamed
+    // under the outer class), for same-class call targets.
+    const declared = new Map<string, { name: string; arities: Set<number> }>();
+    for (const m of methods) {
+      const d = declared.get(m.name.toLowerCase()) ?? { name: m.name, arities: new Set<number>() };
+      d.arities.add(m.params.length);
+      declared.set(m.name.toLowerCase(), d);
+    }
+    const parentName = header.isInterface ? null : header.extendsClass;
     const methodQueries: string[] = [];
     const methodNodes = new Map<string, NodeFact>();
     const classPaths: ApexRelationshipPath[] = [];
@@ -1330,8 +1381,13 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         (methodNode.attributes as Record<string, unknown>).dynamicQueryInLoop = dynInLoop;
       }
 
-      // DML (statements and Database.<op>(…) calls)
-      emitDmlEdges(ctx, methodQname, body, inLoopAt, edges);
+      // DML (statements and Database.<op>(…) calls), linked to the object
+      // when the record expression's type is known.
+      const outerFields = enclosingFields(m.startIdx);
+      emitDmlEdges(ctx, methodQname, body, inLoopAt, edges, {
+        lookup: makeTypeLookup([...paramDecls(m.params), ...collectDecls(body)], outerFields),
+        excludedTypes: localTypes,
+      });
 
       // Named credentials (scan the ORIGINAL method body — strings are stripped from `body`).
       const ncSource = (() => {
@@ -1373,6 +1429,34 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         ]),
       };
       emitStaticCallEdges(ctx, methodQname, callCode, effectiveName, edges, methodScope.localVars);
+      const callLookup = makeTypeLookup(
+        [...paramDecls(m.params), ...collectDecls(callCode)],
+        outerFields,
+      );
+      emitInstanceCallEdges(
+        ctx,
+        methodQname,
+        callCode,
+        {
+          lookup: callLookup,
+          scope: methodScope,
+          selfName: effectiveName,
+          parentName,
+          declared,
+          fields: outerFields,
+        },
+        edges,
+        methodEdgeStart,
+      );
+      emitNameRefEdges(
+        ctx,
+        methodQname,
+        callCode,
+        rawDecl,
+        { lookup: callLookup, scope: methodScope },
+        edges,
+        methodEdgeStart,
+      );
       emitClassRefEdges(ctx, methodQname, callCode, methodScope, edges);
       // The signature is outside `callCode`: prepend it so parameter and
       // return types count for the method too.
@@ -1398,6 +1482,32 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       }
       const rest = outside.join("");
       emitStaticCallEdges(ctx, classQname, rest, effectiveName, edges, refScope.localVars);
+      // Outside method bodies a name is typed only when every declaration of
+      // it agrees (no positional scoping across constructors / initialisers).
+      const restDecls = collectDecls(rest);
+      const restLookup = makeTypeLookup([], restDecls);
+      emitInstanceCallEdges(
+        ctx,
+        classQname,
+        rest,
+        {
+          lookup: restLookup,
+          scope: refScope,
+          selfName: effectiveName,
+          parentName,
+          declared,
+          fields: restDecls,
+        },
+        edges,
+      );
+      emitNameRefEdges(
+        ctx,
+        classQname,
+        rest,
+        input.body,
+        { lookup: restLookup, scope: refScope },
+        edges,
+      );
       emitClassRefEdges(ctx, classQname, rest, refScope, edges);
       emitTypeRefEdges(ctx, classQname, rest, refScope, edges);
       emitDescribeRefEdges(ctx, classQname, rest, edges);

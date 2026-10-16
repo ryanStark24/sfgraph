@@ -40,8 +40,9 @@ export const OBJECT_NODE_HASH_SALT = "custom-object-attrs:v2";
  * v10: a dynamic SOQL string with a literal (or guard-proven) FROM also links
  * to its object (EXECUTES_SOQL `{dynamic: true}`).
  * v11: `apexFieldNameLiterals` (custom field names passed as text).
+ * v13: new edges only (instance calls, DML objects, labels, forName, TYPEOF, ...): `--delta` re-parses.
  */
-export const APEX_NODE_HASH_SALT = "apex-attrs:v12";
+export const APEX_NODE_HASH_SALT = "apex-attrs:v13";
 
 // vlocity/data-raptor.ts
 /**

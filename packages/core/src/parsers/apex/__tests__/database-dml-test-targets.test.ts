@@ -44,6 +44,9 @@ describe("Database.<dml>() as DML (regex path)", () => {
     const r = await new ApexClassParser().parse({ className: "Batch", body }, makeTestCtx());
     const got = dml(r.edges as unknown as Edge[], "ApexMethod:Batch.run(2)");
     expect(got.map((g) => g.dst)).toEqual([
+      // The typed records' objects (DML -> object, see dml-objects.test.ts).
+      "CustomObject:Account",
+      "CustomObject:Case",
       "DML:delete",
       "DML:insert",
       "DML:merge",
@@ -63,7 +66,10 @@ describe("Database.<dml>() as DML (regex path)", () => {
     }`;
     const r = await new ApexTriggerParser().parse({ triggerName: "CaseTrg", body }, makeTestCtx());
     const got = dml(r.edges as unknown as Edge[], "ApexTrigger:CaseTrg");
-    expect(got).toEqual([{ dst: "DML:update", target: "accs", inLoop: undefined }]);
+    expect(got).toEqual([
+      { dst: "CustomObject:Account", target: undefined, inLoop: undefined },
+      { dst: "DML:update", target: "accs", inLoop: undefined },
+    ]);
   });
 });
 

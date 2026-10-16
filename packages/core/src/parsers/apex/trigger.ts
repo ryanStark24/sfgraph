@@ -24,6 +24,7 @@ import {
 import { stripCommentsAndStrings } from "./common.js";
 import { foldDynamicSoql, maskApex } from "./dynamic-soql.js";
 import { collectDecls, extractFieldAccesses } from "./field-access.js";
+import { emitInstanceCallEdges, emitNameRefEdges, makeTypeLookup } from "./name-refs.js";
 import { blankBracketGroups, findInlineQueries } from "./soql-fields.js";
 
 export interface ApexTriggerInput {
@@ -47,6 +48,7 @@ function extractTriggerBodyEdges(
   ctx: ParseContext,
   triggerQname: string,
   body: string,
+  object: string,
 ): EdgeFact[] {
   const edges: EdgeFact[] = [];
   const loopRanges = computeLoopRanges(body);
@@ -62,7 +64,10 @@ function extractTriggerBodyEdges(
     );
   }
 
-  emitDmlEdges(ctx, triggerQname, body, inLoopAt, edges);
+  emitDmlEdges(ctx, triggerQname, body, inLoopAt, edges, {
+    lookup: makeTypeLookup(collectDecls(body)),
+    triggerObject: object,
+  });
   return edges;
 }
 
@@ -148,6 +153,12 @@ export class ApexTriggerParser implements Parser<ApexTriggerInput> {
     edges.push(
       makeEdge(ctx, triggerQname, REL_TYPES.TRIGGERS_ON, `CustomObject:${object}`, { events }),
     );
+    // A trigger on a platform event object is that event's subscriber.
+    if (/__e$/i.test(object)) {
+      edges.push(
+        makeEdge(ctx, triggerQname, REL_TYPES.SUBSCRIBES_TO_EVENT, `CustomObject:${object}`),
+      );
+    }
 
     // Store the trigger body so explain_code / debug can read it (triggers had
     // NO stored source before), and run SOQL/DML body analysis so governor and
@@ -161,7 +172,9 @@ export class ApexTriggerParser implements Parser<ApexTriggerInput> {
       startLine: 1,
       endLine: input.body.split("\n").length,
     });
-    edges.push(...aggregateGovernorFacts(extractTriggerBodyEdges(ctx, triggerQname, cleaned)));
+    edges.push(
+      ...aggregateGovernorFacts(extractTriggerBodyEdges(ctx, triggerQname, cleaned, object)),
+    );
     // Field reads/writes through SObject-typed vars and Trigger.new/old/newMap/oldMap.
     const bodyStart = cleaned.indexOf("{", m.index ?? 0);
     const triggerBody = bodyStart >= 0 ? cleaned.slice(bodyStart) : cleaned;
@@ -192,6 +205,22 @@ export class ApexTriggerParser implements Parser<ApexTriggerInput> {
     const triggerVars = localVarNames(decls);
     emitStaticCallEdges(ctx, triggerQname, callCode, undefined, edges, triggerVars);
     const triggerScope = { localTypes, localVars: triggerVars };
+    const callLookup = makeTypeLookup(collectDecls(callCode));
+    emitInstanceCallEdges(
+      ctx,
+      triggerQname,
+      callCode,
+      { lookup: callLookup, scope: triggerScope },
+      edges,
+    );
+    emitNameRefEdges(
+      ctx,
+      triggerQname,
+      callCode,
+      open >= 0 ? input.body.slice(open) : input.body,
+      { lookup: callLookup, scope: triggerScope, triggerObject: object },
+      edges,
+    );
     emitClassRefEdges(ctx, triggerQname, callCode, triggerScope, edges);
     emitTypeRefEdges(ctx, triggerQname, callCode, triggerScope, edges);
     emitDescribeRefEdges(ctx, triggerQname, callCode, edges);
