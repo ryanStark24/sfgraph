@@ -76,3 +76,88 @@ export function evaluateDeletionGuard(
 
   return { proceed: true };
 }
+
+/**
+ * Task 11c: the sweep must not delete a node whose source this run skipped
+ * (skipReport.skips, unreadable entries included): a skipped source touched
+ * nothing, so "not touched" says nothing about whether the node still exists.
+ *
+ * A skip label is mapped to the metadata types it covers. A node's type is
+ * read from its `sourceUri` (`sf://<scope>/<Type>/...`; `sf://describe/` is
+ * CustomObject), falling back to the node label. A label this table does not
+ * know (`discovery`, a whole-source `vlocity` failure, anything new) refuses
+ * the whole sweep. `mcd-baseline:*` skips protect nothing: the baseline only
+ * adds edges, it never touches nodes.
+ */
+export interface SkipProtection {
+  /** No node may be deleted this run. */
+  refuseAll: boolean;
+  /** Protected metadata types (exact). */
+  types: ReadonlySet<string>;
+  /** Protected type prefixes (e.g. `Omni` for a whole OmniStudio source skip). */
+  prefixes: readonly string[];
+  /** The skip labels behind `refuseAll` (for the log line). */
+  unknownLabels: readonly string[];
+}
+
+const SOURCE_LABEL_TYPES: Record<string, readonly string[]> = {
+  apex: ["ApexClass", "ApexTrigger"],
+  lwc: ["LightningComponentBundle"],
+  flow: ["Flow"],
+  object: ["CustomObject"],
+  security: ["Profile", "PermissionSet", "SharingRules"],
+  integration: ["NamedCredential", "ExternalServiceRegistration"],
+  "custom-settings": ["CustomSetting"],
+};
+
+export function skipProtection(skips: ReadonlyArray<{ label: string }>): SkipProtection {
+  const types = new Set<string>();
+  const prefixes: string[] = [];
+  const unknown: string[] = [];
+  for (const { label } of skips) {
+    const fixed = SOURCE_LABEL_TYPES[label];
+    if (fixed) {
+      for (const t of fixed) types.add(t);
+      continue;
+    }
+    if (label.startsWith("mcd-baseline:")) continue;
+    const [head, t] = label.split(":");
+    if ((head === "generic" || head === "vlocity" || head === "omnistudio-retrieve") && t) {
+      types.add(t);
+      continue;
+    }
+    if (label === "omnistudio" || label === "omnistudio-retrieve") {
+      if (!prefixes.includes("Omni")) prefixes.push("Omni");
+      continue;
+    }
+    unknown.push(label);
+  }
+  return { refuseAll: unknown.length > 0, types, prefixes, unknownLabels: unknown };
+}
+
+const SF_URI_TYPE = /^sf:\/\/[^/]+\/([^/]+)\//;
+
+/** The metadata type a node came from (sourceUri first, node label fallback). */
+export function nodeSourceType(node: {
+  label: string;
+  attributes?: Record<string, unknown>;
+}): string {
+  const uri = node.attributes?.sourceUri;
+  if (typeof uri === "string") {
+    if (uri.startsWith("sf://describe/")) return "CustomObject";
+    const m = SF_URI_TYPE.exec(uri);
+    if (m?.[1]) return m[1];
+  }
+  return node.label;
+}
+
+export function isSkipProtected(
+  p: SkipProtection,
+  node: { label: string; attributes?: Record<string, unknown> },
+): boolean {
+  if (p.refuseAll) return true;
+  if (p.types.size === 0 && p.prefixes.length === 0) return false;
+  const t = nodeSourceType(node);
+  if (p.types.has(t) || p.types.has(node.label)) return true;
+  return p.prefixes.some((x) => t.startsWith(x) || node.label.startsWith(x));
+}

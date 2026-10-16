@@ -52,7 +52,7 @@ If `staleness_check` says the ingest is old, say so — your grounding may be ou
 and recommend `sfgraph ingest --org <alias>`. If the org isn't ingested at all, say the
 grounding step is unavailable and proceed with explicit low-confidence caveats.
 
-Only after grounding do you hand off to a design/knowledge skill (`sf-architect-*`) to
+Only after grounding do you hand off to a design/knowledge skill (`sf-architect-*`, when installed; it is not part of sfgraph, so design directly if it is missing) to
 write the code. Ground → design → verify. Never design → hope.
 
 ## When the graph doesn't hold what the analysis needs — pull it from the org
@@ -95,7 +95,9 @@ knows the provenance and whether it left the local-only guarantee.
 | "Build an LWC for `<feature>`" | `find_similar` (existing LWCs) + `analyze_field` (bound fields) | `sf-architect-ui` |
 | "Add an integration / callout" | `find_nodes NamedCredential:*` + `find_similar` | `sf-architect-integrations` |
 | "Reuse — is this already built?" | `sf-find-similar` (free-text concept mode) | — |
-| "Explain this method/class" | `sf-explain-code` (needs `ApexMethod:Class.m(n)`) | — |
+| "Explain this method/trigger/Flow" | `sf-explain-code` (a class: explain its methods, `ApexMethod:Class.m(n)`) | — |
+| "Who calls / uses `<method/class>`" | `trace_upstream` on its qname (`depth: 1` for direct callers) | — |
+| "Which tests cover `<class>`" | `trace_upstream` with `rel_types: ["IS_TEST_FOR"]` | — |
 
 ### DESIGN — architecture & data model
 | Intent | Skill |
@@ -126,6 +128,11 @@ knows the provenance and whether it left the local-only guarantee.
 | "Vlocity ↔ OmniStudio migration inventory" | `sf-omnistudio-migration-audit` |
 | "Is the graph fresh / how do I refresh" | `sf-metadata-refresh` |
 | "Show me the graph visually" | `sf-web-explorer` |
+| "Export findings for CI / code scanning (SARIF)" | `export_sarif` |
+
+When you also have the project's source files, follow **`sf-graph-plus-source`** after the tool call: it says which parts of a graph answer to double-check in the source.
+
+Most skills start with `staleness_check`. With `SFGRAPH_TOOLS=core` the server does not offer it (nor `list_orgs`, `snapshot_*` or `freshness_report`): skip those steps and say the graph's freshness was not checked.
 
 ## Disambiguation (commonly confused)
 - **Committed vs uncommitted vs post-deploy change analysis:** PR/branch/commit → `sf-impact-from-diff`; uncommitted working tree → `sf-wip-impact`; already deployed, something regressed → `sf-what-broke`.

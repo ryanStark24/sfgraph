@@ -63,3 +63,22 @@ export async function loadAllRules(opts?: {
   }
   return { loaded, parsers };
 }
+
+let defaultLoad: Promise<LoadResult> | null = null;
+
+/**
+ * Register the bundled rule parsers once per process (memoised; a failed load
+ * is retried on the next call). Every in-process parse goes through this, so
+ * a parse never sees a registry without the declarative parsers (a delta's
+ * main-thread pre-parse used to run before liveIngest loaded them, and
+ * mis-parsed every rule-based type as opaque).
+ */
+export function ensureRulesLoaded(): Promise<LoadResult> {
+  if (!defaultLoad) {
+    defaultLoad = loadAllRules().catch((e: unknown) => {
+      defaultLoad = null;
+      throw e;
+    });
+  }
+  return defaultLoad;
+}

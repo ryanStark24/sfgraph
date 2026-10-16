@@ -23,6 +23,7 @@ export const FORMATTERS: Record<string, MemberNameFormatter> = {
   ApexPage: STRIP_LABEL,
   ApexComponent: STRIP_LABEL,
   LightningComponentBundle: STRIP_LABEL,
+  LWC: STRIP_LABEL,
   AuraDefinitionBundle: STRIP_LABEL,
   Flow: STRIP_LABEL,
   CustomObject: STRIP_LABEL,

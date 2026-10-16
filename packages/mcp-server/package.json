@@ -1,6 +1,6 @@
 {
   "name": "@ryanstark24/sfgraph-server",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,7 +20,7 @@
     "prepublishOnly": "node ../../scripts/assert-pnpm-publish.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.2",
     "@ryanstark24/sfgraph-core": "workspace:*",
@@ -40,14 +40,15 @@
     "url": "https://github.com/ryanStark24/sfgraph"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
   },
-  "description": "sfgraph MCP server: 19 tools over stdio",
+  "description": "sfgraph MCP server: 28 tools over stdio",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "README.md"
   ],
   "keywords": [

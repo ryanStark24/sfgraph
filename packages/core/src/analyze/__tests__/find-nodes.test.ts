@@ -71,7 +71,7 @@ describe("W3-04: findNodesByGlob", () => {
   it("supports brace expansion: `Flow:{Lead,Account}_*`", async () => {
     const store = await setupStore();
     store.mergeNodes([
-      node("Flow", "Flow:Lead_Convert"),
+      node("Flow", "Flow:Lead_Handoff"),
       node("Flow", "Flow:Lead_Score"),
       node("Flow", "Flow:Account_Sync"),
       node("Flow", "Flow:Opportunity_Close"),
@@ -79,7 +79,7 @@ describe("W3-04: findNodesByGlob", () => {
     const result = findNodesByGlob(store, ORG, "Flow:{Lead,Account}_*");
     expect(result.matches.map((n) => String(n.qualifiedName)).sort()).toEqual([
       "Flow:Account_Sync",
-      "Flow:Lead_Convert",
+      "Flow:Lead_Handoff",
       "Flow:Lead_Score",
     ]);
     await store.close();

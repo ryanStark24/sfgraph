@@ -1,12 +1,22 @@
 import { XMLBuilder } from "fast-xml-parser";
-import { METADATA_CATEGORY } from "../../../domain/index.js";
+import { METADATA_CATEGORY, STANDARD_SOBJECT_WHITELIST } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
 import {
   DESCRIBE_GLOBAL_TIMEOUT_MS,
+  type StopSignal,
   scheduleData,
   scheduleQuery,
   soqlWithTimeout,
+  stopSignalContext,
 } from "../rate-limit.js";
+import {
+  type FetchFailure,
+  type RetryOptions,
+  envInt,
+  querySoqlAll,
+  throwIfIncomplete,
+  withRetry,
+} from "../retry.js";
 
 const xml = new XMLBuilder({ ignoreAttributes: false, format: false, suppressEmptyNode: true });
 
@@ -160,182 +170,6 @@ const SYSTEM_SKIP_NAMES = new Set([
   "IconDefinition",
 ]);
 
-/**
- * Whitelist of standard (non-custom) Salesforce SObjects that user code
- * commonly references. Curated for Sales / Service / Marketing / Platform /
- * Communities. Anything not in this list AND not a custom-suffix SObject
- * is skipped by default to avoid the long tail of industry-cloud /
- * platform-internal tables that bloat the graph, take seconds-each to
- * describe, and have no user-code reference path.
- *
- * Override: SFGRAPH_INCLUDE_ALL_SOBJECTS=1 brings back every queryable
- * SObject (still filtered by companion-table + SYSTEM_SKIP_NAMES).
- */
-const STANDARD_SOBJECT_WHITELIST = new Set([
-  // Sales core
-  "Account",
-  "AccountContactRelation",
-  "AccountContactRole",
-  "AccountTeamMember",
-  "AccountPartner",
-  "Contact",
-  "ContactPointAddress",
-  "ContactPointEmail",
-  "ContactPointPhone",
-  "Opportunity",
-  "OpportunityContactRole",
-  "OpportunityLineItem",
-  "OpportunityHistory",
-  "OpportunityFieldHistory",
-  "OpportunityTeamMember",
-  "OpportunityStage",
-  "Lead",
-  "LeadStatus",
-  "Quote",
-  "QuoteLineItem",
-  "Order",
-  "OrderItem",
-  "Contract",
-  "ContractContactRole",
-  "Asset",
-  "AssetRelationship",
-  "Product2",
-  "PricebookEntry",
-  "Pricebook2",
-  "Campaign",
-  "CampaignMember",
-  "CampaignMemberStatus",
-  "Partner",
-  // Service
-  "Case",
-  "CaseComment",
-  "CaseTeamMember",
-  "CaseTeamRole",
-  "CaseTeamTemplate",
-  "CaseSolution",
-  "CaseContactRole",
-  "CaseMilestone",
-  "Solution",
-  "ServiceContract",
-  "ServiceAppointment",
-  "ServiceTerritory",
-  "ServiceTerritoryMember",
-  "ServiceResource",
-  "ServiceResourceCapacity",
-  "ServiceResourceSkill",
-  "WorkOrder",
-  "WorkOrderLineItem",
-  "WorkType",
-  "WorkTypeGroup",
-  "Entitlement",
-  "EntitlementContact",
-  "EntitlementTemplate",
-  "MilestoneType",
-  "SlaProcess",
-  // Activities
-  "Task",
-  "Event",
-  "EventRelation",
-  "OpenActivity",
-  "ActivityHistory",
-  "Reminder",
-  // Content / Files
-  "ContentDocument",
-  "ContentVersion",
-  "ContentDocumentLink",
-  "ContentNote",
-  "ContentWorkspace",
-  "Attachment",
-  "Note",
-  "Document",
-  "Folder",
-  "Library",
-  // Marketing / Email
-  "EmailMessage",
-  "EmailTemplate",
-  "EmailRelay",
-  "ListEmail",
-  // Setup / Identity / Access
-  "User",
-  "UserRole",
-  "UserLicense",
-  "Group",
-  "GroupMember",
-  "Queue",
-  "QueueSObject",
-  "Profile",
-  "PermissionSet",
-  "PermissionSetAssignment",
-  "PermissionSetGroup",
-  "PermissionSetGroupComponent",
-  "PermissionSetLicense",
-  "PermissionSetLicenseAssign",
-  "RecordType",
-  "BusinessProcess",
-  "BusinessHours",
-  "Holiday",
-  "FiscalYearSettings",
-  "Period",
-  "Territory2",
-  "Territory2Model",
-  "Territory2Type",
-  "UserTerritory2Association",
-  // Experience Cloud / Communities / Topics
-  "Network",
-  "NetworkMember",
-  "Site",
-  "Domain",
-  "DomainSite",
-  "Topic",
-  "TopicAssignment",
-  "FeedItem",
-  "FeedComment",
-  "FeedAttachment",
-  // Knowledge
-  "Knowledge__kav",
-  "KnowledgeArticle",
-  "KnowledgeArticleVersion",
-  "DataCategory",
-  // Reports / Dashboards
-  "Report",
-  "Dashboard",
-  "ReportType",
-  // CMS / DigEx
-  "ManagedContent",
-  "ManagedContentVersion",
-  "ManagedContentType",
-  // Platform staples that DO show up in user code
-  "Idea",
-  "Question",
-  "FAQ",
-  "AggregateResult",
-  "AuthProvider",
-  "ConnectedApplication",
-  "NamedCredential",
-  "ExternalCredential",
-  // Salesforce DX-style metadata SObjects user code sometimes joins
-  "ApexClass",
-  "ApexTrigger",
-  "ApexPage",
-  "ApexComponent",
-  "AuraDefinitionBundle",
-  "AuraDefinition",
-  "LightningComponentBundle",
-  "LightningComponentResource",
-  "FlowDefinition",
-  "Flow",
-  "CustomObject",
-  "CustomField",
-  "StaticResource",
-  "EmailService",
-  "EmailServicesAddress",
-  // OmniStudio-on-core (industry cloud but commonly used)
-  "OmniProcess",
-  "OmniProcessElement",
-  "OmniUiCard",
-  "OmniDataTransform",
-]);
-
 interface EntityDefRow {
   QualifiedApiName?: string;
   IsCustomizable?: boolean;
@@ -357,62 +191,133 @@ interface EntityDefRow {
  * (audit log, auth config, schema introspection table, etc.) that user
  * code never references and never benefits from being in the graph.
  *
- * EntityDefinition pagination: a single Tooling query returns up to 2000
- * rows. Larger orgs need queryMore. We call conn.tooling.query repeatedly
- * via the nextRecordsUrl pattern.
+ * EntityDefinition paging: the Tooling API refuses queryMore() on
+ * EntityDefinition ("does not support queryMore(), use LIMIT to restrict the
+ * results to a single batch"), so an org with more than one batch (2000) of
+ * entities — a large org has 5758 — cannot be drained via nextRecordsUrl.
+ * Keyset paging (`WHERE QualifiedApiName > :last ORDER BY ...`) is not safe
+ * either: the server's ORDER BY and `>` collations disagree, which returned
+ * duplicates and missed rows on a large live org. Instead, one LIMIT-ed query is
+ * tried first (enough for most orgs); when it comes back full, the table is
+ * split on case-insensitive QualifiedApiName prefixes, recursively splitting
+ * any bucket that is itself full, and the union is checked against COUNT().
  *
  * Returns null if EntityDefinition is unavailable (some scratch orgs and
  * specific Salesforce editions return empty here, which is the reason we
  * originally moved off this code path). Caller falls back to the static
  * whitelist when null.
  */
-async function fetchEntityDefinitionClassification(conn: any): Promise<Set<string> | null> {
+async function fetchEntityDefinitionClassification(
+  conn: any,
+  retry: RetryOptions,
+): Promise<Set<string> | null> {
   const userRelevant = new Set<string>();
-  const SOQL =
-    "SELECT QualifiedApiName, IsCustomizable, IsApexTriggerable, IsDeprecatedAndHidden, IsCustomSetting FROM EntityDefinition";
-  try {
-    let res = (await scheduleQuery(() =>
-      soqlWithTimeout(conn.tooling.query(SOQL), "tooling EntityDefinition page1"),
-    )) as {
-      records?: EntityDefRow[];
-      done?: boolean;
-      nextRecordsUrl?: string;
-    } | null;
-    if (!res || !Array.isArray(res.records) || res.records.length === 0) {
-      return null;
+  let rows = 0;
+  // Every query is re-tried; one that still fails throws (the caller falls
+  // back to the static whitelist AND reports the degradation). The old loop
+  // `break`-ed on a failed queryMore and kept the PARTIAL set, which silently
+  // excluded every namespaced custom object / standard object on the lost
+  // pages.
+  for (const r of await drainEntityDefinition(conn.tooling, retry)) {
+    rows += 1;
+    if (!r.QualifiedApiName) continue;
+    if (r.IsDeprecatedAndHidden) continue;
+    // Either flag → keep. Custom settings are usually user-facing
+    // (people query them) even though IsApexTriggerable is false.
+    if (r.IsCustomizable || r.IsApexTriggerable || r.IsCustomSetting) {
+      userRelevant.add(r.QualifiedApiName);
     }
-    const collect = (recs: EntityDefRow[]): void => {
-      for (const r of recs) {
-        if (!r.QualifiedApiName) continue;
-        if (r.IsDeprecatedAndHidden) continue;
-        // Either flag → keep. Custom settings are usually user-facing
-        // (people query them) even though IsApexTriggerable is false.
-        if (r.IsCustomizable || r.IsApexTriggerable || r.IsCustomSetting) {
-          userRelevant.add(r.QualifiedApiName);
-        }
-      }
-    };
-    collect(res.records);
-    // Walk pagination — Tooling API returns nextRecordsUrl for large sets.
-    while (res && res.done === false && res.nextRecordsUrl) {
-      const url = res.nextRecordsUrl;
-      try {
-        res = (await scheduleQuery(() =>
-          soqlWithTimeout(conn.tooling.queryMore(url), "tooling EntityDefinition queryMore"),
-        )) as {
-          records?: EntityDefRow[];
-          done?: boolean;
-          nextRecordsUrl?: string;
-        };
-      } catch {
-        break;
-      }
-      if (res?.records) collect(res.records);
-    }
-    return userRelevant.size > 0 ? userRelevant : null;
-  } catch {
-    return null;
   }
+  if (rows === 0) return null;
+  return userRelevant.size > 0 ? userRelevant : null;
+}
+
+const ED_FIELDS =
+  "QualifiedApiName, IsCustomizable, IsApexTriggerable, IsDeprecatedAndHidden, IsCustomSetting";
+/** Tooling single-batch size: the most one EntityDefinition query returns. */
+const ED_BATCH = 2000;
+/** Characters an API name can contain (LIKE is case-insensitive). Also used
+ *  for the FIRST character: names start with a letter today, but a row that
+ *  did not would otherwise fall through every bucket and fail the COUNT()
+ *  check on every run (11 near-empty extra queries; review M2). */
+const ED_NAME_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+/** Longer than any API name: a bucket still full at this depth is a bug. */
+const ED_MAX_PREFIX_LEN = 80;
+
+function soqlString(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+function soqlLikePrefix(s: string): string {
+  return soqlString(s).replace(/[_%]/g, (c) => `\\${c}`);
+}
+
+/** Every EntityDefinition row, using only single-batch (LIMIT-ed) queries. */
+async function drainEntityDefinition(tooling: any, retry: RetryOptions): Promise<EntityDefRow[]> {
+  const query = (where: string, label: string) =>
+    querySoqlAll<EntityDefRow>(
+      tooling,
+      `SELECT ${ED_FIELDS} FROM EntityDefinition${where} LIMIT ${ED_BATCH}`,
+      label,
+      scheduleQuery,
+      retry,
+    );
+  const first = await query("", "tooling EntityDefinition");
+  if (first.length < ED_BATCH) return first;
+
+  const byName = new Map<string, EntityDefRow>();
+  const add = (rs: EntityDefRow[]) => {
+    for (const r of rs) if (r.QualifiedApiName) byName.set(r.QualifiedApiName, r);
+  };
+  const bucket = async (prefix: string): Promise<void> => {
+    const rs = await query(
+      ` WHERE QualifiedApiName LIKE '${soqlLikePrefix(prefix)}%'`,
+      `tooling EntityDefinition ${prefix}*`,
+    );
+    if (rs.length < ED_BATCH) {
+      add(rs);
+      return;
+    }
+    if (prefix.length >= ED_MAX_PREFIX_LEN) {
+      throw new Error(`tooling EntityDefinition: bucket '${prefix}*' still full at max depth`);
+    }
+    // Full bucket: the name equal to the prefix, plus one sub-bucket per
+    // possible next character.
+    add(
+      await query(
+        ` WHERE QualifiedApiName = '${soqlString(prefix)}'`,
+        `tooling EntityDefinition ${prefix}`,
+      ),
+    );
+    await Promise.all([...ED_NAME_CHARS].map((c) => bucket(prefix + c)));
+  };
+  await Promise.all([...ED_NAME_CHARS].map((c) => bucket(c)));
+
+  // The prefix split assumes names use ED_NAME_CHARS only; verify the union
+  // against the server's own count so a gap surfaces instead of hiding.
+  const count = (await withRetry(
+    () =>
+      scheduleQuery(() =>
+        soqlWithTimeout(
+          Promise.resolve(tooling.query("SELECT COUNT() FROM EntityDefinition")),
+          "tooling EntityDefinition count",
+        ),
+      ),
+    retry,
+  )) as { totalSize?: number } | null;
+  const total = count?.totalSize;
+  if (typeof total !== "number") {
+    // An unverifiable partition is not trusted (review M2).
+    throw new Error(
+      `tooling EntityDefinition COUNT() returned no totalSize (${byName.size} rows partitioned; cannot verify)`,
+    );
+  }
+  if (byName.size < total) {
+    throw new Error(
+      `tooling EntityDefinition partition incomplete: ${byName.size} of ${total} rows classified`,
+    );
+  }
+  return [...byName.values()];
 }
 
 /** Build a shouldIncludeSObject predicate closed over the EntityDefinition
@@ -426,7 +331,10 @@ function makeShouldIncludeSObject(
   return function shouldIncludeSObject(s: SObjectGlobal): boolean {
     if (!s.name) return false;
     if (s.deprecatedAndHidden) return false;
-    if (!s.queryable) return false;
+    // Platform events (`__e`) are describable but never SOQL-queryable, so
+    // describeGlobal reports queryable=false for them; they still belong in
+    // the graph (triggers, flows and Apex publish/subscribe to them).
+    if (!s.queryable && !s.name.endsWith("__e")) return false;
     // Filter out auto-generated companion tables — works for BOTH the custom
     // form (`MyObj__c` → `MyObj__Feed`) AND the standard form (`Account` →
     // `AccountFeed`).
@@ -503,8 +411,18 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  * what the CustomObject parser expects (object-level props + fields list).
  * The parser can derive CustomObject + CustomField nodes from this.
  */
-export async function* iterObject(conn: any): AsyncIterable<RawMember> {
+/** Default ceiling for the EntityDefinition classification probe. */
+const ENTITY_DEF_PROBE_TIMEOUT_MS = 60_000;
+
+export async function* iterObject(
+  conn: any,
+  retryOpts: RetryOptions = {},
+): AsyncIterable<RawMember> {
   const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
+  // Members (or classification passes) lost after retries. Re-thrown as an
+  // IncompleteSourceError once everything fetchable has been yielded, so the
+  // failSoft wrapper records an `object` skip naming them instead of `✓`.
+  const failures: FetchFailure[] = [];
   // Probe EntityDefinition first so shouldIncludeSObject can rely on
   // Salesforce's own classification rather than a hardcoded list. If
   // this fails / returns 0 rows (some scratch orgs), the fallback is the
@@ -514,15 +432,38 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
   // enough to hold a sliding-window slot uselessly. Falling through to
   // the static whitelist costs us some long-tail standard SObjects but
   // unblocks the source promptly.
+  //
+  // When the ceiling fires the inner drain is told to stop (review M6): a
+  // probe-local stop flag, OR-ed with the source's own wedge stop signal, is
+  // published to the rate-limit wrappers, so its pending retries reject with
+  // StopWaitingError instead of holding Tooling pool slots for minutes after
+  // the source already fell back. SFGRAPH_ENTITYDEF_PROBE_TIMEOUT_MS
+  // overrides the ceiling (orgs where the probe reliably needs longer).
   let entityDefRelevant: Set<string> | null;
+  const probeTimeoutMs =
+    envInt("SFGRAPH_ENTITYDEF_PROBE_TIMEOUT_MS") || ENTITY_DEF_PROBE_TIMEOUT_MS;
+  const outer = stopSignalContext.getStore();
+  const probeStopped = { value: false };
+  const probeSignal: StopSignal = {
+    get value() {
+      return probeStopped.value || (outer?.value ?? false);
+    },
+  };
   try {
     entityDefRelevant = await withTimeout(
-      fetchEntityDefinitionClassification(conn),
-      60_000,
+      stopSignalContext.run(probeSignal, () =>
+        fetchEntityDefinitionClassification(conn, retryOpts),
+      ),
+      probeTimeoutMs,
       "EntityDefinition probe",
     );
-  } catch {
+  } catch (e) {
+    // Fallback whitelist still runs, but it misses long-tail standard
+    // objects — report the degradation rather than hiding it.
     entityDefRelevant = null;
+    failures.push({ name: "EntityDefinition classification", error: e });
+  } finally {
+    probeStopped.value = true;
   }
   const shouldIncludeSObject = makeShouldIncludeSObject(entityDefRelevant);
   if (debug) {
@@ -537,16 +478,15 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
     }
   }
 
-  let global: { sobjects?: SObjectGlobal[] } | null = null;
-  try {
-    global = (await scheduleQuery(() =>
-      soqlWithTimeout(conn.describeGlobal(), "describeGlobal", DESCRIBE_GLOBAL_TIMEOUT_MS),
-    )) as {
-      sobjects?: SObjectGlobal[];
-    };
-  } catch {
-    return; // describeGlobal failed; let fail-soft catch it
-  }
+  // describeGlobal failure must propagate (after retries): a bare `return`
+  // here used to end the source as "object ✓ 0 records".
+  const global = (await withRetry(
+    () =>
+      scheduleQuery(() =>
+        soqlWithTimeout(conn.describeGlobal(), "describeGlobal", DESCRIBE_GLOBAL_TIMEOUT_MS),
+      ),
+    retryOpts,
+  )) as { sobjects?: SObjectGlobal[] } | null;
   const all = global?.sobjects ?? [];
   const included = all.filter(shouldIncludeSObject);
   // SFGRAPH_SKIP_SOBJECT=name1,name2,... lets users work around a specific
@@ -607,14 +547,19 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
     if (debug) console.log(`ingest: [debug] object describe ← ${s.name}`);
     const p = (async (): Promise<Settled> => {
       try {
-        const d = await scheduleData(() =>
-          withTimeout(conn.sobject(s.name).describe(), DESCRIBE_TIMEOUT_MS, s.name),
+        const d = await withRetry(
+          () =>
+            scheduleData(() =>
+              withTimeout(conn.sobject(s.name).describe(), DESCRIBE_TIMEOUT_MS, s.name),
+            ),
+          retryOpts,
         );
         return { idx, s, desc: d, elapsedMs: Date.now() - launchedAt };
       } catch (e) {
         const msg = (e as Error)?.message ?? "(unknown)";
         if (/describe timeout/.test(msg)) timedOut += 1;
         if (debug) console.log(`ingest: [debug] object describe ✗ ${s.name}: ${msg}`);
+        failures.push({ name: s.name, error: e });
         return { idx, s, desc: null, elapsedMs: Date.now() - launchedAt };
       }
     })();
@@ -694,4 +639,5 @@ export async function* iterObject(conn: any): AsyncIterable<RawMember> {
       content: typeof objectXml === "string" ? objectXml : String(objectXml),
     };
   }
+  throwIfIncomplete("object", failures);
 }

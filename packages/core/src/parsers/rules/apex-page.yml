@@ -15,13 +15,13 @@ nodes:
 
 edges:
   - relType: CONTROLLED_BY
-    when: "${match(toString(record.body),'controller\\s*=\\s*\"([^\"]+)\"','i')}"
+    when: "${match(toString(record.body),'(?<![A-Za-z])controller\\s*=\\s*[\"\\x27]([A-Za-z_][A-Za-z0-9_]*)[\"\\x27]','i')}"
     src: "ApexPage:${record.name}"
-    dst: "ApexClass:${match(toString(record.body),'controller\\s*=\\s*\"([^\"]+)\"','i')}"
+    dst: "ApexClass:${match(toString(record.body),'(?<![A-Za-z])controller\\s*=\\s*[\"\\x27]([A-Za-z_][A-Za-z0-9_]*)[\"\\x27]','i')}"
 
   - relType: EXTENDS_CONTROLLER
-    iterate: "${splitCsv(match(toString(record.body),'extensions\\s*=\\s*\"([^\"]+)\"','i'))}"
-    when: "${item}"
+    iterate: "${splitCsv(match(toString(record.body),'extensions\\s*=\\s*[\"\\x27]([^\"\\x27]+)[\"\\x27]','i'))}"
+    when: "${match(item,'^([A-Za-z_][A-Za-z0-9_]*)$')}"
     src: "ApexPage:${record.name}"
     dst: "ApexClass:${item}"
 
@@ -30,3 +30,48 @@ edges:
     when: "${item}"
     src: "ApexPage:${record.name}"
     dst: "ApexClass:${item}"
+
+  # Merge fields and markup references (parsers/vf/refs.ts): fields, objects
+  # and labels the {!…} expressions name; components, included pages and
+  # templates the markup pulls in.
+  - relType: READS_FIELD
+    iterate: "${vfRefs(toString(record.body),'reads')}"
+    src: "ApexPage:${record.name}"
+    dst: "${item.dst | raw}"
+    props:
+      via: "${item.via | raw}"
+
+  - relType: WRITES_FIELD
+    iterate: "${vfRefs(toString(record.body),'writes')}"
+    src: "ApexPage:${record.name}"
+    dst: "${item.dst | raw}"
+    props:
+      via: "${item.via | raw}"
+
+  - relType: REFERENCES_OBJECT
+    iterate: "${vfRefs(toString(record.body),'objects')}"
+    src: "ApexPage:${record.name}"
+    dst: "${item.dst | raw}"
+    props:
+      via: "${item.via | raw}"
+
+  - relType: REFERENCES_LABEL
+    iterate: "${vfRefs(toString(record.body),'labels')}"
+    src: "ApexPage:${record.name}"
+    dst: "${item.dst | raw}"
+    props:
+      via: "${item.via | raw}"
+
+  - relType: REFERENCES
+    iterate: "${vfRefs(toString(record.body),'components')}"
+    src: "ApexPage:${record.name}"
+    dst: "${item.dst | raw}"
+    props:
+      via: "${item.via | raw}"
+
+  - relType: REFERENCES
+    iterate: "${vfRefs(toString(record.body),'pages')}"
+    src: "ApexPage:${record.name}"
+    dst: "${item.dst | raw}"
+    props:
+      via: "${item.via | raw}"

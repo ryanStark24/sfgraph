@@ -1,0 +1,23 @@
+[
+  {
+    "%vlocity_namespace%__InterfaceObjectName__c": "Account",
+    "%vlocity_namespace%__InterfaceFieldAPIName__c": "Tier__c",
+    "%vlocity_namespace%__InterfaceObjectLookupOrder__c": 1,
+    "%vlocity_namespace%__DomainObjectAPIName__c": "json",
+    "%vlocity_namespace%__DomainObjectFieldAPIName__c": "Acct:Tier"
+  },
+  {
+    "%vlocity_namespace%__InterfaceObjectName__c": "Account",
+    "%vlocity_namespace%__InterfaceFieldAPIName__c": "Home_Region__r.Code__c",
+    "%vlocity_namespace%__InterfaceObjectLookupOrder__c": 1,
+    "%vlocity_namespace%__DomainObjectAPIName__c": "json",
+    "%vlocity_namespace%__DomainObjectFieldAPIName__c": "Acct:Region"
+  },
+  {
+    "%vlocity_namespace%__InterfaceObjectName__c": "Account",
+    "%vlocity_namespace%__InterfaceFieldAPIName__c": "Billing_Region__r.Code__c",
+    "%vlocity_namespace%__InterfaceObjectLookupOrder__c": 1,
+    "%vlocity_namespace%__DomainObjectAPIName__c": "json",
+    "%vlocity_namespace%__DomainObjectFieldAPIName__c": "Acct:BillRegion"
+  }
+]

@@ -1,3 +1,5 @@
+import { isOrgRejection, withRetry } from "./retry.js";
+
 export const VLOCITY_NAMESPACE_CANDIDATES = [
   "vlocity_cmt",
   "vlocity_ins",
@@ -14,6 +16,19 @@ export const VLOCITY_NAMESPACE_CANDIDATES = [
 
 export type VlocityNamespace = (typeof VLOCITY_NAMESPACE_CANDIDATES)[number];
 
+/**
+ * A capability probe that failed for a reason other than "the object is not
+ * in this org" (timeout, connection reset, 5xx) even after retries. The
+ * capability is reported as false, but `source` names the bulk-retrieve
+ * source it gates so the run records a skip instead of silently dropping
+ * that source (review I2). `source` is null when the probe gates no source.
+ */
+export interface CapabilityProbeError {
+  probe: string;
+  source: "vlocity" | "omnistudio" | null;
+  error: string;
+}
+
 export interface OrgCapabilities {
   detectedNamespaces: string[];
   /** Subset of VLOCITY_NAMESPACE_CANDIDATES whose `${ns}__DRBundle__c` exists. */
@@ -26,6 +41,9 @@ export interface OrgCapabilities {
   agentforce: boolean;
   experienceCloud: boolean;
   sourceTracking: boolean;
+  /** Probes that failed transiently (see {@link CapabilityProbeError}).
+   *  Absent / empty when every probe gave a definite answer. */
+  probeErrors?: CapabilityProbeError[];
 }
 
 // All capability probes use a SHORT 15s timeout — they're tiny single-row
@@ -73,13 +91,61 @@ async function safeToolingQuery(conn: any, soql: string): Promise<{ records?: un
   }
 }
 
-async function describeExists(conn: any, name: string, useTooling = false): Promise<boolean> {
+/** The describe failed because the object is not in this org (or the user
+ *  cannot see it) — a definite "no", not a transient failure. */
+function isAbsent(e: unknown): boolean {
+  if (isOrgRejection(e)) return true;
+  const msg =
+    e instanceof Error
+      ? `${(e as { errorCode?: string }).errorCode ?? ""} ${e.message}`
+      : String(e);
+  return /NOT_FOUND|does not exist|no such/i.test(msg);
+}
+
+/** Retries for a transient describe failure (backoff per retry.ts). */
+const PROBE_RETRIES = 2;
+
+/**
+ * Probe whether `name` is describable. Absence → false. Any other failure
+ * (timeout, reset, 5xx) is retried; if it still fails the probe is recorded
+ * in `errors` (and reported false). Previously every error mapped to false,
+ * so a probe timeout silently removed the whole vlocity / omnistudio source.
+ */
+async function describeExists(
+  conn: any,
+  name: string,
+  useTooling: boolean,
+  source: CapabilityProbeError["source"],
+  errors: CapabilityProbeError[],
+): Promise<boolean> {
+  const root = useTooling ? conn.tooling : conn;
   try {
-    const root = useTooling ? conn.tooling : conn;
-    await withCapsTimeout(root.sobject(name).describe(), `describe ${name}`);
+    await withRetry(
+      async () => {
+        try {
+          await withCapsTimeout(root.sobject(name).describe(), `describe ${name}`);
+        } catch (e) {
+          // Absence is an answer, not a failure: stop retrying.
+          if (isAbsent(e)) throw new AbsentError();
+          throw e;
+        }
+      },
+      { retries: PROBE_RETRIES },
+    );
     return true;
-  } catch {
+  } catch (e) {
+    if (e instanceof AbsentError) return false;
+    errors.push({ probe: name, source, error: e instanceof Error ? e.message : String(e) });
     return false;
+  }
+}
+
+/** Internal marker: the probed object does not exist. Classified as an org
+ *  rejection (INVALID_TYPE in the message) so withRetry does not retry it. */
+class AbsentError extends Error {
+  constructor() {
+    super("INVALID_TYPE: probed object absent");
+    this.name = "AbsentError";
   }
 }
 
@@ -97,18 +163,24 @@ export async function probeCapabilities(conn: any): Promise<OrgCapabilities> {
     }
   }
 
+  const probeErrors: CapabilityProbeError[] = [];
   const vlocityProbes = await Promise.all(
-    VLOCITY_NAMESPACE_CANDIDATES.map((ns) => describeExists(conn, `${ns}__DRBundle__c`)),
+    VLOCITY_NAMESPACE_CANDIDATES.map((ns) =>
+      describeExists(conn, `${ns}__DRBundle__c`, false, "vlocity", probeErrors),
+    ),
   );
   const vlocityNamespaces: string[] = VLOCITY_NAMESPACE_CANDIDATES.filter(
     (_ns, i) => vlocityProbes[i],
   );
 
   const [omnistudioOncore, agentforce, experienceCloud, sourceTracking] = await Promise.all([
-    describeExists(conn, "OmniProcess"),
-    describeExists(conn, "GenAiPlanner", true),
-    describeExists(conn, "Network"),
-    describeExists(conn, "SourceMember", true),
+    describeExists(conn, "OmniProcess", false, "omnistudio", probeErrors),
+    // These gate no bulk-retrieve source (sourceTracking only picks
+    // incremental vs full; false → full, the safe direction), but their
+    // failures are still reported.
+    describeExists(conn, "GenAiPlanner", true, null, probeErrors),
+    describeExists(conn, "Network", false, null, probeErrors),
+    describeExists(conn, "SourceMember", true, null, probeErrors),
   ]);
 
   return {
@@ -120,5 +192,6 @@ export async function probeCapabilities(conn: any): Promise<OrgCapabilities> {
     agentforce,
     experienceCloud,
     sourceTracking,
+    ...(probeErrors.length > 0 ? { probeErrors } : {}),
   };
 }

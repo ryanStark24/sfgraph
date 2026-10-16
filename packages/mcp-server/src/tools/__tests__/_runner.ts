@@ -3,6 +3,24 @@ import { defaultRegistry } from "../../tool-registry.js";
 // Side-effect load all tools.
 import "../index.js";
 
+/**
+ * T5 review fix 2: an MCP client receives only the result text (server.ts runTool), never `data`,
+ * so a result text must not point the caller at a `data.*` field. Every tool test that goes
+ * through callTool checks its fixture output against this.
+ */
+export const DATA_POINTER = /`data\.|\bdata\.[a-z][A-Za-z]*/;
+
+export function assertNoDataPointer(name: string, r: { summary?: unknown; markdown?: unknown }) {
+  for (const part of [r.summary, r.markdown]) {
+    if (typeof part !== "string") continue;
+    const m = DATA_POINTER.exec(part);
+    if (m)
+      throw new Error(
+        `${name} result text points at ${m[0]}: ${part.slice(Math.max(0, m.index - 80), m.index + 40)}`,
+      );
+  }
+}
+
 export async function callTool(
   name: string,
   args: Record<string, unknown>,
@@ -20,6 +38,7 @@ export async function callTool(
     data: unknown;
     follow_up_tools?: string[];
   };
+  assertNoDataPointer(name, r);
   return r;
 }
 

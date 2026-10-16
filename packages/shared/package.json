@@ -1,6 +1,6 @@
 {
   "name": "@ryanstark24/sfgraph-shared",
-  "version": "1.1.3",
+  "version": "1.6.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,7 +16,8 @@
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "node ../../scripts/assert-pnpm-publish.mjs"
   },
   "dependencies": {
     "env-paths": "^3.0.0"
@@ -33,7 +34,7 @@
     "url": "https://github.com/ryanStark24/sfgraph"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
@@ -41,6 +42,7 @@
   "description": "sfgraph shared types, errors, logger, paths",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "README.md"
   ],
   "keywords": [

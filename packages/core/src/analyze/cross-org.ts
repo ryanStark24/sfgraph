@@ -2,6 +2,7 @@ import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import type { NodeFact } from "../domain/index.js";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import type { GraphStore } from "../storage/interfaces.js";
+import { namespaceOfApiName } from "./field-scope.js";
 
 export interface CrossOrgDiff {
   onlyInA: NodeFact[];
@@ -13,6 +14,13 @@ export interface CrossOrgDiff {
    * narrow the scope or paginate before drawing conclusions.
    */
   truncated?: boolean;
+  /**
+   * Set when a named `category` matches no label in either store (compared without case), so
+   * the empty result means "neither org has any", not "no differences".
+   */
+  unknownCategory?: boolean;
+  /** The stored label(s) a named `category` resolved to (case-insensitive match). */
+  resolvedCategory?: string[];
 }
 
 /**
@@ -21,7 +29,21 @@ export interface CrossOrgDiff {
  */
 export const CROSS_ORG_PER_LABEL_CAP = 10000;
 
-const ALL_LABELS = Object.values(METADATA_CATEGORY);
+/**
+ * Labels `category: "all"` covers: every label stored in either graph (parsers
+ * emit labels such as LWC, ApexMethod, DataRaptor or OmniScript that are not
+ * METADATA_CATEGORY values), plus the category names for stores that predate
+ * the label cache.
+ */
+function allLabels(storeA: GraphStore, storeB: GraphStore): string[] {
+  return [
+    ...new Set([
+      ...storeA.listAllLabels(),
+      ...storeB.listAllLabels(),
+      ...Object.values(METADATA_CATEGORY),
+    ]),
+  ];
+}
 
 export interface DiffOrgsArgs {
   storeA: GraphStore;
@@ -79,7 +101,21 @@ export function diffOrgs(
     category = maybeCategory;
   }
 
-  const labels = category === "all" ? ALL_LABELS : [category];
+  // `all` in any case means every label; a named category matches stored labels without case
+  // (`apexclass` finds `ApexClass`), so a casing slip does not read as "no differences".
+  const isAll = category.toLowerCase() === "all";
+  const wanted = category.toLowerCase();
+  const resolved = isAll
+    ? []
+    : [
+        ...new Set(
+          [...storeA.listAllLabels(), ...storeB.listAllLabels()].filter(
+            (l) => l.toLowerCase() === wanted,
+          ),
+        ),
+      ];
+  // No stored label matches: still query the name as given (a store without the label cache).
+  const labels = isAll ? allLabels(storeA, storeB) : resolved.length ? resolved : [category];
   const aMap = new Map<string, NodeFact>();
   const bMap = new Map<string, NodeFact>();
   let truncated = false;
@@ -102,5 +138,89 @@ export function diffOrgs(
   for (const [k, b] of bMap) {
     if (!aMap.has(k)) onlyInB.push(b);
   }
-  return { onlyInA, onlyInB, changed, truncated };
+  if (isAll) return { onlyInA, onlyInB, changed, truncated };
+  if (resolved.length > 0 || aMap.size > 0 || bMap.size > 0)
+    return {
+      onlyInA,
+      onlyInB,
+      changed,
+      truncated,
+      resolvedCategory: resolved.length ? resolved : [category],
+    };
+  return { onlyInA, onlyInB, changed, truncated, unknownCategory: true, resolvedCategory: [] };
+}
+
+/** The item's own name: the last dotted part of the qname (`Tier__c` for `CustomField:Account.Tier__c`). */
+function ownName(n: NodeFact): string {
+  const q = String(n.qualifiedName);
+  const local = q.slice(q.indexOf(":") + 1);
+  return local.slice(local.lastIndexOf(".") + 1);
+}
+
+/**
+ * True for a managed-package item: its own name carries a namespace prefix by the API-name
+ * grammar (`namespaceOfApiName`: `acme__Invoice__c`, `acme__Loc__Latitude__s`), or it is Apex
+ * whose code the org does not show. The org returns managed Apex with an empty body, which the
+ * class parser stores as a stub marked `bodyUnavailable`. Graphs built before that marker hold the
+ * same stub as a class with no modifiers and no parse failure (a parsed top-level class or enum
+ * always declares an access modifier); a trigger stub has no object and no events.
+ */
+export function isManagedItem(n: NodeFact): boolean {
+  if (namespaceOfApiName(ownName(n)) !== null) return true;
+  const a = n.attributes ?? {};
+  if (n.label === "ApexClass") {
+    if (a.bodyUnavailable === true) return true;
+    return (
+      a.bodyUnavailable === undefined &&
+      Array.isArray(a.modifiers) &&
+      a.modifiers.length === 0 &&
+      !a.parseFailed &&
+      !a.isTest
+    );
+  }
+  if (n.label === "ApexTrigger")
+    return Array.isArray(a.events) && a.events.length === 0 && a.object == null;
+  return false;
+}
+
+/** True for a standard Salesforce object or field: one without a custom suffix. */
+export function isStandardItem(n: NodeFact): boolean {
+  if (n.label !== "CustomObject" && n.label !== "CustomField") return false;
+  return !ownName(n).includes("__");
+}
+
+export interface HiddenCounts {
+  managed: number;
+  standard: number;
+}
+
+/**
+ * Drop managed-package and standard items that are in one org only. Such an item
+ * is almost always a difference in what was installed or retrieved (every org has
+ * the standard objects; a package brings its own pieces), not work someone did.
+ * The same items in both orgs with different source stay: that is a real change.
+ * A managed item that is also standard counts once, as managed.
+ */
+export function hideOneSided(
+  diff: CrossOrgDiff,
+  opts: { includeManaged: boolean; includeStandard: boolean },
+): CrossOrgDiff & { hidden: HiddenCounts } {
+  const hidden: HiddenCounts = { managed: 0, standard: 0 };
+  const keep = (n: NodeFact): boolean => {
+    if (!opts.includeManaged && isManagedItem(n)) {
+      hidden.managed++;
+      return false;
+    }
+    if (!opts.includeStandard && isStandardItem(n)) {
+      hidden.standard++;
+      return false;
+    }
+    return true;
+  };
+  return {
+    ...diff,
+    onlyInA: diff.onlyInA.filter(keep),
+    onlyInB: diff.onlyInB.filter(keep),
+    hidden,
+  };
 }

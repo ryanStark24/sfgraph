@@ -20,15 +20,15 @@ let prevXdg: string | undefined;
 
 beforeEach(() => {
   tmpHome = mkdtempSync(path.join(tmpdir(), "sfg-web-search-"));
-  prevHome = process.env.SFGRAPH_HOME;
+  prevHome = process.env.SFGRAPH_DATA_DIR;
   prevXdg = process.env.XDG_DATA_HOME;
-  process.env.SFGRAPH_HOME = tmpHome;
+  process.env.SFGRAPH_DATA_DIR = tmpHome;
 });
 
 afterEach(() => {
   // biome-ignore lint/performance/noDelete: assigning undefined to process.env coerces to the string "undefined"
-  if (prevHome === undefined) delete process.env.SFGRAPH_HOME;
-  else process.env.SFGRAPH_HOME = prevHome;
+  if (prevHome === undefined) delete process.env.SFGRAPH_DATA_DIR;
+  else process.env.SFGRAPH_DATA_DIR = prevHome;
   // biome-ignore lint/performance/noDelete: assigning undefined to process.env coerces to the string "undefined"
   if (prevXdg === undefined) delete process.env.XDG_DATA_HOME;
   else process.env.XDG_DATA_HOME = prevXdg;

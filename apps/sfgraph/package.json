@@ -1,6 +1,6 @@
 {
   "name": "@ryanstark24/sfgraph",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "bin": {
     "sfgraph": "./bin/sfgraph.mjs"
@@ -36,7 +36,7 @@
     "url": "https://github.com/ryanStark24/sfgraph"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "description": "Local, privacy-first Salesforce org knowledge graph for MCP clients (Cursor, Claude, VS Code)",
   "keywords": [

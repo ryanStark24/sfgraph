@@ -3,6 +3,7 @@ import path from "node:path";
 import { MigrationError } from "@ryanstark24/sfgraph-shared";
 import * as sqliteVec from "sqlite-vec";
 import type { BetterSqlite3Database, Migration } from "../interfaces.js";
+import { ensureSnapshotEdgeIndexes, migrateFullCopySnapshots } from "./snapshot-versions.js";
 
 export const MIGRATIONS: Migration[] = [
   {
@@ -274,6 +275,79 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 11,
+    description:
+      "Task 10: (org_id, qualified_name) → FTS rowid side table for _sfgraph_node_fts. The FTS5 key columns are UNINDEXED, so `DELETE … WHERE org_id=? AND qualified_name=?` scanned the whole FTS table on every upsert (O(n²) over an ingest). Upserts and deletes now go through this indexed map and delete by rowid. qualified_name stays BINARY to match the old FTS equality exactly.",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS _sfgraph_node_fts_rowid (
+          org_id TEXT NOT NULL,
+          qualified_name TEXT NOT NULL,
+          fts_rowid INTEGER NOT NULL,
+          PRIMARY KEY (org_id, qualified_name)
+        );
+      `);
+      const hasFts = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sfgraph_node_fts'")
+        .get();
+      if (!hasFts) return;
+      try {
+        // Backfill. The old upsert kept at most one row per key; if duplicates
+        // exist anyway, the newest (max rowid) wins and the rest are purged so
+        // the map is the complete index of the FTS table.
+        db.exec(`
+          INSERT OR REPLACE INTO _sfgraph_node_fts_rowid(org_id, qualified_name, fts_rowid)
+            SELECT org_id, qualified_name, rowid FROM _sfgraph_node_fts
+             WHERE org_id IS NOT NULL AND qualified_name IS NOT NULL
+             ORDER BY rowid;
+          DELETE FROM _sfgraph_node_fts
+           WHERE rowid NOT IN (SELECT fts_rowid FROM _sfgraph_node_fts_rowid);
+        `);
+      } catch (e) {
+        // Only a missing FTS5 module is tolerated (nothing to backfill). Any
+        // other failure must abort the migration: recording v11 over a partial
+        // map would make later upserts insert duplicate docs forever.
+        if (!/no such module: fts5/i.test((e as Error).message)) throw e;
+      }
+    },
+  },
+  {
+    version: 12,
+    description:
+      "Task 11a: embeddings_pending flag on _sfgraph_orgs. Embedding now finishes after 'graph ready' (in a worker), so readers need to know an org's vectors are still being written: find_similar falls back to text search while it is set, and the next ingest backfills vectors left pending by --no-wait-embeddings or a crash. Additive; existing rows default to 0.",
+    up(db) {
+      db.exec("ALTER TABLE _sfgraph_orgs ADD COLUMN embeddings_pending INTEGER NOT NULL DEFAULT 0");
+    },
+  },
+  {
+    version: 13,
+    description:
+      "audit rel-02: record which process holds sync_in_progress (pid, host, process start time) so readers can tell a live ingest from one that was killed (SIGKILL, OOM, power loss) and never cleared the flag. Additive; legacy rows have no owner and stay trusted as before.",
+    up(db) {
+      db.exec(`
+        ALTER TABLE _sfgraph_orgs ADD COLUMN sync_owner_pid INTEGER;
+        ALTER TABLE _sfgraph_orgs ADD COLUMN sync_owner_host TEXT;
+        ALTER TABLE _sfgraph_orgs ADD COLUMN sync_owner_start_ms INTEGER;
+      `);
+    },
+  },
+  {
+    version: 14,
+    description:
+      "audit perf-02/03: snapshots become interval-versioned rows (_sfgraph_snap_nodes/_sfgraph_snap_edges, visible at a snapshot seq when from_seq <= seq < to_seq) instead of a full copy per snapshot. Existing snapshots are converted oldest first; the old tables are replaced by read-only views with the same names and columns.",
+    up(db) {
+      migrateFullCopySnapshots(db);
+    },
+  },
+  {
+    version: 15,
+    description:
+      "T14 batch L: covering snapshot edge indexes. _sfgraph_snap_edges_key gains from_seq and _sfgraph_snap_edges_rel gains from_seq, src_qname, dst_qname, so point_in_time_diff's edge anti-joins and counts read indexes only (a 1.3M-version graph went from ~15 s per direction to ~1 s). Index-only; no row changes.",
+    up(db) {
+      ensureSnapshotEdgeIndexes(db);
+    },
+  },
 ];
 
 /**
@@ -348,6 +422,12 @@ function addNocaseCollation(db: BetterSqlite3Database): void {
   rebuildWithNocase(db, "_sfgraph_service_ids", ["qualified_name"]);
 }
 
+/** SQLITE_BUSY / SQLITE_LOCKED (incl. extended codes) from better-sqlite3. */
+export function isBusyError(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === "string" && /^SQLITE_(BUSY|LOCKED)/.test(code);
+}
+
 export interface MigrationRunnerOpts {
   backupDir: string;
   retainBackups: number;
@@ -385,9 +465,10 @@ export class MigrationRunner {
     }
   }
 
-  private backup(currentVersion: number): void {
+  /** Writes a VACUUM INTO backup; returns its path (undefined for in-memory DBs). */
+  private backup(currentVersion: number): string | undefined {
     const dbName = this.db.name;
-    if (!dbName || dbName === ":memory:" || dbName === "") return;
+    if (!dbName || dbName === ":memory:" || dbName === "") return undefined;
     if (!existsSync(this.opts.backupDir)) {
       mkdirSync(this.opts.backupDir, { recursive: true });
     }
@@ -397,6 +478,7 @@ export class MigrationRunner {
     // better-sqlite3 backup is async; use VACUUM INTO for a sync snapshot.
     this.db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
     this.rotateBackups();
+    return dest;
   }
 
   private rotateBackups(): void {
@@ -424,22 +506,65 @@ export class MigrationRunner {
     this.validateRegistry();
     const sorted = [...this.migrations].sort((a, b) => a.version - b.version);
     let current = this.getCurrentVersion();
+    // review I1: one backup per run (of the pre-run state), not one per step;
+    // a 12 -> 14 upgrade used to write two full-size copies.
+    let backedUp = false;
+    let runBackup: string | undefined;
+    let appliedThisRun = false;
     for (const m of sorted) {
       if (m.version <= current) continue;
-      // Only back up if there's prior state worth preserving.
-      if (current > 0) {
-        this.backup(current);
+      try {
+        // rel-05: make sure the write lock is free BEFORE the (full-size)
+        // backup, so an open during an ingest fails fast with a clear error
+        // instead of writing a backup and then hitting "database is locked".
+        this.db.exec("BEGIN IMMEDIATE");
+        this.db.exec("ROLLBACK");
+        // Another opener may have applied it while we waited for the lock.
+        current = this.getCurrentVersion();
+        if (m.version <= current) continue;
+        // Only back up if there's prior state worth preserving.
+        if (current > 0 && !backedUp) {
+          runBackup = this.backup(current);
+          backedUp = true;
+        }
+        const apply = this.db.transaction(() => {
+          if (this.getCurrentVersion() >= m.version) return;
+          m.up(this.db);
+          this.db
+            .prepare(
+              "INSERT INTO _sfgraph_schema_version(version, applied_at, description) VALUES (?, ?, ?)",
+            )
+            .run(m.version, Date.now(), m.description);
+        });
+        apply.immediate();
+      } catch (e) {
+        if (this.db.inTransaction) {
+          try {
+            this.db.exec("ROLLBACK");
+          } catch {
+            /* already rolled back */
+          }
+        }
+        if (isBusyError(e)) {
+          // A writer grabbed the lock between the probe and the apply: drop
+          // the backup if nothing was applied since, so retries don't pile up
+          // full-size copies of an unchanged DB.
+          if (runBackup && !appliedThisRun) {
+            try {
+              unlinkSync(runBackup);
+            } catch {
+              /* ignore */
+            }
+          }
+          throw new MigrationError(
+            `schema migration v${m.version} is pending but the database is locked by another writer (an sfgraph ingest is probably in progress); retry when it finishes`,
+            { cause: e },
+          );
+        }
+        throw e;
       }
-      const apply = this.db.transaction(() => {
-        m.up(this.db);
-        this.db
-          .prepare(
-            "INSERT INTO _sfgraph_schema_version(version, applied_at, description) VALUES (?, ?, ?)",
-          )
-          .run(m.version, Date.now(), m.description);
-      });
-      apply();
       current = m.version;
+      appliedThisRun = true;
     }
   }
 }

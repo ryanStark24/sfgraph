@@ -1,0 +1,7 @@
+{
+  "Name": "CallIP",
+  "%vlocity_namespace%__Type__c": "Integration Procedure Action",
+  "%vlocity_namespace%__PropertySet__c": {
+    "integrationProcedureKey": "Shop_Checkout"
+  }
+}

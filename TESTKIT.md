@@ -41,7 +41,7 @@ clean, build clean, preflight green.
 Tier 1 proves the code is internally correct and the artifact is shippable. Tier 2 proves
 the fixes actually fire on a real org. Run on a machine where `sf org login web` has
 authenticated an org that has Vlocity-CMT and/or OmniStudio installed (e.g.
-`PLDT_DEV_Anshul`). Re-ingest with the built code first:
+`acme-dev`). Re-ingest with the built code first:
 
 ```bash
 node apps/sfgraph/bin/sfgraph.mjs doctor          # binding loads, code-signing ok

@@ -135,10 +135,28 @@
     },
     {
       "srcQualifiedName": "ApexMethod:AccountController.updateAccountStatus(2)",
+      "dstQualifiedName": "CustomObject:Account",
+      "relType": "EXECUTES_DML",
+      "attributes": {
+        "ops": [
+          "update"
+        ]
+      }
+    },
+    {
+      "srcQualifiedName": "ApexMethod:AccountController.updateAccountStatus(2)",
       "dstQualifiedName": "DML:update",
       "relType": "EXECUTES_DML",
       "attributes": {
         "target": "a"
+      }
+    },
+    {
+      "srcQualifiedName": "ApexMethod:AccountController.updateAccountStatus(2)",
+      "dstQualifiedName": "CustomField:Account.Status__c",
+      "relType": "WRITES_FIELD",
+      "attributes": {
+        "via": "member-access"
       }
     }
   ]

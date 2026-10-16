@@ -1,5 +1,6 @@
 import { asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { triggerWhen } from "../explain_code.js";
 import { type Fixture, createFixture } from "./_fixture.js";
 import { callTool } from "./_runner.js";
 
@@ -105,5 +106,28 @@ describe("explain_code", () => {
 
   it("rejects missing qname", async () => {
     await expect(callTool("explain_code", { org: fix.orgId })).rejects.toThrow();
+  });
+});
+
+// Cycle 3 T9 fix round 1: a trigger's In short says when it runs, from its header.
+describe("triggerWhen", () => {
+  it("names the object and the events in plain words", () => {
+    expect(triggerWhen("trigger T on Quote_Line__c (before insert) {")).toBe(
+      "It runs before `Quote_Line__c` records are created.",
+    );
+    expect(triggerWhen("trigger T on X__c (after update) {}")).toBe(
+      "It runs after `X__c` records are updated.",
+    );
+    expect(
+      triggerWhen(
+        "/* c */\ntrigger T on Case (before insert, before update, after delete, after undelete) {",
+      ),
+    ).toBe(
+      "It runs before `Case` records are created or updated, and after they are deleted or restored.",
+    );
+  });
+  it("says nothing when the header cannot be read", () => {
+    expect(triggerWhen("public class X {}")).toBeUndefined();
+    expect(triggerWhen("trigger T on Case () {}")).toBeUndefined();
   });
 });

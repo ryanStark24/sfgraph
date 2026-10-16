@@ -77,11 +77,37 @@ function normaliseLabel(dstQname: string): string {
   return (colon >= 0 ? dstQname.slice(0, colon) : dstQname).toLowerCase();
 }
 
+/**
+ * The parse-time view of a node's outgoing edges: what its parser emitted,
+ * before any later resolver pass ran. Resolver-owned edges (`resolvedBy`) and
+ * reflection edges are dropped; an edge a resolver moved (arity, interface
+ * retarget, formula hop) counts at its original destination, once. The
+ * signature is then the same whether this pass runs on a fresh graph or on a
+ * graph that already went through the later passes (delta ingest).
+ */
+function parseTimeDsts(edges: EdgeFact[]): Array<{ relType: string; dst: string }> {
+  const out: Array<{ relType: string; dst: string }> = [];
+  const seen = new Set<string>();
+  for (const e of edges) {
+    const a = (e.attributes ?? {}) as Record<string, unknown>;
+    if (a.resolvedBy != null || a.source === "reflection") continue;
+    const moved = [a.arityResolvedFrom, a.retargetedFrom, a.hopResolvedFrom].find(
+      (v): v is string => typeof v === "string" && v.length > 0,
+    );
+    const dst = moved ?? String(e.dstQualifiedName);
+    const k = `${e.relType}|${dst.toLowerCase()}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ relType: e.relType, dst });
+  }
+  return out;
+}
+
 function buildSignature(edges: EdgeFact[]): Map<string, number> {
   const counts = new Map<string, number>();
-  for (const e of edges) {
+  for (const e of parseTimeDsts(edges)) {
     if (e.relType === REL_TYPES.CANONICAL_OF) continue;
-    const key = `${e.relType}|${normaliseLabel(String(e.dstQualifiedName))}`;
+    const key = `${e.relType}|${normaliseLabel(e.dst)}`;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return counts;

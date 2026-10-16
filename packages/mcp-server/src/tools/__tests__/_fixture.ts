@@ -11,27 +11,35 @@ import {
 import { type OrgId, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { type ToolContext, setToolContextFactory } from "../../context.js";
 
+export interface FixtureNode {
+  qualifiedName: string;
+  label: string;
+  attributes?: Record<string, unknown>;
+  sourceHash?: string;
+  firstSeenAt?: number;
+  lastSeenAt?: number;
+  lastModifiedAt?: number;
+}
+
+export interface FixtureEdge {
+  srcQualifiedName: string;
+  dstQualifiedName: string;
+  relType: string;
+  attributes?: Record<string, unknown>;
+  firstSeenAt?: number;
+  lastSeenAt?: number;
+}
+
 export interface Fixture {
   ctx: ToolContext;
   orgId: OrgId;
   workDir: string;
-  addNode: (n: {
-    qualifiedName: string;
-    label: string;
-    attributes?: Record<string, unknown>;
-    sourceHash?: string;
-    firstSeenAt?: number;
-    lastSeenAt?: number;
-    lastModifiedAt?: number;
-  }) => void;
-  addEdge: (e: {
-    srcQualifiedName: string;
-    dstQualifiedName: string;
-    relType: string;
-    attributes?: Record<string, unknown>;
-    firstSeenAt?: number;
-    lastSeenAt?: number;
-  }) => void;
+  addNode: (n: FixtureNode) => void;
+  addEdge: (e: FixtureEdge) => void;
+  /** One write transaction for the lot. Seeding thousands of rows one by one
+   *  blocks the worker for many seconds on Windows (an fsync per row). */
+  addNodes: (ns: FixtureNode[]) => void;
+  addEdges: (es: FixtureEdge[]) => void;
   cleanup: () => Promise<void>;
 }
 
@@ -51,34 +59,41 @@ export async function createFixture(orgIdStr = "org1"): Promise<Fixture> {
   const ctx: ToolContext = { graphStore, snapshotStore, orgId };
   setToolContextFactory(async () => ctx);
 
+  const nodeFact = (n: FixtureNode): NodeFact => ({
+    orgId,
+    qualifiedName: asQualifiedName(n.qualifiedName),
+    label: n.label,
+    attributes: n.attributes ?? {},
+    sourceHash: asSha256(n.sourceHash ?? `h-${n.qualifiedName}`),
+    firstSeenAt: n.firstSeenAt ?? 1,
+    lastSeenAt: n.lastSeenAt ?? 1,
+    lastModifiedAt: n.lastModifiedAt ?? Date.now(),
+  });
+  const edgeFact = (e: FixtureEdge): EdgeFact => ({
+    orgId,
+    srcQualifiedName: asQualifiedName(e.srcQualifiedName),
+    dstQualifiedName: asQualifiedName(e.dstQualifiedName),
+    relType: e.relType as never,
+    attributes: e.attributes ?? {},
+    firstSeenAt: e.firstSeenAt ?? 1,
+    lastSeenAt: e.lastSeenAt ?? 1,
+  });
+
   const fix: Fixture = {
     ctx,
     orgId,
     workDir,
     addNode(n) {
-      const fact: NodeFact = {
-        orgId,
-        qualifiedName: asQualifiedName(n.qualifiedName),
-        label: n.label,
-        attributes: n.attributes ?? {},
-        sourceHash: asSha256(n.sourceHash ?? `h-${n.qualifiedName}`),
-        firstSeenAt: n.firstSeenAt ?? 1,
-        lastSeenAt: n.lastSeenAt ?? 1,
-        lastModifiedAt: n.lastModifiedAt ?? Date.now(),
-      };
-      graphStore.mergeNodes([fact]);
+      graphStore.mergeNodes([nodeFact(n)]);
     },
     addEdge(e) {
-      const fact: EdgeFact = {
-        orgId,
-        srcQualifiedName: asQualifiedName(e.srcQualifiedName),
-        dstQualifiedName: asQualifiedName(e.dstQualifiedName),
-        relType: e.relType as never,
-        attributes: e.attributes ?? {},
-        firstSeenAt: e.firstSeenAt ?? 1,
-        lastSeenAt: e.lastSeenAt ?? 1,
-      };
-      graphStore.mergeEdges([fact]);
+      graphStore.mergeEdges([edgeFact(e)]);
+    },
+    addNodes(ns) {
+      graphStore.mergeNodes(ns.map(nodeFact));
+    },
+    addEdges(es) {
+      graphStore.mergeEdges(es.map(edgeFact));
     },
     async cleanup() {
       setToolContextFactory(null);

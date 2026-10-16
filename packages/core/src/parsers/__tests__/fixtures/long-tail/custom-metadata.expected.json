@@ -12,7 +12,7 @@
   "edges": [
     {
       "srcQualifiedName": "CustomMetadataRecord:Config__mdt.Default",
-      "dstQualifiedName": "CustomMetadataType:Config__mdt",
+      "dstQualifiedName": "CustomObject:Config__mdt",
       "relType": "INSTANCE_OF",
       "attributes": {}
     }

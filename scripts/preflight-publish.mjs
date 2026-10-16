@@ -48,6 +48,11 @@
  *  9. **Git tag exists for the highest publish-candidate version.**
  *     Releases without tags are unreachable in history.
  *
+ * 10. **The vendored embedding model is real.** The ONNX weights live in
+ *     Git LFS; a checkout without `git lfs pull` holds 130-byte pointer
+ *     files, and `pnpm pack` would ship those. Every file listed in
+ *     packages/models/data/CHECKSUM.json must match its sha256.
+ *
  * Usage:
  *
  *   node scripts/preflight-publish.mjs                # check all bumped packages
@@ -61,6 +66,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -194,7 +200,7 @@ function classifyPackages(packages) {
 // Check 1: publisher is pnpm
 // ---------------------------------------------------------------------------
 function checkPublisherTool() {
-  section("[1/9] Publisher tool");
+  section("[1/10] Publisher tool");
   // This script can be invoked standalone (no user-agent set) — in that
   // case we just confirm pnpm is on PATH and warn if npm is being used.
   // The prepublishOnly hook in each package.json is the hard gate at
@@ -227,7 +233,7 @@ function checkPublisherTool() {
 // all internal deps resolve to a published or about-to-publish version
 // ---------------------------------------------------------------------------
 function checkPackedTarballs(toPublish, toSkip = []) {
-  section("[2/9] Packed tarballs do not leak workspace:* + [4/9] internal deps resolve");
+  section("[2/10] Packed tarballs do not leak workspace:* + [4/10] internal deps resolve");
   const packDir = mkdtempSync(join(tmpdir(), "sfgraph-preflight-"));
   try {
     // The "candidate set" for dep resolution = packages about to publish
@@ -337,7 +343,7 @@ function checkPackedTarballs(toPublish, toSkip = []) {
 // Check 3: classification summary — every package needing publish is OK
 // ---------------------------------------------------------------------------
 function reportClassification(toPublish, toSkip) {
-  section("[3/9] Classification: which packages need to publish");
+  section("[3/10] Classification: which packages need to publish");
   for (const pkg of toPublish) {
     if (pkg.kind === "first-publish") {
       pass(`${pkg.name}: ${pkg.version} (first publish — not yet on registry)`);
@@ -371,7 +377,7 @@ function cmpSemver(a, b) {
 // Check 5: CHANGELOG mentions every publish-candidate version
 // ---------------------------------------------------------------------------
 function checkChangelog(packages) {
-  section("[5/9] CHANGELOG.md mentions every publish-candidate version");
+  section("[5/10] CHANGELOG.md mentions every publish-candidate version");
   const changelogPath = join(REPO_ROOT, "CHANGELOG.md");
   if (!existsSync(changelogPath)) {
     fail("CHANGELOG.md not found at repo root");
@@ -403,7 +409,7 @@ function checkChangelog(packages) {
 // Check 6: dist/ fresh relative to src/
 // ---------------------------------------------------------------------------
 function checkDistFreshness(packages) {
-  section("[6/9] dist/ is newer than src/ (build artifacts are fresh)");
+  section("[6/10] dist/ is newer than src/ (build artifacts are fresh)");
   for (const pkg of packages) {
     const srcDir = join(pkg.absDir, "src");
     const distDir = join(pkg.absDir, "dist");
@@ -463,7 +469,7 @@ function checkDistFreshness(packages) {
 // Check 7: tests pass
 // ---------------------------------------------------------------------------
 function checkTests() {
-  section("[7/9] All tests pass");
+  section("[7/10] All tests pass");
   if (skipTests) {
     warn("--skip-tests passed — tests NOT run", "Use sparingly; re-publishing broken code is hard to undo");
     return;
@@ -483,7 +489,7 @@ function checkTests() {
 // Check 8: clean working tree on release-relevant paths
 // ---------------------------------------------------------------------------
 function checkGitClean() {
-  section("[8/9] Git working tree is clean on release-relevant paths");
+  section("[8/10] Git working tree is clean on release-relevant paths");
   try {
     const out = execSync("git status --porcelain", {
       cwd: REPO_ROOT,
@@ -527,7 +533,7 @@ function checkGitClean() {
 // Check 9: git tag exists for the highest publish version
 // ---------------------------------------------------------------------------
 function checkGitTag(packages) {
-  section("[9/9] Git tag exists for the highest publish-candidate version");
+  section("[9/10] Git tag exists for the highest publish-candidate version");
   const versions = [...new Set(packages.map((p) => p.version))];
   versions.sort(cmpSemver);
   const highest = versions[versions.length - 1];
@@ -573,6 +579,42 @@ function checkGitTag(packages) {
 }
 
 // ---------------------------------------------------------------------------
+// Check 10: vendored model files match CHECKSUM.json (not LFS pointers)
+// ---------------------------------------------------------------------------
+function checkModelData(packages) {
+  section("[10/10] Vendored embedding model matches CHECKSUM.json");
+  const models = packages.find((p) => p.name === "@ryanstark24/sfgraph-models");
+  if (!models) {
+    pass("sfgraph-models not in the publish set — skipping");
+    return;
+  }
+  const dataDir = join(models.absDir, "data");
+  const sumPath = join(dataDir, "CHECKSUM.json");
+  if (!existsSync(sumPath)) {
+    fail("packages/models/data/CHECKSUM.json missing");
+    return;
+  }
+  const { files } = readJson(sumPath);
+  const bad = [];
+  for (const [rel, want] of Object.entries(files ?? {})) {
+    const p = join(dataDir, rel);
+    if (!existsSync(p)) {
+      bad.push(`${rel}: missing`);
+      continue;
+    }
+    const buf = readFileSync(p);
+    if (buf.subarray(0, 64).toString("utf8").startsWith("version https://git-lfs")) {
+      bad.push(`${rel}: Git LFS pointer, not the file — run \`git lfs pull\``);
+      continue;
+    }
+    const got = createHash("sha256").update(buf).digest("hex");
+    if (got !== want) bad.push(`${rel}: sha256 ${got.slice(0, 12)}… != ${String(want).slice(0, 12)}…`);
+  }
+  if (bad.length === 0) pass(`${Object.keys(files ?? {}).length} model files match CHECKSUM.json`);
+  else fail("vendored model files do not match CHECKSUM.json", bad.join("\n"));
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 function main() {
@@ -605,6 +647,7 @@ function main() {
   checkTests();
   checkGitClean();
   checkGitTag(toPublish);
+  checkModelData(toPublish);
 
   process.stdout.write(`\n${BOLD}summary${RESET}\n`);
   if (failures.length === 0) {

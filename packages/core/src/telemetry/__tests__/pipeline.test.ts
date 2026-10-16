@@ -32,7 +32,7 @@ describe("TelemetryPipeline", () => {
       kind: "ingest_failure",
       ts: 1,
       category: "ApexClass",
-      errorCode: "err at /Users/x",
+      errorCode: "err at /Users/dev/x",
     });
     expect(sink.events).toHaveLength(1);
     expect(sink.events[0]!["errorCode"]).toBe("err at <path>");

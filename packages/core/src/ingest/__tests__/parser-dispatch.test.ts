@@ -33,8 +33,8 @@ describe("live-ingest parser dispatch — long-tail fallback", () => {
 
   it("falls back to OpaqueMetadata for types with no parser — never null", async () => {
     const adapted = adaptParserInput(
-      ref("CustomTab", "Booking__c"),
-      JSON.stringify({ fullName: "Booking__c", motif: "Custom20: Airplane" }),
+      ref("Territory2Model", "Booking_Model"),
+      JSON.stringify({ fullName: "Booking_Model", name: "Booking Model" }),
     );
     expect(adapted?.type).toBe("OpaqueMetadata");
     const parser = parserRegistry.for("OpaqueMetadata");
@@ -47,7 +47,7 @@ describe("live-ingest parser dispatch — long-tail fallback", () => {
       logger: { debug() {}, info() {}, warn() {}, error() {} } as never,
     });
     // The member becomes a real node with the grant-matching qname.
-    expect(result?.nodes?.[0]?.qualifiedName).toBe("CustomTab:Booking__c");
+    expect(result?.nodes?.[0]?.qualifiedName).toBe("Territory2Model:Booking_Model");
   });
 
   it("passes JSON metadata.read payloads as sibling keys for xml-string rules", async () => {

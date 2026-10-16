@@ -1,6 +1,6 @@
 ---
 name: sf-governor-risk-fix
-description: Detect governor-limit risks (SOQL/DML in loops, unbounded queries) and produce a remediation checklist.
+description: Detect governor-limit risks (SOQL, SOSL and DML in loops, triggers that are not bulk-safe, unbounded queries) and produce a remediation checklist.
 triggers:
   - "governor limit"
   - "SOQL in loop"
@@ -24,17 +24,29 @@ State a fact about this org or the Salesforce platform **only when evidence back
 ## What the tool actually emits
 
 `governor_risk_check` reports only the risk types the analyzer can prove from
-the graph. As of the edge-based detector these are:
+the graph. Each record has `risk` (one of the kinds below), the method or trigger
+qname, and evidence (the query text or DML target):
 
-- **`soql_in_loop`** — a SOQL query whose `EXECUTES_SOQL` edge is tagged
+- **`soql_in_loop`** (high): a SOQL query whose `EXECUTES_SOQL` edge is tagged
   `inLoop` (AST-verified: the query sits inside a for/while/do-while body).
-- **`dml_in_loop`** — same, for DML statements.
-- **`no_bulk`** — a trigger that doesn't iterate `Trigger.new` (body-scan path).
+- **`sosl_in_loop`** (high): the same for SOSL (`EXECUTES_SOSL`).
+- **`dynamic_soql_in_loop`** (high): `Database.query(...)` inside a loop.
+- **`dml_in_loop`** (high): the same for DML statements.
+- **`no_bulk`** (high): a trigger that doesn't iterate `Trigger.new` (body-scan path).
+- **`unbounded_query`** (medium): a query with no `WHERE` and no `LIMIT`. Only the
+  body-scan path (project ingests, where the full query text is available) emits it;
+  live-org ingests do not, because the captured query head makes it pure noise.
 
-Do **not** promise `UNBOUNDED_QUERY`, `NON_SELECTIVE_QUERY`, `CALLOUT_IN_LOOP`,
-`LARGE_HEAP`, or `RECURSIVE_TRIGGER` — the tool does not produce them. (Unbounded-
-query was removed: on a real org ~100% of SOQL has no WHERE/LIMIT in the captured
-query head, so it was pure noise.)
+Medium and above are listed by default; `min_severity: "high"` keeps only the loop and
+bulk findings. `includeTests: true` adds test code. There is no class or namespace
+parameter: the tool scans the whole org, so filter its findings to the scope the user
+asked about, and say that you did.
+
+The check is per method: SOQL in a method that is *called* from a loop is not flagged.
+Say so when the user asks about a call chain.
+
+Do **not** promise non-selective queries, callouts in loops, heap size or trigger
+recursion: the tool does not check them.
 
 **Live-ingest prerequisite:** `inLoop` tagging comes from the Apex AST parser. A
 graph ingested before that parser change has zero `inLoop` edges, so the check
@@ -44,8 +56,8 @@ not "the org is clean" — say so explicitly rather than reporting a false all-c
 
 ## Playbook
 
-1. Call `governor_risk_check` over the requested scope (single class, namespace, or full org). The tool returns risk records keyed on the **method** qname (`ApexMethod:Class.method(n)`) with `risk_type` (`soql_in_loop` / `dml_in_loop` / `no_bulk`) and evidence (the query text or DML target).
-2. Group findings by `risk_type`; within each group, sort by call-site fan-in (more callers = higher blast radius). Use `trace_upstream` on the owning class to get fan-in.
+1. Call `governor_risk_check` for the org, then keep the findings in the requested scope (a class, a namespace, or the whole org). Records are keyed on the **method** qname (`ApexMethod:Class.method(n)`) or the trigger, with `risk` (one of the six kinds above) and evidence (the query text or DML target).
+2. Group findings by `risk`; within each group, sort by call-site fan-in (more callers = higher blast radius). Use `trace_upstream` on the owning class to get fan-in.
 3. For each finding, describe the canonical fix pattern (e.g. "extract the SOQL above the loop and key the result by `Id`") in one or two sentences — do not write the code. To actually design the bulkified fix, hand off to **`sf-architect-apex`** (or **`sf-architect-performance`** for LDV/query-plan work) with these call sites as grounding, so the rewrite respects the org's real selectors and trigger framework rather than a generic template.
 4. Render a Mermaid heat-map (class-by-rule) yourself from the tool's table findings — `governor_risk_check` returns a table + structured data, not a diagram. See **Visualization**.
 5. Produce a checklist the user can copy into a ticket: `- [ ] ClassName.methodName:line — rule — recommended pattern`.
@@ -57,9 +69,9 @@ Render a **`flowchart TD`** heat-map: rows are Apex classes (top N by fan-in), c
 
 ```
 flowchart TD
-  ClassA -->|SOQL_IN_LOOP: high| Risk1[:::hi]
-  ClassA -->|UNBOUNDED_QUERY: med| Risk2[:::med]
-  ClassB -->|DML_IN_LOOP: high| Risk3[:::hi]
+  ClassA -->|soql_in_loop: high| Risk1[:::hi]
+  ClassA -->|unbounded_query: med| Risk2[:::med]
+  ClassB -->|dml_in_loop: high| Risk3[:::hi]
   classDef hi fill:#fcc,stroke:#900
   classDef med fill:#ffe6cc,stroke:#c60
 ```
@@ -67,6 +79,8 @@ flowchart TD
 If the scan returns >50 findings, render only the top-10-by-fan-in row and link to the full table — a wall of cells doesn't help triage.
 
 ## Staleness check
+
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
 
 Before calling `governor_risk_check`, invoke `staleness_check` for the target org. If the report says stale, surface a warning to the user:
 
@@ -85,6 +99,6 @@ Then continue with the playbook.
 
 - **Never auto-apply fixes.** This skill does not edit Apex.
 - Do not flatten severities — the bucket ordering matters.
-- Do not invent additional rules; only report what `governor_risk_check` returns (`soql_in_loop`, `dml_in_loop`, `no_bulk`).
+- Do not invent additional rules; only report what `governor_risk_check` returns (the six kinds above).
 - Do not report "no governor risks" without first checking staleness — an empty result on a pre-AST-parser ingest means the graph lacks `inLoop` tags, not that the code is clean. Recommend a re-ingest.
 - Do not silently exclude managed-package code; mention it was filtered out if so.

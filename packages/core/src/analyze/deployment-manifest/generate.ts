@@ -1,6 +1,8 @@
 import type { OrgId } from "@ryanstark24/sfgraph-shared";
+import type { NodeFact } from "../../domain/index.js";
 import type { GraphStore } from "../../storage/interfaces.js";
-import { diffOrgs } from "../cross-org.js";
+import { ownerOf } from "../containment.js";
+import { type HiddenCounts, diffOrgs, hideOneSided } from "../cross-org.js";
 import { formatMemberName } from "./member-name-formatters.js";
 import { LABEL_TO_METADATA_TYPE } from "./member-types.js";
 
@@ -25,6 +27,13 @@ export interface DeploymentManifest {
     diffTruncated: boolean;
     unmappedLabels: Record<string, number>;
   };
+  /**
+   * Managed-package and standard items present in one org only, left out of both
+   * files (see {@link hideOneSided}). Such an item reflects what each org installed or
+   * retrieved, not a change; in destructiveChanges.xml it would delete a package's or
+   * Salesforce's own component from the target.
+   */
+  hidden: HiddenCounts;
 }
 
 function escapeXml(s: string): string {
@@ -60,6 +69,10 @@ export interface GenerateManifestArgs {
   storeB: GraphStore;
   orgB: OrgId; // target
   category?: string;
+  /** Keep managed-package items that are in one org only. Default false. */
+  includeManaged?: boolean;
+  /** Keep standard objects and fields that are in one org only. Default false. */
+  includeStandard?: boolean;
 }
 
 export function generateManifest(args: GenerateManifestArgs): DeploymentManifest;
@@ -80,6 +93,8 @@ export function generateManifest(
   let orgA: OrgId;
   let orgB: OrgId;
   let category: string;
+  let includeManaged = false;
+  let includeStandard = false;
   if (
     typeof storeOrArgs === "object" &&
     storeOrArgs !== null &&
@@ -92,6 +107,8 @@ export function generateManifest(
     orgA = a.orgA;
     orgB = a.orgB;
     category = a.category ?? "all";
+    includeManaged = a.includeManaged === true;
+    includeStandard = a.includeStandard === true;
   } else {
     storeA = storeOrArgs as GraphStore;
     storeB = storeOrArgs as GraphStore;
@@ -100,7 +117,10 @@ export function generateManifest(
     category = maybeCategory;
   }
 
-  const diff = diffOrgs({ storeA, orgA, storeB, orgB, category });
+  const diff = hideOneSided(diffOrgs({ storeA, orgA, storeB, orgB, category }), {
+    includeManaged,
+    includeStandard,
+  });
   const apiVersion = storeA.getOrg(orgA)?.apiVersion ?? "59.0";
 
   const pkgMembers = new Map<string, Set<string>>();
@@ -127,9 +147,22 @@ export function generateManifest(
     byType[type] = (byType[type] ?? 0) + 1;
   };
 
-  for (const n of diff.onlyInA) add(pkgMembers, n.label, n.qualifiedName);
-  for (const { a } of diff.changed) add(pkgMembers, a.label, a.qualifiedName);
-  for (const n of diff.onlyInB) add(destMembers, n.label, n.qualifiedName);
+  // A member (an ApexMethod inside its ApexClass, see containment.ts) is
+  // deployed with its owner: the owner's source changes with it, so the
+  // owner's own diff entry carries it. It is neither unmapped nor destructive.
+  // One indexed query on the containment table per entry.
+  const isMember = (store: GraphStore, org: OrgId, qname: NodeFact["qualifiedName"]): boolean =>
+    ownerOf(store, org, qname) !== null;
+
+  for (const n of diff.onlyInA) {
+    if (!isMember(storeA, orgA, n.qualifiedName)) add(pkgMembers, n.label, n.qualifiedName);
+  }
+  for (const { a } of diff.changed) {
+    if (!isMember(storeA, orgA, a.qualifiedName)) add(pkgMembers, a.label, a.qualifiedName);
+  }
+  for (const n of diff.onlyInB) {
+    if (!isMember(storeB, orgB, n.qualifiedName)) add(destMembers, n.label, n.qualifiedName);
+  }
 
   return {
     packageXml: buildPackage(pkgMembers, apiVersion),
@@ -144,5 +177,6 @@ export function generateManifest(
       diffTruncated: diff.truncated === true,
       unmappedLabels,
     },
+    hidden: diff.hidden,
   };
 }

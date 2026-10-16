@@ -16,7 +16,7 @@ tools_used:
 
 # sf-impact-from-diff
 
-Use when the user wants to understand the downstream consequences of a pending change in their working tree (uncommitted or branch-vs-base) before merging.
+Use when the user wants to understand the downstream consequences of committed changes (a PR, a branch or a commit range) before merging. For uncommitted or staged work, use **sf-wip-impact**, which reads the working tree itself.
 
 ## Evidence rule — say it only if something backs it
 
@@ -24,9 +24,9 @@ State a fact about this org or the Salesforce platform **only when evidence back
 
 ## Playbook
 
-1. Confirm the diff source: working tree, staged, or a branch range (e.g. `origin/main...HEAD`). If unspecified, default to staged + unstaged against the merge-base of `origin/main`.
-2. Call `impact_from_git_diff` with the resolved diff scope. Expect a list of changed metadata nodes plus their downstream dependents grouped by edge type (`READS_FIELD`, `CALLS_METHOD`, `INVOKES_FLOW`, `RENDERS_COMPONENT`, …).
-3. Call `test_gap_intelligence_from_git_diff` on the same diff scope. Cross-reference impacted nodes against existing Apex test coverage and surface the uncovered set.
+1. Get the diff text yourself: the tools take the unified diff as their `diff` argument and do not run git. Confirm the range with the user (a PR's base and head, a branch, or a commit range); if unspecified, use `git diff origin/main...HEAD`.
+2. Call `impact_from_git_diff(diff=…, depth=…)`. Expect a list of changed metadata nodes plus their downstream dependents grouped by edge type (`READS_FIELD`, `CALLS`, `FLOW_INVOKES_APEX`, `EMBEDS_LWC`, …).
+3. Call `test_gap_intelligence_from_git_diff` with the same `diff` text. Cross-reference impacted nodes against existing Apex test coverage and surface the uncovered set.
 4. Group findings by risk tier — **direct edits**, **first-degree dependents**, **transitive (depth ≥ 2)** — and call out anything that crosses metadata layers (LWC -> Apex -> Flow).
 5. Render the Mermaid impact graph returned by the tool. If the impact set is large (>40 nodes), summarise by category and offer a follow-up call scoped to a single changed file.
 6. If test gaps exist, list the specific impacted classes + methods that lack assertions, not just totals.
@@ -34,7 +34,7 @@ State a fact about this org or the Salesforce platform **only when evidence back
 
 ## Visualization
 
-Render a **`flowchart LR`** impact graph. Changed nodes are leftmost (highlighted), first-degree dependents in the middle, transitive (depth >= 2) on the right. Edge style encodes edge type (`CALLS_METHOD`, `READS_FIELD`, `INVOKES_FLOW`, `RENDERS_COMPONENT`).
+Render a **`flowchart LR`** impact graph. Changed nodes are leftmost (highlighted), first-degree dependents in the middle, transitive (depth >= 2) on the right. Edge style encodes edge type (`CALLS`, `READS_FIELD`, `FLOW_INVOKES_APEX`, `EMBEDS_LWC`).
 
 ```
 flowchart LR
@@ -47,6 +47,8 @@ flowchart LR
 When the impact set exceeds 40 nodes, summarise per category and offer the user a follow-up scoped to a single changed file before drawing the diagram.
 
 ## Staleness check
+
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
 
 Before calling `impact_from_git_diff`, invoke `staleness_check` for the linked org. A stale graph will under-report dependents added since the last sync. If the report says stale, surface a warning to the user:
 

@@ -5,33 +5,53 @@ root: Workflow
 applies_when:
   always: true
 
+# The object is the member name (Case.workflow-meta.xml / Workflow member
+# "Case"); `record.object` is honoured when a caller passes it explicitly.
 nodes:
   - label: Workflow
-    qname: "Workflow:${record.object}"
+    qname: "Workflow:${record.object || record.name}"
     props:
-      object: "${record.object}"
+      object: "${record.object || record.name}"
 
   - label: WorkflowRule
     iterate: "${record.rules}"
-    qname: "WorkflowRule:${record.object}.${item.fullName || item.name}"
+    qname: "WorkflowRule:${record.object || record.name}.${item.fullName || item.name}"
     props:
       name: "${toString(item.fullName || item.name)}"
-      object: "${record.object}"
+      object: "${record.object || record.name}"
       active: "${bool(item.active)}"
 
+  # Email alerts are addressed as `<Object>.<Alert>` (flow emailAlert
+  # actionCalls, process builder), so they get their own node.
+  - label: WorkflowAlert
+    iterate: "${record.alerts}"
+    when: "${item.fullName}"
+    qname: "WorkflowAlert:${record.object || record.name}.${item.fullName}"
+    props:
+      name: "${toString(item.fullName)}"
+      object: "${record.object || record.name}"
+      template: "${item.template | raw}"
+      description: "${item.description | raw}"
+
 edges:
+  - relType: CONTAINS
+    iterate: "${record.alerts}"
+    when: "${item.fullName}"
+    src: "Workflow:${record.object || record.name}"
+    dst: "WorkflowAlert:${record.object || record.name}.${item.fullName}"
+
   - relType: WORKFLOW_TRIGGERS
     iterate: "${record.rules}"
-    src: "Workflow:${record.object}"
-    dst: "WorkflowRule:${record.object}.${item.fullName || item.name}"
+    src: "Workflow:${record.object || record.name}"
+    dst: "WorkflowRule:${record.object || record.name}.${item.fullName || item.name}"
 
   - relType: TRIGGER_FIRES_ON
     iterate: "${record.rules}"
-    src: "WorkflowRule:${record.object}.${item.fullName || item.name}"
-    dst: "CustomObject:${record.object}"
+    src: "WorkflowRule:${record.object || record.name}.${item.fullName || item.name}"
+    dst: "CustomObject:${record.object || record.name}"
 
   - relType: WORKFLOW_UPDATES_FIELD
     iterate: "${record.fieldUpdates}"
     when: "${item.field}"
-    src: "Workflow:${record.object}"
-    dst: "CustomField:${record.object}.${item.field}"
+    src: "Workflow:${record.object || record.name}"
+    dst: "CustomField:${record.object || record.name}.${item.field}"

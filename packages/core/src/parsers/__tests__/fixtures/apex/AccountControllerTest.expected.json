@@ -5,7 +5,7 @@
       "label": "ApexClass",
       "attributes": {
         "name": "AccountControllerTest",
-        "modifiers": [],
+        "modifiers": ["public"],
         "isTest": true,
         "apiVersion": "59.0"
       }
@@ -47,17 +47,11 @@
       "attributes": {}
     },
     {
-      "srcQualifiedName": "ApexClass:AccountControllerTest",
-      "dstQualifiedName": "ApexClass:System",
-      "relType": "IS_TEST_FOR",
-      "attributes": {}
-    },
-    {
       "srcQualifiedName": "ApexMethod:AccountControllerTest.testGetAccount(0)",
       "dstQualifiedName": "ApexMethod:AccountController.getAccountById(1)",
       "relType": "CALLS",
       "attributes": {
-        "resolvedBy": "regex-arg-count",
+        "callResolution": "regex-arg-count",
         "arity": 1
       }
     },
@@ -66,7 +60,7 @@
       "dstQualifiedName": "ApexMethod:System.assertEquals(2)",
       "relType": "CALLS",
       "attributes": {
-        "resolvedBy": "regex-arg-count",
+        "callResolution": "regex-arg-count",
         "arity": 2
       }
     }

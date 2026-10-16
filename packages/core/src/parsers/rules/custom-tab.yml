@@ -1,0 +1,41 @@
+type: CustomTab
+category: CustomTab
+input: xml-string
+root: CustomTab
+applies_when:
+  always: true
+
+# One node per tab (tabs/<Name>.tab-meta.xml or a live CustomTab member), so
+# Profile / PermissionSet GRANTS_TAB_ACCESS edges (`CustomTab:<tab>`) resolve.
+# A custom-object tab is named after its object; other tabs name what they
+# open (Visualforce page, LWC, Lightning page).
+nodes:
+  - label: CustomTab
+    qname: "CustomTab:${record.name}"
+    props:
+      name: "${record.name}"
+      label: "${record.label | raw}"
+      customObject: "${toString(record.customObject) == 'true'}"
+      motif: "${record.motif | raw}"
+      url: "${record.url | raw}"
+
+edges:
+  - relType: REFERENCES_OBJECT
+    when: "${toString(record.customObject) == 'true'}"
+    src: "CustomTab:${record.name}"
+    dst: "CustomObject:${record.name}"
+
+  - relType: REFERENCES
+    when: "${record.page}"
+    src: "CustomTab:${record.name}"
+    dst: "ApexPage:${record.page}"
+
+  - relType: USES_LWC
+    when: "${record.lwcComponent}"
+    src: "CustomTab:${record.name}"
+    dst: "LWC:${record.lwcComponent}"
+
+  - relType: REFERENCES
+    when: "${record.flexiPage}"
+    src: "CustomTab:${record.name}"
+    dst: "FlexiPage:${record.flexiPage}"

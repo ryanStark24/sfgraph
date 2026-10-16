@@ -4,7 +4,76 @@ import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../.
 import type { SnippetRecord } from "../../storage/interfaces.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
+import { APEX_NODE_HASH_SALT } from "../hash-salts.js";
+import {
+  type ClassRefScope,
+  NEW_INSTANCE_RE,
+  STATIC_CALL_RE,
+  emitClassRefEdges,
+  emitDescribeRefEdges,
+  emitStaticCallEdges,
+  emitTypeRefEdges,
+  isUserClassName,
+  localVarNames,
+} from "./class-refs.js";
 import { parseAnnotations, stripCommentsAndStrings } from "./common.js";
+import {
+  PLACEHOLDER,
+  dynamicSoqlClauseFields,
+  foldDynamicSoql,
+  maskApex,
+  parseDynamicSoql,
+} from "./dynamic-soql.js";
+import {
+  type FieldAccess,
+  classScopes,
+  collectDecls,
+  extractFieldAccesses,
+  paramDecls,
+} from "./field-access.js";
+import {
+  type RecordTypeOpts,
+  emitInstanceCallEdges,
+  emitNameRefEdges,
+  makeTypeLookup,
+  recordTypeAt,
+} from "./name-refs.js";
+import { emitPageRefEdges } from "./page-refs.js";
+import { blankBracketGroups, findInlineQueries, soqlFieldRefs } from "./soql-fields.js";
+import {
+  classStringConstants,
+  extractVlocityCalls,
+  extractVlocityDispatch,
+  stripCommentsOnly,
+} from "./vlocity-calls.js";
+export { APEX_NODE_HASH_SALT } from "../hash-salts.js";
+
+/**
+ * apex-parser (antlr4ts) keeps a DFA cache on each grammar's static ATN. It is
+ * per isolate, it is never trimmed, and it grows with every distinct input:
+ * over a large Vlocity corpus it held ~190 MB live (and a 2-4x larger V8 heap) in each
+ * parse worker. The cache is only a memo for prediction, so dropping it does
+ * not change any parse result. Release it after this many syntax checks in the
+ * current isolate (each parse worker, or the main thread in serial mode).
+ * Measured on a large Vlocity repo, 4 workers: 50 cut peak RSS by ~1.07 GB for ~5% more parse
+ * time.
+ */
+export const APEX_DFA_CLEAR_INTERVAL = 50;
+let apexChecksSinceDfaClear = 0;
+
+/** Count one apex-parser syntax check; clear the lexer and parser DFA when due. */
+function noteApexSyntaxCheck(lexer: any, parser: any): void {
+  apexChecksSinceDfaClear++;
+  if (apexChecksSinceDfaClear < APEX_DFA_CLEAR_INTERVAL) return;
+  apexChecksSinceDfaClear = 0;
+  lexer?.interpreter?.clearDFA();
+  parser?.interpreter?.clearDFA();
+}
+
+/** Test hook: restart the DFA-release counter for this isolate. */
+export function resetApexDfaCounterForTest(): void {
+  apexChecksSinceDfaClear = 0;
+}
 
 export interface ApexClassInput {
   className: string;
@@ -88,57 +157,211 @@ function findMatchingBrace(src: string, openIdx: number): number {
   return -1;
 }
 
-function parseParams(raw: string): string[] {
-  const t = raw.trim();
-  if (!t) return [];
-  return t.split(",").map((s) => s.trim());
+/**
+ * Split `raw` on commas at generic/bracket/paren depth 0, so
+ * `Map<Id, Contact> a, List<String> b` is two items, not three.
+ */
+function splitTopLevel(raw: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const c of raw) {
+    if (c === "<" || c === "(" || c === "[" || c === "{") depth++;
+    else if ((c === ">" || c === ")" || c === "]" || c === "}") && depth > 0) depth--;
+    if (c === "," && depth === 0) {
+      out.push(cur);
+      cur = "";
+    } else cur += c;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter((x) => x.length > 0);
 }
 
+function parseParams(raw: string): string[] {
+  return splitTopLevel(raw);
+}
+
+/** `Database.Batchable<SObject>` -> `Database.Batchable` (whitespace-normalised). */
+function stripTypeArgs(t: string): string {
+  const lt = t.indexOf("<");
+  return (lt >= 0 ? t.slice(0, lt) : t).replace(/\s+/g, "");
+}
+
+/** Remove `@Name` / `@Name(...)` annotations (balanced parens) from `text`. */
+function stripAnnotations(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "@") {
+      out += text[i];
+      continue;
+    }
+    let j = i + 1;
+    while (j < text.length && /\w/.test(text[j] ?? "")) j++;
+    let k = j;
+    while (k < text.length && /\s/.test(text[k] ?? "")) k++;
+    if (text[k] === "(") {
+      let d = 0;
+      for (; k < text.length; k++) {
+        if (text[k] === "(") d++;
+        else if (text[k] === ")" && --d === 0) break;
+      }
+      j = k + 1;
+    }
+    out += " ";
+    i = j - 1;
+  }
+  return out;
+}
+
+/**
+ * Header of the file's OUTER type: the first `class`/`interface`/`enum` keyword at
+ * brace depth 0 (so an inner class can never be taken for the outer one),
+ * with `extends` / `implements` clauses parsed by a depth-aware split so
+ * generic arguments (`Database.Batchable<SObject>`) neither break the match
+ * nor split the list. Type arguments are dropped from the emitted names.
+ * `src` must have comments and strings stripped.
+ */
 function extractClassHeader(src: string): {
   name: string;
   extendsClass: string | null;
+  /** Every `extends` entry; an interface may extend several interfaces. */
+  extendsList: string[];
   implementsList: string[];
   isInterface: boolean;
   isTest: boolean;
   modifiers: string[];
 } {
-  const headerMatch = src.match(
-    /(?:@[\w()=,'"\s.]+\s+)*((?:public|private|global|virtual|abstract|with\s+sharing|without\s+sharing|inherited\s+sharing|\s)+)?(class|interface)\s+([A-Za-z_]\w*)(?:\s+extends\s+([A-Za-z_][\w.]*))?(?:\s+implements\s+([A-Za-z_][\w.,\s]*))?\s*\{/i,
-  );
-  if (!headerMatch) {
-    return {
-      name: "",
-      extendsClass: null,
-      implementsList: [],
-      isInterface: false,
-      isTest: false,
-      modifiers: [],
-    };
+  const empty = {
+    name: "",
+    extendsClass: null,
+    extendsList: [],
+    implementsList: [],
+    isInterface: false,
+    isTest: false,
+    modifiers: [],
+  };
+  // `enum` too: a top-level enum file declares its modifiers like a class does (cycle 3 T6 fix 1).
+  const kwRe = /\b(class|interface|enum)\s+([A-Za-z_]\w*)/gi;
+  let depth = 0;
+  let scanned = 0;
+  let hit: RegExpExecArray | null = null;
+  for (let m = kwRe.exec(src); m !== null; m = kwRe.exec(src)) {
+    for (; scanned < m.index; scanned++) {
+      if (src[scanned] === "{") depth++;
+      else if (src[scanned] === "}") depth--;
+    }
+    if (depth === 0) {
+      hit = m;
+      break;
+    }
   }
-  const mods = (headerMatch[1] ?? "")
+  if (!hit) return empty;
+  const open = src.indexOf("{", hit.index + hit[0].length);
+  if (open < 0) return empty;
+
+  const isInterface = (hit[1] ?? "").toLowerCase() === "interface";
+  const name = hit[2] ?? "";
+  // Everything before the keyword at depth 0 is annotations + modifiers. Only
+  // the trailing statement matters (a preceding `}`/`;` cannot occur before
+  // the outer type, but be defensive).
+  const prefixStart = Math.max(src.lastIndexOf("}", hit.index), src.lastIndexOf(";", hit.index));
+  const prefix = src.slice(prefixStart + 1, hit.index);
+  const isTest = parseAnnotations(prefix).some((a) => a.name.toLowerCase() === "istest");
+  const modifiers = stripAnnotations(prefix)
     .trim()
     .split(/\s+/)
     .filter((s) => s.length > 0);
-  const isInterface = (headerMatch[2] ?? "").toLowerCase() === "interface";
-  const name = headerMatch[3] ?? "";
-  const extendsClass = headerMatch[4] ?? null;
-  const implementsList = (headerMatch[5] ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
 
-  // Class-level annotations live INSIDE headerMatch[0] (the regex consumes
-  // them via the leading `(?:@[\w()=,'"\\s.]+\\s+)*` group), not before it.
-  // Slicing src up to headerStart yielded an empty string and always returned
-  // isTest=false — fixed: parse annotations out of the matched header text
-  // up to the `class`/`interface` keyword.
-  const headerText = headerMatch[0];
-  const keywordIdx = headerText.search(/\b(class|interface)\b/i);
-  const annotationsRegion = keywordIdx > 0 ? headerText.slice(0, keywordIdx) : "";
-  const classAnnotations = parseAnnotations(annotationsRegion).map((a) => a.name.toLowerCase());
-  const isTest = classAnnotations.includes("istest");
+  const tail = src.slice(hit.index + hit[0].length, open);
+  const extIdx = tail.search(/\bextends\b/i);
+  const implIdx = tail.search(/\bimplements\b/i);
+  const clause = (from: number, kwLen: number): string => {
+    if (from < 0) return "";
+    const ends = [extIdx, implIdx].filter((x) => x > from);
+    return tail.slice(from + kwLen, ends.length > 0 ? Math.min(...ends) : tail.length);
+  };
+  const extendsRaw = clause(extIdx, "extends".length);
+  const implementsRaw = clause(implIdx, "implements".length);
+  // An interface may extend several interfaces; a class extends one class.
+  const extendsList = splitTopLevel(extendsRaw)
+    .map(stripTypeArgs)
+    .filter((x) => x);
+  const implementsList = splitTopLevel(implementsRaw)
+    .map(stripTypeArgs)
+    .filter((x) => x.length > 0);
+  return {
+    name,
+    extendsClass: extendsList[0] ?? null,
+    extendsList,
+    implementsList,
+    isInterface,
+    isTest,
+    modifiers,
+  };
+}
 
-  return { name, extendsClass, implementsList, isInterface, isTest, modifiers: mods };
+/**
+ * The bundled apex-parser grammar predates Apex's null-coalescing operator, so
+ * `a ?? b` is a syntax error to it. For grammar validation only, rewrite every
+ * code-level `??` (never inside comments or strings) to `||`: same length, so
+ * token offsets stay valid, and the same binary-expression shape. The original
+ * source is still used for every extraction and snippet.
+ */
+export function rewriteNullCoalescing(src: string): string {
+  if (!src.includes("??")) return src;
+  const masked = maskApex(src);
+  const out = src.split("");
+  for (let i = masked.indexOf("??"); i >= 0; i = masked.indexOf("??", i + 2)) {
+    out[i] = "|";
+    out[i + 1] = "|";
+  }
+  return out.join("");
+}
+
+/**
+ * Human-readable message for a parse failure. apex-parser's
+ * ThrowingErrorListener throws a plain `{ line, column, message }` object (not
+ * an Error), which `String(err)` turned into "[object Object]".
+ */
+export function formatParseError(err: unknown): string {
+  const MAX = 300;
+  const clip = (s: string) => (s.length > MAX ? `${s.slice(0, MAX)}…` : s);
+  if (err instanceof Error) return clip(err.message);
+  if (err && typeof err === "object") {
+    const e = err as { line?: unknown; column?: unknown; message?: unknown };
+    const msg = typeof e.message === "string" ? e.message : JSON.stringify(err);
+    const pos =
+      typeof e.line === "number" ? `${e.line}:${typeof e.column === "number" ? e.column : 0} ` : "";
+    return clip(`${pos}${msg}`);
+  }
+  return clip(String(err));
+}
+
+/**
+ * Raw (comment/string-preserving) body of the method's declaration: the first
+ * not-yet-used `name(<same arity>) {` in `masked` that isn't a call (`.name(`)
+ * or constructor invocation. Matching and brace-balancing run on `masked`; the
+ * slice is taken from `src` at the same offsets. Null when not found.
+ */
+function declRawBody(
+  src: string,
+  masked: string,
+  m: MethodInfo,
+  used: Set<number>,
+): { text: string; start: number } | null {
+  const re = new RegExp(`(?<![.\\w])${m.name}\\s*\\(([^)]*)\\)\\s*\\{`, "g");
+  for (const hit of masked.matchAll(re)) {
+    const at = hit.index ?? 0;
+    if (used.has(at)) continue;
+    if (/\bnew\s+$/.test(masked.slice(Math.max(0, at - 5), at))) continue;
+    if (parseParams(hit[1] ?? "").length !== m.params.length) continue;
+    const open = at + hit[0].length - 1;
+    const close = findMatchingBrace(masked, open);
+    if (close <= 0) return null;
+    used.add(at);
+    return { text: src.slice(open + 1, close), start: open + 1 };
+  }
+  return null;
 }
 
 function findMethods(src: string, className?: string): MethodInfo[] {
@@ -207,6 +430,21 @@ function extractApiVersion(metaXml?: string): string | null {
   if (!metaXml) return null;
   const m = metaXml.match(/<apiVersion>([^<]+)<\/apiVersion>/);
   return m?.[1] ? m[1].trim() : null;
+}
+
+/**
+ * `<shadowsManaged>ns</shadowsManaged>` entries the live extractor adds to the
+ * metaXml envelope when this local class shares its (namespace-less) qname
+ * with managed-package classes. Not a Salesforce field.
+ */
+function extractShadowsManaged(metaXml?: string): string[] {
+  if (!metaXml) return [];
+  const out: string[] = [];
+  for (const m of metaXml.matchAll(/<shadowsManaged>([^<]+)<\/shadowsManaged>/g)) {
+    const ns = m[1]?.trim();
+    if (ns) out.push(ns);
+  }
+  return out;
 }
 
 function sha256(s: string): string {
@@ -298,13 +536,67 @@ export function computeLoopRanges(body: string): Array<{ start: number; end: num
   return ranges;
 }
 
-// Matches a whole inline SOQL query and captures its FULL inner text (group 1),
-// from `[SELECT` to the closing `]`. The object is NOT taken from a regex group
-// — see parseSoql, which finds the FROM at paren-depth 0 so a child subquery
+// Inline SOQL queries are found by soql-fields findInlineQueries: from
+// `[SELECT` to the `]` that closes it at bracket depth 0, outside string
+// literals (a bind such as `:ids[0]` does not end the query). The object is
+// taken by parseSoql, which finds the FROM at paren-depth 0 so a child subquery
 // (`(SELECT … FROM Contacts)`) or a semi-join (`WHERE Id IN (SELECT … FROM
 // Contact)`) doesn't get mistaken for the outer object.
-export const SOQL_RE = /\[\s*SELECT\b([^\]]*)\]/gi;
 export const SOSL_RE = /\[\s*FIND\b/gi;
+
+/** Dynamic query entry points (the query text is a runtime string). */
+export const DYNAMIC_QUERY_RE =
+  /\b(Database|Search)\s*\.\s*(query|queryWithBinds|countQuery|countQueryWithBinds|getQueryLocator|getQueryLocatorWithBinds)\s*\(/gi;
+
+/**
+ * T15 I-5: one EXECUTES_SOSL `SOSL:*` edge when `code` has an inline SOSL
+ * query, stamped `inLoop` when any of them sits inside a loop body.
+ */
+export function emitSoslEdge(
+  ctx: ParseContext,
+  srcQname: string,
+  code: string,
+  inLoopAt: (idx: number) => boolean,
+  edges: EdgeFact[],
+): void {
+  let found = false;
+  let inLoop = false;
+  for (const m of code.matchAll(new RegExp(SOSL_RE.source, "gi"))) {
+    found = true;
+    if (inLoopAt(m.index ?? 0)) inLoop = true;
+  }
+  if (found) {
+    edges.push(
+      makeEdge(ctx, srcQname, REL_TYPES.EXECUTES_SOSL, "SOSL:*", inLoop ? { inLoop: true } : {}),
+    );
+  }
+}
+
+/**
+ * T15 I-5: the dynamic query calls (`Database.query`, `Search.query`, ...)
+ * inside a loop body of `code` (strings/comments stripped), as sorted
+ * distinct canonical names. Stamped on the method / trigger node as
+ * `dynamicQueryInLoop`; empty when none.
+ */
+export function dynamicQueriesInLoop(code: string, inLoopAt: (idx: number) => boolean): string[] {
+  const out = new Set<string>();
+  for (const m of code.matchAll(new RegExp(DYNAMIC_QUERY_RE.source, "gi"))) {
+    if (!inLoopAt(m.index ?? 0)) continue;
+    const cls = (m[1] ?? "").toLowerCase() === "search" ? "Search" : "Database";
+    const op = (m[2] ?? "").toLowerCase();
+    const canon =
+      [
+        "query",
+        "queryWithBinds",
+        "countQuery",
+        "countQueryWithBinds",
+        "getQueryLocator",
+        "getQueryLocatorWithBinds",
+      ].find((k) => k.toLowerCase() === op) ?? op;
+    out.add(`${cls}.${canon}`);
+  }
+  return [...out].sort();
+}
 
 /**
  * Extract the outer object + SELECT clause from a SOQL query's inner text (the
@@ -331,89 +623,382 @@ export function parseSoql(inner: string): { object: string | null; selectClause:
   }
   return { object: null, selectClause: inner };
 }
-export const DML_RE = /\b(insert|update|delete|upsert|undelete|merge)\s+([A-Za-z_][\w.]*)/gi;
-const FIELD_ACCESS_RE = /\b([A-Z][A-Za-z0-9_]*(?:__r)?)\.([A-Za-z_][\w]*?)(?:__c)?\b/g;
-const NEW_INSTANCE_RE = /\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\(/g;
-const STATIC_CALL_RE = /\b([A-Z][A-Za-z0-9_]*)\.([a-z][A-Za-z0-9_]*)\s*\(/g;
+export const DML_RE = /\b(insert|update|delete|upsert|undelete|merge)\s+([A-Za-z_][\w.]*|\[)/gi;
+/** `Database.insert(recs)`, `Database.update(recs, false)`, `Database.INSERT(…)`:
+ *  the Database class DML methods (Apex is case-insensitive). Group 2 is the
+ *  first argument when it is a plain name. */
+export const DATABASE_DML_RE =
+  /\bDatabase\s*\.\s*(insert|update|upsert|delete|undelete|merge)\s*\(\s*([A-Za-z_][\w.]*)?/gi;
 
 /**
- * Count the arguments in a balanced parenthesised arg list starting one
- * character after `openParenIdx` (which must point at the `(` opening the
- * call). Handles nested parens, string literals, and single-line `//`
- * plus block `/* * /` comments. Returns the arg count, or `null` if the
- * caller's parens never close inside `body` (truncated source / unbalanced).
+ * EXECUTES_DML `DML:<op>` for DML statements (`insert x;`, `delete [SELECT …]`)
+ * and Database DML calls (`Database.insert(x)`) in `code` (strings/comments
+ * stripped), stamped `inLoop` when inside a loop body. `target` is the record
+ * expression's name when there is one.
  *
- * Used by the regex pass to emit `ApexMethod:Foo.bar(2)` instead of the
- * `(?)` ambiguity placeholder — turning most regex-mode CALLS edges into
- * precise-arity edges that bypass the arity resolver's overload fan-out.
- * Cases that genuinely can't be counted (lambdas, splat, comment-split
- * args) fall back to `(?)` — preserving the existing ambiguous-fan-out
- * semantics on the long tail.
+ * When the record expression's sObject type is known (see `recordTypeAt`:
+ * `new T(…)`, an inline query, a variable `objects.lookup` types, or
+ * `Trigger.new` / `Trigger.old`), also EXECUTES_DML `CustomObject:<T>`, like
+ * EXECUTES_SOQL, one per object with the sorted operations in `ops`. That edge
+ * carries no `inLoop`: the governor checks read the `DML:<op>` marker, so a
+ * statement in a loop is reported once.
  */
-function countCallArgs(body: string, openParenIdx: number): number | null {
-  // empty args → arity 0; we detect by peeking for the matching `)` after
-  // any whitespace before counting commas.
-  let depth = 1;
-  let i = openParenIdx + 1;
-  let argCount = 0;
-  let sawNonWhitespace = false;
-  while (i < body.length && depth > 0) {
-    const ch = body[i];
-    // Line comment
-    if (ch === "/" && body[i + 1] === "/") {
-      const nl = body.indexOf("\n", i + 2);
-      i = nl < 0 ? body.length : nl + 1;
-      continue;
-    }
-    // Block comment
-    if (ch === "/" && body[i + 1] === "*") {
-      const close = body.indexOf("*/", i + 2);
-      i = close < 0 ? body.length : close + 2;
-      continue;
-    }
-    // String literal — Apex uses single-quoted strings with `\\` and `\'` escapes
-    if (ch === "'") {
-      i += 1;
-      while (i < body.length) {
-        const c = body[i];
-        if (c === "\\") {
-          i += 2;
-          continue;
-        }
-        if (c === "'") {
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
-      sawNonWhitespace = true;
-      continue;
-    }
-    if (ch === "(") depth += 1;
-    else if (ch === ")") {
-      depth -= 1;
-      if (depth === 0) break;
-    } else if (ch === "," && depth === 1) {
-      argCount += 1;
-    } else if (ch && /\S/.test(ch)) {
-      sawNonWhitespace = true;
-    }
-    i += 1;
+export function emitDmlEdges(
+  ctx: ParseContext,
+  srcQname: string,
+  code: string,
+  inLoopAt: (idx: number) => boolean,
+  edges: EdgeFact[],
+  objects: RecordTypeOpts = {},
+): void {
+  const found: Array<{ i: number; op: string; target: string | undefined; arg: number }> = [];
+  for (const m of code.matchAll(new RegExp(DML_RE.source, "gi"))) {
+    const raw = m[2] ?? "";
+    const i = m.index ?? 0;
+    const target = raw === "[" || raw.toLowerCase() === "new" ? undefined : raw;
+    found.push({ i, op: (m[1] ?? "").toLowerCase(), target, arg: i + m[0].length - raw.length });
   }
-  if (depth !== 0) return null; // unbalanced — let caller emit `(?)`
-  // No commas + no non-whitespace content between parens = arity 0.
-  // Any non-whitespace + N commas = N+1 args.
-  return sawNonWhitespace ? argCount + 1 : 0;
+  for (const m of code.matchAll(new RegExp(DATABASE_DML_RE.source, "gi"))) {
+    const t = m[2] && m[2].toLowerCase() !== "new" ? m[2] : undefined;
+    const i = m.index ?? 0;
+    const arg = i + m[0].length - (m[2] ?? "").length;
+    found.push({ i, op: (m[1] ?? "").toLowerCase(), target: t, arg });
+  }
+  found.sort((a, b) => a.i - b.i);
+  const byObject = new Map<string, { object: string; ops: Set<string> }>();
+  for (const f of found) {
+    edges.push(
+      makeEdge(ctx, srcQname, REL_TYPES.EXECUTES_DML, `DML:${f.op}`, {
+        ...(f.target !== undefined ? { target: f.target } : {}),
+        ...(inLoopAt(f.i) ? { inLoop: true } : {}),
+      }),
+    );
+    const object = recordTypeAt(code, f.arg, objects);
+    if (!object) continue;
+    const obj = stripNs(object, ctx.namespace);
+    const hit = byObject.get(obj.toLowerCase()) ?? { object: obj, ops: new Set<string>() };
+    hit.ops.add(f.op);
+    byObject.set(obj.toLowerCase(), hit);
+  }
+  for (const { object, ops } of byObject.values()) {
+    edges.push(
+      makeEdge(ctx, srcQname, REL_TYPES.EXECUTES_DML, `CustomObject:${object}`, {
+        ops: [...ops].sort(),
+      }),
+    );
+  }
 }
+
+/** A relationship traversal the parser records for the post-merge resolver
+ *  (parsers/apex/ref-resolver.ts): `path` (`Account.Name`) read or written
+ *  from a record of `object`. */
+export interface ApexRelationshipPath {
+  object: string;
+  path: string;
+  rel: typeof REL_TYPES.READS_FIELD | typeof REL_TYPES.WRITES_FIELD;
+}
+
+/**
+ * Inline `[SELECT …]` queries in `code`: EXECUTES_SOQL on the outer FROM
+ * object (with `query`, `inLoop`) and READS_FIELD for every plain field the
+ * outer query names (SELECT list, WHERE / HAVING operands, GROUP BY, ORDER
+ * BY). Dotted relationship fields are not this object's fields: they are
+ * appended to `paths`.
+ */
+export function emitInlineSoqlEdges(
+  ctx: ParseContext,
+  srcQname: string,
+  code: string,
+  inLoopAt: (idx: number) => boolean,
+  edges: EdgeFact[],
+  paths: ApexRelationshipPath[],
+  children?: ApexChildRelationship[],
+): void {
+  for (const sq of findInlineQueries(code)) {
+    // Bind expressions (`:ids[0]`, an inline query held in a bind) are Apex,
+    // not this query's SOQL: blank their bracket groups for the grammar pass.
+    const inner = blankBracketGroups(sq.inner);
+    const { object } = parseSoql(inner);
+    const obj = stripNs(object ?? "", ctx.namespace);
+    edges.push(
+      makeEdge(ctx, srcQname, REL_TYPES.EXECUTES_SOQL, `CustomObject:${obj}`, {
+        query: sq.text.trim(),
+        ...(inLoopAt(sq.index) ? { inLoop: true } : {}),
+      }),
+    );
+    if (!obj) continue;
+    const refs = soqlFieldRefs(inner);
+    for (const f of refs.fields)
+      edges.push(makeEdge(ctx, srcQname, REL_TYPES.READS_FIELD, `CustomField:${obj}.${f}`));
+    for (const p of refs.paths) paths.push({ object: obj, path: p, rel: REL_TYPES.READS_FIELD });
+    // `TYPEOF What WHEN Account THEN Name …`: branch fields are read on the branch's type.
+    for (const b of refs.typeOf) {
+      const bObj = stripNs(b.object, ctx.namespace);
+      for (const f of b.fields)
+        edges.push(makeEdge(ctx, srcQname, REL_TYPES.READS_FIELD, `CustomField:${bObj}.${f}`));
+      for (const p of b.paths) paths.push({ object: bObj, path: p, rel: REL_TYPES.READS_FIELD });
+    }
+    if (children) addChildRelationships(children, obj, parseSoql(inner).selectClause);
+  }
+}
+
+/**
+ * A string literal that is exactly a custom field API name (`'Tier__c'`), with
+ * the sObject types the same method declares (parameters and locals). Resolved
+ * post-merge (parsers/apex/ref-resolver.ts): READS_FIELD `{via:
+ * "field-name-literal"}` when exactly one of those objects defines the field.
+ * Covers helpers such as `setFieldIfNull(acc, 'Tier__c', v)` and `rec.get('Tier__c')`.
+ */
+export interface ApexFieldNameLiteral {
+  field: string;
+  objects: string[];
+}
+
+/** Literal custom-field names: `'Name__c'` (optional namespace), nothing else in the quotes. */
+const FIELD_LITERAL_RE = /'((?:[A-Za-z][A-Za-z0-9]*__)?[A-Za-z][A-Za-z0-9_]*__c)'/g;
+/** Declared types that are never an sObject. */
+const NOT_SOBJECT = new Set(["sobject", "string", "object", "id", "map", "list", "set"]);
+
+/** Records `apexFieldNameLiterals` on a method node (see ApexFieldNameLiteral). */
+function setFieldNameLiterals(
+  node: NodeFact,
+  rawDecl: string,
+  decls: ReadonlyArray<{ type: string | null; elem: string | null }>,
+): void {
+  const objects = new Set<string>();
+  for (const d of decls) {
+    for (const t of [d.type, d.elem]) {
+      if (!t || t.includes(".") || NOT_SOBJECT.has(t.toLowerCase())) continue;
+      if (/^[A-Za-z]\w*$/.test(t)) objects.add(t);
+    }
+  }
+  if (objects.size === 0) return;
+  const fields = new Set<string>();
+  for (const m of stripCommentsOnly(rawDecl).matchAll(FIELD_LITERAL_RE)) {
+    if (m[1]) fields.add(m[1]);
+  }
+  if (fields.size === 0) return;
+  const objs = [...objects].sort().slice(0, 20);
+  (node.attributes as Record<string, unknown>).apexFieldNameLiterals = [...fields]
+    .sort()
+    .slice(0, 200)
+    .map((field) => ({ field, objects: objs }));
+}
+
+/** A child-relationship subquery (`(SELECT … FROM Contacts)` in the SELECT
+ *  list of a query on `object`), resolved to the child object post-merge
+ *  (parsers/apex/ref-resolver.ts). `fields` are the subquery's plain fields. */
+export interface ApexChildRelationship {
+  object: string;
+  relationship: string;
+  fields: string[];
+}
+
+/** Append the depth-1 `(SELECT …)` groups of `selectClause`, deduped on
+ *  (object, relationship) with their fields merged. One linear pass. */
+function addChildRelationships(
+  into: ApexChildRelationship[],
+  object: string,
+  selectClause: string,
+): void {
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < selectClause.length; i++) {
+    const c = selectClause[i];
+    if (c === "(") {
+      depth += 1;
+      if (depth === 1) start = i + 1;
+    } else if (c === ")" && depth > 0) {
+      depth -= 1;
+      if (depth !== 0) continue;
+      const sub = /^\s*select\b/i.exec(selectClause.slice(start, i));
+      if (!sub) continue;
+      const refs = soqlFieldRefs(selectClause.slice(start + sub[0].length, i));
+      if (!refs.object || refs.object.includes(".")) continue;
+      const hit = into.find(
+        (r) =>
+          r.object.toLowerCase() === object.toLowerCase() &&
+          r.relationship.toLowerCase() === refs.object?.toLowerCase(),
+      );
+      const rec = hit ?? { object, relationship: refs.object, fields: [] };
+      if (!hit) into.push(rec);
+      for (const f of refs.fields)
+        if (!rec.fields.some((x) => x.toLowerCase() === f.toLowerCase())) rec.fields.push(f);
+    }
+  }
+}
+
+/** Store child-relationship subqueries on a node (only when there are any). */
+function setChildRelationships(node: NodeFact | undefined, rels: ApexChildRelationship[]): void {
+  if (!node || rels.length === 0) return;
+  (node.attributes as Record<string, unknown>).apexChildRelationships = rels;
+}
+
+/** Append `add` to `into`, deduped on (object, path, rel) case-insensitively. */
+function mergePaths(into: ApexRelationshipPath[], add: ApexRelationshipPath[]): void {
+  const seen = new Set(into.map((p) => `${p.object}|${p.path}|${p.rel}`.toLowerCase()));
+  for (const p of add) {
+    const k = `${p.object}|${p.path}|${p.rel}`.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    into.push(p);
+  }
+}
+const FIELD_ACCESS_RE = /\b([A-Z][A-Za-z0-9_]*(?:__r)?)\.([A-Za-z_][\w]*?)(?:__c)?\b/g;
+
 const NAMED_CRED_RE = /['"]callout:([A-Za-z_][\w]*)/g;
+
+/**
+ * Push READS_FIELD / WRITES_FIELD edges for member-access field refs, skipping
+ * any (rel, dst) already emitted for this source since `fromIdx` (e.g. a
+ * READS_FIELD from a SOQL select list) so existing edge attributes are kept.
+ */
+export function emitFieldAccessEdges(
+  ctx: ParseContext,
+  srcQname: string,
+  accesses: FieldAccess[],
+  edges: EdgeFact[],
+  fromIdx: number,
+): void {
+  const seen = new Set<string>();
+  for (let i = fromIdx; i < edges.length; i++) {
+    const e = edges[i];
+    if (e && String(e.srcQualifiedName) === srcQname)
+      seen.add(`${e.relType}|${String(e.dstQualifiedName).toLowerCase()}`);
+  }
+  const push = (rel: typeof REL_TYPES.READS_FIELD | typeof REL_TYPES.WRITES_FIELD, dst: string) => {
+    const key = `${rel}|${dst.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    edges.push(makeEdge(ctx, srcQname, rel, dst, { via: "member-access" }));
+  };
+  for (const a of accesses) {
+    const dst = `CustomField:${stripNs(a.object, ctx.namespace)}.${a.field}`;
+    if (a.read) push(REL_TYPES.READS_FIELD, dst);
+    if (a.write) push(REL_TYPES.WRITES_FIELD, dst);
+  }
+}
+
+/**
+ * READS_FIELD `dynamic: true` for the outer SELECT fields and the WHERE /
+ * HAVING / GROUP BY / ORDER BY field operands of each folded dynamic SOQL
+ * string in `queries` (see foldDynamicSoql, dynamicSoqlClauseFields). Only
+ * when the FROM object is literal text; computed fields are skipped. A
+ * (src, dst) READS_FIELD already emitted since `fromIdx` is not repeated.
+ * Returns the number of clause field operands skipped because FROM is
+ * computed (see setDynamicSoqlSkips).
+ */
+export function emitDynamicSoqlEdges(
+  ctx: ParseContext,
+  srcQname: string,
+  queries: string[],
+  edges: EdgeFact[],
+  fromIdx: number,
+): number {
+  const seen = new Set<string>();
+  // Objects this source already queries (static SOQL): an added dynamic edge
+  // would replace that edge (the store merges last-wins) and could drop its
+  // `inLoop`, so those keep the static edge alone.
+  const queried = new Set<string>();
+  for (let i = fromIdx; i < edges.length; i++) {
+    const e = edges[i];
+    if (!e || String(e.srcQualifiedName) !== srcQname) continue;
+    if (e.relType === REL_TYPES.READS_FIELD) seen.add(String(e.dstQualifiedName).toLowerCase());
+    else if (e.relType === REL_TYPES.EXECUTES_SOQL)
+      queried.add(String(e.dstQualifiedName).toLowerCase());
+  }
+  let skipped = 0;
+  for (const q of queries) {
+    const parsed = parseDynamicSoql(q);
+    const clause = dynamicSoqlClauseFields(q, parsed);
+    skipped += clause.skipped;
+    if (!parsed) continue;
+    const obj = stripNs(parsed.object, ctx.namespace);
+    // The object the query reads, like a static `[SELECT …]`. No `inLoop`:
+    // loop detection for dynamic queries is `dynamicQueryInLoop` on the node.
+    const objDst = `CustomObject:${obj}`;
+    if (!queried.has(objDst.toLowerCase())) {
+      queried.add(objDst.toLowerCase());
+      edges.push(
+        makeEdge(ctx, srcQname, REL_TYPES.EXECUTES_SOQL, objDst, {
+          query: q.split(PLACEHOLDER).join("…").trim().slice(0, 500),
+          dynamic: true,
+        }),
+      );
+    }
+    for (const fname of [...parsed.fields, ...clause.fields]) {
+      const dst = `CustomField:${obj}.${fname}`;
+      if (seen.has(dst.toLowerCase())) continue;
+      seen.add(dst.toLowerCase());
+      edges.push(makeEdge(ctx, srcQname, REL_TYPES.READS_FIELD, dst, { dynamic: true }));
+    }
+  }
+  return skipped;
+}
+
+/**
+ * Parse stat on a source node: `dynamicSoqlFieldsSkipped`, the dynamic SOQL
+ * clause field operands not attributed because the query's FROM is computed
+ * (only when there are any). The apex ref resolver sums it.
+ */
+export function setDynamicSoqlSkips(node: NodeFact | undefined, skipped: number): void {
+  if (!node || skipped <= 0) return;
+  const attrs = node.attributes as Record<string, unknown>;
+  attrs.dynamicSoqlFieldsSkipped = ((attrs.dynamicSoqlFieldsSkipped as number) ?? 0) + skipped;
+}
+
+/**
+ * Collapse repeated EXECUTES_SOQL / EXECUTES_DML facts with the same
+ * (src, rel, dst) into one, in place of first occurrence. The store merges
+ * edges last-wins on that key, so without this an out-of-loop query after an
+ * in-loop one on the same object erased `inLoop`. The kept fact carries
+ * `inLoop: true` if any occurrence did (taking that occurrence's attributes),
+ * and `count` = number of occurrences when more than one.
+ */
+export function aggregateGovernorFacts(edges: EdgeFact[]): EdgeFact[] {
+  const out: EdgeFact[] = [];
+  const byKey = new Map<string, { edge: EdgeFact; count: number }>();
+  for (const e of edges) {
+    if (e.relType !== REL_TYPES.EXECUTES_SOQL && e.relType !== REL_TYPES.EXECUTES_DML) {
+      out.push(e);
+      continue;
+    }
+    const key = `${e.relType}|${String(e.srcQualifiedName)}|${String(e.dstQualifiedName).toLowerCase()}`;
+    const prev = byKey.get(key);
+    if (!prev) {
+      const copy = { ...e, attributes: { ...e.attributes } };
+      byKey.set(key, { edge: copy, count: 1 });
+      out.push(copy);
+      continue;
+    }
+    prev.count += 1;
+    const attrs = e.attributes as Record<string, unknown>;
+    if (attrs.inLoop === true && (prev.edge.attributes as Record<string, unknown>).inLoop !== true)
+      prev.edge.attributes = { ...attrs };
+    (prev.edge.attributes as Record<string, unknown>).count = prev.count;
+  }
+  return out;
+}
+
+const LOWER_NEW_RE = /\bnew\s+([a-z][A-Za-z0-9_]*)\s*\(/g;
+const LOWER_STATIC_CALL_RE = /(?<![\w.])([a-z][A-Za-z0-9_]*)\.([A-Za-z][A-Za-z0-9_]*)\s*\(/g;
+const NOT_A_CLASS = new Set(["this", "super"]);
 
 function parseClassNameAndIsTest(body: string): {
   isTest: boolean;
   testTargets: Set<string>;
+  lowerTargets: string[];
 } {
   const testTargets = new Set<string>();
+  const lowerTargets: string[] = [];
   const m = body.match(/@isTest\s*\(\s*seeAllData\s*=\s*[^)]*\)|@isTest/i);
-  if (!m) return { isTest: false, testTargets };
+  if (!m) return { isTest: false, testTargets, lowerTargets };
+  for (const re of [LOWER_NEW_RE, LOWER_STATIC_CALL_RE]) {
+    for (const x of body.matchAll(new RegExp(re.source, "g"))) {
+      const t = x[1] ?? "";
+      if (t && !NOT_A_CLASS.has(t)) lowerTargets.push(t);
+    }
+  }
   // crude: find class names referenced via `new X(` or `X.foo(`
   const re1 = new RegExp(NEW_INSTANCE_RE.source, "g");
   let mm: RegExpExecArray | null = re1.exec(body);
@@ -427,7 +1012,7 @@ function parseClassNameAndIsTest(body: string): {
     if (mm[1]) testTargets.add(mm[1]);
     mm = re2.exec(body);
   }
-  return { isTest: true, testTargets };
+  return { isTest: true, testTargets, lowerTargets };
 }
 
 export class ApexClassParser implements Parser<ApexClassInput> {
@@ -439,7 +1024,16 @@ export class ApexClassParser implements Parser<ApexClassInput> {
     const edges: EdgeFact[] = [];
     const snippets: SnippetRecord[] = [];
     const className = stripNs(input.className, ctx.namespace);
-    const fileHash = sha256(input.body);
+    const shadowsManaged = extractShadowsManaged(input.metaXml);
+    const shadowAttr = shadowsManaged.length > 0 ? { shadowsManaged } : {};
+    // Fold the collision into the hash (only when present, so every other
+    // node keeps its hash): node merge skips attributes when the hash is
+    // unchanged, and the stored local node must pick up the attr.
+    const fileHash = sha256(
+      `${APEX_NODE_HASH_SALT}\n${input.body}${
+        shadowsManaged.length > 0 ? `\nshadowsManaged:${shadowsManaged.join(",")}` : ""
+      }`,
+    );
 
     // Managed-package Apex (and any member whose Body the extractor couldn't
     // fetch) arrives with an empty body. That is NOT a parse failure — the
@@ -458,6 +1052,8 @@ export class ApexClassParser implements Parser<ApexClassInput> {
             modifiers: [],
             isTest: false,
             apiVersion: extractApiVersion(input.metaXml),
+            bodyUnavailable: true,
+            ...shadowAttr,
           },
           fileHash,
         ),
@@ -478,6 +1074,8 @@ export class ApexClassParser implements Parser<ApexClassInput> {
     // When parserMode != "regex", retain the parsed compilationUnit tree
     // so the AST extractor can walk it without parsing twice.
     let parsedTree: unknown = null;
+    let lexer: any = null;
+    let parser: any = null;
     try {
       // Lazy-load to avoid pulling apex-parser into other parsers' worker.
       const apex = await import("apex-parser");
@@ -488,17 +1086,17 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         CaseInsensitiveInputStream,
         ThrowingErrorListener,
       } = apex as any;
-      const input1 = new CaseInsensitiveInputStream("file", input.body);
-      const lexer = new ApexLexer(input1);
+      const input1 = new CaseInsensitiveInputStream("file", rewriteNullCoalescing(input.body));
+      lexer = new ApexLexer(input1);
       lexer.removeErrorListeners();
       lexer.addErrorListener(new ThrowingErrorListener());
       const tokens = new CommonTokenStream(lexer);
-      const parser = new ApexParser(tokens);
+      parser = new ApexParser(tokens);
       parser.removeErrorListeners();
       parser.addErrorListener(new ThrowingErrorListener());
       parsedTree = parser.compilationUnit();
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
+      const errMsg = formatParseError(err);
       nodes.push(
         makeNode(
           ctx,
@@ -508,7 +1106,34 @@ export class ApexClassParser implements Parser<ApexClassInput> {
           sha256(`${className}:${errMsg}`),
         ),
       );
+      // Keep a stub for the type itself so grants, references and calls to it
+      // still resolve; `parseFailed` marks it as having no extracted body.
+      const stubSrc = stripCommentsAndStrings(input.body);
+      const stubHeader = extractClassHeader(stubSrc);
+      const stubLabel = stubHeader.isInterface ? "ApexInterface" : "ApexClass";
+      // Cheap fallback when the broken body defeats the header scan: an
+      // `@isTest` annotation before the first class keyword.
+      const stubIsTest = stubHeader.isTest || /@istest\b[^{;]*?\bclass\b/i.test(stubSrc);
+      nodes.push(
+        makeNode(
+          ctx,
+          stubLabel,
+          `${stubLabel}:${className}`,
+          {
+            name: className,
+            modifiers: [],
+            isTest: stubIsTest,
+            apiVersion: extractApiVersion(input.metaXml),
+            parseFailed: true,
+            ...shadowAttr,
+          },
+          fileHash,
+        ),
+      );
       return { nodes, edges };
+    } finally {
+      // The tree (if kept) does not depend on the DFA cache.
+      if (parser) noteApexSyntaxCheck(lexer, parser);
     }
 
     const cleaned = stripCommentsAndStrings(input.body);
@@ -519,6 +1144,9 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       : `ApexClass:${effectiveName}`;
     const apiVersion = extractApiVersion(input.metaXml);
 
+    const dispatch = extractVlocityDispatch(input.body, header.implementsList);
+    // `final` String fields: an IP / DataRaptor name passed as a constant.
+    const stringConstants = classStringConstants(input.body);
     nodes.push(
       makeNode(
         ctx,
@@ -529,12 +1157,26 @@ export class ApexClassParser implements Parser<ApexClassInput> {
           modifiers: header.modifiers,
           isTest: header.isTest,
           apiVersion,
+          ...(dispatch ? { vlocityDispatch: dispatch } : {}),
+          ...shadowAttr,
         },
         fileHash,
       ),
     );
 
-    if (header.extendsClass) {
+    if (header.isInterface) {
+      // An interface extends interfaces, possibly several.
+      for (const parent of header.extendsList) {
+        edges.push(
+          makeEdge(
+            ctx,
+            classQname,
+            REL_TYPES.EXTENDS,
+            `ApexInterface:${stripNs(parent, ctx.namespace)}`,
+          ),
+        );
+      }
+    } else if (header.extendsClass) {
       edges.push(
         makeEdge(
           ctx,
@@ -556,8 +1198,58 @@ export class ApexClassParser implements Parser<ApexClassInput> {
     }
 
     // Methods
+    const usedDecls = new Set<number>();
+    const maskedBody = maskApex(input.body);
     const methods = findMethods(cleaned, effectiveName);
+    // Member-access field refs: each method falls back to the fields/properties
+    // declared directly in ITS enclosing class body (constructor/initializer
+    // locals and other inner classes' fields are excluded); types declared in
+    // this file (inner classes, enums, interfaces) are never SObjects.
+    const scopes = classScopes(cleaned);
+    const localTypes = new Set(
+      [...cleaned.matchAll(/\b(?:class|enum|interface)\s+([A-Za-z_]\w*)/gi)].map((x) =>
+        (x[1] ?? "").toLowerCase(),
+      ),
+    );
+    // Fields of the method's class and of every enclosing class: an inner
+    // class can use its outer class's (static) fields.
+    const enclosingFields = (pos: number) => {
+      const out: ReturnType<typeof scopes.fields> = [];
+      const seen = new Set<number>();
+      for (let c = scopes.classAt(pos); c >= 0 && !seen.has(c); c = scopes.classAt(c)) {
+        seen.add(c);
+        out.push(...scopes.fields(c));
+      }
+      return out;
+    };
+    const refScope: ClassRefScope = {
+      selfName: effectiveName,
+      localTypes,
+      // File-wide set: used for code outside method bodies and for test-class
+      // linkage. Each method gets its own set below (its params, its body's
+      // declarations and its enclosing class's fields).
+      localVars: localVarNames([
+        ...collectDecls(cleaned),
+        ...methods.flatMap((m) => paramDecls(m.params)),
+      ]),
+    };
+    // Methods declared in this file (inner classes' too: all are qnamed
+    // under the outer class), for same-class call targets.
+    const declared = new Map<string, { name: string; arities: Set<number> }>();
     for (const m of methods) {
+      const d = declared.get(m.name.toLowerCase()) ?? { name: m.name, arities: new Set<number>() };
+      d.arities.add(m.params.length);
+      declared.set(m.name.toLowerCase(), d);
+    }
+    const parentName = header.isInterface ? null : header.extendsClass;
+    emitPageRefEdges(ctx, classQname, cleaned, edges);
+    const methodQueries: string[] = [];
+    const methodNodes = new Map<string, NodeFact>();
+    const classPaths: ApexRelationshipPath[] = [];
+    const classChildren: ApexChildRelationship[] = [];
+    const declRanges: Array<{ text: string; start: number }> = [];
+    for (const m of methods) {
+      const methodEdgeStart = edges.length;
       const methodQname = `ApexMethod:${effectiveName}.${m.name}(${m.params.length})`;
       const annotationsLower = m.annotations.map((a) => a.toLowerCase());
       const auraEnabled = annotationsLower.includes("auraenabled");
@@ -572,34 +1264,34 @@ export class ApexClassParser implements Parser<ApexClassInput> {
 
       const isTestLabel = isTestMethod || (header.isTest && m.modifiers.includes("static"));
 
-      nodes.push(
-        makeNode(
-          ctx,
-          isTestLabel ? "TestMethod" : "ApexMethod",
-          methodQname,
-          {
-            name: m.name,
-            arity: m.params.length,
-            returnType: m.returnType,
-            modifiers: m.modifiers,
-            annotations: m.annotations,
-            auraEnabled,
-            isInvocable,
-            isRemote,
-            isFuture,
-            httpVerbs,
-            // Mirror the test-status onto the attributes so rules and queries
-            // can filter on attributes.isTest uniformly across labels.
-            // (The label is already TestMethod vs ApexMethod, but
-            // label-based filtering requires consumers to know both.)
-            // Source: @isTest / @TestSetup annotation on the method itself,
-            // or @isTest on the enclosing class with the method static.
-            // Never derived from filename.
-            isTest: isTestLabel,
-          },
-          sha256(m.body),
-        ),
+      const methodNode = makeNode(
+        ctx,
+        isTestLabel ? "TestMethod" : "ApexMethod",
+        methodQname,
+        {
+          name: m.name,
+          arity: m.params.length,
+          returnType: m.returnType,
+          modifiers: m.modifiers,
+          annotations: m.annotations,
+          auraEnabled,
+          isInvocable,
+          isRemote,
+          isFuture,
+          httpVerbs,
+          // Mirror the test-status onto the attributes so rules and queries
+          // can filter on attributes.isTest uniformly across labels.
+          // (The label is already TestMethod vs ApexMethod, but
+          // label-based filtering requires consumers to know both.)
+          // Source: @isTest / @TestSetup annotation on the method itself,
+          // or @isTest on the enclosing class with the method static.
+          // Never derived from filename.
+          isTest: isTestLabel,
+        },
+        sha256(`${APEX_NODE_HASH_SALT}\n${m.body}`),
       );
+      nodes.push(methodNode);
+      methodNodes.set(methodQname, methodNode);
       edges.push(makeEdge(ctx, classQname, REL_TYPES.CONTAINS_METHOD, methodQname));
 
       // Snippet: emit the raw method body from the ORIGINAL source (preserves
@@ -629,9 +1321,39 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       if (endLine != null) snippetRec.endLine = endLine;
       snippets.push(snippetRec);
 
+      // Apex -> Vlocity calls (IP / DataRaptor), extracted from the raw body.
+      // `rawBody` above locates the method by first textual occurrence of its
+      // name (which can be a call site), so locate the declaration properly here.
+      const decl = declRawBody(input.body, maskedBody, m, usedDecls);
+      if (decl) declRanges.push(decl);
+      const rawDecl = decl?.text ?? null;
+      const vc = extractVlocityCalls(rawDecl ?? "", stringConstants, m.params);
+      for (const k of vc.ipKeys)
+        edges.push(
+          makeEdge(ctx, methodQname, REL_TYPES.APEX_CALLS_IP, `IntegrationProcedure:${k}`),
+        );
+      for (const d of vc.drNames)
+        edges.push(makeEdge(ctx, methodQname, REL_TYPES.APEX_CALLS_DR, `DataRaptor:${d}`));
+      if (rawDecl !== null) {
+        setFieldNameLiterals(methodNode, rawDecl, [
+          ...paramDecls(m.params),
+          ...collectDecls(m.body),
+        ]);
+      }
+
       // Body analysis (regex path — gated when parserMode === "ast").
       const body = m.body;
+      const methodPaths: ApexRelationshipPath[] = [];
+      const accessPaths: ApexRelationshipPath[] = [];
+      const fieldAccesses = extractFieldAccesses(body, {
+        decls: [...paramDecls(m.params), ...collectDecls(body)],
+        outer: scopes.fields(scopes.classAt(m.startIdx)),
+        excludedTypes: localTypes,
+        paths: accessPaths,
+      });
       if (parserMode === "ast") {
+        setRelationshipPaths(methodNode, accessPaths);
+        emitFieldAccessEdges(ctx, methodQname, fieldAccesses, edges, methodEdgeStart);
         // AST mode handles per-method edges in a single tree walk after this loop;
         // skip the regex extraction here to avoid duplicate / inconsistent edges.
         continue;
@@ -644,54 +1366,30 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       const inLoopAt = (idx: number): boolean =>
         loopRanges.some((r) => idx > r.start && idx < r.end);
 
-      // SOQL
-      const soqlRe = new RegExp(SOQL_RE.source, "gi");
-      let sq: RegExpExecArray | null = soqlRe.exec(body);
-      while (sq !== null) {
-        const { object, selectClause } = parseSoql(sq[1] ?? "");
-        const obj = stripNs(object ?? "", ctx.namespace);
-        edges.push(
-          makeEdge(ctx, methodQname, REL_TYPES.EXECUTES_SOQL, `CustomObject:${obj}`, {
-            query: sq[0]?.trim(),
-            ...(inLoopAt(sq.index) ? { inLoop: true } : {}),
-          }),
-        );
-        // READS_FIELD for the OUTER query's SELECT clause fields only (subquery
-        // SELECTs sit inside parens and are dropped by the `[()*]` filter).
-        const selectFields = selectClause
-          .split(",")
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0 && !/[()*]/.test(s));
-        for (const f of selectFields) {
-          const fname = f.split(/\s+/)[0] ?? "";
-          if (/^[A-Za-z_][\w]*$/.test(fname)) {
-            edges.push(
-              makeEdge(ctx, methodQname, REL_TYPES.READS_FIELD, `CustomField:${obj}.${fname}`),
-            );
-          }
-        }
-        sq = soqlRe.exec(body);
+      // SOQL: EXECUTES_SOQL + READS_FIELD for the outer query's fields.
+      const methodChildren: ApexChildRelationship[] = [];
+      emitInlineSoqlEdges(ctx, methodQname, body, inLoopAt, edges, methodPaths, methodChildren);
+      setChildRelationships(methodNode, methodChildren);
+      mergePaths(methodPaths, accessPaths);
+      setRelationshipPaths(methodNode, methodPaths);
+
+      emitFieldAccessEdges(ctx, methodQname, fieldAccesses, edges, methodEdgeStart);
+
+      // SOSL (inLoop when any SOSL sits in a loop body) and dynamic queries
+      // in a loop body (governor risks, T15 I-5).
+      emitSoslEdge(ctx, methodQname, body, inLoopAt, edges);
+      const dynInLoop = dynamicQueriesInLoop(body, inLoopAt);
+      if (dynInLoop.length > 0) {
+        (methodNode.attributes as Record<string, unknown>).dynamicQueryInLoop = dynInLoop;
       }
 
-      // SOSL
-      const soslRe = new RegExp(SOSL_RE.source, "gi");
-      if (soslRe.test(body)) {
-        edges.push(makeEdge(ctx, methodQname, REL_TYPES.EXECUTES_SOSL, "SOSL:*"));
-      }
-
-      // DML
-      const dmlRe = new RegExp(DML_RE.source, "gi");
-      let dm: RegExpExecArray | null = dmlRe.exec(body);
-      while (dm !== null) {
-        const op = (dm[1] ?? "").toLowerCase();
-        edges.push(
-          makeEdge(ctx, methodQname, REL_TYPES.EXECUTES_DML, `DML:${op}`, {
-            target: dm[2],
-            ...(inLoopAt(dm.index) ? { inLoop: true } : {}),
-          }),
-        );
-        dm = dmlRe.exec(body);
-      }
+      // DML (statements and Database.<op>(…) calls), linked to the object
+      // when the record expression's type is known.
+      const outerFields = enclosingFields(m.startIdx);
+      emitDmlEdges(ctx, methodQname, body, inLoopAt, edges, {
+        lookup: makeTypeLookup([...paramDecls(m.params), ...collectDecls(body)], outerFields),
+        excludedTypes: localTypes,
+      });
 
       // Named credentials (scan the ORIGINAL method body — strings are stripped from `body`).
       const ncSource = (() => {
@@ -719,35 +1417,127 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         nc = ncRe.exec(ncSource);
       }
 
-      // Calls to other static methods (best-effort)
-      const scRe = new RegExp(STATIC_CALL_RE.source, "g");
-      let sc: RegExpExecArray | null = scRe.exec(body);
-      while (sc !== null) {
-        const target = sc[1] ?? "";
-        const targetMethod = sc[2] ?? "";
-        if (target !== effectiveName && /^[A-Z]/.test(target)) {
-          // The regex's match index + match length lands one char before
-          // the `(`. Walk forward past any whitespace to find it, then
-          // count balanced args. When counting succeeds we emit a precise
-          // arity dst (same shape AST pass uses), which skips the
-          // arity-resolver's overload fan-out entirely.
-          const matchEnd = scRe.lastIndex - 1;
-          const arity = countCallArgs(body, matchEnd);
-          const dstArity = arity == null ? "?" : String(arity);
-          const attrs: Record<string, unknown> =
-            arity == null ? { unresolvedArity: true } : { resolvedBy: "regex-arg-count", arity };
-          edges.push(
-            makeEdge(
-              ctx,
-              methodQname,
-              REL_TYPES.CALLS,
-              `ApexMethod:${stripNs(target, ctx.namespace)}.${targetMethod}(${dstArity})`,
-              attrs,
-            ),
-          );
+      // Calls to other static methods (best-effort), constructors and
+      // static-member references.
+      // Scanned on the length-preserving mask (quotes kept, contents blanked)
+      // so a string argument still counts toward the call's arity.
+      const callCode = rawDecl === null ? body : maskApex(rawDecl);
+      const methodScope: ClassRefScope = {
+        ...refScope,
+        localVars: localVarNames([
+          ...paramDecls(m.params),
+          ...collectDecls(body),
+          ...enclosingFields(m.startIdx),
+        ]),
+      };
+      emitStaticCallEdges(ctx, methodQname, callCode, effectiveName, edges, methodScope.localVars);
+      const callLookup = makeTypeLookup(
+        [...paramDecls(m.params), ...collectDecls(callCode)],
+        outerFields,
+      );
+      emitInstanceCallEdges(
+        ctx,
+        methodQname,
+        callCode,
+        {
+          lookup: callLookup,
+          scope: methodScope,
+          selfName: effectiveName,
+          parentName,
+          declared,
+          fields: outerFields,
+        },
+        edges,
+        methodEdgeStart,
+      );
+      emitNameRefEdges(
+        ctx,
+        methodQname,
+        callCode,
+        rawDecl,
+        { lookup: callLookup, scope: methodScope },
+        edges,
+        methodEdgeStart,
+      );
+      emitClassRefEdges(ctx, methodQname, callCode, methodScope, edges);
+      // The signature is outside `callCode`: prepend it so parameter and
+      // return types count for the method too.
+      const sig = `${m.returnType} ${m.name}(${m.params.join(", ")});\n`;
+      emitTypeRefEdges(ctx, methodQname, sig + callCode, methodScope, edges, methodEdgeStart);
+      emitDescribeRefEdges(ctx, methodQname, callCode, edges);
+      const queries = rawDecl === null ? [] : foldDynamicSoql(rawDecl);
+      methodQueries.push(...queries);
+      setDynamicSoqlSkips(
+        methodNode,
+        emitDynamicSoqlEdges(ctx, methodQname, queries, edges, methodEdgeStart),
+      );
+    }
+
+    // Code outside method bodies (field initializers, constructors, static
+    // blocks, method signatures) is attributed to the class itself.
+    if (parserMode !== "ast") {
+      const outside = maskedBody.split("");
+      for (const d of declRanges) {
+        for (let k = d.start; k < d.start + d.text.length; k++) {
+          if (outside[k] !== "\n") outside[k] = " ";
         }
-        sc = scRe.exec(body);
       }
+      const rest = outside.join("");
+      emitStaticCallEdges(ctx, classQname, rest, effectiveName, edges, refScope.localVars);
+      // Outside method bodies a name is typed only when every declaration of
+      // it agrees (no positional scoping across constructors / initialisers).
+      const restDecls = collectDecls(rest);
+      const restLookup = makeTypeLookup([], restDecls);
+      emitInstanceCallEdges(
+        ctx,
+        classQname,
+        rest,
+        {
+          lookup: restLookup,
+          scope: refScope,
+          selfName: effectiveName,
+          parentName,
+          declared,
+          fields: restDecls,
+        },
+        edges,
+      );
+      emitNameRefEdges(
+        ctx,
+        classQname,
+        rest,
+        input.body,
+        { lookup: restLookup, scope: refScope },
+        edges,
+      );
+      emitClassRefEdges(ctx, classQname, rest, refScope, edges);
+      emitTypeRefEdges(ctx, classQname, rest, refScope, edges);
+      emitDescribeRefEdges(ctx, classQname, rest, edges);
+      // Dynamic SOQL outside method bodies (constants, constructors): every
+      // folded query in the file minus those already attributed to a method.
+      const left = new Map<string, number>();
+      for (const q of methodQueries) left.set(q, (left.get(q) ?? 0) + 1);
+      const classQueries = foldDynamicSoql(input.body).filter((q) => {
+        const n = left.get(q) ?? 0;
+        if (n > 0) left.set(q, n - 1);
+        return n === 0;
+      });
+      setDynamicSoqlSkips(
+        nodes.find((n) => String(n.qualifiedName) === classQname),
+        emitDynamicSoqlEdges(ctx, classQname, classQueries, edges, 0),
+      );
+      // Inline SOQL outside method bodies (static field initialisers,
+      // constructors, initializer blocks) belongs to the class.
+      const restLoops = computeLoopRanges(rest);
+      emitInlineSoqlEdges(
+        ctx,
+        classQname,
+        rest,
+        (idx) => restLoops.some((r) => idx > r.start && idx < r.end),
+        edges,
+        classPaths,
+        classChildren,
+      );
     }
 
     // AST-mode (and shadow mode): walk the parsed compilationUnit and emit
@@ -765,11 +1555,38 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         if (parserMode === "both") {
           // Tag AST edges so a shadow diff can distinguish overlap.
           for (const e of extraction.edges) {
-            (e.attributes as Record<string, unknown>).resolvedBy = "ast-shadow";
+            (e.attributes as Record<string, unknown>).callResolution = "ast-shadow";
             edges.push(e);
           }
         } else {
-          for (const e of extraction.edges) edges.push(e);
+          // Member-access field edges were already emitted per method; the AST
+          // dotted-ref / select-list READS_FIELD to the same (src, dst) would
+          // only duplicate them.
+          const fieldKeys = new Set(
+            edges
+              .filter(
+                (e) => e.relType === REL_TYPES.READS_FIELD || e.relType === REL_TYPES.WRITES_FIELD,
+              )
+              .map(
+                (e) =>
+                  `${e.relType}|${String(e.srcQualifiedName)}|${String(e.dstQualifiedName).toLowerCase()}`,
+              ),
+          );
+          for (const e of extraction.edges) {
+            const key = `${e.relType}|${String(e.srcQualifiedName)}|${String(e.dstQualifiedName).toLowerCase()}`;
+            if (fieldKeys.has(key)) continue;
+            if (e.relType === REL_TYPES.READS_FIELD || e.relType === REL_TYPES.WRITES_FIELD)
+              fieldKeys.add(key);
+            edges.push(e);
+          }
+        }
+        if (parserMode === "ast") {
+          // "both" keeps the regex paths (regex is authoritative there).
+          for (const [qn, paths] of extraction.relationshipPaths) {
+            const target =
+              methodNodes.get(qn) ?? nodes.find((n) => String(n.qualifiedName) === classQname);
+            if (target) setRelationshipPaths(target, paths);
+          }
         }
         if (process.env.SFGRAPH_DEBUG_INGEST === "1" && extraction.diagnostics.length > 0) {
           ctx.logger?.debug?.("apex ast diagnostics", {
@@ -787,10 +1604,26 @@ export class ApexClassParser implements Parser<ApexClassInput> {
 
     // Test class linkage
     if (header.isTest) {
-      const { testTargets } = parseClassNameAndIsTest(cleaned);
+      const { testTargets, lowerTargets } = parseClassNameAndIsTest(cleaned);
+      // Lowercase-initial names (`new myController()`) are legal class
+      // names but indistinguishable from variables here: keep them as
+      // candidates the post-merge resolver matches against known classes.
+      const candidates: string[] = [];
+      for (const t of lowerTargets) {
+        if (t.toLowerCase() === effectiveName.toLowerCase()) continue;
+        if (!isUserClassName(t, refScope) || refScope.localVars.has(t.toLowerCase())) continue;
+        if (candidates.some((c) => c.toLowerCase() === t.toLowerCase())) continue;
+        candidates.push(t);
+      }
+      const classNode = nodes.find((n) => String(n.qualifiedName) === classQname);
+      if (classNode && candidates.length > 0)
+        (classNode.attributes as Record<string, unknown>).testTargetCandidates = candidates;
       for (const t of testTargets) {
         if (t === effectiveName) continue;
-        if (!/^[A-Z]/.test(t)) continue;
+        // Only plausible user classes: not Apex system types/namespaces
+        // (Database, System, Test, String), SObjects, types declared in this
+        // file, or declared variables/fields used as call receivers.
+        if (!isUserClassName(t, refScope) || refScope.localVars.has(t.toLowerCase())) continue;
         edges.push(
           makeEdge(
             ctx,
@@ -802,6 +1635,25 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       }
     }
 
-    return { nodes, edges, snippets };
+    setChildRelationships(
+      nodes.find((n) => String(n.qualifiedName) === classQname),
+      classChildren,
+    );
+    if (classPaths.length > 0) {
+      const classNode = nodes.find((n) => String(n.qualifiedName) === classQname);
+      if (classNode) setRelationshipPaths(classNode, classPaths);
+    }
+
+    return { nodes, edges: aggregateGovernorFacts(edges), snippets };
   }
+}
+
+/** Store relationship paths on a node (only when there are any). */
+function setRelationshipPaths(node: NodeFact, paths: ApexRelationshipPath[]): void {
+  if (paths.length === 0) return;
+  const attrs = node.attributes as Record<string, unknown>;
+  const cur = (attrs.apexRelationshipPaths as ApexRelationshipPath[] | undefined) ?? [];
+  const merged = [...cur];
+  mergePaths(merged, paths);
+  attrs.apexRelationshipPaths = merged;
 }

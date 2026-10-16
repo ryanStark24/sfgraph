@@ -9,6 +9,7 @@
  *   ${!a}                              — negation
  *   ${stripNs(record.x)}               — explicit stripNs helper
  *   ${split(record.x,'-')[0]}          — split + index helper
+ *   ${vfRefs(record.body,'reads')}     — Visualforce references (vf/refs.ts)
  *
  * Context binds:
  *   record  — parsed input object
@@ -19,6 +20,8 @@
  * Undefined-safe: missing fields evaluate to '' in interpolations, false in conditionals.
  * Pure non-string primitives flow through (so a boolean prop value stays boolean).
  */
+
+import { vfRefs } from "../vf/refs.js";
 
 export interface EvalCtx {
   record: unknown;
@@ -160,6 +163,9 @@ function evalAtom(token: string, ctx: EvalCtx): unknown {
       };
       visit(args[0]);
       result = out;
+    } else if (name === "vfRefs") {
+      // vfRefs(markup, 'kind') -> [{dst, via}] Visualforce references (vf/refs.ts)
+      result = vfRefs(String(args[0] ?? ""), String(args[1] ?? ""), ctx.ns);
     } else if (name === "stripPrefix") {
       // stripPrefix(text, 'pfx') — remove leading prefix if present
       const text = String(args[0] ?? "");

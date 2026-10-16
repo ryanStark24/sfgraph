@@ -19,15 +19,15 @@ nodes:
       # find_nodes/analyze. `| raw` returns the array unmodified.
       values: "${record.values | raw}"
 
-  - label: CustomMetadataType
-    when: "${record.kind != 'record' && !split(toString(record.name),'.')[1]}"
-    qname: "CustomMetadataType:${record.name}"
-    props:
-      name: "${record.name}"
-      label: "${record.label | raw}"
+  # A custom metadata TYPE is the CustomObject `X__mdt` the object directory
+  # (and the live-org CustomObject retrieve) already emits; that is its one
+  # canonical qname, owned by the object parser. A dot-less member (which
+  # names the type itself) therefore writes no node here: a second writer
+  # with fewer attributes would overwrite the object parser's node whenever
+  # the hashes differ.
 
 edges:
   - relType: INSTANCE_OF
     when: "${(record.kind == 'record' || split(toString(record.name),'.')[1]) && split(toString(record.name),'.')[0]}"
     src: "CustomMetadataRecord:${record.name}"
-    dst: "CustomMetadataType:${split(toString(record.name),'.')[0]}"
+    dst: "CustomObject:${match(split(toString(record.name),'.')[0],'^(.*?)(?:__mdt)?$')}__mdt"

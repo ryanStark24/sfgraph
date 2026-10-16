@@ -1,6 +1,14 @@
 import { METADATA_CATEGORY } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
 import { scheduleData, scheduleQuery, soqlWithTimeout } from "../rate-limit.js";
+import {
+  type FetchFailure,
+  type RetryOptions,
+  isOrgRejection,
+  querySoqlAll,
+  throwIfIncomplete,
+  withRetry,
+} from "../retry.js";
 
 /**
  * Custom Settings ROW capture. Custom settings are SObjects whose rows ARE the
@@ -36,41 +44,52 @@ const SYS_FIELDS = new Set([
  *  except hierarchy settings with a row per profile/user; we cap and note it. */
 const ROW_CAP = 200;
 
-export async function* iterCustomSettings(conn: any, orgId: string): AsyncIterable<RawMember> {
+export async function* iterCustomSettings(
+  conn: any,
+  orgId: string,
+  retryOpts: RetryOptions = {},
+): AsyncIterable<RawMember> {
   let entities: EntityRow[] = [];
   try {
-    const res = (await scheduleQuery(() =>
-      soqlWithTimeout(
-        conn.tooling.query(
-          "SELECT QualifiedApiName FROM EntityDefinition WHERE IsCustomSetting = true",
-        ),
-        "tooling EntityDefinition IsCustomSetting",
-      ),
-    )) as { records?: EntityRow[] } | null;
-    entities = res?.records ?? [];
+    // Drain every page and retry: a truncated discovery silently loses
+    // custom settings.
+    entities = await querySoqlAll<EntityRow>(
+      conn.tooling,
+      "SELECT QualifiedApiName FROM EntityDefinition WHERE IsCustomSetting = true",
+      "tooling EntityDefinition IsCustomSetting",
+      scheduleQuery,
+      retryOpts,
+    );
   } catch (e) {
     // EntityDefinition unavailable (some scratch orgs) — nothing to do.
-    console.log(
-      `ingest:   custom-settings discovery failed: ${(e as Error).message?.slice(0, 160) ?? String(e)}`,
-    );
-    return;
+    // Anything else (timeouts, connection loss) must surface as a skip.
+    if (isOrgRejection(e)) return;
+    throw e;
   }
+  const failures: FetchFailure[] = [];
 
   for (const ent of entities) {
     const obj = ent.QualifiedApiName;
     if (!obj) continue;
     let rows: Array<Record<string, unknown>> = [];
     try {
-      const res = (await scheduleData(() =>
-        soqlWithTimeout(
-          conn.query(`SELECT FIELDS(ALL) FROM ${obj} LIMIT ${ROW_CAP}`),
-          `data ${obj} (custom-setting rows)`,
-        ),
+      // LIMIT ROW_CAP (200) fits in one page, so no queryMore needed.
+      const res = (await withRetry(
+        () =>
+          scheduleData(() =>
+            soqlWithTimeout(
+              conn.query(`SELECT FIELDS(ALL) FROM ${obj} LIMIT ${ROW_CAP}`),
+              `data ${obj} (custom-setting rows)`,
+            ),
+          ),
+        retryOpts,
       )) as { records?: Array<Record<string, unknown>> } | null;
       rows = res?.records ?? [];
-    } catch {
-      // Object may be empty, inaccessible, or non-queryable — skip silently;
-      // the schema node still exists from the object extractor.
+    } catch (e) {
+      // Inaccessible / non-queryable objects have no rows to capture; the
+      // schema node still exists from the object extractor. Transient
+      // failures are recorded and surfaced after the loop.
+      if (!isOrgRejection(e)) failures.push({ name: obj, error: e });
       continue;
     }
     if (rows.length === 0) continue;
@@ -95,4 +114,5 @@ export async function* iterCustomSettings(conn: any, orgId: string): AsyncIterab
       content: JSON.stringify({ name: obj, rows: cleaned, rowCount: rows.length }),
     };
   }
+  throwIfIncomplete("custom-settings", failures);
 }

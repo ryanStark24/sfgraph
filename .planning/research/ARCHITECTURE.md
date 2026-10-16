@@ -385,14 +385,14 @@ Sfgraph runs locally per developer/org; "scale" is a function of org size (numbe
 
 ## Sources
 
-- `/Users/anshulmehta/Documents/salesforceMCP/.planning/PROJECT.md` (Waves 1/2/3 scope, key decisions, constraints) — HIGH
-- `/Users/anshulmehta/Documents/salesforceMCP/packages/core/src/ingest/live-ingest.ts:680–809` (post-merge pass shape, atomicity decision in code) — HIGH
-- `/Users/anshulmehta/Documents/salesforceMCP/packages/core/src/parsers/cross-flavor-resolver.ts` (reference shape for new passes — `store.transaction()`, opts type, return shape) — HIGH
-- `/Users/anshulmehta/Documents/salesforceMCP/packages/core/src/parsers/common.ts:10–47` (verified `makeEdge` drops `ctx.sourceUri` while `makeNode` preserves it — W1-02's surgical site) — HIGH
-- `/Users/anshulmehta/Documents/salesforceMCP/packages/core/src/domain/edge-fact.ts` (current 12-line EdgeFact interface, no provenance fields) — HIGH
-- `/Users/anshulmehta/Documents/salesforceMCP/packages/core/src/parsers/contract.ts:7` (ParseContext already has `sourceUri`) — HIGH
-- `/Users/anshulmehta/Documents/salesforceMCP/packages/core/src/extractors/live-org/vlocity/runner.ts:76, 188, 246` (three silent catch sites; line 76 is `tryParseJsonField`, 188 is child-fetch SOQL, 246 is parent-fetch SOQL) — HIGH
-- `/Users/anshulmehta/Documents/salesforceMCP/packages/core/src/parsers/lwc/html-visitor.ts` (whole file — verified zero matches for `lwc:if|lwc:for|lwc:else`) — HIGH
+- `.planning/PROJECT.md` (Waves 1/2/3 scope, key decisions, constraints) — HIGH
+- `packages/core/src/ingest/live-ingest.ts:680–809` (post-merge pass shape, atomicity decision in code) — HIGH
+- `packages/core/src/parsers/cross-flavor-resolver.ts` (reference shape for new passes — `store.transaction()`, opts type, return shape) — HIGH
+- `packages/core/src/parsers/common.ts:10–47` (verified `makeEdge` drops `ctx.sourceUri` while `makeNode` preserves it — W1-02's surgical site) — HIGH
+- `packages/core/src/domain/edge-fact.ts` (current 12-line EdgeFact interface, no provenance fields) — HIGH
+- `packages/core/src/parsers/contract.ts:7` (ParseContext already has `sourceUri`) — HIGH
+- `packages/core/src/extractors/live-org/vlocity/runner.ts:76, 188, 246` (three silent catch sites; line 76 is `tryParseJsonField`, 188 is child-fetch SOQL, 246 is parent-fetch SOQL) — HIGH
+- `packages/core/src/parsers/lwc/html-visitor.ts` (whole file — verified zero matches for `lwc:if|lwc:for|lwc:else`) — HIGH
 
 ---
 *Architecture research for: Salesforce metadata graph hardening + capability expansion milestone*

@@ -1,6 +1,14 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import Bottleneck from "bottleneck";
 import pLimit from "p-limit";
+// Cycle-safe: retry.ts only uses rate-limit exports inside function bodies.
+import {
+  classifyFinalError,
+  isDeterministicRejection,
+  isNonRetryable,
+  resolveRetryOptions,
+  singleItemConfirmDelaysMs,
+} from "./retry.js";
 
 /** Cap concurrent query invocations against a single org connection. */
 export const queryLimit = pLimit(5);
@@ -236,11 +244,20 @@ export const METADATA_READ_BATCH_SIZE = (() => {
   return Number.isFinite(env) && env > 0 && env <= 10 ? env : 10;
 })();
 
+/**
+ * Called by {@link readMetadataBatchAdaptive} for items it had to give up on
+ * (single-item failure after one re-try, or the bisect depth ceiling). Items
+ * the server simply did not return are NOT failures and are not reported.
+ */
+export type MetadataReadFailureHandler = (fullNames: string[], error: unknown) => void;
+
 export async function readMetadataBatchAdaptive<TItem extends { fullName: string }>(
   conn: { metadata: { read: (type: string, names: string[]) => Promise<unknown> } },
   type: string,
   items: TItem[],
   depth = 0,
+  onFailed?: MetadataReadFailureHandler,
+  singleRetried = false,
 ): Promise<(unknown | null)[]> {
   if (items.length === 0) return [];
   // Pre-chunk to the platform's per-call ceiling before doing anything else.
@@ -254,11 +271,11 @@ export async function readMetadataBatchAdaptive<TItem extends { fullName: string
       chunks.push(items.slice(i, i + METADATA_READ_BATCH_SIZE));
     }
     const partials = await Promise.all(
-      chunks.map((c) => readMetadataBatchAdaptive(conn, type, c, 0)),
+      chunks.map((c) => readMetadataBatchAdaptive(conn, type, c, 0, onFailed)),
     );
     return partials.flat();
   }
-  try {
+  const readOnce = async (): Promise<(unknown | null)[]> => {
     const raw = await scheduleMetadata(() =>
       withTimeout(
         conn.metadata.read(
@@ -273,20 +290,54 @@ export async function readMetadataBatchAdaptive<TItem extends { fullName: string
     const out: (unknown | null)[] = [];
     for (let i = 0; i < items.length; i += 1) out.push(arr[i] ?? null);
     return out;
+  };
+  try {
+    return await readOnce();
   } catch (e) {
     const isDebug = process.env.SFGRAPH_DEBUG_INGEST === "1";
     const errMsg = (e as Error)?.message ?? String(e);
-    // Single-item slice → genuine skip.
+    // Single-item slice → re-try once (a lone transient failure should not
+    // lose the record), then a genuine skip that is REPORTED via onFailed.
     if (items.length === 1) {
+      // Same contract as withRetry (review M5): never re-try a non-retryable
+      // error (stop-waiting, read-only guard, org rejection), and back off
+      // one step first so a blip does not fail both attempts.
+      // Up to UNKNOWN_EXCEPTION_CONFIRM_ATTEMPTS reads with growing backoff
+      // (4 s + 8 s in production): a lone blip recovers, and an identical
+      // gack is only believed after it outlived a short server incident
+      // (review I1). A recognised deterministic rejection is not re-read.
+      const attempts: unknown[] = [e];
+      if (!singleRetried) {
+        const delays = singleItemConfirmDelaysMs(resolveRetryOptions().retryBackoffMs);
+        for (const delay of delays) {
+          const last = attempts[attempts.length - 1];
+          if (isNonRetryable(last) || isDeterministicRejection(last)) break;
+          if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+          try {
+            return await readOnce();
+          } catch (e2) {
+            attempts.push(e2);
+          }
+        }
+      }
+      // A recognised deterministic rejection, or the same UNKNOWN_EXCEPTION
+      // on every attempt, is reported as `unreadable` (not auto-retried this
+      // run); anything else stays a retryable loss.
+      const final = classifyFinalError(attempts);
+      onFailed?.([items[0]?.fullName ?? "?"], final);
       if (isDebug) {
         console.warn(
-          `metadata.read ${type}: dropping ${items[0]?.fullName ?? "?"} after single-item failure: ${errMsg}`,
+          `metadata.read ${type}: dropping ${items[0]?.fullName ?? "?"} after single-item failure: ${(final as Error)?.message ?? errMsg}`,
         );
       }
       return [null];
     }
     // Bisect ceiling → drop the slice to bound wall-clock cost.
     if (depth >= MAX_BISECT_DEPTH) {
+      onFailed?.(
+        items.map((i) => i.fullName),
+        e,
+      );
       if (isDebug) {
         console.warn(
           `metadata.read ${type}: bisect depth ceiling (${MAX_BISECT_DEPTH}) reached; dropping ${items.length} record(s): ${items.map((i) => i.fullName).join(",")} (${errMsg})`,
@@ -296,8 +347,8 @@ export async function readMetadataBatchAdaptive<TItem extends { fullName: string
     }
     const mid = Math.ceil(items.length / 2);
     const [left, right] = await Promise.all([
-      readMetadataBatchAdaptive(conn, type, items.slice(0, mid), depth + 1),
-      readMetadataBatchAdaptive(conn, type, items.slice(mid), depth + 1),
+      readMetadataBatchAdaptive(conn, type, items.slice(0, mid), depth + 1, onFailed),
+      readMetadataBatchAdaptive(conn, type, items.slice(mid), depth + 1, onFailed),
     ]);
     return [...left, ...right];
   }
@@ -349,10 +400,17 @@ export interface RateLimitPools {
  */
 function wrapScheduled<T>(
   pool: Bottleneck,
-  fn: () => Promise<T>,
+  job: () => Promise<T>,
   stopSignal: StopSignal | undefined,
   label: string,
 ): Promise<T> {
+  // Bottleneck starts a queued job from the completion callback of an
+  // earlier job, i.e. inside THAT caller's async context. Without binding,
+  // a job with no stop signal of its own picks up the earlier caller's
+  // signal via stopSignalContext.getStore() — e.g. describeGlobal queued
+  // behind a stopped EntityDefinition probe died with StopWaitingError and
+  // lost the whole `object` source. Run every job in its scheduler's context.
+  const fn = AsyncResource.bind(job);
   if (!stopSignal) return pool.schedule(fn);
   const guarded = (): Promise<T> => {
     // Pre-execution gate. If the signal was flipped while we were queued,
@@ -515,7 +573,7 @@ export function createRateLimitPools(overrides: PoolConcurrencyOverrides = {}): 
   // and never refills, deadlocking the whole fan-out (every queued API call
   // waits forever; sources then wedge on first-yield/inactivity). We instead
   // refill the reservoir on our own interval (see startReservoirRefill), which
-  // is immune to updateSettings. Verified against the live PLDT org.
+  // is immune to updateSettings. Verified against a large live org.
   const toolingPool = new Bottleneck({
     maxConcurrent: toolingConc,
     minTime: 0,

@@ -39,13 +39,13 @@ function node(label: string, qname: string): NodeFact {
   };
 }
 
-function grant(src: string, field: string): EdgeFact {
+function grant(src: string, field: string, attributes: Record<string, unknown> = {}): EdgeFact {
   return {
     orgId: ORG,
     srcQualifiedName: asQualifiedName(src),
     dstQualifiedName: asQualifiedName(field),
     relType: "GRANTS_FIELD_ACCESS" as EdgeFact["relType"],
-    attributes: {},
+    attributes,
     firstSeenAt: 1,
     lastSeenAt: 1,
   };
@@ -63,6 +63,29 @@ describe("securityAudit — Profile FLS is honoured (not just Permission Sets)",
     // The Profile shows up as a grantor in the matrix.
     const row = audit.fieldAccessMatrix.find((r) => r.field === field);
     expect(row?.grantedBy).toContain("Profile:Sales User");
+  });
+
+  it("a <readable>false</readable> entry is not access: the field stays an FLS gap", () => {
+    const field = "CustomField:Account.SSN__c";
+    store.mergeNodes([
+      node("CustomField", field),
+      node("Profile", "Profile:Sales User"),
+      node("PermissionSet", "PermissionSet:Support"),
+    ]);
+    store.mergeEdges([
+      grant("Profile:Sales User", field, { readable: false, editable: false }),
+      grant("PermissionSet:Support", field, { readable: false, editable: false }),
+    ]);
+    const audit = securityAudit(store, ORG);
+    expect(audit.flsGaps).toContain(field);
+    expect(audit.fieldAccessMatrix.find((r) => r.field === field)).toBeUndefined();
+
+    store.mergeEdges([grant("PermissionSet:Support", field, { readable: true, editable: false })]);
+    const after = securityAudit(store, ORG);
+    expect(after.flsGaps).not.toContain(field);
+    expect(after.fieldAccessMatrix.find((r) => r.field === field)?.grantedBy).toEqual([
+      "PermissionSet:Support",
+    ]);
   });
 
   it("still flags a genuinely ungranted field as an FLS gap", () => {

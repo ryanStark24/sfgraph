@@ -57,16 +57,16 @@ describe("writeMcpConfig", () => {
       homeOverride: home,
       platformOverride: "darwin",
       env: {
-        SFGRAPH_DATA_DIR: "/Users/x/Library/Application Support/sfgraph",
-        SFGRAPH_CONFIG_DIR: "/Users/x/Library/Preferences/sfgraph",
+        SFGRAPH_DATA_DIR: "/Users/dev/Library/Application Support/sfgraph",
+        SFGRAPH_CONFIG_DIR: "/Users/dev/Library/Preferences/sfgraph",
       },
     });
     expect(res.action).toBe("created");
     const path = configPathFor("cursor", { homeOverride: home });
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     expect(parsed.mcpServers.sfgraph.env).toEqual({
-      SFGRAPH_DATA_DIR: "/Users/x/Library/Application Support/sfgraph",
-      SFGRAPH_CONFIG_DIR: "/Users/x/Library/Preferences/sfgraph",
+      SFGRAPH_DATA_DIR: "/Users/dev/Library/Application Support/sfgraph",
+      SFGRAPH_CONFIG_DIR: "/Users/dev/Library/Preferences/sfgraph",
     });
   });
 

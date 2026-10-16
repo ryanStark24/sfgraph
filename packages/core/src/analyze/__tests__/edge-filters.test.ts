@@ -2,7 +2,7 @@ import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared"
 import { beforeEach, describe, expect, it } from "vitest";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";
 import { findDependents } from "../dependents.js";
-import { isReflectionEdge, keepEdge } from "../edge-filters.js";
+import { isEffectiveGrant, isReflectionEdge, keepEdge } from "../edge-filters.js";
 
 const ORG = asOrgId("orgFilter");
 let store: SqliteGraphStore;
@@ -40,6 +40,36 @@ beforeEach(async () => {
     edge("Profile:Admin", "ApexClass:Target", "GRANTS_APEX_ACCESS"),
     edge("Profile:Sales", "ApexClass:Target", "GRANTS_APEX_ACCESS"),
   ]);
+});
+
+describe("isEffectiveGrant", () => {
+  it("drops all-false Profile/PermissionSet entries and keeps any real grant", () => {
+    const g = (rel: string, attrs: Record<string, unknown>) =>
+      isEffectiveGrant(edge("Profile:Admin", "X:Y", rel, attrs));
+    expect(g("GRANTS_FIELD_ACCESS", { readable: false, editable: false })).toBe(false);
+    expect(g("GRANTS_FIELD_ACCESS", { readable: true, editable: false })).toBe(true);
+    expect(g("GRANTS_FIELD_ACCESS", { readable: false, editable: true })).toBe(true);
+    expect(g("GRANTS_OBJECT_ACCESS", { allowRead: false, allowEdit: false })).toBe(false);
+    expect(g("GRANTS_OBJECT_ACCESS", { allowRead: false, viewAllRecords: true })).toBe(true);
+    expect(g("GRANTS_APEX_ACCESS", { enabled: false })).toBe(false);
+    expect(g("GRANTS_PAGE_ACCESS", { enabled: true })).toBe(true);
+    expect(g("GRANTS_TAB_ACCESS", { visibility: "Hidden" })).toBe(false);
+    expect(g("GRANTS_TAB_ACCESS", { visibility: "DefaultOn" })).toBe(true);
+    // No flags at all (another source, an older graph): still counts.
+    expect(g("GRANTS_FIELD_ACCESS", {})).toBe(true);
+    expect(g("CALLS", {})).toBe(true);
+  });
+
+  it("keepEdge drops a no-access grant even when grants are included", () => {
+    const denied = edge("Profile:Admin", "ApexClass:Target", "GRANTS_APEX_ACCESS", {
+      enabled: false,
+    });
+    const allowed = edge("Profile:Admin", "ApexClass:Target", "GRANTS_APEX_ACCESS", {
+      enabled: true,
+    });
+    expect(keepEdge(denied, { excludeSecurity: false })).toBe(false);
+    expect(keepEdge(allowed, { excludeSecurity: false })).toBe(true);
+  });
 });
 
 describe("edge-filters", () => {

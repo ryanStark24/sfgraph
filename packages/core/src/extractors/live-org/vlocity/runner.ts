@@ -4,8 +4,16 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { METADATA_CATEGORY } from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
+import { memberNameFor, normaliseRow } from "../../vlocity-shared/row.js";
 import type { OrgCapabilities } from "../capabilities.js";
-import { scheduleQuery, soqlWithTimeout } from "../rate-limit.js";
+import { scheduleQuery } from "../rate-limit.js";
+import {
+  type FetchFailure,
+  type RetryOptions,
+  isOrgRejection,
+  querySoqlAll,
+  throwIfIncomplete,
+} from "../retry.js";
 
 export interface VlocityTypeDef {
   vlocityDataPackType: string;
@@ -53,52 +61,6 @@ interface VElementRow {
   Id?: string;
   Name?: string;
   [k: string]: unknown;
-}
-
-/** Strip a Vlocity namespace prefix + `__c` suffix so the parser walk sees
- *  the conventional keys (`Type`, `propertySet`, `Definition`, …) instead
- *  of `vlocity_cmt__Type__c` etc. Keeps `Id`, `Name`, `LastModifiedDate`
- *  intact. */
-function normaliseFieldName(key: string, namespace: string): string {
-  let k = key;
-  if (k.startsWith(`${namespace}__`)) k = k.slice(namespace.length + 2);
-  if (k.endsWith("__c") || k.endsWith("__r")) k = k.slice(0, -3);
-  return k;
-}
-
-/** Parse a long-text JSON field value defensively — Vlocity stores design-
- *  time config as stringified JSON; if parsing fails we keep the raw text
- *  under `_raw` so a parser fallback can still see something. */
-function tryParseJsonField(value: unknown): unknown {
-  if (typeof value !== "string" || value.length === 0) return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return { _raw: value };
-  }
-}
-
-/** Normalise every key on a row (strip namespace prefix) and decode the
- *  known JSON-blob fields (`PropertySet`, `Definition`, `Content`,
- *  `DefinitionFileContent`). Returns a plain object the parsers' walk()
- *  can traverse. */
-function normaliseRow(row: Record<string, unknown>, namespace: string): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(row)) {
-    const key = normaliseFieldName(k, namespace);
-    out[key] = v;
-  }
-  for (const blobKey of ["PropertySet", "Definition", "Content", "DefinitionFileContent"]) {
-    if (typeof out[blobKey] === "string") {
-      const parsed = tryParseJsonField(out[blobKey]);
-      if (parsed !== null) out[blobKey] = parsed;
-    }
-  }
-  // Surface `propertySet` under the lowercase key the parsers check for.
-  if (out.PropertySet !== undefined && out.propertySet === undefined) {
-    out.propertySet = out.PropertySet;
-  }
-  return out;
 }
 
 interface ChildFetchSpec {
@@ -195,22 +157,39 @@ async function fetchChildrenByParent(
   vdpType: string,
   namespace: string,
   parentIds: string[],
-  onError?: (label: string, err: Error) => void,
-): Promise<Map<string, Array<Record<string, unknown>>>> {
+  onError: ((label: string, err: Error) => void) | undefined,
+  retryOpts: RetryOptions,
+): Promise<{
+  byParent: Map<string, Array<Record<string, unknown>>>;
+  failedParents: Map<string, unknown>;
+}> {
   const byParent = new Map<string, Array<Record<string, unknown>>>();
+  const failedParents = new Map<string, unknown>();
   const spec = CHILD_FETCHES[vdpType];
-  if (!spec || parentIds.length === 0) return byParent;
+  if (!spec || parentIds.length === 0) return { byParent, failedParents };
   const CHUNK = 200;
   for (let i = 0; i < parentIds.length; i += CHUNK) {
     const slice = parentIds.slice(i, i + CHUNK);
     const idList = slice.map((id) => `'${id.replace(/'/g, "\\'")}'`).join(",");
     const soql = spec.soql(namespace, idList);
-    let res: { records?: VElementRow[] } | null = null;
+    // 200 parents can carry far more than one 2000-row page of children:
+    // drain every page (a plain conn.query returns only the first batch).
+    let records: VElementRow[] = [];
     try {
-      res = (await scheduleQuery(() =>
-        soqlWithTimeout(conn.query(soql), `vlocity ${vdpType} children (${namespace})`),
-      )) as { records?: VElementRow[] } | null;
+      records = await querySoqlAll<VElementRow>(
+        conn,
+        soql,
+        `vlocity ${vdpType} children (${namespace})`,
+        scheduleQuery,
+        retryOpts,
+      );
     } catch (e) {
+      if (!isOrgRejection(e)) {
+        // Transient (after retries): don't emit these parents with a
+        // missing element graph; the caller surfaces them as not fetched.
+        for (const id of slice) failedParents.set(id, e);
+        continue;
+      }
       // Child fetch failed for this chunk — could be schema drift (e.g.
       // DRMapItem.DRBundleId__c removed in newer vlocity_cmt packages) or
       // a transient pool/socket failure. Surface via onError so callers can
@@ -220,7 +199,7 @@ async function fetchChildrenByParent(
       onError?.(`vlocity:${vdpType}:children:${namespace}`, e as Error);
       continue;
     }
-    for (const r of res?.records ?? []) {
+    for (const r of records) {
       const norm = normaliseRow(r as Record<string, unknown>, namespace);
       const parentId = String(norm[spec.parentField] ?? "");
       if (!parentId) continue;
@@ -229,7 +208,7 @@ async function fetchChildrenByParent(
       byParent.set(parentId, arr);
     }
   }
-  return byParent;
+  return { byParent, failedParents };
 }
 
 /**
@@ -247,7 +226,13 @@ export async function* iterVlocityRecords(
   caps: OrgCapabilities,
   orgId: string,
   onError?: (label: string, err: Error) => void,
+  retryOpts: RetryOptions = {},
 ): AsyncIterable<RawMember> {
+  // Transient losses (timeouts / connection drops that survive retries) are
+  // collected and re-thrown at the end so the `vlocity` source becomes a
+  // skip that --retry-skipped re-runs. Org rejections (type absent, schema
+  // drift) keep going to onError as before.
+  const failures: FetchFailure[] = [];
   const namespaces = caps.vlocityNamespaces ?? [];
   if (namespaces.length === 0) return;
   const registry = loadVlocityRegistry();
@@ -307,20 +292,26 @@ export async function* iterVlocityRecords(
     t: Task;
     records: VRow[];
     childrenByParent: Map<string, Array<Record<string, unknown>>>;
+    failedParents: Map<string, unknown>;
   };
 
   const runTask = async (idx: number, t: Task): Promise<Settled> => {
     const baseSoql = t.typeDef.query.split("%vlocity_namespace%").join(t.namespace);
     const soql = enrichSoql(baseSoql, t.typeDef.vlocityDataPackType, t.namespace);
-    let res: { records?: VRow[] } | null = null;
+    let records: VRow[] = [];
     try {
-      res = (await scheduleQuery(() =>
-        soqlWithTimeout(
-          conn.query(soql),
-          `vlocity ${t.typeDef.vlocityDataPackType} (${t.namespace})`,
-        ),
-      )) as { records?: VRow[] } | null;
+      records = await querySoqlAll<VRow>(
+        conn,
+        soql,
+        `vlocity ${t.typeDef.vlocityDataPackType} (${t.namespace})`,
+        scheduleQuery,
+        retryOpts,
+      );
     } catch (e) {
+      if (!isOrgRejection(e)) {
+        failures.push({ name: `${t.typeDef.vlocityDataPackType}:${t.namespace}`, error: e });
+        return { idx, t, records: [], childrenByParent: new Map(), failedParents: new Map() };
+      }
       // Per-type query failed. Common causes: type doesn't exist in this
       // org (different Vlocity industry namespaces install different
       // DataPack types — INVALID_TYPE / sObject not supported), socket
@@ -329,14 +320,13 @@ export async function* iterVlocityRecords(
       // wedged" — these used to look identical (empty output) which made
       // schema-drift bugs invisible.
       onError?.(`vlocity:${t.typeDef.vlocityDataPackType}:${t.namespace}`, e as Error);
-      return { idx, t, records: [], childrenByParent: new Map() };
+      return { idx, t, records: [], childrenByParent: new Map(), failedParents: new Map() };
     }
-    const records = res?.records ?? [];
     const childSpec = CHILD_FETCHES[t.typeDef.vlocityDataPackType];
     // Collect the parent keys the children correlate to — Id for FK-linked
     // children (Element.OmniScriptId), Name for name-linked ones (DRMapItem).
     const linkBy = childSpec?.linkBy ?? "Id";
-    const childrenByParent = childSpec
+    const children = childSpec
       ? await fetchChildrenByParent(
           conn,
           t.typeDef.vlocityDataPackType,
@@ -345,9 +335,16 @@ export async function* iterVlocityRecords(
             .map((r) => String((linkBy === "Name" ? r.Name : r.Id) ?? ""))
             .filter((k) => k.length > 0),
           onError,
+          retryOpts,
         )
-      : new Map<string, Array<Record<string, unknown>>>();
-    return { idx, t, records, childrenByParent };
+      : { byParent: new Map<string, Array<Record<string, unknown>>>(), failedParents: new Map() };
+    return {
+      idx,
+      t,
+      records,
+      childrenByParent: children.byParent,
+      failedParents: children.failedParents,
+    };
   };
 
   // Sliding window of 4 in-flight tasks. Matches the BATCH_WINDOW pattern
@@ -372,11 +369,28 @@ export async function* iterVlocityRecords(
       const taskRef = tasks[idx];
       if (taskRef) inFlight.set(idx, runTask(idx, taskRef));
     }
-    const { t, records, childrenByParent } = settled;
+    const { t, records, childrenByParent, failedParents } = settled;
     const childSpec = CHILD_FETCHES[t.typeDef.vlocityDataPackType];
     for (const r of records) {
-      const name = String(r.Name ?? r.Id ?? "");
+      if (childSpec && failedParents.size > 0) {
+        const parentKey = String((childSpec.linkBy === "Name" ? r.Name : r.Id) ?? "");
+        const childErr = failedParents.get(parentKey);
+        if (childErr) {
+          failures.push({
+            name: `${t.typeDef.vlocityDataPackType}:${t.namespace}:${r.Name ?? r.Id}`,
+            error: childErr,
+          });
+          continue;
+        }
+      }
       const normalised = normaliseRow(r as Record<string, unknown>, t.namespace);
+      const name = memberNameFor(t.typeDef.vlocityDataPackType, normalised, (id) =>
+        onError?.(
+          `vlocity:${t.typeDef.vlocityDataPackType}:nameFallback:${id}`,
+          new Error("missing Type/SubType"),
+        ),
+      );
+      normalised.recordId = r.Id;
       if (childSpec) {
         // Match children by the same key the fetch grouped on (Id or Name).
         const parentKey = String((childSpec.linkBy === "Name" ? r.Name : r.Id) ?? "");
@@ -396,4 +410,5 @@ export async function* iterVlocityRecords(
       };
     }
   }
+  throwIfIncomplete("vlocity", failures);
 }

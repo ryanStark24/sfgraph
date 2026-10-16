@@ -28,10 +28,10 @@ State a fact about this org or the Salesforce platform **only when evidence back
 2. Call `security_audit` with the resolved target (`object` / `field` to narrow; whole-org if neither). Capture full-access sharing rules and the FLS gap list.
    - **FLS gaps are pre-filtered** to FLS-relevant fields: Custom Metadata Type (`__mdt`), platform-event (`__e`), big-object (`__b`), and standard system/audit fields (Id, CreatedById, SystemModstamp, …) are excluded as noise. The response notes `+N CMDT/system fields hidden`. Only pass `include_non_fls_fields: true` if the user explicitly wants that raw set — never lead with it.
    - The inline gap list is capped (`limit`, default 30). Narrow with `object`, or raise `limit`, rather than dumping thousands of rows.
-3. Build the access matrix: Profile/PSet -> Read / Edit / Delete / View All / Modify All.
-4. Identify sharing exposure: OWD setting, sharing rules expanding access, role-hierarchy inheritance toggles.
-5. Flag risks: `without sharing` Apex selectors, missing `stripInaccessible` / `WITH SECURITY_ENFORCED`, guest user access, Experience Cloud profile reach.
-6. Render the access matrix as Mermaid yourself from the tool's `fieldAccessMatrix` data — the tool returns the matrix as structured data + markdown, not a diagram. See **Visualization** below.
+3. Build the field access matrix: for one field, the report lists every profile and permission set that grants read or edit ("Granted by"); a profile or permission set whose entry denies access is not counted. Run the audit per field you need in the matrix.
+4. Report sharing exposure from what the tool returns: the sharing rules that give edit or full access. The tool does **not** report org-wide defaults, the role hierarchy, object CRUD per profile, or `without sharing` Apex; say so, and check those in the source or the org if the user needs them (label them as not graph-confirmed).
+5. Flag risks you can back with evidence: full-access sharing rules and FLS gaps from the tool; `without sharing` classes, missing `stripInaccessible` / `WITH SECURITY_ENFORCED`, guest user and Experience Cloud reach only from source you read.
+6. Render the access matrix as Mermaid yourself from the report's "Granted by" lists. The tool does not draw a diagram. See **Visualization** below.
 
 ## Visualization
 
@@ -48,6 +48,8 @@ flowchart LR
 When more than 25 Profiles/PSets have access, collapse to a count table and only diagram the high-risk paths (guest, Experience Cloud, without-sharing).
 
 ## Staleness check
+
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
 
 Before calling `security_audit`, invoke `staleness_check` for the target org. Permission set/profile assignments change frequently; a stale graph misrepresents access. If the report says stale, surface a warning to the user:
 

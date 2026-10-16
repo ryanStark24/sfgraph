@@ -1,9 +1,10 @@
 import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import { REL_TYPES } from "../domain/rel-types.js";
+import { maskApex } from "../parsers/apex/dynamic-soql.js";
+import { blankBracketGroups, findInlineQueries } from "../parsers/apex/soql-fields.js";
 import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
-import { realIncomingRefCount } from "./dead-code.js";
-import { freshnessScore } from "./freshness.js";
+import { deadCodeCandidates, scoreDeadCode } from "./dead-code.js";
 
 export interface PopulateCounts {
   findings: number;
@@ -43,6 +44,11 @@ export function populateGovernorRisks(
     const emit = (idx: number, type: string, evidence: string): void => {
       out.push({ type, evidence: evidence.trim().slice(0, 200), line: lineOf(idx) });
     };
+    // Inline queries end at their depth-0 `]` outside string literals
+    // (findInlineQueries, on the comment-masked body); evidence is raw text.
+    const masked = maskApex(body);
+    const queries = findInlineQueries(masked);
+    const queryAt = new Map(queries.map((q) => [q.index, q]));
     for (let i = 0; i < body.length; i++) {
       const ch = body[i];
       // loop keyword detection
@@ -70,14 +76,11 @@ export function populateGovernorRisks(
       }
       // detect patterns at this position
       if (inLoop()) {
-        if (body.startsWith("[", i)) {
-          const close = body.indexOf("]", i);
-          const seg = close !== -1 ? body.slice(i, close + 1) : body.slice(i, i + 80);
-          if (/^\[\s*SELECT\b/i.test(seg)) {
-            emit(i, "soql_in_loop", seg);
-            i = close === -1 ? i : close;
-            continue;
-          }
+        const q = queryAt.get(i);
+        if (q) {
+          emit(i, "soql_in_loop", body.slice(i, i + q.text.length));
+          i += q.text.length - 1;
+          continue;
         }
         const dmlMatch = body
           .slice(i, i + 40)
@@ -88,10 +91,12 @@ export function populateGovernorRisks(
       }
     }
     // unbounded query: search globally for SELECT without WHERE/LIMIT
-    for (const m of body.matchAll(/\[\s*SELECT\b[\s\S]*?\]/gi)) {
-      const seg = m[0] ?? "";
-      if (!/\bLIMIT\b/i.test(seg) && !/\bWHERE\b/i.test(seg)) {
-        emit(m.index ?? 0, "unbounded_query", seg);
+    // (each query on its own: a query held in a bind is blanked out of its
+    // outer query and checked separately)
+    for (const q of queries) {
+      const own = blankBracketGroups(q.inner);
+      if (!/\bLIMIT\b/i.test(own) && !/\bWHERE\b/i.test(own)) {
+        emit(q.index, "unbounded_query", body.slice(q.index, q.index + q.text.length));
       }
     }
     // simple no-bulkify: trigger with single-record DML pattern
@@ -177,46 +182,157 @@ export function populateGovernorRisks(
   return n;
 }
 
+/**
+ * Version of the dead-code algorithm (`deadCodeCandidates` + `scoreDeadCode`)
+ * that wrote `_sfgraph_dead_code_scores`. Bump it on any change to which
+ * nodes are candidates or how they are scored: rows stamped with another
+ * version, or with none (written before the stamp existed), are stale, and
+ * readers recompute live instead of serving pre-fix answers.
+ *   2: member containment (method refs keep the class), @isTest classes
+ *      excluded, test-only references do not keep a class alive.
+ *   3: classes referenced only by tests carry `referenced_only_by_tests`
+ *      instead of `no_incoming_edges`.
+ *   4: an unambiguous Custom Metadata record -> ApexClass reflection edge
+ *      (a CMDT field naming the class) is a real reference.
+ *   5: test references count as references: dead = no inbound of any kind,
+ *      unreferenced @isTest classes included (`test_class`); production code
+ *      used only by tests is kept apart (`referenced_only_by_tests`).
+ */
+export const DEAD_CODE_ALGORITHM_VERSION = 5;
+
+const DEAD_CODE_ANALYSIS = "dead_code";
+
+function ensureVersionTable(db: BetterSqlite3Database): void {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS _sfgraph_analysis_versions (
+       org_id TEXT NOT NULL,
+       analysis TEXT NOT NULL,
+       version INTEGER NOT NULL,
+       computed_at INTEGER NOT NULL,
+       PRIMARY KEY (org_id, analysis)
+     )`,
+  );
+}
+
+/** The algorithm version stamped for `analysis`, or null when none is. */
+function stampedVersion(db: BetterSqlite3Database, orgId: OrgId, analysis: string): number | null {
+  try {
+    const r = db
+      .prepare("SELECT version FROM _sfgraph_analysis_versions WHERE org_id = ? AND analysis = ?")
+      .get(orgId, analysis) as { version: number } | undefined;
+    return r ? Number(r.version) : null;
+  } catch {
+    // No version table: written before stamps existed.
+    return null;
+  }
+}
+
 export function populateDeadCodeScores(
   store: GraphStore,
   orgId: OrgId,
   db: BetterSqlite3Database,
 ): number {
   const now = Date.now();
+  ensureVersionTable(db);
   const stmt = db.prepare(
     `INSERT OR REPLACE INTO _sfgraph_dead_code_scores
      (org_id, qualified_name, score, confidence, reasons, computed_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
   );
   let n = 0;
-  const labels = [
-    METADATA_CATEGORY.APEX_CLASS,
-    METADATA_CATEGORY.LWC,
-    METADATA_CATEGORY.FLOW,
-    METADATA_CATEGORY.APEX_PAGE,
-    METADATA_CATEGORY.APEX_COMPONENT,
-  ];
-  for (const lbl of labels) {
-    for (const node of store.listNodesByLabel(orgId, lbl, 10000)) {
-      const incoming = realIncomingRefCount(store, orgId, node.qualifiedName);
-      const fresh = freshnessScore(node, now);
-      const reasons: string[] = [];
-      // Score formula: lower = more dead. weight 0.6 freshness + 0.4 incoming.
-      const incomingScore = incoming === 0 ? 0 : Math.min(1, incoming / 5);
-      if (incoming === 0) reasons.push("no_incoming_edges");
-      if (fresh < 0.4) reasons.push("stale_freshness");
-      const score = 0.6 * fresh + 0.4 * incomingScore;
-      let confidence: "high" | "medium" | "low";
-      if (score < 0.2) confidence = "high";
-      else if (score < 0.45) confidence = "medium";
-      else confidence = "low";
-      // Only persist potentially-dead candidates
-      if (incoming > 0 && fresh >= 0.5) continue;
+  // Both deadCodeCandidates kinds: dead rows (`no_incoming_edges`) and
+  // production code used only by tests (`referenced_only_by_tests`); readers
+  // keep them apart by reason. A node with a production inbound edge is in
+  // use, whatever its freshness.
+  const write = db.transaction(() => {
+    db.prepare("DELETE FROM _sfgraph_dead_code_scores WHERE org_id = ?").run(orgId);
+    for (const { node, testOnlyRefs, isTest } of deadCodeCandidates(store, orgId)) {
+      const { score, confidence, reasons } = scoreDeadCode(node, now, testOnlyRefs, isTest);
       stmt.run(orgId, node.qualifiedName, score, confidence, JSON.stringify(reasons), now);
       n += 1;
     }
-  }
+    db.prepare(
+      `INSERT OR REPLACE INTO _sfgraph_analysis_versions (org_id, analysis, version, computed_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(orgId, DEAD_CODE_ANALYSIS, DEAD_CODE_ALGORITHM_VERSION, now);
+  });
+  write();
   return n;
+}
+
+export interface DeadCodeScoreRow {
+  qualifiedName: string;
+  score: number;
+  confidence: string;
+  reasons: string[];
+  computedAt: number;
+}
+
+/**
+ * Rows of `_sfgraph_dead_code_scores` for `orgId`, ordered by score, or null
+ * when the cache is stale for this algorithm: no version stamp (an older
+ * scorer wrote it) or another version. An empty array is a current, valid
+ * answer (no candidates). Freshness against the last sync is the caller's
+ * check (`computedAt`).
+ */
+export function readDeadCodeScores(
+  db: BetterSqlite3Database,
+  orgId: OrgId,
+): DeadCodeScoreRow[] | null {
+  if (stampedVersion(db, orgId, DEAD_CODE_ANALYSIS) !== DEAD_CODE_ALGORITHM_VERSION) return null;
+  try {
+    const rows = db
+      .prepare(
+        `SELECT qualified_name, score, confidence, reasons, computed_at
+         FROM _sfgraph_dead_code_scores WHERE org_id = ? ORDER BY score ASC, qualified_name ASC`,
+      )
+      .all(orgId) as Array<{
+      qualified_name: string;
+      score: number;
+      confidence: string;
+      reasons: string;
+      computed_at: number;
+    }>;
+    return rows.map((r) => {
+      let reasons: string[] = [];
+      try {
+        reasons = JSON.parse(r.reasons) as string[];
+      } catch {
+        // unparseable reasons: keep the row, no reasons
+      }
+      return {
+        qualifiedName: r.qualified_name,
+        score: r.score,
+        confidence: r.confidence,
+        reasons,
+        computedAt: r.computed_at,
+      };
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Dead-code scores from the cache when it is current for this algorithm,
+ * otherwise computed live (same candidates and scores the cache would hold).
+ */
+export function loadDeadCodeScores(
+  store: GraphStore,
+  orgId: OrgId,
+  db: BetterSqlite3Database | null | undefined,
+  now = Date.now(),
+): { rows: DeadCodeScoreRow[]; source: "cache" | "live" } {
+  const cached = db ? readDeadCodeScores(db, orgId) : null;
+  if (cached) return { rows: cached, source: "cache" };
+  const rows = deadCodeCandidates(store, orgId)
+    .map(({ node, testOnlyRefs, isTest }) => ({
+      qualifiedName: String(node.qualifiedName),
+      ...scoreDeadCode(node, now, testOnlyRefs, isTest),
+      computedAt: now,
+    }))
+    .sort((x, y) => x.score - y.score || x.qualifiedName.localeCompare(y.qualifiedName));
+  return { rows, source: "live" };
 }
 
 export function populateTestCoverage(

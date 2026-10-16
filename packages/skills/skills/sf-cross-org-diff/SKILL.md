@@ -25,7 +25,7 @@ State a fact about this org or the Salesforce platform **only when evidence back
 ## Playbook
 
 1. Call `list_orgs` first. Present the user with the authenticated orgs, each org's `ingested` flag, last sync timestamp, and `stale` flag. Ask the user to pick the two orgs to compare. Refuse to proceed if either selected org has `ingested=false` — instruct them to run `sfgraph ingest --org <alias>` first.
-2. Call `cross_org_diff(orgA, orgB)`. Capture added / removed / modified nodes grouped by metadata category.
+2. Call `cross_org_diff(org_a, org_b)` (optionally `category`). Capture added / removed / modified nodes grouped by metadata category. Managed-package and standard items found in one org only are hidden by default and counted in the report; pass `include_managed: true` / `include_standard: true` only when the user asks about them.
 3. For high-churn categories, call `point_in_time_diff` inside each org to confirm the drift originated there (vs being a stale snapshot artifact).
 4. Categorise drift: **structural** (new objects/fields), **logic** (Apex, Flow body changes), **security** (profile / sharing), **config** (custom metadata / settings).
 5. Render the Mermaid drift summary from the tool. For each category, list the top-N items by impact.
@@ -51,6 +51,8 @@ flowchart LR
 For diffs with >50 nodes, switch to a bucketed table per category and skip the diagram.
 
 ## Staleness check
+
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
 
 Before calling `cross_org_diff`, invoke `staleness_check` for both orgs. If either is stale, surface a warning to the user:
 

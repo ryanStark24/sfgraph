@@ -1,0 +1,4 @@
+<PermissionSet><label>Sales</label>
+  <classAccesses><apexClass>AccountService</apexClass><enabled>true</enabled></classAccesses>
+  <fieldPermissions><field>Account.Tier__c</field><readable>true</readable><editable>false</editable></fieldPermissions>
+</PermissionSet>

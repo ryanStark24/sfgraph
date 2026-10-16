@@ -7,6 +7,13 @@ import {
   scheduleMetadata,
   withTimeout,
 } from "../rate-limit.js";
+import {
+  type FetchFailure,
+  type RetryOptions,
+  catchInto,
+  throwIfIncomplete,
+  withRetry,
+} from "../retry.js";
 
 const BATCH = 10;
 const xml = new XMLBuilder({
@@ -27,13 +34,23 @@ interface MdListItem {
  * failSoft's inactivity timer happy on orgs with many flows where the
  * full-collect pattern was breaching the 180s no-yield ceiling.
  */
-export async function* iterFlow(conn: any): AsyncIterable<RawMember> {
-  const list = (await scheduleMetadata(() =>
-    withTimeout(
-      conn.metadata.list([{ type: "Flow" }]),
-      METADATA_LIST_TIMEOUT_MS,
-      "metadata.list Flow",
-    ),
+export async function* iterFlow(conn: any, retryOpts: RetryOptions = {}): AsyncIterable<RawMember> {
+  // Flows the adaptive reader gave up on; re-thrown at the end so failSoft
+  // records a `flow` skip naming them (previously dropped silently).
+  const failures: FetchFailure[] = [];
+  const onFailed = (names: string[], error: unknown) => {
+    for (const name of names) failures.push({ name, error });
+  };
+  const list = (await withRetry(
+    () =>
+      scheduleMetadata(() =>
+        withTimeout(
+          conn.metadata.list([{ type: "Flow" }]),
+          METADATA_LIST_TIMEOUT_MS,
+          "metadata.list Flow",
+        ),
+      ),
+    retryOpts,
   )) as MdListItem[] | null;
   const items = Array.isArray(list) ? list : [];
   const batches: MdListItem[][] = [];
@@ -48,7 +65,7 @@ export async function* iterFlow(conn: any): AsyncIterable<RawMember> {
     const p = (async (): Promise<Settled> => ({
       idx,
       batch,
-      records: await readMetadataBatchAdaptive(conn, "Flow", batch),
+      records: await readMetadataBatchAdaptive(conn, "Flow", batch, 0, onFailed),
     }))();
     inFlight.set(idx, p);
   };
@@ -76,4 +93,5 @@ export async function* iterFlow(conn: any): AsyncIterable<RawMember> {
       };
     }
   }
+  throwIfIncomplete("flow", failures);
 }

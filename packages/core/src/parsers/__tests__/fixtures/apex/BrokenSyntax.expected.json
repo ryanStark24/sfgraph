@@ -1,11 +1,22 @@
 {
   "nodes": [
     {
+      "qualifiedName": "ApexClass:BrokenSyntax",
+      "label": "ApexClass",
+      "attributes": {
+        "name": "BrokenSyntax",
+        "modifiers": [],
+        "isTest": false,
+        "apiVersion": null,
+        "parseFailed": true
+      }
+    },
+    {
       "qualifiedName": "ParseError:ApexClass:BrokenSyntax",
       "label": "ParseError",
       "attributes": {
         "className": "BrokenSyntax",
-        "message": "[object Object]"
+        "message": "2:22 mismatched input '{' expecting {'abstract', 'after', 'before', 'final', 'get', 'global', 'inherited', 'instanceof', 'override', 'private', 'protected', 'public', 'set', 'sharing', 'static', 'switch', 'testmethod', 'transient', 'trigger', 'virtual', 'webservice', 'when', 'with', 'without', 'list…"
       }
     }
   ],

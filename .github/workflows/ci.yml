@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: [20, 22]
+        node: [22]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,6 +33,14 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      # Workspace packages resolve each other through dist/, so build first.
+      - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm test
-      - run: pnpm build
+        if: runner.os != 'Windows'
+      # Windows: one package's suite at a time. `pnpm -r` runs up to four
+      # packages' tests at once; on the Windows runner core, mcp-server and cli
+      # together starve vitest's main process, and a worker gives up on it
+      # ("Timeout calling onTaskUpdate") with every test passing.
+      - run: pnpm -r --workspace-concurrency=1 test
+        if: runner.os == 'Windows'

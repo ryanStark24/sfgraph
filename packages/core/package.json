@@ -1,6 +1,6 @@
 {
   "name": "@ryanstark24/sfgraph-core",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -42,10 +42,9 @@
     "fast-xml-parser": "^5.8.0",
     "jsforce": "^3.10.14",
     "jszip": "^3.10.1",
-    "picomatch": "^4.0.4",
     "p-limit": "^7.3.0",
     "parse5": "^8.0.1",
-    "piscina": "^5.1.4",
+    "piscina": "^5.3.2",
     "sqlite-vec": "^0.1.9",
     "yaml": "^2.9.0",
     "zod": "^3.25.76",
@@ -54,7 +53,7 @@
   },
   "optionalDependencies": {
     "@xenova/transformers": "^2.17.2",
-    "@ryanstark24/sfgraph-models": "^1.1.0"
+    "@ryanstark24/sfgraph-models": "workspace:*"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
@@ -62,7 +61,6 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/jsforce": "^1.11.6",
     "@types/node": "^22.0.0",
-    "@types/picomatch": "^4.0.0",
     "typescript": "^5.6.0",
     "vitest": "^3.2.4"
   },
@@ -72,7 +70,7 @@
     "url": "https://github.com/ryanStark24/sfgraph"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
@@ -80,6 +78,7 @@
   "description": "sfgraph engine: storage, parsers, extractors, analyze, render",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "README.md"
   ],
   "keywords": [

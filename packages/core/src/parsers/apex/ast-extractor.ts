@@ -23,6 +23,7 @@ import type { EdgeFact } from "../../domain/index.js";
 import { REL_TYPES } from "../../domain/index.js";
 import { makeEdge, stripNs } from "../common.js";
 import type { ParseContext } from "../contract.js";
+import type { ApexRelationshipPath } from "./class.js";
 
 export interface AstExtractorOpts {
   ctx: ParseContext;
@@ -37,6 +38,9 @@ export interface AstExtraction {
   diagnostics: string[];
   /** Per-method-name → arity, mostly used by tests. */
   methodArities: Map<string, number>;
+  /** Per method qname: dotted SOQL relationship fields (`Account.Name`) for
+   *  the post-merge resolver (parsers/apex/ref-resolver.ts). */
+  relationshipPaths: Map<string, ApexRelationshipPath[]>;
 }
 
 /**
@@ -95,6 +99,31 @@ function findDescendants(root: Node, rule: string): Node[] {
   }
   return out;
 }
+
+/** Descendants of `root` with rule `rule`, not entering `stop` rules below
+ *  `root` (a nested subquery has its own FROM object). */
+function findOwnDescendants(root: Node, rule: string, stop: ReadonlySet<string>): Node[] {
+  const out: Node[] = [];
+  const visit = (n: Node, top: boolean) => {
+    const r = ruleName(n);
+    if (!top && stop.has(r)) return;
+    if (r === rule) out.push(n);
+    const c = getChildCount(n);
+    for (let i = 0; i < c; i++) {
+      const ch = getChild(n, i);
+      if (ch) visit(ch, false);
+    }
+  };
+  visit(root, true);
+  return out;
+}
+
+const SUBQUERY_RULES: ReadonlySet<string> = new Set(["QueryContext", "SubQueryContext"]);
+const SELECT_SKIP_RULES: ReadonlySet<string> = new Set([
+  "QueryContext",
+  "SubQueryContext",
+  "SoqlFunctionContext",
+]);
 
 function findAncestor(node: Node, rule: string, root: Node): Node | undefined {
   // antlr4ts attaches `parent` for parsing, but we conservatively assume
@@ -265,11 +294,20 @@ function extractSoqlEdges(
   ctx: ParseContext,
   edges: EdgeFact[],
   diag: string[],
+  paths: ApexRelationshipPath[],
 ): void {
-  const queriesInLoop = nodesInsideLoops(methodDecl, ["QueryContext"]);
+  const queriesInLoop = nodesInsideLoops(methodDecl, ["QueryContext", "SubQueryContext"]);
   // SoqlLiteral wraps Query; both surface FromNameList. Use Query to get
-  // selectList + fromNameList in one place.
-  for (const q of findDescendants(methodDecl, "QueryContext")) {
+  // selectList + fromNameList in one place. A WHERE semi-join
+  // (`Id IN (SELECT AccountId FROM Contact)`) is a SubQuery with its own FROM
+  // object; select-list subqueries (`(SELECT Id FROM Contacts)`) name a
+  // child relationship, not an object, and are not walked.
+  const queries = new Set<Node>(findDescendants(methodDecl, "QueryContext"));
+  for (const q of [...queries]) {
+    const where = (q as any).whereClause?.();
+    if (where) for (const sq of findDescendants(where, "SubQueryContext")) queries.add(sq);
+  }
+  for (const q of queries) {
     const fromList = (q as any).fromNameList?.();
     if (!fromList) continue;
     const fromObjects: string[] = [];
@@ -303,37 +341,54 @@ function extractSoqlEdges(
       );
     }
 
-    // SELECT-list fields → READS_FIELD on the *first* FROM object (good enough
-    // when the query has a single root; subqueries are walked separately).
+    // Fields of the query's own FROM object → READS_FIELD on the *first* FROM
+    // object: the SELECT list (aggregate arguments aside) and the WHERE /
+    // GROUP BY / ORDER BY operands. Subqueries are walked separately. Dotted
+    // relationship fields (`Account.Name`) are not fields of this object:
+    // they are recorded as paths for the post-merge resolver.
     const primary = fromObjects[0];
     if (!primary) continue;
-    const selectList = (q as any).selectList?.();
-    if (!selectList) continue;
-    for (const fn of findDescendants(selectList, "FieldNameContext")) {
+    const fieldNodes: Node[] = [];
+    const selectList = (q as any).selectList?.() ?? (q as any).subFieldList?.();
+    if (selectList)
+      fieldNodes.push(...findOwnDescendants(selectList, "FieldNameContext", SELECT_SKIP_RULES));
+    for (const clause of [
+      (q as any).whereClause?.(),
+      (q as any).groupByClause?.(),
+      (q as any).orderByClause?.(),
+    ]) {
+      if (clause)
+        fieldNodes.push(...findOwnDescendants(clause, "FieldNameContext", SUBQUERY_RULES));
+    }
+    const seen = new Set<string>();
+    for (const fn of fieldNodes) {
       const path = nodeText(fn).trim();
       if (!path || !SOQL_FIELD_NAME_RE.test(path)) continue;
-      // `Name` → CustomField:Account.Name
-      // `Account.Name` (parent traversal) → CustomField:Account.Name (the leaf)
-      // `Owner.Profile.Name` → emit READS_FIELD for the trailing field only;
-      //   parent traversal is a separate concern we don't try to resolve here.
-      const parts = path.split(".");
-      const fieldName = parts[parts.length - 1] ?? "";
-      const target = parts.length > 1 ? parts.slice(0, -1).join(".") : primary;
-      if (!fieldName) continue;
+      if (seen.has(path.toLowerCase())) continue;
+      seen.add(path.toLowerCase());
+      if (path.includes(".")) {
+        if (!paths.some((p) => p.object === primary && p.path.toLowerCase() === path.toLowerCase()))
+          paths.push({ object: primary, path, rel: REL_TYPES.READS_FIELD });
+        continue;
+      }
       edges.push(
         makeEdge(
           ctx,
           scope.qname,
           REL_TYPES.READS_FIELD,
-          `CustomField:${stripNs(target, ctx.namespace)}.${fieldName}`,
+          `CustomField:${stripNs(primary, ctx.namespace)}.${path}`,
         ),
       );
     }
   }
 
   // Detect SOSL — `[FIND ...]` shows up as SoslLiteral.
-  if (findDescendants(methodDecl, "SoslLiteralContext").length > 0) {
-    edges.push(makeEdge(ctx, scope.qname, REL_TYPES.EXECUTES_SOSL, "SOSL:*"));
+  const sosl = findDescendants(methodDecl, "SoslLiteralContext");
+  if (sosl.length > 0) {
+    // T15 I-5: stamped inLoop when any SOSL literal sits in a loop body.
+    const inLoop = nodesInsideLoops(methodDecl, ["SoslLiteralContext"]);
+    const attrs = sosl.some((n) => inLoop.has(n)) ? { inLoop: true } : {};
+    edges.push(makeEdge(ctx, scope.qname, REL_TYPES.EXECUTES_SOSL, "SOSL:*", attrs));
   }
 }
 
@@ -408,18 +463,24 @@ function extractDottedFieldRefs(
     if (!/^[A-Za-z_][\w]*$/.test(recvText)) continue;
     const sobj = scope.vars.get(recvText);
     if (!sobj) continue;
-    // Strip Apex `__c` from the captured field name to match how CustomField
-    // qnames are stored (CustomField:Account.Foo, not CustomField:Account.Foo__c).
-    const normalized = fieldName.endsWith("__c") ? fieldName.slice(0, -3) : fieldName;
+    // Keep the API name verbatim (`Foo__c`): CustomField qnames are
+    // `CustomField:<Object>.<Field API name>`, same as the SOQL select-list path.
     edges.push(
       makeEdge(
         ctx,
         scope.qname,
         REL_TYPES.READS_FIELD,
-        `CustomField:${stripNs(sobj, ctx.namespace)}.${normalized}`,
+        `CustomField:${stripNs(sobj, ctx.namespace)}.${fieldName}`,
       ),
     );
   }
+}
+
+function hasVarCI(vars: Map<string, string>, name: string): boolean {
+  if (vars.has(name)) return true;
+  const lower = name.toLowerCase();
+  for (const k of vars.keys()) if (k.toLowerCase() === lower) return true;
+  return false;
 }
 
 function extractMethodCalls(
@@ -442,6 +503,8 @@ function extractMethodCalls(
     // `acc.update()` etc. — those are instance calls on locals.
     if (!/^[A-Z][A-Za-z0-9_]*$/.test(recv)) continue;
     if (recv === effectiveName) continue;
+    // A capitalised local/param (`Prefix.trim()`) is an instance call.
+    if (hasVarCI(scope.vars, recv)) continue;
     const exprList = (dmc as any).expressionList?.();
     const arity = countDirectArgs(exprList);
     edges.push(
@@ -450,7 +513,7 @@ function extractMethodCalls(
         scope.qname,
         REL_TYPES.CALLS,
         `ApexMethod:${stripNs(recv, ctx.namespace)}.${methodId}(${arity})`,
-        { resolvedBy: "ast" },
+        { callResolution: "ast" },
       ),
     );
   }
@@ -477,7 +540,7 @@ function extractMethodCalls(
         `ApexClass:${stripNs(bare, ctx.namespace)}`,
         {
           arity,
-          resolvedBy: "ast",
+          callResolution: "ast",
         },
       ),
     );
@@ -526,6 +589,7 @@ export function extractFromAst(tree: unknown, opts: AstExtractorOpts): AstExtrac
   const edges: EdgeFact[] = [];
   const diagnostics: string[] = [];
   const methodArities = new Map<string, number>();
+  const relationshipPaths = new Map<string, ApexRelationshipPath[]>();
   const root = tree as Node;
 
   const classDecls = findDescendants(root, "ClassDeclarationContext");
@@ -549,12 +613,14 @@ export function extractFromAst(tree: unknown, opts: AstExtractorOpts): AstExtrac
       const qname = paramQname(opts.effectiveName, methodName, arity);
       const scope: MethodContext = { qname, vars: new Map() };
       indexLocalsAndParams(md, scope);
-      extractSoqlEdges(md, scope, opts.ctx, edges, diagnostics);
+      const paths = relationshipPaths.get(qname) ?? [];
+      extractSoqlEdges(md, scope, opts.ctx, edges, diagnostics, paths);
+      if (paths.length > 0) relationshipPaths.set(qname, paths);
       extractDmlEdges(md, scope, opts.ctx, edges);
       extractDottedFieldRefs(md, scope, opts.ctx, edges);
       extractMethodCalls(md, scope, opts.effectiveName, opts.ctx, edges);
     }
   }
 
-  return { edges, diagnostics, methodArities };
+  return { edges, diagnostics, methodArities, relationshipPaths };
 }

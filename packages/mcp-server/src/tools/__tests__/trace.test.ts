@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Fixture, REL_TYPES, createFixture } from "./_fixture.js";
-import { callTool } from "./_runner.js";
+import { callTool, defaultRegistry } from "./_runner.js";
 
 let fix: Fixture;
 
@@ -146,5 +146,34 @@ describe("trace_upstream / trace_downstream", () => {
     });
     const d = r.data as { nodes: Array<{ qualifiedName: string }> };
     expect(d.nodes.length).toBeGreaterThanOrEqual(50);
+  });
+
+  it("rejects an unknown rel_type with the closest real names, instead of answering 'nothing'", async () => {
+    for (const tool of ["trace_upstream", "trace_downstream"]) {
+      const err = await callTool(tool, {
+        org: fix.orgId,
+        qname: "ApexClass:B",
+        rel_types: ["CALLS_METHOD"],
+      }).catch((e: Error) => e);
+      expect(String((err as Error).message)).toContain("unknown rel_type `CALLS_METHOD`");
+      expect(String((err as Error).message)).toContain("`CALLS`");
+    }
+  });
+
+  it("matches rel_types case-insensitively", async () => {
+    const r = await callTool("trace_downstream", {
+      org: fix.orgId,
+      qname: "ApexClass:A",
+      rel_types: ["calls"],
+    });
+    const d = r.data as { nodes: Array<{ qualifiedName: string }> };
+    expect(d.nodes.map((n) => n.qualifiedName)).toContain("ApexClass:C");
+  });
+
+  it("still advertises rel_types as a plain string list", () => {
+    const props = defaultRegistry.get("trace_downstream")?.schema.inputSchema as {
+      properties: Record<string, unknown>;
+    };
+    expect(props.properties.rel_types).toEqual({ type: "array", items: { type: "string" } });
   });
 });

@@ -1,5 +1,6 @@
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
+import { countNoun, withInShort } from "./_report.js";
 
 const inputSchema = z.object({ org: z.string().min(1) });
 
@@ -9,7 +10,7 @@ const STALE_THRESHOLD_DAYS = 7;
 defineTool({
   name: "staleness_check",
   description:
-    "USE THIS for any 'is my graph fresh' / 'when was the last ingest' / 'should I re-ingest' question for a single Salesforce org. Returns days since last sync + stale flag (>=7 days) + the exact sfgraph ingest command to refresh. Call this FIRST in any workflow where staleness would change the answer.",
+    "Use for 'is the graph fresh'. Returns days since the org's last sync, a stale flag (7+ days) and the refresh command.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
@@ -43,7 +44,16 @@ defineTool({
     ].join("\n");
     return {
       summary,
-      markdown: md,
+      markdown: withInShort(
+        ageDays == null
+          ? `The graph for \`${input.org}\` has no record of ever being loaded, so answers about it may be missing or out of date; load it before relying on it.`
+          : `The graph for \`${input.org}\` was last loaded ${ageDays === 0 ? "today" : `${countNoun(ageDays, "day")} ago`}${
+              stale
+                ? ", so it may be out of date; reload it before relying on it."
+                : ", so it is recent enough to use."
+            }`,
+        md,
+      ),
       data: {
         org: input.org,
         lastSyncedAt,

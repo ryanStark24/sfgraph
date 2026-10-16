@@ -14,8 +14,10 @@ nodes:
       sobjectType: "${record.sobjectType | raw}"
 
 edges:
+  # Custom LWCs appear as `c:name` or a bare `name`; any other `ns:name`
+  # (flexipage:, force:, managed packages) is not a local LWC.
   - relType: EMBEDS_LWC
     iterate: "${walkAll(record.flexiPageRegions,'componentName')}"
-    when: "${item}"
+    when: "${match(toString(item),'^(?:c:)?([A-Za-z]\\w*)$')}"
     src: "FlexiPage:${record.name}"
-    dst: "LightningComponentBundle:${stripPrefix(toString(item),'c:')}"
+    dst: "LWC:${match(toString(item),'^(?:c:)?([A-Za-z]\\w*)$')}"

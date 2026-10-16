@@ -1,0 +1,8 @@
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+  <processType>AutoLaunchedFlow</processType>
+  <start><object>Account</object><triggerType>RecordAfterSave</triggerType></start>
+  <actionCalls><name>Call_Svc</name><actionName>AccountService</actionName><actionType>apex</actionType></actionCalls>
+  <recordUpdates><name>Upd</name><object>Account</object>
+    <inputAssignments><field>Tier__c</field><value><stringValue>Gold</stringValue></value></inputAssignments>
+  </recordUpdates>
+</Flow>

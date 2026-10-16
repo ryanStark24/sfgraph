@@ -35,13 +35,13 @@ A real-org ingest never reports a metadata type as "skipped" because of a wedge 
 
 ## Why this phase exists (concrete evidence)
 
-A real ingest run against the **PLDT_DEV_Anshul** org (Vlocity-CMT) surfaced a cascade failure that the existing watchdog architecture cannot prevent:
+A real ingest run against the **large Vlocity-CMT test** org (Vlocity-CMT) surfaced a cascade failure that the existing watchdog architecture cannot prevent:
 
-- **The wedge:** One LWC bundle (`oSSTechnologiesTable`) stalled the `lwc` source for 440+ seconds at `packages/core/src/extractors/live-org/extractors/lwc.ts:91-98` — a serial per-bundle `LightningComponentResource` Tooling SOQL inside a `for`-loop at `lwc.ts:60`.
+- **The wedge:** One LWC bundle (`<large bundle>`) stalled the `lwc` source for 440+ seconds at `packages/core/src/extractors/live-org/extractors/lwc.ts:91-98` — a serial per-bundle `LightningComponentResource` Tooling SOQL inside a `for`-loop at `lwc.ts:60`.
 - **The cascade:** While that single bundle's pagination stalled, **37 unrelated metadata types** were marked `"skipped (source watchdog: first-yield 90s)"` by the watchdog at `packages/core/src/extractors/live-org/bulk-retrieve.ts:155`. Casualties included `security` (entire Profile / PermSet ingest), `vlocity`, `object`, `flow`, `lwc` itself, `layout`, `customMetadata`, `flowDefinition`, `approvalProcess`, `connectedApp`, `samlSsoConfig`, multiple GenAi types, `Network`, `experienceBundle`, and others.
 - **The root cause:** `bulk-retrieve.ts:137` sets `startedAt = Date.now()` at source **registration**, not at slot acquisition. Sources queued behind a wedge in the sliding-window merger burn their 90-second "first-yield" budget while still waiting their turn. When the wedge finally clears, queued neighbors have already exceeded their clocks and are killed without ever executing.
 - **The blast radius:** The graph audit at the end of the run showed **19,166 dangling edges out of 39,012 total** — the direct downstream cost of the missing types. Every dangling edge is a question the graph cannot answer.
-- **The compounding catastrophe (added 2026-05-18, motivates W1.5-07):** Today's `--detect-deletions` sweep at `packages/core/src/ingest/live-ingest.ts:789-819` only skips when `streamAborted === true`. A wedged source releases its slot with `streamAborted === false`, `parseErrors === 0`, and an empty `touchedQnames` for its label. Result: the sweep wipes EVERY node of that label. The PLDT_DEV_Anshul run with `--detect-deletions=true` would have erased every Profile and PermissionSet from the graph — a graph extinction event from a benign wedge. W1.5-01/02 fix the cascade itself; W1.5-07 is the second-line defense that makes the deletion sweep refuse to act on empty streams.
+- **The compounding catastrophe (added 2026-05-18, motivates W1.5-07):** Today's `--detect-deletions` sweep at `packages/core/src/ingest/live-ingest.ts:789-819` only skips when `streamAborted === true`. A wedged source releases its slot with `streamAborted === false`, `parseErrors === 0`, and an empty `touchedQnames` for its label. Result: the sweep wipes EVERY node of that label. The the large Vlocity-CMT test org run with `--detect-deletions=true` would have erased every Profile and PermissionSet from the graph — a graph extinction event from a benign wedge. W1.5-01/02 fix the cascade itself; W1.5-07 is the second-line defense that makes the deletion sweep refuse to act on empty streams.
 
 The fix is correctness, not bigger numbers.
 
@@ -56,7 +56,7 @@ wedge:<sourceLabel>:<stage>:<detail>
 ```
 
 Examples:
-- `wedge:lwc:firstYield:90s:lastYielded=lwc/Bundle/oSSTechnologiesTable`
+- `wedge:lwc:firstYield:90s:lastYielded=lwc/Bundle/<large bundle>`
 - `wedge:lwc:slotReleased:wedgedFor=440000ms`
 - `wedge:lwc:resolvedLate:totalMs=612000`
 - `wedge:security:firstYield:90s:lastYielded=<none>`
@@ -119,7 +119,7 @@ A `wedge:<sourceLabel>:firstYield:90s:lastYielded=<qualifiedName>` warning is em
 **Known limitation: stop-waiting is not socket-cancellation.** Verified at `node_modules/.pnpm/jsforce@3.10.15_@types+node@22.19.19/node_modules/jsforce/lib/request.js:55,128,180`: jsforce 3.10.15 constructs its `AbortController` internally and never exposes it to callers. `conn.tooling.query()` returns a `Promise`, not an abortable `Request`. **True in-flight socket abort is impossible without forking jsforce or monkey-patching.** Consequently, a wedged source on the in-flight cancel path may hold an underlying TCP socket and ~1–10MB of buffered memory until the network layer times out (~10 minutes default). This is accepted as a Phase 1.5 bound; a proper jsforce fork or upstream PR is filed as a future hardening item. The queue-cancel path remains clean.
 
 **Acceptance.**
-- The cascade scenario from the PLDT_DEV_Anshul run is reproducible as a fixture: one source wedges for 440s; with `concurrency=4` and 8 other sources queued, all 8 others execute to completion and yield records. Exactly one `wedge:<source>:firstYield:90s:...` warning is emitted at slot release, not 37.
+- The cascade scenario from the large-org run is reproducible as a fixture: one source wedges for 440s; with `concurrency=4` and 8 other sources queued, all 8 others execute to completion and yield records. Exactly one `wedge:<source>:firstYield:90s:...` warning is emitted at slot release, not 37.
 - **Late-yield drain:** the wedged source's records, if they eventually arrive, are present in the output stream with `attributes.lateYield: true` and `attributes.wedgeReleasedAt` set. A test asserts that records yielded ≥ 100ms after slot release are still merged.
 - Slot release happens within **100ms** of wedge detection (measured from watchdog fire to `pending.size` decrement).
 - `SFGRAPH_MAX_BACKGROUND_WEDGES=2` with three induced wedges produces exactly one `wedge:cap:backgroundWedgeAborted:...` warning naming the oldest of the three.
@@ -175,8 +175,8 @@ Keep the per-bundle `try`/`catch` (`lwc.ts:91-98`); failure of one bundle does n
 - Unit test against a mock connection serving 50 bundles: with `WINDOW=8`, total wall-clock to drain the iterator is ≤ ⌈50/8⌉ × (per-bundle latency) + overhead. Compare to the serial baseline (≥ 50 × per-bundle latency).
 - Records are yielded individually as they complete (not batched at the end) — verified by asserting that `yieldedAt[i] < yieldedAt[i+8]` holds, i.e., the first record arrives before the 9th request is even issued.
 - A bundle that throws mid-fetch produces exactly one `wedge:lwc:bundleFetchFailed:...` warning and does not interrupt the other 49 bundles.
-- Real-org smoke against PLDT_DEV_Anshul (231 bundles, including `oSSTechnologiesTable`): `lwc` source completes within 120s wall-clock; the `oSSTechnologiesTable` wedge no longer prevents other bundles from yielding.
-- Apex source wall-clock against PLDT_DEV_Anshul does not regress materially (>20% slower) after W1.5-04 lands — Apex shares the 5-slot Tooling pool with LWC, and LWC saturating 5 slots for 231 bundles must not starve Apex.
+- Real-org smoke against the large Vlocity-CMT test org (231 bundles, including one very large data-table bundle): `lwc` source completes within 120s wall-clock; that bundle's wedge no longer prevents other bundles from yielding.
+- Apex source wall-clock against the large Vlocity-CMT test org does not regress materially (>20% slower) after W1.5-04 lands — Apex shares the 5-slot Tooling pool with LWC, and LWC saturating 5 slots for 231 bundles must not starve Apex.
 
 **Files.**
 - `packages/core/src/extractors/live-org/extractors/lwc.ts` (loop at line 60, per-bundle SOQL at lines 91–98, managed fast-path at 65–84 must remain non-windowed)
@@ -250,7 +250,7 @@ Wire into the main `sfgraph` CLI entry. Document in README under a new "Diagnost
 
 **Acceptance.**
 - `sfgraph diagnose <orgId>` against a healthy scratch org produces a report with no `wedged: true` entries and `slowCalls[]` empty (or near-empty).
-- The same command against PLDT_DEV_Anshul produces a report that names `lwc` (or whichever source still wedges post-W1.5-04) with `wedged: true` and `lastYieldedRecord: "lwc/Bundle/oSSTechnologiesTable"` (or similar).
+- The same command against the large Vlocity-CMT test org produces a report that names `lwc` (or whichever source still wedges post-W1.5-04) with `wedged: true` and `lastYieldedRecord: "lwc/Bundle/<bundle>"` (or similar).
 - The report path is printed to stdout on completion; the file is valid JSON parseable by `node -e "JSON.parse(...)"`.
 - `--help` lists `diagnose` alongside `ingest`, `query`, etc., and includes the "diagnostic-mode timing is not comparable to production" note.
 - When run after a `--detect-deletions` ingest that triggered W1.5-07 refusals, the report includes a populated `detectDeletionsRefusals[]` array and the corresponding `perSource[]` entries carry `needsDiagnose: true`.
@@ -329,7 +329,7 @@ Document the **jsforce stop-waiting limitation** from W1.5-03 in `docs/COVERAGE.
 
 **Description.** Add a second-line defense at `packages/core/src/ingest/live-ingest.ts:789-819` (the `if (opts.detectDeletions && mode === "full")` block) that refuses to delete an entire label's worth of nodes when the in-memory `touchedQnames` set is suspiciously sparse relative to the prior on-disk population.
 
-**Motivation.** Today's deletion sweep only skips when `streamAborted === true` (i.e. when the extractor threw). A source that completes with **zero records** (which is exactly what the wedge cascade produces — neighbor sources are killed before ever yielding) sets `streamAborted === false`, `parseErrors === 0`, and `touchedQnames` for that label is empty. Result: the sweep wipes every node of that label. In the PLDT_DEV_Anshul run, ONE wedge in `lwc` → `security` source killed at 90s false-positive → `--detect-deletions=true` → **every Profile and PermissionSet wiped from the graph**. A graph extinction event from a benign wedge. W1.5-01/02 fix the cascade itself; W1.5-07 is the second-line defense that ensures the deletion sweep cannot act on an empty stream.
+**Motivation.** Today's deletion sweep only skips when `streamAborted === true` (i.e. when the extractor threw). A source that completes with **zero records** (which is exactly what the wedge cascade produces — neighbor sources are killed before ever yielding) sets `streamAborted === false`, `parseErrors === 0`, and `touchedQnames` for that label is empty. Result: the sweep wipes every node of that label. In the large-org run, ONE wedge in `lwc` → `security` source killed at 90s false-positive → `--detect-deletions=true` → **every Profile and PermissionSet wiped from the graph**. A graph extinction event from a benign wedge. W1.5-01/02 fix the cascade itself; W1.5-07 is the second-line defense that ensures the deletion sweep cannot act on an empty stream.
 
 **Behavior.**
 
@@ -345,7 +345,7 @@ Document the **jsforce stop-waiting limitation** from W1.5-03 in `docs/COVERAGE.
 
 **Acceptance.**
 
-- Real-org repro: run `sfgraph ingest --detect-deletions --rebuild` against PLDT_DEV_Anshul on a deliberately-induced wedge condition (e.g. set `SFGRAPH_SKIP_LWC=1` to simulate an empty `lwc` stream). Verify no Profile/PermissionSet/etc. is deleted; verify `wedge:detect-deletions:refuse:*` warnings appear in the run summary naming the protected labels.
+- Real-org repro: run `sfgraph ingest --detect-deletions --rebuild` against the large Vlocity-CMT test org on a deliberately-induced wedge condition (e.g. set `SFGRAPH_SKIP_LWC=1` to simulate an empty `lwc` stream). Verify no Profile/PermissionSet/etc. is deleted; verify `wedge:detect-deletions:refuse:*` warnings appear in the run summary naming the protected labels.
 - Unit test: inject an extractor yielding zero records for label `Profile` against a graph pre-seeded with 100 Profile nodes; assert no nodes deleted; assert `wedge:detect-deletions:refuse:label=Profile:reason=empty-stream:priorCount=100` warning emitted.
 - Unit test: inject an extractor yielding 60 of 100 prior `PermissionSet` qnames (40% drop); assert no nodes deleted; assert `wedge:detect-deletions:refuse:label=PermissionSet:reason=drop-ratio:dropped=40:prior=100:ratio=0.40` warning emitted.
 - Env-var override test: set `SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO=1.0`; verify guard is effectively disabled and old behavior returns (for users who explicitly accept the risk).
@@ -432,7 +432,7 @@ Document the **jsforce stop-waiting limitation** from W1.5-03 in `docs/COVERAGE.
 3. Engineer running `sfgraph diagnose <orgId>` gets a JSON report at `~/Library/Application Support/sfgraph/diagnostics/<orgId>-<timestamp>.json` with per-source timing, slow-call list, capability probes, and the `diagnosticMode: true` flag. The report identifies any sub-30s wedge candidates.
 4. Engineer reading README sees: accurate MCP tool count, honest disclosure of security model gaps, documented env var inventory matching the grep output at PR-merge time (≥13 vars including new `SFGRAPH_MAX_BACKGROUND_WEDGES` and `SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO`).
 5. Engineer reading `docs/COVERAGE.md` sees every ingested metadata type with status (`Full` / `Partial` / `Generic-Only` / `Unsupported`) and known limitations — including the jsforce stop-waiting socket-leak window, the deletion-guard refusal behavior, and the MCP staleness block — no surprises in the graph.
-6. A second-pass real-org ingest log captured in `.planning/phase-1.5/EVIDENCE.md` shows the AFTER skip count is **≤ 10% of the BEFORE skip count** on the same org / run conditions as the original diagnostic run on PLDT_DEV_Anshul (see EVIDENCE.md schema below).
+6. A second-pass real-org ingest log captured in `.planning/phase-1.5/EVIDENCE.md` shows the AFTER skip count is **≤ 10% of the BEFORE skip count** on the same org / run conditions as the original diagnostic run on the large Vlocity-CMT test org (see EVIDENCE.md schema below).
 7. Engineer running `sfgraph ingest --detect-deletions --rebuild` against any org sees zero label-level deletions on a wedge-induced empty-stream condition; instead sees `wedge:detect-deletions:refuse:label=*` warnings naming the protected labels.
 8. MCP client polling any tool response sees `staleness: { generation: N, in_progress: bool, last_sync_at: ISO }` block. During an active ingest, `in_progress: true` and clients can warn the user "graph is being rewritten."
 
@@ -458,7 +458,7 @@ grep -E "metadata (type was|types were) skipped" run.log | head -1
 
 ```yaml
 org:
-  alias: PLDT_DEV_Anshul
+  alias: acme-dev
   orgId: <18-char ID>
 before:
   runTimestamp: <ISO-8601>
@@ -505,7 +505,7 @@ If org metadata changed by >5% between runs (deploys, package installs), the AFT
 
 The phase is **NOT** complete until all of:
 
-1. A full ingest run against PLDT_DEV_Anshul (or any Vlocity-CMT org) completes with zero "skipped due to neighbor wedge" entries — meaning the only skips remaining are sources that actually wedged themselves, not victims of someone else's wedge. Verified via the namespaced-string `lastYielded=<own-source>` check.
+1. A full ingest run against a large Vlocity-CMT org completes with zero "skipped due to neighbor wedge" entries — meaning the only skips remaining are sources that actually wedged themselves, not victims of someone else's wedge. Verified via the namespaced-string `lastYielded=<own-source>` check.
 2. The same run shows the `lwc` source completing in under **120s** wall-clock against the same 231-bundle org (down from 440s+).
 3. `sfgraph diagnose <orgId>` prints a complete per-source timing report and identifies any sources still taking >30s. The report file is created at the documented path with `diagnosticMode: true`.
 4. README + `docs/COVERAGE.md` changes have been reviewed by the user.
@@ -531,7 +531,7 @@ Phase 1.5 has **no dependency** on Phase 1. The two phases can land in either or
 - **Diagnostics report path under `~/Library/Application Support/sfgraph/`.** Matches existing sfgraph user-data conventions on macOS; no new platform-path code needed. Linux/Windows variants follow the same `app-data-dir` resolver used elsewhere in the CLI. Diagnose mode is for naming wedges, not predicting production wall-clock.
 - **W1.5-07 — deletion-sweep guard refuses, doesn't merge.** Refused-label nodes keep their `last_seen_at` so staleness reports still surface them. Default drop-ratio 0.30 chosen as conservative; tuning data needed before adjusting. Env-var override (`SFGRAPH_DETECT_DELETIONS_MAX_DROP_RATIO=1.0`) preserves old behavior for users who explicitly accept the risk.
 - **W1.5-08 — staleness signaled via INTEGER counter, not snapshot isolation.** Per-connection WAL snapshots already give technical isolation; this is purely about communicating "sync not done yet" to readers. No global ingest transaction; no DB file atomic-swap. Smallest possible surface that closes the user-visible inconsistency.
-- **Performance work deferred.** Parallel parse + buffered writes (independent analyst's items #1 and #2) require profiling proof first. Speculative claim of 3-5x throughput rejected without per-record timing data on PLDT_DEV_Anshul. Profiling task captured as backlog item 2 below; trigger to revisit is documented per backlog entry.
+- **Performance work deferred.** Parallel parse + buffered writes (independent analyst's items #1 and #2) require profiling proof first. Speculative claim of 3-5x throughput rejected without per-record timing data on the large Vlocity-CMT test org. Profiling task captured as backlog item 2 below; trigger to revisit is documented per backlog entry.
 
 ## Files Expected to Be Touched
 
@@ -575,7 +575,7 @@ These items were surfaced by an independent analyst review (12 issues identified
 - Source: independent analyst (#1 from their list). Claim of 3–5× throughput is unprofiled.
 - Status: deferred pending profiling.
 - Trigger to revisit: real-org timing histogram shows >50% wall-clock spent inside `processOne` (CPU-bound parsing for Apex AST, OmniStudio JSON walks, LWC HTML bind resolution).
-- Profiling requirement: capture per-record CPU time vs await time on PLDT_DEV_Anshul. If parsing dominates, plan as Phase 1.6. If extractor-bound, the parallel-parse refactor is wasted effort.
+- Profiling requirement: capture per-record CPU time vs await time on the large Vlocity-CMT test org. If parsing dominates, plan as Phase 1.6. If extractor-bound, the parallel-parse refactor is wasted effort.
 - Compounds with: backlog item 1 (combined refactor is one architectural change, not two).
 
 **Backlog item 3: Move MCD baseline into the bulkRetrieve sliding-window merge (#6 from analysis).**
@@ -646,7 +646,7 @@ This round folds in an independent analyst review of `live-ingest.ts` (12 issues
 
 ### (c) Explicit deferrals from analyst items
 
-- **#1 Parallel `processOne` via p-limit** → backlog item 2. Trigger: real-org timing histogram shows >50% wall-clock spent inside `processOne`. Profiling requirement: per-record CPU vs await time on PLDT_DEV_Anshul.
+- **#1 Parallel `processOne` via p-limit** → backlog item 2. Trigger: real-org timing histogram shows >50% wall-clock spent inside `processOne`. Profiling requirement: per-record CPU vs await time on the large Vlocity-CMT test org.
 - **#2 Per-record SQLite write buffering** → backlog item 1. Trigger: real-org timing histogram shows >20% wall-clock spent in SQLite merge calls.
 - **#5 Incremental-mode deletion safety net** → backlog item 6. Relies on W1.5-07 as underlying mechanism; defer to milestone v1.3.
 - **#6 MCD into bulkRetrieve merge** → backlog item 3. Trigger: confirm MCD-edge writes and parsed-edge writes do NOT race on shared rows.
