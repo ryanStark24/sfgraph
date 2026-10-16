@@ -1,4 +1,4 @@
-import type { OrgId } from "@ryanstark24/sfgraph-shared";
+import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { NodeFact } from "../domain/index.js";
 import type { GraphStore } from "../storage/interfaces.js";
 
@@ -348,6 +348,56 @@ export function findNodesByGlob(
     }
   }
 
+  allMatches.sort((a, b) => String(a.qualifiedName).localeCompare(String(b.qualifiedName)));
+  const truncated = allMatches.length > limit;
+  return {
+    matches: truncated ? allMatches.slice(0, limit) : allMatches,
+    truncated,
+    total: allMatches.length,
+  };
+}
+
+/** A `findNodeNamesByGlob` match: just what a listing needs. */
+export interface NodeName {
+  qualifiedName: QualifiedName;
+  label: string;
+}
+
+export interface FindNodeNamesResult {
+  matches: NodeName[];
+  truncated: boolean;
+  total: number;
+}
+
+/**
+ * `findNodesByGlob` without reading node rows: the same matches, in the same
+ * order, as `{ qualifiedName, label }`. Reads only the qualified names
+ * (`listQnamesByLabel`: same rows, same order and per-label cap as
+ * `listNodesByLabel`) instead of parsing every node's attributes; stores
+ * without it fall back to `listNodesByLabel`.
+ */
+export function findNodeNamesByGlob(
+  store: GraphStore,
+  orgId: OrgId,
+  pattern: string,
+  opts: FindNodesOpts = {},
+): FindNodeNamesResult {
+  const limit = Math.max(1, opts.limit ?? 500);
+  const matcher = compileGlob(pattern);
+  const stored = listAllLabels(store, orgId);
+  const labels = opts.label
+    ? [stored.find((l) => l.toLowerCase() === opts.label?.toLowerCase()) ?? opts.label]
+    : stored;
+  const allMatches: NodeName[] = [];
+  for (const label of labels) {
+    const qnames =
+      typeof store.listQnamesByLabel === "function"
+        ? store.listQnamesByLabel(orgId, label, 50_000)
+        : store.listNodesByLabel(orgId, label, 50_000).map((n) => n.qualifiedName);
+    for (const q of qnames) {
+      if (matcher(String(q))) allMatches.push({ qualifiedName: q, label });
+    }
+  }
   allMatches.sort((a, b) => String(a.qualifiedName).localeCompare(String(b.qualifiedName)));
   const truncated = allMatches.length > limit;
   return {

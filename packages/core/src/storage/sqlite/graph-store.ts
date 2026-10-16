@@ -1317,6 +1317,25 @@ export class SqliteGraphStore implements GraphStore {
     return rows.map((r) => rowToNode(r, label));
   }
 
+  /**
+   * listNodesByLabel's qualified names, without the attributes JSON (~6x
+   * cheaper on attribute-heavy labels). `ORDER BY rowid` pins the order
+   * listNodesByLabel gets from its `<tbl>_org` index scan: selecting only
+   * qualified_name would otherwise make the covering PK index the cheapest
+   * plan, which yields NOCASE name order (and a different LIMIT subset).
+   */
+  listQnamesByLabel(orgId: OrgId, label: string, limit?: number): QualifiedName[] {
+    validateLabel(label);
+    this.syncCaches();
+    const tbl = this.nodeLabelCache.get(label);
+    if (!tbl) return [];
+    const sql = `SELECT qualified_name FROM ${tbl} WHERE org_id = ? ORDER BY rowid${typeof limit === "number" ? " LIMIT ?" : ""}`;
+    const params: unknown[] = [orgId];
+    if (typeof limit === "number") params.push(limit);
+    const rows = this.stmt(sql).all(...params) as Array<{ qualified_name: string }>;
+    return rows.map((r) => asQualifiedName(r.qualified_name));
+  }
+
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[] {
     this.syncCaches();
     const out: EdgeFact[] = [];

@@ -39,10 +39,10 @@ defineTool({
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
-    const opts: Parameters<typeof analyze.findNodesByGlob>[3] = {};
+    const opts: Parameters<typeof analyze.findNodeNamesByGlob>[3] = {};
     if (input.label) opts.label = input.label;
     opts.limit = input.limit ?? 200;
-    const result = analyze.findNodesByGlob(ctx.graphStore, ctx.orgId, input.pattern, opts);
+    const result = analyze.findNodeNamesByGlob(ctx.graphStore, ctx.orgId, input.pattern, opts);
     const lines = result.matches.map((n) => `- \`${n.qualifiedName}\` (${n.label})`);
     const md = [
       `Pattern \`${input.pattern}\` matched ${result.total} node${result.total === 1 ? "" : "s"}${

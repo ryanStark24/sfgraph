@@ -141,6 +141,9 @@ export interface GraphStore {
   mergeEdges(facts: EdgeFact[], opts?: MergeEdgesOptions): MergeResult;
   getNode(orgId: OrgId, qname: QualifiedName): NodeFact | null;
   listNodesByLabel(orgId: OrgId, label: string, limit?: number): NodeFact[];
+  /** The qualified names `listNodesByLabel` would return, in the same order,
+   *  without reading the rest of each row. Optional. */
+  listQnamesByLabel?(orgId: OrgId, label: string, limit?: number): QualifiedName[];
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[];
   listEdgesTo(orgId: OrgId, dst: QualifiedName, relType?: RelType): EdgeFact[];
   /** Edges (any rel type) whose dst is one of `dsts` (NOCASE, like listEdgesTo).
