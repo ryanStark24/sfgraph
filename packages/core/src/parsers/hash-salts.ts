@@ -71,6 +71,15 @@ export const LWC_NODE_HASH_SALT = "lwc-attrs:v4";
 // generic/opaque-node-parser.ts
 export const OPAQUE_DATAPACK_HASH_SALT = "vlocity-datapack-refs:v2";
 
+// flow/parser.ts
+/**
+ * Folded into the Flow node hash. Bump it when the Flow parser emits new node
+ * attributes or different edges for unchanged XML. v1: flowRelationshipPaths;
+ * bulk-update collection writes, no field read for an inputReference, and
+ * PUBLISHES_EVENT / SUBSCRIBES_TO_EVENT.
+ */
+export const FLOW_NODE_HASH_SALT = "flow-attrs:v1";
+
 /** Every salt above; a new salt must be added here. */
 export const HASH_SALTS: readonly string[] = [
   FIELD_NODE_HASH_SALT,
@@ -81,4 +90,5 @@ export const HASH_SALTS: readonly string[] = [
   AURA_NODE_HASH_SALT,
   LWC_NODE_HASH_SALT,
   OPAQUE_DATAPACK_HASH_SALT,
+  FLOW_NODE_HASH_SALT,
 ];
