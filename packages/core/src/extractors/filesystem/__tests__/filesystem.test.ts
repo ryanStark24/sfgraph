@@ -46,6 +46,17 @@ describe("FilesystemMetadataSource", () => {
     expect(types).toEqual(["ApexClass", "Flow"]);
   });
 
+  it("walks Lightning message channels", async () => {
+    w(
+      "force-app/main/default/messageChannels/Record_Selected.messageChannel-meta.xml",
+      "<LightningMessageChannel/>",
+    );
+    const members = await collect(new FilesystemMetadataSource(workDir));
+    expect(members.map((m) => `${m.type}:${m.name}`)).toEqual([
+      "LightningMessageChannel:Record_Selected",
+    ]);
+  });
+
   it("bundles LWC files into one RawMember", async () => {
     w("force-app/main/default/lwc/accountTile/accountTile.js", "export default class {}");
     w("force-app/main/default/lwc/accountTile/accountTile.html", "<template></template>");
