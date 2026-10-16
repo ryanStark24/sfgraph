@@ -31,6 +31,7 @@ import {
   extractFieldAccesses,
   paramDecls,
 } from "./field-access.js";
+import { emitPageRefEdges } from "./page-refs.js";
 import { blankBracketGroups, findInlineQueries, soqlFieldRefs } from "./soql-fields.js";
 import {
   classStringConstants,
@@ -1190,6 +1191,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         ...methods.flatMap((m) => paramDecls(m.params)),
       ]),
     };
+    emitPageRefEdges(ctx, classQname, cleaned, edges);
     const methodQueries: string[] = [];
     const methodNodes = new Map<string, NodeFact>();
     const classPaths: ApexRelationshipPath[] = [];
