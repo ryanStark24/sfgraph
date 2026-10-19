@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.0 — 2026-10-12
+## 1.6.0 — 2026-10-19
 
 **Performance and stabilization.** This release makes ingest faster on large projects and orgs, fixes a wide set of audit and tool accuracy problems, and makes the MCP tool reports easier to read. Re-ingest with `sfgraph ingest --rebuild` after upgrading (see the upgrade notes below).
 
