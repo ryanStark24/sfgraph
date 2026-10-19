@@ -1,4 +1,4 @@
-import { fenceLabel, mermaidId } from "./shared.js";
+import { fenceLabel } from "./shared.js";
 
 export interface DiffNode {
   qualifiedName: string;
@@ -16,8 +16,10 @@ export function renderDiff(opts: RenderDiffOpts): string {
   const { added, removed, changed, title } = opts;
   const lines: string[] = ["flowchart LR"];
   if (title) lines.push(`  %% ${title.replace(/\n/g, " ")}`);
+  // Generated ids (n0, n1, ...): ids built from names collapse non-ASCII to `_` and can clash.
+  let next = 0;
   const emit = (n: DiffNode, cls: string) => {
-    const id = mermaidId(n.qualifiedName);
+    const id = `n${next++}`;
     lines.push(`  ${id}[${fenceLabel(n.qualifiedName)}]:::${cls}`);
   };
   for (const n of added) emit(n, "added");

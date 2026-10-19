@@ -1,0 +1,1067 @@
+{
+  "trace_downstream.trigger": {
+    "data": {
+      "found": true,
+      "nodes": [
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexMethod:CaseService.run(0)",
+          "label": "ApexMethod",
+          "attributes": {},
+          "sourceHash": "h-ApexMethod:CaseService.run(0)",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901089
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexClass:CaseService",
+          "label": "ApexClass",
+          "attributes": {},
+          "sourceHash": "h-ApexClass:CaseService",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901089
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "CustomObject:Case",
+          "label": "CustomObject",
+          "attributes": {},
+          "sourceHash": "h-CustomObject:Case",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901090
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "label": "ApexMethod",
+          "attributes": {},
+          "sourceHash": "h-ApexMethod:CaseHelper.apply(1)",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901089
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexClass:CaseHelper",
+          "label": "ApexClass",
+          "attributes": {},
+          "sourceHash": "h-ApexClass:CaseHelper",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901089
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "CustomField:Case.Priority__c",
+          "label": "CustomField",
+          "attributes": {},
+          "sourceHash": "h-CustomField:Case.Priority__c",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901091
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "CustomField:Account.Name",
+          "label": "CustomField",
+          "attributes": {},
+          "sourceHash": "h-CustomField:Account.Name",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901091
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "CustomField:Account.Tier__c",
+          "label": "CustomField",
+          "attributes": {},
+          "sourceHash": "h-CustomField:Account.Tier__c",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901091
+        }
+      ],
+      "edges": [
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexTrigger:CaseTrigger",
+          "dstQualifiedName": "ApexMethod:CaseService.run(0)",
+          "relType": "CALLS",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexTrigger:CaseTrigger",
+          "dstQualifiedName": "CustomObject:Case",
+          "relType": "TRIGGERS_ON",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexMethod:CaseService.run(0)",
+          "dstQualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "relType": "CALLS",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexMethod:CaseService.run(0)",
+          "dstQualifiedName": "CustomField:Case.Priority__c",
+          "relType": "READS_FIELD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexClass:CaseService",
+          "dstQualifiedName": "ApexMethod:CaseService.run(0)",
+          "relType": "CONTAINS_METHOD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "dstQualifiedName": "ApexMethod:System.debug(1)",
+          "relType": "CALLS",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "dstQualifiedName": "CustomField:Account.Name",
+          "relType": "READS_FIELD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "dstQualifiedName": "CustomField:Account.Tier__c",
+          "relType": "WRITES_FIELD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexClass:CaseHelper",
+          "dstQualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "relType": "CONTAINS_METHOD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        }
+      ],
+      "reached": [
+        {
+          "qualifiedName": "ApexMethod:CaseService.run(0)",
+          "label": "ApexMethod",
+          "hop": 1,
+          "relType": "CALLS",
+          "hasNode": true
+        },
+        {
+          "qualifiedName": "ApexClass:CaseService",
+          "label": "ApexClass",
+          "hop": 1,
+          "relType": "CONTAINS_METHOD",
+          "hasNode": true,
+          "via": "class-rollup"
+        },
+        {
+          "qualifiedName": "CustomObject:Case",
+          "label": "CustomObject",
+          "hop": 1,
+          "relType": "TRIGGERS_ON",
+          "hasNode": true
+        },
+        {
+          "qualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "label": "ApexMethod",
+          "hop": 2,
+          "relType": "CALLS",
+          "hasNode": true
+        },
+        {
+          "qualifiedName": "ApexClass:CaseHelper",
+          "label": "ApexClass",
+          "hop": 2,
+          "relType": "CONTAINS_METHOD",
+          "hasNode": true,
+          "via": "class-rollup"
+        },
+        {
+          "qualifiedName": "CustomField:Case.Priority__c",
+          "label": "CustomField",
+          "hop": 2,
+          "relType": "READS_FIELD",
+          "hasNode": true
+        },
+        {
+          "qualifiedName": "CustomField:Account.Name",
+          "label": "CustomField",
+          "hop": 3,
+          "relType": "READS_FIELD",
+          "hasNode": true,
+          "role": "standard-field"
+        },
+        {
+          "qualifiedName": "CustomField:Account.Tier__c",
+          "label": "CustomField",
+          "hop": 3,
+          "relType": "WRITES_FIELD",
+          "hasNode": true
+        }
+      ],
+      "pseudo": [
+        {
+          "qualifiedName": "ApexMethod:System.debug(1)",
+          "label": "ApexMethod",
+          "hop": 3,
+          "relType": "CALLS",
+          "hasNode": false,
+          "pseudoKind": "apex-platform"
+        }
+      ],
+      "truncated": false,
+      "filtered": 0,
+      "structural": 1
+    },
+    "markdown": "downstream of `ApexTrigger:CaseTrigger` (depth 3): 7 components — ApexClass 2, ApexMethod 2, CustomField 2, CustomObject 1\n\n### ApexClass (2)\n- ApexClass:CaseService — hop 1 via CONTAINS_METHOD (class roll-up)\n- ApexClass:CaseHelper — hop 2 via CONTAINS_METHOD (class roll-up)\n\n### ApexMethod (2)\n- ApexMethod:CaseService.run(0) (in ApexClass:CaseService) — hop 1 via CALLS\n- ApexMethod:CaseHelper.apply(1) (in ApexClass:CaseHelper) — hop 2 via CALLS\n\n### CustomField (2)\n- CustomField:Case.Priority__c — hop 2 via READS_FIELD\n- CustomField:Account.Tier__c — hop 3 via WRITES_FIELD\n\n### CustomObject (1)\n- CustomObject:Case — hop 1 via TRIGGERS_ON\n\n### Standard fields (1, no `__c` suffix, not counted)\n- CustomField:Account.Name — hop 3 via READS_FIELD\n\n_1 pseudo endpoint not counted_ (platform Apex, DML operations, LWC properties/events, Remote calls duplicating a listed ApexClass, managed-package types with no node):\n- apex-platform (1): ApexMethod:System.debug(1)\n\n_1 containment edge not expanded_ (objects and fields are leaves) — pass `include_structure: true` to expand objects into their fields, validation rules and record types."
+  },
+  "trace_downstream.class": {
+    "data": {
+      "found": true,
+      "nodes": [
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexMethod:CaseService.run(0)",
+          "label": "ApexMethod",
+          "attributes": {},
+          "sourceHash": "h-ApexMethod:CaseService.run(0)",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901120
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "label": "ApexMethod",
+          "attributes": {},
+          "sourceHash": "h-ApexMethod:CaseHelper.apply(1)",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901120
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexClass:CaseHelper",
+          "label": "ApexClass",
+          "attributes": {},
+          "sourceHash": "h-ApexClass:CaseHelper",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901120
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "CustomField:Case.Priority__c",
+          "label": "CustomField",
+          "attributes": {},
+          "sourceHash": "h-CustomField:Case.Priority__c",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901121
+        }
+      ],
+      "edges": [
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexClass:CaseService",
+          "dstQualifiedName": "ApexMethod:CaseService.run(0)",
+          "relType": "CONTAINS_METHOD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexMethod:CaseService.run(0)",
+          "dstQualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "relType": "CALLS",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexMethod:CaseService.run(0)",
+          "dstQualifiedName": "CustomField:Case.Priority__c",
+          "relType": "READS_FIELD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        }
+      ],
+      "reached": [
+        {
+          "qualifiedName": "ApexMethod:CaseService.run(0)",
+          "label": "ApexMethod",
+          "hop": 0,
+          "relType": "CONTAINS_METHOD",
+          "hasNode": true,
+          "role": "root-member"
+        },
+        {
+          "qualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "label": "ApexMethod",
+          "hop": 1,
+          "relType": "CALLS",
+          "hasNode": true
+        },
+        {
+          "qualifiedName": "ApexClass:CaseHelper",
+          "label": "ApexClass",
+          "hop": 1,
+          "relType": "CONTAINS_METHOD",
+          "hasNode": true,
+          "via": "class-rollup"
+        },
+        {
+          "qualifiedName": "CustomField:Case.Priority__c",
+          "label": "CustomField",
+          "hop": 1,
+          "relType": "READS_FIELD",
+          "hasNode": true
+        }
+      ],
+      "pseudo": [],
+      "truncated": false,
+      "filtered": 0,
+      "structural": 0
+    },
+    "markdown": "downstream of `ApexClass:CaseService` (depth 1): 3 components — ApexClass 1, ApexMethod 1, CustomField 1\n\n### ApexClass (1)\n- ApexClass:CaseHelper — hop 1 via CONTAINS_METHOD (class roll-up)\n\n### ApexMethod (1)\n- ApexMethod:CaseHelper.apply(1) (in ApexClass:CaseHelper) — hop 1 via CALLS\n\n### CustomField (1)\n- CustomField:Case.Priority__c — hop 1 via READS_FIELD\n\n### Root members (1, part of `ApexClass:CaseService`, not counted)\n- ApexMethod:CaseService.run(0)"
+  },
+  "trace_downstream.structure": {
+    "data": {
+      "found": true,
+      "nodes": [
+        {
+          "orgId": "org1",
+          "qualifiedName": "CustomField:Account.Name",
+          "label": "CustomField",
+          "attributes": {},
+          "sourceHash": "h-CustomField:Account.Name",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901145
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "CustomField:Account.Tier__c",
+          "label": "CustomField",
+          "attributes": {},
+          "sourceHash": "h-CustomField:Account.Tier__c",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901145
+        }
+      ],
+      "edges": [
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "CustomObject:Account",
+          "dstQualifiedName": "CustomField:Account.Name",
+          "relType": "DEFINES_FIELD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "CustomObject:Account",
+          "dstQualifiedName": "CustomField:Account.Tier__c",
+          "relType": "DEFINES_FIELD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        }
+      ],
+      "reached": [
+        {
+          "qualifiedName": "CustomField:Account.Name",
+          "label": "CustomField",
+          "hop": 1,
+          "relType": "DEFINES_FIELD",
+          "hasNode": true,
+          "role": "standard-field"
+        },
+        {
+          "qualifiedName": "CustomField:Account.Tier__c",
+          "label": "CustomField",
+          "hop": 1,
+          "relType": "DEFINES_FIELD",
+          "hasNode": true
+        }
+      ],
+      "pseudo": [],
+      "truncated": false,
+      "filtered": 0,
+      "structural": 0
+    },
+    "markdown": "downstream of `CustomObject:Account` (depth 3): 1 component — CustomField 1\n\n### CustomField (1)\n- CustomField:Account.Tier__c — hop 1 via DEFINES_FIELD\n\n### Standard fields (1, no `__c` suffix, not counted)\n- CustomField:Account.Name — hop 1 via DEFINES_FIELD"
+  },
+  "trace_downstream.notfound": {
+    "data": {
+      "found": false,
+      "qname": "ApexClass:Ghost",
+      "nodes": [],
+      "edges": [],
+      "reached": [],
+      "truncated": false
+    },
+    "markdown": "**Node not found:** `ApexClass:Ghost` is not a node or edge endpoint in this org's graph, so there is nothing downstream of it.\n\nCheck the spelling with `find_nodes { pattern: \"*Ghost*\" }` (qnames look like `ApexClass:Name` or `CustomField:Object.Field__c`)."
+  },
+  "trace_upstream.class": {
+    "data": {
+      "found": true,
+      "nodes": [
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexMethod:CaseService.run(0)",
+          "label": "ApexMethod",
+          "attributes": {},
+          "sourceHash": "h-ApexMethod:CaseService.run(0)",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901182
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexTrigger:CaseTrigger",
+          "label": "ApexTrigger",
+          "attributes": {},
+          "sourceHash": "h-ApexTrigger:CaseTrigger",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901182
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "LWC:caseCard",
+          "label": "LWC",
+          "attributes": {},
+          "sourceHash": "h-LWC:caseCard",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901183
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "Flow:Case_Flow",
+          "label": "Flow",
+          "attributes": {},
+          "sourceHash": "h-Flow:Case_Flow",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901183
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexClass:CaseServiceTest",
+          "label": "ApexClass",
+          "attributes": {},
+          "sourceHash": "h-ApexClass:CaseServiceTest",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901183
+        }
+      ],
+      "edges": [
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexMethod:CaseService.run(0)",
+          "dstQualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "relType": "CALLS",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexTrigger:CaseTrigger",
+          "dstQualifiedName": "ApexMethod:CaseService.run(0)",
+          "relType": "CALLS",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "LWC:caseCard",
+          "dstQualifiedName": "ApexMethod:CaseService.run(0)",
+          "relType": "CALLS_APEX_FROM_LWC",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "Flow:Case_Flow",
+          "dstQualifiedName": "ApexClass:CaseService",
+          "relType": "FLOW_INVOKES_APEX",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexClass:CaseServiceTest",
+          "dstQualifiedName": "ApexClass:CaseService",
+          "relType": "IS_TEST_FOR",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        }
+      ],
+      "reached": [
+        {
+          "qualifiedName": "ApexMethod:CaseService.run(0)",
+          "label": "ApexMethod",
+          "hop": 1,
+          "relType": "CALLS",
+          "hasNode": true,
+          "via": "member"
+        },
+        {
+          "qualifiedName": "ApexTrigger:CaseTrigger",
+          "label": "ApexTrigger",
+          "hop": 2,
+          "relType": "CALLS",
+          "hasNode": true
+        },
+        {
+          "qualifiedName": "LWC:caseCard",
+          "label": "LWC",
+          "hop": 2,
+          "relType": "CALLS_APEX_FROM_LWC",
+          "hasNode": true
+        },
+        {
+          "qualifiedName": "Flow:Case_Flow",
+          "label": "Flow",
+          "hop": 2,
+          "relType": "FLOW_INVOKES_APEX",
+          "hasNode": true,
+          "via": "owner"
+        },
+        {
+          "qualifiedName": "ApexClass:CaseServiceTest",
+          "label": "ApexClass",
+          "hop": 2,
+          "relType": "IS_TEST_FOR",
+          "hasNode": true,
+          "via": "owner"
+        }
+      ],
+      "pseudo": [],
+      "truncated": false,
+      "filtered": 0,
+      "structural": 0
+    },
+    "markdown": "upstream of `ApexClass:CaseHelper` (depth 3): 5 components — ApexClass 1, ApexMethod 1, ApexTrigger 1, Flow 1, LWC 1\n\n### ApexClass (1)\n- ApexClass:CaseServiceTest — hop 2 via IS_TEST_FOR\n\n### ApexMethod (1)\n- ApexMethod:CaseService.run(0) (in ApexClass:CaseService) — hop 1 via CALLS\n\n### ApexTrigger (1)\n- ApexTrigger:CaseTrigger — hop 2 via CALLS\n\n### Flow (1)\n- Flow:Case_Flow — hop 2 via FLOW_INVOKES_APEX\n\n### LWC (1)\n- LWC:caseCard — hop 2 via CALLS_APEX_FROM_LWC\n\n### Classes of the listed methods (1 not listed above)\n- ApexClass:CaseService"
+  },
+  "trace_upstream.field": {
+    "data": {
+      "found": true,
+      "nodes": [
+        {
+          "orgId": "org1",
+          "qualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "label": "ApexMethod",
+          "attributes": {},
+          "sourceHash": "h-ApexMethod:CaseHelper.apply(1)",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901204
+        },
+        {
+          "orgId": "org1",
+          "qualifiedName": "CustomObject:Account",
+          "label": "CustomObject",
+          "attributes": {},
+          "sourceHash": "h-CustomObject:Account",
+          "firstSeenAt": 1,
+          "lastSeenAt": 1,
+          "lastModifiedAt": 1791808901204
+        }
+      ],
+      "edges": [
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "dstQualifiedName": "CustomField:Account.Tier__c",
+          "relType": "WRITES_FIELD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        },
+        {
+          "orgId": "org1",
+          "srcQualifiedName": "CustomObject:Account",
+          "dstQualifiedName": "CustomField:Account.Tier__c",
+          "relType": "DEFINES_FIELD",
+          "attributes": {},
+          "firstSeenAt": 1,
+          "lastSeenAt": 1
+        }
+      ],
+      "reached": [
+        {
+          "qualifiedName": "ApexMethod:CaseHelper.apply(1)",
+          "label": "ApexMethod",
+          "hop": 1,
+          "relType": "WRITES_FIELD",
+          "hasNode": true
+        },
+        {
+          "qualifiedName": "CustomObject:Account",
+          "label": "CustomObject",
+          "hop": 1,
+          "relType": "DEFINES_FIELD",
+          "hasNode": true
+        }
+      ],
+      "pseudo": [],
+      "truncated": false,
+      "filtered": 0,
+      "structural": 1
+    },
+    "markdown": "upstream of `CustomField:Account.Tier__c` (depth 1): 2 components — ApexMethod 1, CustomObject 1\n\n### ApexMethod (1)\n- ApexMethod:CaseHelper.apply(1) (in ApexClass:CaseHelper) — hop 1 via WRITES_FIELD\n\n### CustomObject (1)\n- CustomObject:Account — hop 1 via DEFINES_FIELD\n\n### Classes of the listed methods (1 not listed above)\n- ApexClass:CaseHelper\n\n_1 containing object listed as leaves_ — pass `include_structure: true` to expand them into everything that uses them."
+  },
+  "trace_upstream.notfound": {
+    "data": {
+      "found": false,
+      "qname": "Flow:Nope",
+      "nodes": [],
+      "edges": [],
+      "reached": [],
+      "truncated": false
+    },
+    "markdown": "**Node not found:** `Flow:Nope` is not a node or edge endpoint in this org's graph, so there is nothing upstream of it.\n\nCheck the spelling with `find_nodes { pattern: \"*Nope*\" }` (qnames look like `ApexClass:Name` or `CustomField:Object.Field__c`)."
+  },
+  "impact_from_git_diff.helper": {
+    "data": {
+      "seedQnames": ["ApexClass:CaseHelper"],
+      "changed": ["ApexClass:CaseHelper"],
+      "changedMembers": [],
+      "unmapped": [],
+      "impacted": [
+        "ApexClass:CaseHelper",
+        "ApexClass:CaseServiceTest",
+        "ApexMethod:CaseService.run(0)",
+        "ApexTrigger:CaseTrigger",
+        "Flow:Case_Flow",
+        "LWC:caseCard"
+      ],
+      "dependents": [
+        "ApexClass:CaseServiceTest",
+        "ApexMethod:CaseService.run(0)",
+        "ApexTrigger:CaseTrigger",
+        "Flow:Case_Flow",
+        "LWC:caseCard"
+      ],
+      "dependencies": [
+        "ApexMethod:CaseHelper.apply(1)",
+        "CustomField:Account.Name",
+        "CustomField:Account.Tier__c"
+      ],
+      "notFound": [],
+      "truncated": false
+    },
+    "markdown": "Seed: 1 files -> 1 changed components. Total impacted: 6 (1 changed + 5 upstream dependents).\n\n### Changed (1)\n- `ApexClass:CaseHelper` (ApexClass) — changed\n\n### Dependents: ApexClass (1)\n- `ApexClass:CaseServiceTest` (ApexClass)\n\n### Dependents: ApexMethod (1)\n- `ApexMethod:CaseService.run(0)` (ApexMethod, in ApexClass:CaseService)\n\n### Dependents: ApexTrigger (1)\n- `ApexTrigger:CaseTrigger` (ApexTrigger)\n\n### Dependents: Flow (1)\n- `Flow:Case_Flow` (Flow)\n\n### Dependents: LWC (1)\n- `LWC:caseCard` (LWC)\n\n### Classes of the listed methods (1 not listed above)\n- `ApexClass:CaseService`\n\n```mermaid\nflowchart LR\n  %% impact_from_git_diff\n  ApexClass_CaseHelper[\"ApexClass:CaseHelper\"]\n  ApexClass_CaseServiceTest[\"ApexClass:CaseServiceTest\"]\n  ApexClass_CaseService[\"ApexClass:CaseService\"]\n  ApexTrigger_CaseTrigger[\"ApexTrigger:CaseTrigger\"]\n  Flow_Case_Flow[\"Flow:Case_Flow\"]\n  LWC_caseCard[\"LWC:caseCard\"]\n  ApexClass_CaseService -->|CALLS| ApexClass_CaseHelper\n  ApexTrigger_CaseTrigger -->|CALLS| ApexClass_CaseService\n  LWC_caseCard -->|CALLS_APEX_FROM_LWC| ApexClass_CaseService\n  Flow_Case_Flow -->|FLOW_INVOKES_APEX| ApexClass_CaseService\n  ApexClass_CaseServiceTest -->|IS_TEST_FOR| ApexClass_CaseService\n  classDef cls0 fill:#4a90e2,color:#fff,stroke:#333,stroke-width:1px\n  classDef cls1 fill:#2c6fb8,color:#fff,stroke:#333,stroke-width:1px\n  classDef cls2 fill:#7ed321,color:#fff,stroke:#333,stroke-width:1px\n  classDef cls3 fill:#f5a623,color:#fff,stroke:#333,stroke-width:1px\n  class ApexClass_CaseHelper cls0\n  class ApexClass_CaseServiceTest cls0\n  class ApexClass_CaseService cls0\n  class ApexTrigger_CaseTrigger cls1\n  class Flow_Case_Flow cls2\n  class LWC_caseCard cls3\n```"
+  },
+  "impact_from_git_diff.ghost": {
+    "data": {
+      "seedQnames": ["ApexClass:Ghost"],
+      "changed": ["ApexClass:Ghost"],
+      "changedMembers": [],
+      "unmapped": [
+        {
+          "path": "README.md",
+          "reason": "no-qname"
+        }
+      ],
+      "impacted": ["ApexClass:Ghost"],
+      "dependents": [],
+      "dependencies": [],
+      "notFound": ["ApexClass:Ghost"],
+      "truncated": false
+    },
+    "markdown": "Seed: 2 files -> 1 changed components. Total impacted: 1 (1 changed + 0 upstream dependents).\n\n### Changed (1)\n- `ApexClass:Ghost` (Changed) — changed\n\n```mermaid\nflowchart LR\n  %% impact_from_git_diff\n  ApexClass_Ghost[\"ApexClass:Ghost\"]\n  classDef cls0 fill:#9b9b9b,color:#fff,stroke:#333,stroke-width:1px\n  class ApexClass_Ghost cls0\n```\n\n_1 changed file maps to a qname not in the graph_ (new, or not ingested yet): `ApexClass:Ghost`. Their impact is unknown. Check the spelling with `find_nodes { pattern: \"*Ghost*\" }` (qnames look like `ApexClass:Name` or `CustomField:Object.Field__c`).\n\n_1 changed path not mapped to a graph node_ (impact unknown): `README.md` (no-qname)"
+  },
+  "what_broke.changed": {
+    "data": {
+      "changed": ["ApexClass:CaseHelper"],
+      "added": [],
+      "removed": [],
+      "atRisk": [
+        "ApexTrigger:CaseTrigger",
+        "Flow:Case_Flow",
+        "LWC:caseCard",
+        "ApexClass:CaseServiceTest"
+      ],
+      "covered": ["ApexClass:CaseService"],
+      "nonComponentChanges": {
+        "changed": [],
+        "added": [],
+        "removed": []
+      },
+      "nonComponentDependents": [],
+      "counts": {
+        "changed": 1,
+        "added": 0,
+        "removed": 0,
+        "atRisk": 4,
+        "covered": 1,
+        "tests": 1,
+        "nonComponent": {
+          "changed": 0,
+          "added": 0,
+          "removed": 0,
+          "dependents": 0
+        }
+      },
+      "seedsTraced": 1,
+      "seedsTruncated": 0,
+      "untracedSeeds": [],
+      "untracedSeedsTotal": 0,
+      "truncated": false,
+      "depth": 2
+    },
+    "markdown": "Changed: 1, added: 0, removed: 0; at risk: 4 (1 test class), covered: 1\n\n```mermaid\nflowchart LR\n  %% what_broke\n  ApexClass_CaseHelper[\"ApexClass:CaseHelper\"]\n  ApexMethod_CaseService_run_0_[\"ApexMethod:CaseService.run(0)\"]\n  ApexTrigger_CaseTrigger[\"ApexTrigger:CaseTrigger\"]\n  LWC_caseCard[\"LWC:caseCard\"]\n  Flow_Case_Flow[\"Flow:Case_Flow\"]\n  ApexClass_CaseServiceTest[\"ApexClass:CaseServiceTest\"]\n  ApexMethod_CaseService_run_0_ --> ApexClass_CaseHelper\n  ApexTrigger_CaseTrigger --> ApexMethod_CaseService_run_0_\n  LWC_caseCard --> ApexMethod_CaseService_run_0_\n  Flow_Case_Flow --> ApexMethod_CaseService_run_0_\n  ApexClass_CaseServiceTest --> ApexMethod_CaseService_run_0_\n  classDef cls0 fill:#9b9b9b,color:#fff,stroke:#333,stroke-width:1px\n  classDef cls1 fill:#4a90e2,color:#fff,stroke:#333,stroke-width:1px\n  classDef cls2 fill:#2c6fb8,color:#fff,stroke:#333,stroke-width:1px\n  classDef cls3 fill:#f5a623,color:#fff,stroke:#333,stroke-width:1px\n  classDef cls4 fill:#7ed321,color:#fff,stroke:#333,stroke-width:1px\n  classDef cls5 fill:#4a90e2,color:#fff,stroke:#333,stroke-width:1px\n  class ApexClass_CaseHelper cls0\n  class ApexMethod_CaseService_run_0_ cls1\n  class ApexTrigger_CaseTrigger cls2\n  class LWC_caseCard cls3\n  class Flow_Case_Flow cls4\n  class ApexClass_CaseServiceTest cls5\n```"
+  },
+  "what_broke.nobaseline": {
+    "data": {
+      "atRisk": [],
+      "covered": []
+    },
+    "markdown": "> no auto snapshot found; pass `since` explicitly"
+  },
+  "what_broke.nochange": {
+    "data": {
+      "atRisk": [],
+      "covered": []
+    },
+    "markdown": "_no changes since snapshot_"
+  },
+  "wip_diff.local": {
+    "data": {
+      "added": ["ApexClass:CaseRouter"],
+      "changed": ["ApexClass:CaseHelper", "ApexMethod:CaseHelper.apply(1)"],
+      "removed": []
+    },
+    "markdown": "Added (1):\n  + ApexClass:CaseRouter\n\nChanged (2):\n  ~ ApexClass:CaseHelper\n  ~ ApexMethod:CaseHelper.apply(1)\n\nRemoved (0):"
+  },
+  "wip_impact.local": {
+    "data": {
+      "changed": ["ApexClass:CaseHelper", "ApexMethod:CaseHelper.apply(1)"],
+      "added": ["ApexClass:CaseRouter"],
+      "removed": [],
+      "dependents": [
+        {
+          "qname": "ApexMethod:CaseService.run(0)",
+          "label": "ApexMethod",
+          "depth": 1,
+          "viaRelType": "CALLS",
+          "coveredByTest": true
+        },
+        {
+          "qname": "ApexTrigger:CaseTrigger",
+          "label": "ApexTrigger",
+          "depth": 2,
+          "viaRelType": "CALLS",
+          "coveredByTest": false
+        },
+        {
+          "qname": "LWC:caseCard",
+          "label": "LWC",
+          "depth": 2,
+          "viaRelType": "CALLS_APEX_FROM_LWC",
+          "coveredByTest": false
+        },
+        {
+          "qname": "Flow:Case_Flow",
+          "label": "Flow",
+          "depth": 2,
+          "viaRelType": "FLOW_INVOKES_APEX",
+          "coveredByTest": false
+        },
+        {
+          "qname": "ApexClass:CaseServiceTest",
+          "label": "ApexClass",
+          "depth": 2,
+          "viaRelType": "IS_TEST_FOR",
+          "coveredByTest": false
+        }
+      ]
+    },
+    "markdown": "Changed: 2, Added: 1, Removed: 0, Dependents: 5\n\n```mermaid\nflowchart LR\n  classDef wip-changed fill:#d0021b,color:#fff,stroke:#333\n  classDef wip-added fill:#4a90e2,color:#fff,stroke:#333\n  classDef risk fill:#f5a623,color:#000,stroke:#333\n  classDef safe fill:#7ed321,color:#000,stroke:#333\n  ApexClass_CaseHelper[\"ApexClass:CaseHelper\"]\n  ApexMethod_CaseHelper_apply_1_[\"ApexMethod:CaseHelper.apply(1)\"]\n  ApexClass_CaseRouter[\"ApexClass:CaseRouter\"]\n  ApexMethod_CaseService_run_0_[\"ApexMethod:CaseService.run(0)\"]\n  ApexTrigger_CaseTrigger[\"ApexTrigger:CaseTrigger\"]\n  LWC_caseCard[\"LWC:caseCard\"]\n  Flow_Case_Flow[\"Flow:Case_Flow\"]\n  ApexClass_CaseServiceTest[\"ApexClass:CaseServiceTest\"]\n  ApexMethod_CaseService_run_0_ -->|CALLS| ApexClass_CaseHelper\n  ApexTrigger_CaseTrigger -->|CALLS| ApexMethod_CaseService_run_0_\n  LWC_caseCard -->|CALLS_APEX_FROM_LWC| ApexMethod_CaseService_run_0_\n  Flow_Case_Flow -->|FLOW_INVOKES_APEX| ApexMethod_CaseService_run_0_\n  ApexClass_CaseServiceTest -->|IS_TEST_FOR| ApexMethod_CaseService_run_0_\n  ApexMethod_CaseService_run_0_ -->|CALLS| ApexMethod_CaseHelper_apply_1_\n  ApexTrigger_CaseTrigger -->|CALLS| ApexMethod_CaseService_run_0_\n  LWC_caseCard -->|CALLS_APEX_FROM_LWC| ApexMethod_CaseService_run_0_\n  Flow_Case_Flow -->|FLOW_INVOKES_APEX| ApexMethod_CaseService_run_0_\n  ApexClass_CaseServiceTest -->|IS_TEST_FOR| ApexMethod_CaseService_run_0_\n  class ApexClass_CaseHelper wip-changed\n  class ApexMethod_CaseHelper_apply_1_ wip-changed\n  class ApexClass_CaseRouter wip-added\n  class ApexMethod_CaseService_run_0_ safe\n  class ApexTrigger_CaseTrigger risk\n  class LWC_caseCard risk\n  class Flow_Case_Flow risk\n  class ApexClass_CaseServiceTest risk\n```"
+  },
+  "wip_test_gap.local": {
+    "data": {
+      "uncovered": [
+        {
+          "qname": "ApexClass:CaseHelper",
+          "label": "ApexClass",
+          "depth": 0,
+          "viaRelType": "",
+          "coveredByTest": false,
+          "seed": "changed"
+        },
+        {
+          "qname": "ApexClass:CaseRouter",
+          "label": "ApexClass",
+          "depth": 0,
+          "viaRelType": "",
+          "coveredByTest": false,
+          "seed": "added"
+        },
+        {
+          "qname": "ApexTrigger:CaseTrigger",
+          "label": "ApexTrigger",
+          "depth": 2,
+          "viaRelType": "CALLS",
+          "coveredByTest": false
+        }
+      ],
+      "covered": ["ApexClass:CaseService"],
+      "tests": ["ApexClass:CaseServiceTest"],
+      "notApplicable": ["Flow:Case_Flow", "LWC:caseCard"]
+    },
+    "markdown": "Uncovered dependents (3):\n- ApexClass:CaseHelper (ApexClass, changed locally)\n- ApexClass:CaseRouter (ApexClass, added locally)\n- ApexTrigger:CaseTrigger (ApexTrigger, depth=2, via=CALLS)"
+  },
+  "test_gap_intelligence_from_git_diff.helper": {
+    "data": {
+      "gaps": ["ApexClass:CaseHelper", "ApexTrigger:CaseTrigger"],
+      "changedGaps": ["ApexClass:CaseHelper"],
+      "covered": ["ApexClass:CaseService"],
+      "tests": ["ApexClass:CaseServiceTest"],
+      "notApplicable": ["Flow:Case_Flow", "LWC:caseCard"],
+      "notFound": [],
+      "unmapped": [],
+      "depth": 2
+    },
+    "markdown": "**Test gaps:** 2\n\n- `ApexClass:CaseHelper`\n- `ApexTrigger:CaseTrigger`"
+  },
+  "test_gap_intelligence_from_git_diff.ghost": {
+    "data": {
+      "gaps": [],
+      "changedGaps": [],
+      "covered": [],
+      "tests": [],
+      "notApplicable": [],
+      "notFound": ["ApexClass:Ghost"],
+      "unmapped": [
+        {
+          "path": "README.md",
+          "reason": "no-qname"
+        }
+      ],
+      "depth": 1
+    },
+    "markdown": "**Test gaps:** 0\n\n\n_1 changed file not in the graph_ (new, or not ingested yet): `ApexClass:Ghost`. Check the spelling with `find_nodes { pattern: \"*Ghost*\" }` (qnames look like `ApexClass:Name` or `CustomField:Object.Field__c`).\n\n_1 changed path not mapped to a graph node_: `README.md` (no-qname)"
+  },
+  "cross_layer_flow_map.lwc": {
+    "data": {
+      "participants": [
+        {
+          "id": "LWC:caseCard",
+          "label": "LWC:caseCard",
+          "layer": "LWC",
+          "role": "entry"
+        },
+        {
+          "id": "ApexClass:CaseService",
+          "label": "ApexClass:CaseService",
+          "layer": "Apex"
+        },
+        {
+          "id": "ApexClass:CaseHelper",
+          "label": "ApexClass:CaseHelper",
+          "layer": "Apex"
+        },
+        {
+          "id": "CustomField:Case.Priority__c",
+          "label": "CustomField:Case.Priority__c",
+          "layer": "Field"
+        },
+        {
+          "id": "CustomObject:Case",
+          "label": "CustomObject:Case",
+          "layer": "SOQL"
+        },
+        {
+          "id": "CustomField:Account.Name",
+          "label": "CustomField:Account.Name",
+          "layer": "Field",
+          "role": "standard-field"
+        },
+        {
+          "id": "CustomObject:Account",
+          "label": "CustomObject:Account",
+          "layer": "SOQL"
+        },
+        {
+          "id": "CustomField:Account.Tier__c",
+          "label": "CustomField:Account.Tier__c",
+          "layer": "Field"
+        }
+      ],
+      "messages": [
+        {
+          "fromId": "LWC:caseCard",
+          "toId": "ApexClass:CaseService",
+          "label": "CALLS_APEX_FROM_LWC"
+        },
+        {
+          "fromId": "ApexClass:CaseService",
+          "toId": "ApexClass:CaseHelper",
+          "label": "CALLS"
+        },
+        {
+          "fromId": "ApexClass:CaseService",
+          "toId": "CustomField:Case.Priority__c",
+          "label": "READS_FIELD"
+        },
+        {
+          "fromId": "ApexClass:CaseHelper",
+          "toId": "CustomField:Account.Name",
+          "label": "READS_FIELD"
+        },
+        {
+          "fromId": "ApexClass:CaseHelper",
+          "toId": "CustomField:Account.Tier__c",
+          "label": "WRITES_FIELD"
+        },
+        {
+          "fromId": "CustomObject:Case",
+          "toId": "CustomField:Case.Priority__c",
+          "label": "CONTAINS"
+        },
+        {
+          "fromId": "CustomObject:Account",
+          "toId": "CustomField:Account.Name",
+          "label": "CONTAINS"
+        },
+        {
+          "fromId": "CustomObject:Account",
+          "toId": "CustomField:Account.Tier__c",
+          "label": "CONTAINS"
+        }
+      ],
+      "pseudo": [
+        {
+          "id": "ApexMethod:System.debug(1)",
+          "pseudoKind": "apex-platform"
+        }
+      ],
+      "truncated": false
+    },
+    "markdown": "Flow from `LWC:caseCard`: 6 components reached (the entry and standard fields not counted).\n\n### ApexClass (2)\n- ApexClass:CaseHelper\n- ApexClass:CaseService\n\n### CustomField (2)\n- CustomField:Account.Tier__c\n- CustomField:Case.Priority__c\n\n### CustomObject (2)\n- CustomObject:Account\n- CustomObject:Case\n\n```mermaid\nsequenceDiagram\n  participant LWC_caseCard as LWC:caseCard\n  participant ApexClass_CaseService as ApexClass:CaseService\n  participant ApexClass_CaseHelper as ApexClass:CaseHelper\n  participant CustomObject_Case as CustomObject:Case\n  participant CustomObject_Account as CustomObject:Account\n  participant CustomField_Case_Priority__c as CustomField:Case.Priority__c\n  participant CustomField_Account_Name as CustomField:Account.Name\n  participant CustomField_Account_Tier__c as CustomField:Account.Tier__c\n  LWC_caseCard ->> ApexClass_CaseService: CALLS_APEX_FROM_LWC\n  ApexClass_CaseService ->> ApexClass_CaseHelper: CALLS\n  ApexClass_CaseService ->> CustomField_Case_Priority__c: READS_FIELD\n  ApexClass_CaseHelper ->> CustomField_Account_Name: READS_FIELD\n  ApexClass_CaseHelper ->> CustomField_Account_Tier__c: WRITES_FIELD\n  CustomObject_Case ->> CustomField_Case_Priority__c: CONTAINS\n  CustomObject_Account ->> CustomField_Account_Name: CONTAINS\n  CustomObject_Account ->> CustomField_Account_Tier__c: CONTAINS\n```\n\n_1 pseudo endpoint not drawn_ (platform Apex, DML, LWC properties/events, managed-package types): ApexMethod:System.debug(1)\n\n_1 standard field (no `__c` suffix) drawn, not counted_: CustomField:Account.Name"
+  },
+  "cross_layer_flow_map.bare": {
+    "data": {
+      "found": false,
+      "entry": "caseCard",
+      "candidates": ["LWC:caseCard"]
+    },
+    "markdown": "> Entry must be a full `Label:Name` qname (e.g. `LWC:caseCard`). Did you mean: `LWC:caseCard`?"
+  },
+  "cross_layer_flow_map.ghost": {
+    "data": {
+      "found": false,
+      "entry": "LWC:ghost",
+      "candidates": []
+    },
+    "markdown": "> No node `LWC:ghost` in the graph. Check the spelling with find_nodes (e.g. pattern `LWC:*ghost*`)."
+  },
+  "explain_code.method": {
+    "data": {
+      "qname": "ApexMethod:CaseService.run(0)",
+      "sourceFormat": "apex",
+      "sourceText": "public void run() { new CaseHelper().apply(c); }",
+      "startLine": 3,
+      "endLine": 3,
+      "cachedExplanation": null,
+      "cachedAt": null,
+      "stored": false,
+      "references": [
+        {
+          "qname": "ApexClass:CaseHelper",
+          "label": "ApexClass",
+          "relType": "CALLS"
+        },
+        {
+          "qname": "CustomField:Case.Priority__c",
+          "label": "CustomField",
+          "relType": "READS_FIELD"
+        }
+      ]
+    },
+    "markdown": "**ApexMethod:CaseService.run(0)** — `apex` (lines 3–3)\n\n```apex\npublic void run() { new CaseHelper().apply(c); }\n```\n\n**Direct references** (2, component level; trace_downstream depth 1):\n- ApexClass:CaseHelper — CALLS\n- CustomField:Case.Priority__c — READS_FIELD\n\n> No explanation cached yet — generate one and call `explain_code` again with `annotation` to persist it.\n\n_follow_up_tools: `analyze_field`, `trace_upstream`, `trace_downstream`_"
+  },
+  "explain_code.nosnippet": {
+    "data": {
+      "qname": "CustomField:Case.Priority__c",
+      "sourceFormat": null,
+      "sourceText": null,
+      "startLine": null,
+      "endLine": null,
+      "cachedExplanation": null,
+      "cachedAt": null,
+      "stored": false,
+      "references": []
+    },
+    "markdown": "> No snippet stored for `CustomField:Case.Priority__c`. Snippets are stored for Apex methods, Apex triggers and Flows; for a class, explain one of its methods. For other metadata, use `analyze_field` or `trace_upstream` instead."
+  },
+  "analyze_field.tier": {
+    "data": {
+      "readers": [],
+      "writers": ["ApexMethod:CaseHelper.apply(1)"],
+      "grants": [],
+      "grants_count": 0
+    },
+    "markdown": "**CustomField:Account.Tier__c** — readers 0 · writers 1 · grants 0\n\n### Readers (0)\n\n### Writers (1)\n- ApexMethod:CaseHelper.apply(1) — WRITES_FIELD"
+  },
+  "analyze_field.priority": {
+    "data": {
+      "readers": ["ApexMethod:CaseService.run(0)"],
+      "writers": [],
+      "grants": [],
+      "grants_count": 0
+    },
+    "markdown": "**CustomField:Case.Priority__c** — readers 1 · writers 0 · grants 0\n\n### Readers (1)\n- ApexMethod:CaseService.run(0) — READS_FIELD\n\n### Writers (0)"
+  },
+  "analyze_field.ghost": {
+    "data": {
+      "found": false
+    },
+    "markdown": "> no node `CustomField:Case.Ghost__c`"
+  }
+}

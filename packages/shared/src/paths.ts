@@ -1,3 +1,4 @@
+import path from "node:path";
 import envPaths from "env-paths";
 
 export interface SfgraphPaths {
@@ -33,4 +34,12 @@ export function getSfgraphPaths(): SfgraphPaths {
     config: process.env.SFGRAPH_CONFIG_DIR ?? p.config,
     temp: process.env.SFGRAPH_TEMP_DIR ?? p.temp,
   };
+}
+
+/**
+ * Where tools that write a file (export_sarif) put it: SFGRAPH_EXPORTS_DIR, else
+ * `<data dir>/exports`. Bench runners point it at a scratch dir so nothing lands in a data dir.
+ */
+export function getExportsDir(): string {
+  return process.env.SFGRAPH_EXPORTS_DIR ?? path.join(getSfgraphPaths().data, "exports");
 }

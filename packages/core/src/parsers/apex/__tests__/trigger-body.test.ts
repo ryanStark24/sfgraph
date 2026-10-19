@@ -38,11 +38,12 @@ describe("ApexTriggerParser — body snippet + SOQL/DML analysis", () => {
     const result = await parse(body);
     const soql = result.edges.filter((e) => e.relType === "EXECUTES_SOQL");
     const dml = result.edges.filter((e) => e.relType === "EXECUTES_DML");
-    // Two SOQL: one outside the loop (bulkified), one inside.
-    const outside = soql.find((e) => (e.attributes as { inLoop?: boolean }).inLoop !== true);
-    const inside = soql.find((e) => (e.attributes as { inLoop?: boolean }).inLoop === true);
-    expect(outside).toBeDefined();
-    expect(inside).toBeDefined();
+    // Two SOQL on Contact, one outside the loop (bulkified) and one inside.
+    // They share the store's (src, rel, dst) key, so the parser emits ONE fact
+    // that keeps inLoop (the store would otherwise keep whichever came last).
+    expect(soql).toHaveLength(1);
+    expect((soql[0]?.attributes as { inLoop?: boolean }).inLoop).toBe(true);
+    expect((soql[0]?.attributes as { count?: number }).count).toBe(2);
     // The DML (update c) is inside the loop → governor risk.
     expect(dml.some((e) => (e.attributes as { inLoop?: boolean }).inLoop === true)).toBe(true);
     // TRIGGERS_ON still emitted.

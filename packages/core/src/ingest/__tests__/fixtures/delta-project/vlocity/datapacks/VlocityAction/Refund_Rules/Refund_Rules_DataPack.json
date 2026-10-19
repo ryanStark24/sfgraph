@@ -1,0 +1,6 @@
+{
+  "Name": "Refund_Rules",
+  "%vlocity_namespace%__Code__c": "RefundRules",
+  "ProcessName": "Shop_Refund",
+  "Notes": "OrderHelper"
+}

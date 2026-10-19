@@ -18,6 +18,8 @@ tools_used:
 
 Use when the user has local edits they haven't committed yet (working tree, staged or unstaged) and wants to see the downstream blast radius and test gaps before deciding whether to commit or push.
 
+What counts as changed: the wip tools compare the local project with the ingested graph. In the default `mode: "changed-only"`, a file counts when it differs from git HEAD **or** was modified after the org's last sync, so commits made since the last ingest are included too; say so if the user expects only uncommitted edits. `mode: "full-folder"` parses every member.
+
 ## Evidence rule — say it only if something backs it
 
 State a fact about this org or the Salesforce platform **only when evidence backs it**: a tool/graph result, source you actually read (local sfdx file or an org fetch), a live org query, or official Salesforce documentation. If you don't have that, say so plainly — "the graph doesn't show this", "unverified", "I'd need to check the org" — and either go get the evidence or stop. **Never fill the gap with a plausible-sounding guess**: an invented field/method/object name, an assumed dependency, or a governor number recalled from memory. Label each claim as **graph-confirmed** (a tool returned it), **inferred** (you reasoned it from graph facts — say which facts), or **general Salesforce knowledge**. For platform behaviour — governor limits, order of execution, sharing/FLS semantics, API rules — cite the official doc (developer.salesforce.com; fetch it if unsure) instead of asserting from memory. If the graph is stale or the org was never ingested, lead with that caveat — your grounding may be wrong.
@@ -55,6 +57,8 @@ flowchart LR
 If the dependent set exceeds 40 nodes, summarise per category and skip the diagram.
 
 ## Staleness check
+
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
 
 Before calling `wip_impact`, invoke `staleness_check` for the linked org. WIP analysis depends on the existing graph being accurate; a stale graph will under-report dependents. If the report says stale, surface a warning to the user:
 

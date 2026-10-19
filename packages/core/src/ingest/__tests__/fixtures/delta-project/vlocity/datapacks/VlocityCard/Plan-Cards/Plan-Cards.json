@@ -1,0 +1,9 @@
+{
+  "dataSource": {
+    "type": "IntegrationProcedures",
+    "value": {
+      "ipMethod": "Shop_Checkout"
+    }
+  },
+  "states": []
+}

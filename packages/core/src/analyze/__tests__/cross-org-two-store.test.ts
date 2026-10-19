@@ -75,3 +75,23 @@ describe("diffOrgs two-store form", () => {
     expect(diff.onlyInB.map((n) => n.qualifiedName)).toEqual(["ApexClass:Y"]);
   });
 });
+
+describe("diffOrgs category matching (final review I2)", () => {
+  it("matches a category without case and accepts `All`", () => {
+    storeA.mergeNodes([node(A, "ApexClass:Only_A", "h1")]);
+    storeB.mergeNodes([node(B, "ApexClass:Only_B", "h2")]);
+    const lower = diffOrgs({ storeA, orgA: A, storeB, orgB: B, category: "apexclass" });
+    expect(lower.onlyInA.map((n) => n.qualifiedName)).toEqual(["ApexClass:Only_A"]);
+    expect(lower.unknownCategory).toBeUndefined();
+    expect(lower.resolvedCategory).toEqual(["ApexClass"]);
+    const all = diffOrgs({ storeA, orgA: A, storeB, orgB: B, category: "All" });
+    expect(all.onlyInB.map((n) => n.qualifiedName)).toEqual(["ApexClass:Only_B"]);
+  });
+
+  it("flags a category neither store has", () => {
+    storeA.mergeNodes([node(A, "ApexClass:Only_A", "h1")]);
+    const d = diffOrgs({ storeA, orgA: A, storeB, orgB: B, category: "Nonesuch" });
+    expect(d.unknownCategory).toBe(true);
+    expect(d.onlyInA).toEqual([]);
+  });
+});

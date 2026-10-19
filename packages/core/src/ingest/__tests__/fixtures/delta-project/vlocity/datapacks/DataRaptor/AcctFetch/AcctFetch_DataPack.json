@@ -1,0 +1,5 @@
+{
+  "Name": "AcctFetch",
+  "%vlocity_namespace%__Type__c": "Extract",
+  "%vlocity_namespace%__DRMapItem__c": "AcctFetch_Mappings.json"
+}

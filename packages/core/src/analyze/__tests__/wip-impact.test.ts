@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { REL_TYPES } from "../../domain/index.js";
 import type { EdgeFact, NodeFact } from "../../domain/index.js";
 import { SqliteGraphStore } from "../../storage/index.js";
-import { analyzeLocalImpact } from "../wip-impact.js";
+import { adaptParserInput, analyzeLocalImpact } from "../wip-impact.js";
 
 let workDir: string;
 let dbPath: string;
@@ -141,5 +141,22 @@ describe("analyzeLocalImpact", () => {
     expect(result.mermaid).toContain("classDef safe");
     // Some node id for ApexClass:Foo
     expect(result.mermaid).toMatch(/ApexClass.?Foo/);
+  });
+});
+
+describe("adaptParserInput (CustomObject)", () => {
+  it("passes the fields-only stub flag through to the parser input", () => {
+    const ref = {
+      category: "CustomObject",
+      memberType: "CustomObject",
+      memberName: "Widget__c",
+      lastModifiedAt: null,
+      sourceUri: "file:///x",
+      namespace: null,
+    } as never;
+    const content = JSON.stringify({ apiName: "Widget__c", objectXml: "", stub: true, fields: {} });
+    expect((adaptParserInput(ref, content)?.input as { stub?: boolean }).stub).toBe(true);
+    const full = JSON.stringify({ apiName: "Widget__c", objectXml: "<CustomObject/>", fields: {} });
+    expect((adaptParserInput(ref, full)?.input as { stub?: boolean }).stub).toBeUndefined();
   });
 });

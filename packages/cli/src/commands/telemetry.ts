@@ -46,7 +46,7 @@ export async function previewCmd(env: TelemetryEnv = defaultEnv()): Promise<void
   const sample = {
     kind: "cli_command" as const,
     ts: Date.now(),
-    command: "ingest --org acme at /Users/alice/code",
+    command: "ingest --org acme at /Users/dev/code",
     durationMs: 1234,
     exitCode: 0,
   };

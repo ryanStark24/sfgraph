@@ -50,6 +50,46 @@ describe("deployment manifest", () => {
     expect(m.destructiveXml).toContain("<members>DeletedOne</members>");
   });
 
+  it("leaves managed and standard items found only in the target out of destructiveChanges.xml", () => {
+    store.mergeNodes([
+      n(B, "ApexClass", "ApexClass:DeletedOne"),
+      n(B, "CustomObject", "CustomObject:acme__Invoice__c"), // managed package
+      n(B, "CustomField", "CustomField:acme__Invoice__c.acme__Total__c"), // managed package
+      n(B, "CustomField", "CustomField:Account.Industry"), // standard
+      n(A, "CustomField", "CustomField:Account.Rating"), // standard, source only
+    ]);
+    const m = generateManifest({ storeA: store, orgA: A, storeB: store, orgB: B });
+    expect(m.destructiveXml).toContain("<members>DeletedOne</members>");
+    expect(m.destructiveXml).not.toContain("acme__");
+    expect(m.destructiveXml).not.toContain("Account.Industry");
+    expect(m.packageXml).not.toContain("Account.Rating");
+    expect(m.hidden).toEqual({ managed: 2, standard: 2 });
+    expect(m.summary.removed).toBe(1);
+
+    const all = generateManifest({
+      storeA: store,
+      orgA: A,
+      storeB: store,
+      orgB: B,
+      includeManaged: true,
+      includeStandard: true,
+    });
+    expect(all.destructiveXml).toContain("<members>acme__Invoice__c</members>");
+    expect(all.destructiveXml).toContain("<members>Account.Industry</members>");
+    expect(all.packageXml).toContain("<members>Account.Rating</members>");
+    expect(all.hidden).toEqual({ managed: 0, standard: 0 });
+  });
+
+  it("keeps a managed or standard item that changed in both orgs", () => {
+    store.mergeNodes([
+      n(A, "CustomField", "CustomField:Account.Industry", "h2"),
+      n(B, "CustomField", "CustomField:Account.Industry", "h1"),
+    ]);
+    const m = generateManifest({ storeA: store, orgA: A, storeB: store, orgB: B });
+    expect(m.packageXml).toContain("<members>Account.Industry</members>");
+    expect(m.hidden).toEqual({ managed: 0, standard: 0 });
+  });
+
   it("member-name formatters strip label prefixes", () => {
     expect(formatMemberName("ApexClass", "ApexClass:Foo")).toBe("Foo");
     expect(formatMemberName("CustomField", "CustomField:Account.Foo__c")).toBe("Account.Foo__c");

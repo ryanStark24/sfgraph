@@ -8,6 +8,13 @@ import {
   scheduleMetadata,
   withTimeout,
 } from "../rate-limit.js";
+import {
+  type FetchFailure,
+  type RetryOptions,
+  catchInto,
+  throwIfIncomplete,
+  withRetry,
+} from "../retry.js";
 
 const BATCH = 10;
 const xml = new XMLBuilder({ ignoreAttributes: false, format: false, suppressEmptyNode: true });
@@ -23,9 +30,25 @@ const TYPE_TO_CATEGORY: Record<string, MetadataCategory> = {
   ExternalServiceRegistration: METADATA_CATEGORY.EXTERNAL_SERVICE_REGISTRATION,
 };
 
-async function* iterType(conn: any, type: string): AsyncIterable<RawMember> {
-  const list = (await scheduleMetadata(() =>
-    withTimeout(conn.metadata.list([{ type }]), METADATA_LIST_TIMEOUT_MS, `metadata.list ${type}`),
+async function* iterType(
+  conn: any,
+  type: string,
+  failures: FetchFailure[],
+  retryOpts: RetryOptions,
+): AsyncIterable<RawMember> {
+  const onFailed = (names: string[], error: unknown) => {
+    for (const name of names) failures.push({ name: `${type}:${name}`, error });
+  };
+  const list = (await withRetry(
+    () =>
+      scheduleMetadata(() =>
+        withTimeout(
+          conn.metadata.list([{ type }]),
+          METADATA_LIST_TIMEOUT_MS,
+          `metadata.list ${type}`,
+        ),
+      ),
+    retryOpts,
   )) as MdListItem[] | null;
   const items = Array.isArray(list) ? list : [];
   const category = TYPE_TO_CATEGORY[type] ?? METADATA_CATEGORY.INTEGRATION;
@@ -42,7 +65,7 @@ async function* iterType(conn: any, type: string): AsyncIterable<RawMember> {
     const p = (async (): Promise<Settled> => ({
       idx,
       batch,
-      records: await readMetadataBatchAdaptive(conn, type, batch),
+      records: await readMetadataBatchAdaptive(conn, type, batch, 0, onFailed),
     }))();
     inFlight.set(idx, p);
   };
@@ -72,9 +95,15 @@ async function* iterType(conn: any, type: string): AsyncIterable<RawMember> {
   }
 }
 
-export async function* iterIntegration(conn: any): AsyncIterable<RawMember> {
+export async function* iterIntegration(
+  conn: any,
+  retryOpts: RetryOptions = {},
+): AsyncIterable<RawMember> {
+  // See iterSecurity: sub-stream failures are collected, not swallowed.
+  const failures: FetchFailure[] = [];
+  const types = ["NamedCredential", "ExternalServiceRegistration"];
   yield* mergeAsyncIterablesParallel(
-    iterType(conn, "NamedCredential"),
-    iterType(conn, "ExternalServiceRegistration"),
+    ...types.map((t) => catchInto(t, iterType(conn, t, failures, retryOpts), failures)),
   );
+  throwIfIncomplete("integration", failures);
 }

@@ -1,0 +1,9 @@
+{
+  "Name": "RA",
+  "%vlocity_namespace%__Type__c": "Remote Action",
+  "%vlocity_namespace%__Active__c": true,
+  "%vlocity_namespace%__PropertySet__c": {
+    "remoteClass": "CheckoutSvc",
+    "remoteMethod": "submit"
+  }
+}

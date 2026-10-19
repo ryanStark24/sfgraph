@@ -17,19 +17,19 @@ describe("iterCustomSettings", () => {
       tooling: {
         query: async (soql: string) => {
           expect(soql).toContain("IsCustomSetting = true");
-          return { records: [{ QualifiedApiName: "Integration_Settings__c" }], done: true };
+          return { records: [{ QualifiedApiName: "Acme_Settings__c" }], done: true };
         },
       },
       query: async (soql: string) => {
-        if (soql.includes("Integration_Settings__c")) {
+        if (soql.includes("Acme_Settings__c")) {
           return {
             records: [
               {
-                attributes: { type: "Integration_Settings__c" },
+                attributes: { type: "Acme_Settings__c" },
                 Id: "a01x0000000001",
                 SystemModstamp: "2025-01-01T00:00:00Z",
                 Name: "Default",
-                Endpoint__c: "https://api.example.com/orders",
+                Service_Url__c: "https://api.example.com/orders",
                 Timeout__c: 30000,
               },
             ],
@@ -43,17 +43,17 @@ describe("iterCustomSettings", () => {
     expect(members).toHaveLength(1);
     const m = members[0]!;
     expect(m.ref.memberType).toBe("CustomSetting");
-    expect(m.ref.memberName).toBe("Integration_Settings__c");
+    expect(m.ref.memberName).toBe("Acme_Settings__c");
     const parsed = JSON.parse(m.content) as {
       name: string;
       rows: Array<Record<string, unknown>>;
     };
-    expect(parsed.name).toBe("Integration_Settings__c");
+    expect(parsed.name).toBe("Acme_Settings__c");
     expect(parsed.rows).toHaveLength(1);
     // System/audit fields stripped, config fields kept.
     expect(parsed.rows[0]).not.toHaveProperty("Id");
     expect(parsed.rows[0]).not.toHaveProperty("SystemModstamp");
-    expect(parsed.rows[0]?.Endpoint__c).toBe("https://api.example.com/orders");
+    expect(parsed.rows[0]?.Service_Url__c).toBe("https://api.example.com/orders");
   });
 
   it("yields nothing when the org has no custom settings", async () => {
@@ -70,15 +70,15 @@ describe("iterCustomSettings", () => {
     expect(parser).toBeDefined();
     const result = await parser!.parse(
       {
-        name: "Integration_Settings__c",
-        rows: [{ Name: "Default", Endpoint__c: "https://api.example.com/orders" }],
+        name: "Acme_Settings__c",
+        rows: [{ Name: "Default", Service_Url__c: "https://api.example.com/orders" }],
         rowCount: 1,
       } as never,
       makeTestCtx(),
     );
     const node = result.nodes.find((n) => n.label === "CustomSetting");
     expect(node).toBeDefined();
-    expect(String(node!.qualifiedName)).toBe("CustomSetting:Integration_Settings__c");
+    expect(String(node!.qualifiedName)).toBe("CustomSetting:Acme_Settings__c");
     const rows = (node!.attributes as { customSettingRows?: unknown[] }).customSettingRows;
     expect(Array.isArray(rows)).toBe(true);
     // Linked to its schema object.
@@ -86,7 +86,7 @@ describe("iterCustomSettings", () => {
       result.edges.some(
         (e) =>
           e.relType === "INSTANCE_OF" &&
-          String(e.dstQualifiedName) === "CustomObject:Integration_Settings__c",
+          String(e.dstQualifiedName) === "CustomObject:Acme_Settings__c",
       ),
     ).toBe(true);
   });

@@ -1,0 +1,10 @@
+{
+  "%vlocity_namespace%__Type__c": "Shop",
+  "%vlocity_namespace%__SubType__c": "Checkout",
+  "%vlocity_namespace%__Language__c": "Procedure",
+  "%vlocity_namespace%__Element__c": [
+    "Shop_Checkout_Element_RA.json",
+    "Shop_Checkout_Element_DR.json"
+  ],
+  "Name": "Checkout"
+}

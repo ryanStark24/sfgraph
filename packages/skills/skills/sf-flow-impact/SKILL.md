@@ -48,6 +48,8 @@ If more than 20 flows reference the field, group leaves by entry-trigger type an
 
 ## Staleness check
 
+If `staleness_check` is not available (the server runs with `SFGRAPH_TOOLS=core`), skip this step and say the graph's freshness was not checked.
+
 Before calling `analyze_field`, invoke `staleness_check` for the target org. Newly-created or recently-modified Flows are invisible in a stale graph, which makes this skill produce false negatives. If the report says stale, surface a warning to the user:
 
 > Your ingest is N days old. Run `sfgraph ingest --org <alias>` to refresh, or proceed with the understanding that the graph may not reflect recent changes.

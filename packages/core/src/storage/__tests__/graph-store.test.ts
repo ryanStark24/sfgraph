@@ -135,6 +135,64 @@ describe("SqliteGraphStore", () => {
       expect(store.listEdgesTo(ORG, asQualifiedName("ApexMethod:Svc.run")).length).toBe(1);
     });
 
+    it("M-3: a re-emitted guess inherits first_seen_at from the edge a resolver rewrote it to", () => {
+      const firstSeen = (src: string, dst: string): number =>
+        (
+          store.db
+            .prepare(
+              `SELECT first_seen_at AS t FROM ${store.getEdgeRelTables().get("CALLS")} WHERE src_qname = ? AND dst_qname = ?`,
+            )
+            .get(src, dst) as { t: number }
+        ).t;
+      // Resolved edges from an earlier ingest (arity, interface retarget, hop).
+      store.mergeEdges([
+        e(
+          "CALLS",
+          "ApexMethod:A.go",
+          "ApexMethod:Svc.run(1)",
+          { arityResolvedFrom: "ApexMethod:Svc.run(?)" },
+          5,
+        ),
+        e(
+          "CALLS",
+          "ApexMethod:A.go",
+          "ApexInterface:IFace",
+          { retargetedFrom: "ApexClass:IFace" },
+          5,
+        ),
+      ]);
+      // Re-parse re-emits the guesses at t=9; the rewritten edges are pruned.
+      store.mergeEdges(
+        [
+          e("CALLS", "ApexMethod:A.go", "ApexMethod:Svc.run(?)", {}, 9),
+          e("CALLS", "ApexMethod:A.go", "ApexClass:IFace", {}, 9),
+          e("CALLS", "ApexMethod:A.go", "ApexMethod:Other.x(?)", {}, 9),
+        ],
+        { reconcileSources: true },
+      );
+      expect(firstSeen("ApexMethod:A.go", "ApexMethod:Svc.run(?)")).toBe(5);
+      expect(firstSeen("ApexMethod:A.go", "ApexClass:IFace")).toBe(5);
+      expect(firstSeen("ApexMethod:A.go", "ApexMethod:Other.x(?)")).toBe(9);
+      expect(
+        store
+          .listEdgesFrom(ORG, asQualifiedName("ApexMethod:A.go"))
+          .map((x) => String(x.dstQualifiedName))
+          .sort(),
+      ).toEqual(["ApexClass:IFace", "ApexMethod:Other.x(?)", "ApexMethod:Svc.run(?)"]);
+    });
+
+    it("N-5: reconcileExtraSrcs prunes a source that emitted no edges this batch", () => {
+      store.mergeEdges([e("CALLS", "ApexMethod:Svc.ping(1)", "ApexMethod:Util.log(1)")], {
+        reconcileSources: true,
+      });
+      const r = store.mergeEdges([], {
+        reconcileSources: true,
+        reconcileExtraSrcs: { orgId: ORG, qnames: ["ApexMethod:Svc.ping(1)"] },
+      });
+      expect(r.deleted).toBe(1);
+      expect(store.listEdgesFrom(ORG, asQualifiedName("ApexMethod:Svc.ping(1)"))).toEqual([]);
+    });
+
     it("without reconcileSources, edges are additive (legacy resolver behaviour)", () => {
       store.mergeEdges([e("EXECUTES_SOQL", "ApexMethod:Svc.run", "CustomObject:Account")]);
       const r = store.mergeEdges([

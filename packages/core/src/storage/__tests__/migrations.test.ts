@@ -47,16 +47,16 @@ describe("MigrationRunner", () => {
   it("applyPending brings DB to highest version", () => {
     const runner = new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 });
     runner.applyPending();
-    expect(currentVersion(db)).toBe(10);
+    expect(currentVersion(db)).toBe(15);
   });
 
   it("is idempotent on re-run", () => {
     const runner = new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 });
     runner.applyPending();
     runner.applyPending();
-    expect(currentVersion(db)).toBe(10);
+    expect(currentVersion(db)).toBe(15);
     const rows = db.prepare("SELECT version FROM _sfgraph_schema_version ORDER BY version").all();
-    expect(rows).toHaveLength(10);
+    expect(rows).toHaveLength(15);
   });
 
   it("creates snippet table at v6", () => {
@@ -86,7 +86,7 @@ describe("MigrationRunner", () => {
 
     // Now apply through v3; should produce backups.
     new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 }).applyPending();
-    expect(currentVersion(db)).toBe(10);
+    expect(currentVersion(db)).toBe(15);
     const files = readdirSync(backupDir).filter((f) => f.endsWith(".sqlite"));
     expect(files.length).toBeGreaterThanOrEqual(1);
   });
@@ -105,5 +105,33 @@ describe("MigrationRunner", () => {
     new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 1 }).applyPending();
     const files = readdirSync(backupDir).filter((f) => f.endsWith(".sqlite"));
     expect(files.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("migration 11 (FTS rowid side table backfill)", () => {
+  it("backfills valid rows and does not let a NULL-key FTS row abort the backfill", () => {
+    new MigrationRunner(
+      db,
+      MIGRATIONS.filter((m) => m.version <= 10),
+      { backupDir, retainBackups: 5 },
+    ).applyPending();
+    const hasFts = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sfgraph_node_fts'")
+      .get();
+    if (!hasFts) return; // FTS5 unavailable in this build
+    const ins = db.prepare(
+      "INSERT INTO _sfgraph_node_fts(qualified_name, org_id, label, body) VALUES (?, ?, ?, ?)",
+    );
+    ins.run("ApexClass:Good", "org1", "ApexClass", "good body");
+    ins.run("ApexClass:Orphan", null, "ApexClass", "orphan body");
+    new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 }).applyPending();
+    expect(currentVersion(db)).toBeGreaterThanOrEqual(11);
+    const map = db
+      .prepare("SELECT org_id, qualified_name FROM _sfgraph_node_fts_rowid ORDER BY qualified_name")
+      .all();
+    expect(map).toEqual([{ org_id: "org1", qualified_name: "ApexClass:Good" }]);
+    // The unreachable NULL-key doc is purged; the valid one survives.
+    const fts = db.prepare("SELECT qualified_name FROM _sfgraph_node_fts").all();
+    expect(fts).toEqual([{ qualified_name: "ApexClass:Good" }]);
   });
 });

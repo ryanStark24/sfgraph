@@ -117,6 +117,21 @@ public class Bad2 {
     expect(rows[0]?.confidence).toBe("high");
   });
 
+  it("populateDeadCodeScores scores LWC nodes (own bundle edge is not usage)", () => {
+    const old = Date.now() - 400 * 86400000;
+    store.mergeNodes([node("LWC", "LWC:lonelyCard", {}, old)]);
+    store.mergeEdges([
+      edge("LWCBundle:lonelyCard", REL_TYPES.CONTAINS_COMPONENT, "LWC:lonelyCard"),
+    ]);
+    populateDeadCodeScores(store, ORG, db);
+    const rows = db
+      .prepare(
+        "SELECT confidence FROM _sfgraph_dead_code_scores WHERE org_id = ? AND qualified_name = ?",
+      )
+      .all(ORG, "LWC:lonelyCard") as Array<{ confidence: string }>;
+    expect(rows[0]?.confidence).toBe("high");
+  });
+
   it("populateTestCoverage counts IS_TEST_FOR edges", () => {
     store.mergeNodes([node("ApexClass", "ApexClass:Foo"), node("ApexClass", "ApexClass:FooTest")]);
     store.mergeEdges([edge("ApexClass:FooTest", REL_TYPES.IS_TEST_FOR, "ApexClass:Foo")]);

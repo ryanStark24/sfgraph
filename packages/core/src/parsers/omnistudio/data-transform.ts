@@ -13,6 +13,7 @@ import {
   buildBaseNode,
   isPlainFieldName,
   isSObjectName,
+  payloadParseErrors,
   pickProp,
   sha256,
 } from "../vlocity/common.js";
@@ -42,7 +43,7 @@ export class OmniDataTransformParser implements Parser<OmniDataTransformInput> {
       raw: md,
       hash,
     });
-    nodes.push(node);
+    nodes.push(node, ...payloadParseErrors(ctx, node, md));
     const src = node.qualifiedName as unknown as string;
 
     // OmniDataTransformItem rows carry the field mappings structurally.

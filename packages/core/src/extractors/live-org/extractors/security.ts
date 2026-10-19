@@ -8,8 +8,26 @@ import {
   scheduleMetadata,
   withTimeout,
 } from "../rate-limit.js";
+import {
+  type FetchFailure,
+  type RetryOptions,
+  catchInto,
+  throwIfIncomplete,
+  withRetry,
+} from "../retry.js";
 
 const BATCH = 10;
+
+/**
+ * Members per `metadata.read` call, by type (default BATCH). Profiles are read
+ * one per call (cycle 2 T2): on a large live org each of the 109 Profiles is about
+ * 2.9 MB of XML. A 10-Profile call took 78 s and raised the main heap by
+ * about 170 MB while jsforce parsed the SOAP body; with 4 such calls in
+ * flight the live-org ingest peaked at 2.35-2.45 GB RSS. The same 10 Profiles
+ * read one per call, 4 at a time, took 32 s, and only 4 Profiles are in
+ * flight at once.
+ */
+export const SECURITY_READ_BATCH: Readonly<Record<string, number>> = { Profile: 1 };
 const xml = new XMLBuilder({ ignoreAttributes: false, format: false, suppressEmptyNode: true });
 
 interface MdListItem {
@@ -32,14 +50,31 @@ const TYPE_TO_CATEGORY: Record<string, MetadataCategory> = {
  * could park here for minutes with zero yields, getting the source killed
  * by the 180s inactivity timeout on slow orgs.
  */
-async function* iterType(conn: any, type: string): AsyncIterable<RawMember> {
-  const list = (await scheduleMetadata(() =>
-    withTimeout(conn.metadata.list([{ type }]), METADATA_LIST_TIMEOUT_MS, `metadata.list ${type}`),
+async function* iterType(
+  conn: any,
+  type: string,
+  failures: FetchFailure[],
+  retryOpts: RetryOptions,
+): AsyncIterable<RawMember> {
+  const onFailed = (names: string[], error: unknown) => {
+    for (const name of names) failures.push({ name: `${type}:${name}`, error });
+  };
+  const list = (await withRetry(
+    () =>
+      scheduleMetadata(() =>
+        withTimeout(
+          conn.metadata.list([{ type }]),
+          METADATA_LIST_TIMEOUT_MS,
+          `metadata.list ${type}`,
+        ),
+      ),
+    retryOpts,
   )) as MdListItem[] | null;
   const items = Array.isArray(list) ? list : [];
   const category = TYPE_TO_CATEGORY[type] ?? METADATA_CATEGORY.SECURITY;
   const batches: MdListItem[][] = [];
-  for (let i = 0; i < items.length; i += BATCH) batches.push(items.slice(i, i + BATCH));
+  const size = SECURITY_READ_BATCH[type] ?? BATCH;
+  for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
   const BATCH_WINDOW = 4;
   type Settled = { idx: number; batch: MdListItem[]; records: (unknown | null)[] };
   const inFlight = new Map<number, Promise<Settled>>();
@@ -50,7 +85,7 @@ async function* iterType(conn: any, type: string): AsyncIterable<RawMember> {
     const p = (async (): Promise<Settled> => ({
       idx,
       batch,
-      records: await readMetadataBatchAdaptive(conn, type, batch),
+      records: await readMetadataBatchAdaptive(conn, type, batch, 0, onFailed),
     }))();
     inFlight.set(idx, p);
   };
@@ -80,13 +115,20 @@ async function* iterType(conn: any, type: string): AsyncIterable<RawMember> {
   }
 }
 
-export async function* iterSecurity(conn: any): AsyncIterable<RawMember> {
+export async function* iterSecurity(
+  conn: any,
+  retryOpts: RetryOptions = {},
+): AsyncIterable<RawMember> {
   // Run all three types in parallel — they all schedule through the same
   // Metadata pool, but the pool's 5-wide budget is now actually utilised
   // (previously: Profile finished entirely before PermissionSet started).
+  // mergeAsyncIterablesParallel treats a rejected sub-stream as silently
+  // done, so each type is wrapped with catchInto and every loss (failed
+  // list, unreadable members) is re-thrown once all three types finished.
+  const failures: FetchFailure[] = [];
+  const types = ["Profile", "PermissionSet", "SharingRules"];
   yield* mergeAsyncIterablesParallel(
-    iterType(conn, "Profile"),
-    iterType(conn, "PermissionSet"),
-    iterType(conn, "SharingRules"),
+    ...types.map((t) => catchInto(t, iterType(conn, t, failures, retryOpts), failures)),
   );
+  throwIfIncomplete("security", failures);
 }

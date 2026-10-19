@@ -38,6 +38,13 @@ export interface MergeEdgesOptions {
    * other not-yet-reparsed callers survive.
    */
   reconcileSources?: boolean;
+  /**
+   * Task 11c (N-5): extra source qnames this reconcile batch is authoritative
+   * for even though it carries no edge from them (a method whose only call
+   * was removed). Their outgoing parser edges are pruned like any batch
+   * source's. A batch with no facts but extras still reconciles.
+   */
+  reconcileExtraSrcs?: { orgId: OrgId | string; qnames: readonly string[] };
 }
 
 export type SnippetSourceFormat = "apex" | "js" | "html" | "xml" | "json" | "flow" | "soql";
@@ -79,6 +86,14 @@ export interface SyncStatus {
   in_progress: boolean;
   started_at: string | null;
   last_sync_at: number | null;
+}
+
+/** One dangling edge as stored: `attributes` is the raw JSON text. */
+export interface DanglingEdgeRow {
+  relType: string;
+  src: string;
+  dst: string;
+  attributes: string;
 }
 
 export interface GraphStore {
@@ -126,8 +141,20 @@ export interface GraphStore {
   mergeEdges(facts: EdgeFact[], opts?: MergeEdgesOptions): MergeResult;
   getNode(orgId: OrgId, qname: QualifiedName): NodeFact | null;
   listNodesByLabel(orgId: OrgId, label: string, limit?: number): NodeFact[];
+  /** The qualified names `listNodesByLabel` would return, in the same order,
+   *  without reading the rest of each row. Optional. */
+  listQnamesByLabel?(orgId: OrgId, label: string, limit?: number): QualifiedName[];
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[];
   listEdgesTo(orgId: OrgId, dst: QualifiedName, relType?: RelType): EdgeFact[];
+  /** Edges (any rel type) whose dst is one of `dsts` (NOCASE, like listEdgesTo).
+   *  Optional: callers fall back to one listEdgesTo per dst. */
+  listEdgesToAny?(orgId: OrgId, dsts: Iterable<string>): EdgeFact[];
+  /** Edges of `relType` whose src is one of `srcs` (NOCASE, like listEdgesFrom).
+   *  Optional: callers fall back to one listEdgesFrom per src. */
+  listEdgesFromAny?(orgId: OrgId, srcs: Iterable<string>, relType: RelType): EdgeFact[];
+  /** Stored qnames of nodes whose `attributes[attr]` is JSON `true` (the nodes
+   *  for which `getNode(q)?.attributes[attr] === true`). Optional. */
+  listNodesWithTrueAttribute?(orgId: OrgId, attr: string): Set<string>;
   /** Find edges whose dst_qname matches a SQL LIKE pattern (e.g. `ApexMethod:%(?)`).
    *  Optional relType narrows the search to a single edge table; otherwise every
    *  known table is scanned. Used by post-merge resolvers (arity, dangling-edge audit). */
@@ -137,6 +164,11 @@ export interface GraphStore {
   /** Edges whose dst_qname has no row in `_sfgraph_node_index`. Used by the
    *  dangling-edge audit and `sfgraph audit` CLI. */
   listDanglingEdges(orgId: OrgId, limit?: number): EdgeFact[];
+  /** The same edges, in the same order, as `listDanglingEdges`, streamed one
+   *  row at a time with the attributes left as JSON text. The connection is
+   *  busy until the iterator finishes or is closed: do not query the store
+   *  from inside the loop. */
+  iterateDanglingEdges(orgId: OrgId, limit?: number): IterableIterator<DanglingEdgeRow>;
   listAllQnames(orgId: OrgId): QualifiedName[];
   /** Distinct node labels known to the store (across all orgs). Used by
    *  find-nodes glob matching to enumerate label tables. */
@@ -162,7 +194,66 @@ export interface GraphStore {
   upsertNodeFts(orgId: OrgId, qname: QualifiedName, label: string, body: string): void;
   /** Keyword search over node FTS docs, ranked best-first (bm25). Returns up to
    *  `k` hits; [] if FTS5 is unavailable or the query is empty. */
-  searchNodesFts(orgId: OrgId, query: string, k: number): Array<{ qname: string; label: string }>;
+  /** `opts.label` (case-insensitive) filters before the LIMIT (T15 I-7). */
+  searchNodesFts(
+    orgId: OrgId,
+    query: string,
+    k: number,
+    opts?: { label?: string },
+  ): Array<{ qname: string; label: string }>;
+  /** Rebuild bulk-load window (Task 10). Optional: lightweight/mock stores omit
+   *  it and ingest takes the per-member path. See SqliteGraphStore.beginBulk. */
+  beginBulk?(opts?: { freshOrgId?: OrgId; batchTransactions?: boolean }): void;
+  /** Close the bulk window (commit, rebuild deferred indexes, synchronous=NORMAL). */
+  endBulk?(): void;
+  /** Advance the bulk window by one member (commits every 2,000). */
+  bulkMemberDone?(): void;
+  /** Live-graph write batches for non-rebuild ingests. Optional, like the bulk
+   *  window. See SqliteGraphStore.beginBatch. */
+  beginBatch?(opts?: { maxMembers?: number; maxMs?: number }): void;
+  /** Open the batch transaction (if none is open) before a member's writes. */
+  batchMemberStart?(): void;
+  /** After a member's writes: commit when the batch is full or old enough. */
+  batchMemberDone?(): void;
+  /** Close the batch window, committing the open transaction. */
+  endBatch?(): void;
+  /** True when the org has no nodes, edges or FTS docs. */
+  isOrgEmpty?(orgId: OrgId): boolean;
+  /** Task 11a: flag the org's vectors as still being written. */
+  setEmbeddingsPending?(orgId: OrgId, pending: boolean): void;
+  /** Task 11a: pending flag plus the org's embedded-text total (FTS docs). */
+  getEmbeddingStatus?(orgId: OrgId): { pending: boolean; total: number } | null;
+  /** Task 11a: the org's FTS docs (qname, label, exact embed text). */
+  listFtsDocs?(orgId: OrgId): Iterable<{ qname: string; label: string; body: string }>;
+  /** Task 11c: per-member rows of a filesystem source (delta ingest). */
+  listMemberRows?(orgId: OrgId): MemberRow[];
+  /** Task 11c: replace every member row of the org (a full ingest), stamped with its generation. */
+  replaceMemberRows?(orgId: OrgId, rows: readonly MemberRow[], generation?: string): void;
+  /** Task 11c: drop every member row of the org (an aborted full ingest). */
+  clearMemberRows?(orgId: OrgId): void;
+  /** Task 11c: delete every outgoing edge (any pass) of `srcs`. */
+  deleteEdgesFrom?(
+    orgId: OrgId,
+    srcs: Iterable<string>,
+  ): Array<{ relType: string; src: string; dst: string; firstSeenAt: number }>;
+  /** Task 11c: delete reflection-walker edges from `srcs` / into `dsts` (neither: all). */
+  deleteReflectionEdges?(
+    orgId: OrgId,
+    scope?: { srcs?: Iterable<string>; dsts?: Iterable<string> },
+  ): number;
+}
+
+/**
+ * Task 11c: one member of a filesystem source as recorded by the last
+ * ingest: its key (sourceUri), fingerprint (file sizes + mtimes), content
+ * hash and the qnames it owns (nodes it emitted plus sources of edges it
+ * emitted). An errored member has empty fingerprint and hash.
+ */
+export interface MemberRow {
+  key: string;
+  fingerprint: string;
+  hash: string;
+  owned: string[];
 }
 
 export interface VectorUpsertResult {
@@ -216,6 +307,8 @@ export interface VectorStore {
   /** content_hash of the node's stored vector, or null. Lets the embedding
    *  queue skip re-running the model when the text is unchanged. */
   getContentHash(orgId: OrgId, qname: QualifiedName): Sha256 | null;
+  /** Run `fn` in one transaction, so a batch of upserts costs one commit. */
+  transaction?<T>(fn: () => T): T;
 }
 
 export interface NodeDiff {
@@ -229,6 +322,13 @@ export interface EdgeDiff {
   removed: EdgeFact[];
 }
 
+/** The first `limit` entries of each {@link EdgeDiff} bucket (same order) plus
+ *  the buckets' exact sizes. */
+export interface EdgeDiffPage extends EdgeDiff {
+  addedCount: number;
+  removedCount: number;
+}
+
 export interface SnapshotStore {
   init(): Promise<void>;
   createSnapshot(orgId: OrgId, label: string, isAuto: boolean): Snapshot;
@@ -237,5 +337,13 @@ export interface SnapshotStore {
   deleteSnapshot(id: string): void;
   diffNodes(orgId: OrgId, fromId: string | "current", toId: string | "current"): NodeDiff;
   diffEdges(orgId: OrgId, fromId: string | "current", toId: string | "current"): EdgeDiff;
+  /** {@link diffEdges} cut to the first `limit` rows per bucket, with exact
+   *  counts; cheaper than diffEdges on large graphs. */
+  diffEdgesPage(
+    orgId: OrgId,
+    fromId: string | "current",
+    toId: string | "current",
+    limit: number,
+  ): EdgeDiffPage;
   prune(orgId: OrgId, retainDays: number): number;
 }

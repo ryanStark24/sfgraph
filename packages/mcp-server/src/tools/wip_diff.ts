@@ -3,6 +3,7 @@ import { ConfigError, readWorkspace } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
 import { resolveWipProjectRoot } from "./_project-root.js";
+import { wipDiffReport } from "./_wip_report.js";
 
 const inputSchema = z.object({
   project_root: z.string().min(1).optional(),
@@ -13,7 +14,7 @@ const inputSchema = z.object({
 defineTool({
   name: "wip_diff",
   description:
-    "USE THIS for any 'show me what is different between my local source and the org' / 'list local-only / org-only metadata' question. Returns just the added/changed/removed sets — no dependent fan-out. Faster than wip_impact when you only need the diff.",
+    "Use to list how local source differs from the org: added, changed and removed components.",
   inputSchema,
   async execute(input) {
     const projectRoot = resolveWipProjectRoot(input.project_root ?? process.cwd());
@@ -34,6 +35,8 @@ defineTool({
       orgId: ctx.orgId,
       projectRoot,
       mode: input.mode,
+      // wip_diff reports only added/changed/removed: no dependents pass.
+      skipDependents: true,
     });
     const md = [
       `Added (${result.addedQnames.length}):`,
@@ -47,7 +50,7 @@ defineTool({
     ].join("\n");
     return {
       summary: `WIP diff: +${result.addedQnames.length} ~${result.changedQnames.length} -${result.removedQnames.length}`,
-      markdown: md,
+      markdown: wipDiffReport(result, input.mode, md),
       data: {
         added: result.addedQnames,
         changed: result.changedQnames,

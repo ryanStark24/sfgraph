@@ -1,20 +1,23 @@
 import { analyze } from "@ryanstark24/sfgraph-core";
 import { ConfigError, readWorkspace } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
-import { defineTool, z } from "./_define.js";
+import { defineTool, numeric, z } from "./_define.js";
 import { resolveWipProjectRoot } from "./_project-root.js";
+import { wipImpactReport } from "./_wip_report.js";
 
 const inputSchema = z.object({
   project_root: z.string().min(1).optional(),
   org: z.string().min(1).optional(),
-  depth: z.number().int().min(1).max(5).default(3),
+  depth: numeric(z.number().int().min(1).max(5).default(3)),
   mode: z.enum(["changed-only", "full-folder"]).default("changed-only"),
+  /** Show the Picture (a diagram of at most 25 components); false hides it. */
+  mermaid: z.boolean().default(true),
 });
 
 defineTool({
   name: "wip_impact",
   description:
-    "USE THIS for any 'what does this branch break' / 'dry-run my local changes' / 'what would happen if I deployed this' / 'impact of my uncommitted changes' question. Parses the local sfdx-source tree (force-app/) and overlays it on the org's persisted graph WITHOUT writing to it. Returns changed/added/removed qnames + N-hop dependent BFS + Mermaid. The local-equivalent of impact_from_git_diff for uncommitted work.",
+    "Use for 'what do my local changes break'. Overlays local source on the org graph (read-only): changes and dependents.",
   inputSchema,
   async execute(input) {
     const projectRoot = resolveWipProjectRoot(input.project_root ?? process.cwd());
@@ -36,17 +39,12 @@ defineTool({
       projectRoot,
       depth: input.depth,
       mode: input.mode,
+      // For the report only: which dependents are tests, or cannot carry Apex test coverage.
+      testGaps: true,
     });
-    const md = [
-      `Changed: ${result.changedQnames.length}, Added: ${result.addedQnames.length}, Removed: ${result.removedQnames.length}, Dependents: ${result.dependents.length}`,
-      "",
-      "```mermaid",
-      result.mermaid,
-      "```",
-    ].join("\n");
     return {
       summary: `WIP impact: ${result.changedQnames.length} changed, ${result.addedQnames.length} added, ${result.dependents.length} dependents`,
-      markdown: md,
+      markdown: wipImpactReport(result, input.depth, input.mermaid),
       data: {
         changed: result.changedQnames,
         added: result.addedQnames,

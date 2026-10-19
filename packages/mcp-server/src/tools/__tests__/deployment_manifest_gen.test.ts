@@ -118,6 +118,31 @@ describe("deployment_manifest_gen", () => {
     expect(d.summary.removed).toBeGreaterThanOrEqual(1);
   });
 
+  it("never deletes managed-package or standard items found only in the target, and says so", async () => {
+    n("orgB", storeB, "ApexClass:Gone", "h2");
+    n("orgB", storeB, "CustomObject:acme__Invoice__c", "h3", "CustomObject");
+    n("orgB", storeB, "CustomField:Account.Industry", "h4", "CustomField");
+    const r = await callTool("deployment_manifest_gen", { from_org: ORG_A, to_org: ORG_B });
+    const d = r.data as { destructiveXml: string; hidden: { managed: number; standard: number } };
+    expect(d.destructiveXml).toContain("Gone");
+    expect(d.destructiveXml).not.toContain("acme__Invoice__c");
+    expect(d.destructiveXml).not.toContain("Account.Industry");
+    expect(d.hidden).toEqual({ managed: 1, standard: 1 });
+    expect(r.markdown).toContain("1 managed-package item and 1 standard Salesforce item");
+    expect(r.markdown).toContain("`include_managed: true` or `include_standard: true`");
+
+    const all = await callTool("deployment_manifest_gen", {
+      from_org: ORG_A,
+      to_org: ORG_B,
+      include_managed: true,
+      include_standard: true,
+    });
+    const dAll = all.data as { destructiveXml: string };
+    expect(dAll.destructiveXml).toContain("acme__Invoice__c");
+    expect(dAll.destructiveXml).toContain("Account.Industry");
+    expect(all.markdown).not.toContain("Left out of both files");
+  });
+
   it("returns zero counts when orgs are identical", async () => {
     n("orgA", storeA, "ApexClass:Same", "h1");
     n("orgB", storeB, "ApexClass:Same", "h1");

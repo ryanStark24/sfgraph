@@ -1,0 +1,1129 @@
+{
+  "_notes": {
+    "export_sarif.all, export_sarif.none": "Fix round 1 (approved deviation): the last line of the old text changed from the 'client saves it as sfgraph.sarif' line to the saved file's path, because the tool now writes the file. <exports> stands for the test's exports dir.",
+    "freshness_report.all": "Fix round 1 (intended data change, a bug fix): freshness_report now scans the `LWC` label the parser emits, so `LWC:caseCard` joins the dead bucket in data and in the old table. Updated by hand from the pre-change capture: only that row was added."
+  },
+  "governor_risk_check.risks": {
+    "data": {
+      "risks": [
+        {
+          "qualifiedName": "ApexMethod:CaseService.run(0)",
+          "risk": "soql_in_loop",
+          "evidence": "[SELECT Id FROM Case]"
+        },
+        {
+          "qualifiedName": "ApexMethod:OrderService.load(0)",
+          "risk": "soql_in_loop",
+          "evidence": "[SELECT Id FROM Order]"
+        },
+        {
+          "qualifiedName": "ApexMethod:CaseService.save(1)",
+          "risk": "dml_in_loop",
+          "evidence": "cases"
+        }
+      ],
+      "total": 3,
+      "truncated": false,
+      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
+      "cached": false,
+      "source": "live",
+      "cache": "absent",
+      "excludedTests": 0,
+      "minSeverity": "medium",
+      "hiddenBelowSeverity": 0
+    },
+    "markdown": "#### `ApexClass:CaseService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:CaseService.run(0)` | soql_in_loop | [SELECT Id FROM Case] |\n| `ApexMethod:CaseService.save(1)` | dml_in_loop | cases |\n\n#### `ApexClass:OrderService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:OrderService.load(0)` | soql_in_loop | [SELECT Id FROM Order] |\n\n_source: live_"
+  },
+  "governor_risk_check.limited": {
+    "data": {
+      "risks": [
+        {
+          "qualifiedName": "ApexMethod:CaseService.run(0)",
+          "risk": "soql_in_loop",
+          "evidence": "[SELECT Id FROM Case]"
+        }
+      ],
+      "total": 3,
+      "truncated": true,
+      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
+      "cached": false,
+      "source": "live",
+      "cache": "absent",
+      "excludedTests": 0,
+      "minSeverity": "medium",
+      "hiddenBelowSeverity": 0
+    },
+    "markdown": "#### `ApexClass:CaseService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:CaseService.run(0)` | soql_in_loop | [SELECT Id FROM Case] |\n\n_showing the 1 highest-priority of 3 risks (+2 more) — raise `limit` or use export_sarif._\n\n_source: live_"
+  },
+  "governor_risk_check.none": {
+    "data": {
+      "risks": [],
+      "total": 0,
+      "truncated": false,
+      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
+      "cached": false,
+      "source": "live",
+      "cache": "absent",
+      "excludedTests": 0,
+      "minSeverity": "medium",
+      "hiddenBelowSeverity": 0
+    },
+    "markdown": "_no governor risks surfaced_"
+  },
+  "dead_code_audit.all": {
+    "data": {
+      "dead": [
+        {
+          "qualifiedName": "ApexClass:OldHelper",
+          "isTest": false,
+          "score": 0.03,
+          "confidence": "high",
+          "reasons": ["no_incoming_edges", "stale_freshness"]
+        },
+        {
+          "qualifiedName": "ApexClass:OrderService",
+          "isTest": false,
+          "score": 0.03,
+          "confidence": "high",
+          "reasons": ["no_incoming_edges", "stale_freshness"]
+        },
+        {
+          "qualifiedName": "Flow:Old_Flow",
+          "isTest": false,
+          "score": 0.03,
+          "confidence": "high",
+          "reasons": ["no_incoming_edges", "stale_freshness"]
+        },
+        {
+          "qualifiedName": "LWC:caseCard",
+          "isTest": false,
+          "score": 0.03,
+          "confidence": "high",
+          "reasons": ["no_incoming_edges", "stale_freshness"]
+        }
+      ],
+      "total": 4,
+      "referencedOnlyByTests": [],
+      "referencedOnlyByTestsTotal": 0,
+      "byConfidence": {
+        "high": 4
+      },
+      "byLabel": {
+        "ApexClass": 2,
+        "Flow": 1,
+        "LWC": 1
+      },
+      "cached": false
+    },
+    "markdown": "**4 dead-code candidates** — showing 4.\n\nConfidence: high=4\nType: ApexClass=2, Flow=1, LWC=1\n\n- ApexClass:OldHelper — high 0.03 (no_incoming_edges, stale_freshness)\n- ApexClass:OrderService — high 0.03 (no_incoming_edges, stale_freshness)\n- Flow:Old_Flow — high 0.03 (no_incoming_edges, stale_freshness)\n- LWC:caseCard — high 0.03 (no_incoming_edges, stale_freshness)"
+  },
+  "dead_code_audit.flow": {
+    "data": {
+      "dead": [
+        {
+          "qualifiedName": "Flow:Old_Flow",
+          "isTest": false,
+          "score": 0.03,
+          "confidence": "high",
+          "reasons": ["no_incoming_edges", "stale_freshness"]
+        }
+      ],
+      "total": 1,
+      "referencedOnlyByTests": [],
+      "referencedOnlyByTestsTotal": 0,
+      "byConfidence": {
+        "high": 1
+      },
+      "byLabel": {
+        "Flow": 1
+      },
+      "cached": false
+    },
+    "markdown": "**1 dead-code candidate** (label=Flow) — showing 1.\n\nConfidence: high=1\nType: Flow=1\n\n- Flow:Old_Flow — high 0.03 (no_incoming_edges, stale_freshness)"
+  },
+  "dead_code_audit.none": {
+    "data": {
+      "dead": [],
+      "cached": false,
+      "total": 0,
+      "referencedOnlyByTests": [],
+      "referencedOnlyByTestsTotal": 0
+    },
+    "markdown": "_no dead code detected_"
+  },
+  "dead_code_audit.unscored": {
+    "data": {
+      "dead": [],
+      "total": 0,
+      "referencedOnlyByTests": [],
+      "referencedOnlyByTestsTotal": 0,
+      "cached": false,
+      "scored": false,
+      "live": true
+    },
+    "markdown": "**0 zero-inbound CustomObject candidates** (computed live; CustomObject has no freshness score, so every CustomObject with no incoming reference (test references count) is listed) — showing 0.\n\n_Note: confidence/freshness filters do not apply to unscored labels._\n\n_no CustomObject with zero inbound references_"
+  },
+  "dead_code_audit.unknown": {
+    "data": {
+      "dead": [],
+      "cached": false,
+      "total": 0,
+      "referencedOnlyByTests": [],
+      "referencedOnlyByTestsTotal": 0,
+      "scored": false
+    },
+    "markdown": "label Nope is not scored by dead_code_audit (no Nope nodes found; check the label spelling)"
+  },
+  "security_audit.all": {
+    "data": {
+      "sharingFullAccess": ["SharingRule:Case.OpenAll"],
+      "fieldAccessMatrix": [
+        {
+          "field": "CustomField:Case.Priority__c",
+          "grantedBy": ["PermissionSet:Support"]
+        }
+      ],
+      "flsGaps": ["CustomField:Account.SSN__c"],
+      "flsGapsExcluded": 0,
+      "truncated": false,
+      "sharingFullAccessTotal": 1,
+      "flsGapsTotal": 1,
+      "fieldAccessMatrixTotal": 1,
+      "cachedFindings": [],
+      "cachedFindingsTotal": 0,
+      "limited": false
+    },
+    "markdown": "**Full-access sharing rules:** 1\n- `SharingRule:Case.OpenAll`\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 1\n- `CustomField:Account.SSN__c`"
+  },
+  "security_audit.none": {
+    "data": {
+      "sharingFullAccess": [],
+      "fieldAccessMatrix": [],
+      "flsGaps": [],
+      "flsGapsExcluded": 0,
+      "truncated": false,
+      "sharingFullAccessTotal": 0,
+      "flsGapsTotal": 0,
+      "fieldAccessMatrixTotal": 0,
+      "cachedFindings": [],
+      "cachedFindingsTotal": 0,
+      "limited": false
+    },
+    "markdown": "**Full-access sharing rules:** 0\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
+  },
+  "security_audit.field": {
+    "data": {
+      "sharingFullAccess": ["SharingRule:Case.OpenAll"],
+      "fieldAccessMatrix": [
+        {
+          "field": "CustomField:Case.Priority__c",
+          "grantedBy": ["PermissionSet:Support"]
+        }
+      ],
+      "flsGaps": [],
+      "flsGapsExcluded": 0,
+      "truncated": false,
+      "sharingFullAccessTotal": 1,
+      "flsGapsTotal": 0,
+      "fieldAccessMatrixTotal": 1,
+      "cachedFindings": [],
+      "cachedFindingsTotal": 0,
+      "limited": false
+    },
+    "markdown": "**Full-access sharing rules:** 1\n- `SharingRule:Case.OpenAll`\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
+  },
+  "security_audit.ghostfield": {
+    "data": {
+      "sharingFullAccess": ["SharingRule:Case.OpenAll"],
+      "fieldAccessMatrix": [],
+      "flsGaps": [],
+      "flsGapsExcluded": 0,
+      "truncated": false,
+      "sharingFullAccessTotal": 1,
+      "flsGapsTotal": 0,
+      "fieldAccessMatrixTotal": 0,
+      "cachedFindings": [],
+      "cachedFindingsTotal": 0,
+      "limited": false
+    },
+    "markdown": "**Full-access sharing rules:** 1\n- `SharingRule:Case.OpenAll`\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
+  },
+  "find_similar.qname": {
+    "data": {
+      "focalQname": "ApexClass:CaseService",
+      "focalText": null,
+      "label": null,
+      "k": 10,
+      "minSimilarity": 0.4,
+      "cutByFloor": 2,
+      "hits": [
+        {
+          "qname": "ApexClass:OrderService",
+          "label": "ApexClass",
+          "distance": 0.5,
+          "similarity": 0.875,
+          "via": "vector"
+        }
+      ]
+    },
+    "markdown": "**Top 1 nearest neighbour to ApexClass:CaseService:**\n\n| # | qname | label | similarity | via |\n| - | ----- | ----- | ---------- | --- |\n| 1 | `ApexClass:OrderService` | `ApexClass` | 0.875 | vector |\n\n_2 weaker vector match(es) hidden below the 0.4 similarity floor — lower `min_similarity` to include them._\n\n_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_"
+  },
+  "find_similar.ghost": {
+    "data": {
+      "hits": [],
+      "reason": "focal_not_found",
+      "focalQname": "ApexClass:Ghost"
+    },
+    "markdown": "> No node `ApexClass:Ghost` in the graph. Graph keys are `<Label>:<Name>` (e.g. `ApexClass:BillingSvc`); check the name with find_nodes, or retry with `text` to search by concept."
+  },
+  "find_similar.nothing": {
+    "data": {
+      "hits": [],
+      "reason": "vector_index_unavailable"
+    },
+    "markdown": "> Neither vector search nor keyword search returned anything for this org.\n\nVector search isn't available (no embeddings), and the keyword index had no match. Causes (most common first):\n- The org was ingested before embeddings/FTS were wired up. Re-run `sfgraph ingest --org org1 --rebuild`.\n- The optional `@ryanstark24/sfgraph-models` install was skipped (~30 MB); install it and re-ingest.\n- The `sqlite-vec` extension failed to load on this Node ABI.\n\n_follow_up_tools: `trace_downstream`, `trace_upstream`, `analyze_field`_"
+  },
+  "find_nodes.service": {
+    "data": {
+      "matches": [
+        {
+          "qualifiedName": "ApexClass:CaseService",
+          "label": "ApexClass"
+        },
+        {
+          "qualifiedName": "ApexClass:OrderService",
+          "label": "ApexClass"
+        }
+      ],
+      "total": 2,
+      "truncated": false
+    },
+    "markdown": "Pattern `ApexClass:*Service` matched 2 nodes.\n\n- `ApexClass:CaseService` (ApexClass)\n- `ApexClass:OrderService` (ApexClass)"
+  },
+  "find_nodes.limited": {
+    "data": {
+      "matches": [
+        {
+          "qualifiedName": "ApexClass:CaseService",
+          "label": "ApexClass"
+        },
+        {
+          "qualifiedName": "ApexClass:OldHelper",
+          "label": "ApexClass"
+        }
+      ],
+      "total": 13,
+      "truncated": true
+    },
+    "markdown": "Pattern `*:*` matched 13 nodes (showing first 2).\n\n- `ApexClass:CaseService` (ApexClass)\n- `ApexClass:OldHelper` (ApexClass)\n\n_11 more, narrow with a more specific `pattern`, a `label` filter, or raise `limit`._"
+  },
+  "find_nodes.none": {
+    "data": {
+      "matches": [],
+      "total": 0,
+      "truncated": false
+    },
+    "markdown": "Pattern `Flow:Nothing*` matched 0 nodes.\n"
+  },
+  "cross_org_diff.ab": {
+    "data": {
+      "onlyInA": [
+        "ApexClass:OldHelper",
+        "ApexMethod:CaseService.run(0)",
+        "ApexMethod:CaseService.save(1)",
+        "ApexMethod:OrderService.load(0)",
+        "Flow:Old_Flow",
+        "LWC:caseCard",
+        "CustomField:Case.Priority__c",
+        "CustomField:Account.SSN__c",
+        "PermissionSet:Support",
+        "SharingRule:Case.OpenAll"
+      ],
+      "onlyInB": ["ApexClass:NewThing"],
+      "changed": ["ApexClass:CaseService"],
+      "truncated": false,
+      "hidden": {
+        "managed": 0,
+        "standard": 1
+      }
+    },
+    "markdown": "| metric | count |\n|---|---|\n| only in A | 10 |\n| only in B | 1 |\n| changed | 1 |\n\n### Only in A (`org1`) (10)\n- ApexClass:OldHelper\n- ApexMethod:CaseService.run(0)\n- ApexMethod:CaseService.save(1)\n- ApexMethod:OrderService.load(0)\n- CustomField:Account.SSN__c\n- CustomField:Case.Priority__c\n- Flow:Old_Flow\n- LWC:caseCard\n- PermissionSet:Support\n- SharingRule:Case.OpenAll\n\n### Only in B (`orgB`) (1)\n- ApexClass:NewThing\n\n### Changed (1, in both with different source)\n- ApexClass:CaseService\n\n```mermaid\nflowchart LR\n  n0[\"ApexClass:NewThing\"]:::added\n  n1[\"ApexClass:OldHelper\"]:::removed\n  n2[\"ApexMethod:CaseService.run(0)\"]:::removed\n  n3[\"ApexMethod:CaseService.save(1)\"]:::removed\n  n4[\"ApexMethod:OrderService.load(0)\"]:::removed\n  n5[\"Flow:Old_Flow\"]:::removed\n  n6[\"LWC:caseCard\"]:::removed\n  n7[\"CustomField:Case.Priority__c\"]:::removed\n  n8[\"CustomField:Account.SSN__c\"]:::removed\n  n9[\"PermissionSet:Support\"]:::removed\n  n10[\"SharingRule:Case.OpenAll\"]:::removed\n  n11[\"ApexClass:CaseService\"]:::changed\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+  },
+  "cross_org_diff.same": {
+    "data": {
+      "onlyInA": [],
+      "onlyInB": [],
+      "changed": [],
+      "truncated": false,
+      "hidden": {
+        "managed": 0,
+        "standard": 0
+      }
+    },
+    "markdown": "| metric | count |\n|---|---|\n| only in A | 0 |\n| only in B | 0 |\n| changed | 0 |\n\n### Only in A (`org1`) (0)\n_none_\n\n### Only in B (`org1`) (0)\n_none_\n\n### Changed (0, in both with different source)\n_none_\n\n```mermaid\nflowchart LR\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+  },
+  "point_in_time_diff.changed": {
+    "data": {
+      "componentDiff": {
+        "added": ["ApexClass:Brand_New"],
+        "removed": [],
+        "changed": ["ApexClass:CaseService"]
+      },
+      "nonComponentChanges": {
+        "added": [],
+        "removed": [],
+        "changed": [],
+        "counts": {
+          "added": 0,
+          "removed": 0,
+          "changed": 0
+        }
+      },
+      "nodeDiff": {
+        "added": [
+          {
+            "orgId": "org1",
+            "qualifiedName": "ApexClass:Brand_New",
+            "label": "ApexClass",
+            "attributes": {},
+            "sourceHash": "h-ApexClass:Brand_New",
+            "firstSeenAt": 0,
+            "lastSeenAt": 0,
+            "lastModifiedAt": 0
+          }
+        ],
+        "removed": [],
+        "changed": [
+          {
+            "before": {
+              "orgId": "org1",
+              "qualifiedName": "ApexClass:CaseService",
+              "label": "ApexClass",
+              "attributes": {},
+              "sourceHash": "h-ApexClass:CaseService",
+              "firstSeenAt": 0,
+              "lastSeenAt": 0,
+              "lastModifiedAt": 0
+            },
+            "after": {
+              "orgId": "org1",
+              "qualifiedName": "ApexClass:CaseService",
+              "label": "ApexClass",
+              "attributes": {},
+              "sourceHash": "v2",
+              "firstSeenAt": 0,
+              "lastSeenAt": 0,
+              "lastModifiedAt": 0
+            }
+          }
+        ]
+      },
+      "edgeDiff": {
+        "added": [],
+        "removed": []
+      },
+      "counts": {
+        "nodes": {
+          "added": 1,
+          "removed": 0,
+          "changed": 1
+        },
+        "components": {
+          "added": 1,
+          "removed": 0,
+          "changed": 1
+        },
+        "nonComponent": {
+          "added": 0,
+          "removed": 0,
+          "changed": 0
+        },
+        "edges": {
+          "added": 0,
+          "removed": 0
+        }
+      },
+      "truncated": false,
+      "baselineEmpty": false
+    },
+    "markdown": "**Components** — +1 / -0 / ~1\n**Records and configuration** (not components) — +0 / -0 / ~0\n**Nodes** — +1 / -0 / ~1\n**Edges** — +0 / -0\n\n```mermaid\nflowchart LR\n  n0[\"ApexClass:Brand_New\"]:::added\n  n1[\"ApexClass:CaseService\"]:::changed\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+  },
+  "point_in_time_diff.nochange": {
+    "data": {
+      "componentDiff": {
+        "added": [],
+        "removed": [],
+        "changed": []
+      },
+      "nonComponentChanges": {
+        "added": [],
+        "removed": [],
+        "changed": [],
+        "counts": {
+          "added": 0,
+          "removed": 0,
+          "changed": 0
+        }
+      },
+      "nodeDiff": {
+        "added": [],
+        "removed": [],
+        "changed": []
+      },
+      "edgeDiff": {
+        "added": [],
+        "removed": []
+      },
+      "counts": {
+        "nodes": {
+          "added": 0,
+          "removed": 0,
+          "changed": 0
+        },
+        "components": {
+          "added": 0,
+          "removed": 0,
+          "changed": 0
+        },
+        "nonComponent": {
+          "added": 0,
+          "removed": 0,
+          "changed": 0
+        },
+        "edges": {
+          "added": 0,
+          "removed": 0
+        }
+      },
+      "truncated": false,
+      "baselineEmpty": false
+    },
+    "markdown": "**Components** — +0 / -0 / ~0\n**Records and configuration** (not components) — +0 / -0 / ~0\n**Nodes** — +0 / -0 / ~0\n**Edges** — +0 / -0\n\n```mermaid\nflowchart LR\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+  },
+  "export_sarif.all": {
+    "data": {
+      "report": {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+          {
+            "tool": {
+              "driver": {
+                "name": "sfgraph",
+                "version": "1.6.0",
+                "informationUri": "https://github.com/ryanStark24/sfgraph",
+                "rules": [
+                  {
+                    "id": "dead-code.unreferenced",
+                    "name": "Unreferenced metadata",
+                    "shortDescription": {
+                      "text": "Node has no incoming edges and is not an obvious entry point."
+                    },
+                    "fullDescription": {
+                      "text": "Apex/LWC/Flow components with no incoming references are candidates for deletion. Note that some entry points (AuraEnabled, REST endpoints, scheduled jobs) are only reachable from outside the org and will show up here legitimately — verify before deleting."
+                    },
+                    "defaultConfiguration": {
+                      "level": "note"
+                    },
+                    "properties": {
+                      "tags": ["dead-code"]
+                    }
+                  },
+                  {
+                    "id": "governor.dml-in-loop",
+                    "name": "DML in loop",
+                    "shortDescription": {
+                      "text": "Apex method executes DML inside a loop."
+                    },
+                    "fullDescription": {
+                      "text": "Detected via the `hasDmlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 150 DML statements the platform allows per transaction — bulkify by collecting records into a list and committing once after the loop."
+                    },
+                    "defaultConfiguration": {
+                      "level": "error"
+                    },
+                    "properties": {
+                      "tags": ["governor"]
+                    }
+                  },
+                  {
+                    "id": "governor.soql-in-loop",
+                    "name": "SOQL in loop",
+                    "shortDescription": {
+                      "text": "Apex method executes SOQL inside a loop."
+                    },
+                    "fullDescription": {
+                      "text": "Detected via the `hasSoqlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 100 SOQL queries the platform allows per transaction — bulkify by moving the query outside the loop and consuming the results inline."
+                    },
+                    "defaultConfiguration": {
+                      "level": "error"
+                    },
+                    "properties": {
+                      "tags": ["governor"]
+                    }
+                  },
+                  {
+                    "id": "graph.dangling-edge",
+                    "name": "Dangling edge",
+                    "shortDescription": {
+                      "text": "Edge points to a destination node that doesn't exist in the graph."
+                    },
+                    "fullDescription": {
+                      "text": "Dangling edges usually indicate ingest gaps (a metadata type that didn't get extracted) or stale references (managed-package targets no longer installed). Investigate which extractor would own the missing dst label."
+                    },
+                    "defaultConfiguration": {
+                      "level": "note"
+                    },
+                    "properties": {
+                      "tags": ["graph"]
+                    }
+                  },
+                  {
+                    "id": "security.fls-gap",
+                    "name": "Field-level security gap",
+                    "shortDescription": {
+                      "text": "CustomField has no FLS grant on any profile/permission set."
+                    },
+                    "fullDescription": {
+                      "text": "Fields with no FLS grant are invisible to every user in API and UI alike. Either remove the field if unused or grant access on the appropriate permission set."
+                    },
+                    "defaultConfiguration": {
+                      "level": "warning"
+                    },
+                    "properties": {
+                      "tags": ["security"]
+                    }
+                  },
+                  {
+                    "id": "security.sharing-full-access",
+                    "name": "Object granted full access via sharing",
+                    "shortDescription": {
+                      "text": "OWD or sharing rule grants Modify All / View All to a broad audience."
+                    },
+                    "fullDescription": {
+                      "text": "Granting full access via OWD or sharing rules bypasses field-level security and CRUD checks. Review whether the audience genuinely needs unrestricted access; prefer scoped permission sets."
+                    },
+                    "defaultConfiguration": {
+                      "level": "warning"
+                    },
+                    "properties": {
+                      "tags": ["security"]
+                    }
+                  }
+                ]
+              }
+            },
+            "results": [
+              {
+                "ruleId": "governor.soql-in-loop",
+                "level": "error",
+                "message": {
+                  "text": "ApexMethod:CaseService.run(0): [SELECT Id FROM Case]"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "ApexMethod:CaseService.run(0)",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ],
+                "properties": {
+                  "evidence": "[SELECT Id FROM Case]"
+                }
+              },
+              {
+                "ruleId": "governor.soql-in-loop",
+                "level": "error",
+                "message": {
+                  "text": "ApexMethod:OrderService.load(0): [SELECT Id FROM Order]"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "ApexMethod:OrderService.load(0)",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ],
+                "properties": {
+                  "evidence": "[SELECT Id FROM Order]"
+                }
+              },
+              {
+                "ruleId": "governor.dml-in-loop",
+                "level": "error",
+                "message": {
+                  "text": "ApexMethod:CaseService.save(1): cases"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "ApexMethod:CaseService.save(1)",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ],
+                "properties": {
+                  "evidence": "cases"
+                }
+              },
+              {
+                "ruleId": "security.fls-gap",
+                "level": "warning",
+                "message": {
+                  "text": "CustomField:Account.SSN__c: no FLS grant on any profile/permission set"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "CustomField:Account.SSN__c",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "ruleId": "security.sharing-full-access",
+                "level": "warning",
+                "message": {
+                  "text": "SharingRule:Case.OpenAll: granted full access via sharing rule or OWD"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "SharingRule:Case.OpenAll",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "ruleId": "dead-code.unreferenced",
+                "level": "note",
+                "message": {
+                  "text": "ApexClass:OrderService: no incoming references"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "ApexClass:OrderService",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ],
+                "properties": {
+                  "label": "ApexClass"
+                }
+              },
+              {
+                "ruleId": "dead-code.unreferenced",
+                "level": "note",
+                "message": {
+                  "text": "ApexClass:OldHelper: no incoming references"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "ApexClass:OldHelper",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ],
+                "properties": {
+                  "label": "ApexClass"
+                }
+              },
+              {
+                "ruleId": "dead-code.unreferenced",
+                "level": "note",
+                "message": {
+                  "text": "LWC:caseCard: no incoming references"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "LWC:caseCard",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ],
+                "properties": {
+                  "label": "LWC"
+                }
+              },
+              {
+                "ruleId": "dead-code.unreferenced",
+                "level": "note",
+                "message": {
+                  "text": "Flow:Old_Flow: no incoming references"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "Flow:Old_Flow",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ],
+                "properties": {
+                  "label": "Flow"
+                }
+              },
+              {
+                "ruleId": "graph.dangling-edge",
+                "level": "note",
+                "message": {
+                  "text": "ApexMethod:CaseService.save(1) --EXECUTES_DML--> DML:update: dst node missing"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "ApexMethod:CaseService.save(1)",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ],
+                "properties": {
+                  "relType": "EXECUTES_DML",
+                  "danglingDst": "DML:update"
+                }
+              },
+              {
+                "ruleId": "graph.dangling-edge",
+                "level": "note",
+                "message": {
+                  "text": "ApexMethod:OrderService.load(0) --EXECUTES_SOQL--> CustomObject:Order: dst node missing"
+                },
+                "locations": [
+                  {
+                    "logicalLocations": [
+                      {
+                        "fullyQualifiedName": "ApexMethod:OrderService.load(0)",
+                        "kind": "module"
+                      }
+                    ]
+                  }
+                ],
+                "properties": {
+                  "relType": "EXECUTES_SOQL",
+                  "danglingDst": "CustomObject:Order"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "findings": [
+        {
+          "ruleId": "governor.soql-in-loop",
+          "message": "ApexMethod:CaseService.run(0): [SELECT Id FROM Case]",
+          "level": "error",
+          "location": {
+            "qualifiedName": "ApexMethod:CaseService.run(0)"
+          },
+          "properties": {
+            "evidence": "[SELECT Id FROM Case]"
+          }
+        },
+        {
+          "ruleId": "governor.soql-in-loop",
+          "message": "ApexMethod:OrderService.load(0): [SELECT Id FROM Order]",
+          "level": "error",
+          "location": {
+            "qualifiedName": "ApexMethod:OrderService.load(0)"
+          },
+          "properties": {
+            "evidence": "[SELECT Id FROM Order]"
+          }
+        },
+        {
+          "ruleId": "governor.dml-in-loop",
+          "message": "ApexMethod:CaseService.save(1): cases",
+          "level": "error",
+          "location": {
+            "qualifiedName": "ApexMethod:CaseService.save(1)"
+          },
+          "properties": {
+            "evidence": "cases"
+          }
+        },
+        {
+          "ruleId": "security.fls-gap",
+          "message": "CustomField:Account.SSN__c: no FLS grant on any profile/permission set",
+          "level": "warning",
+          "location": {
+            "qualifiedName": "CustomField:Account.SSN__c"
+          }
+        },
+        {
+          "ruleId": "security.sharing-full-access",
+          "message": "SharingRule:Case.OpenAll: granted full access via sharing rule or OWD",
+          "level": "warning",
+          "location": {
+            "qualifiedName": "SharingRule:Case.OpenAll"
+          }
+        },
+        {
+          "ruleId": "dead-code.unreferenced",
+          "message": "ApexClass:OrderService: no incoming references",
+          "level": "note",
+          "location": {
+            "qualifiedName": "ApexClass:OrderService"
+          },
+          "properties": {
+            "label": "ApexClass"
+          }
+        },
+        {
+          "ruleId": "dead-code.unreferenced",
+          "message": "ApexClass:OldHelper: no incoming references",
+          "level": "note",
+          "location": {
+            "qualifiedName": "ApexClass:OldHelper"
+          },
+          "properties": {
+            "label": "ApexClass"
+          }
+        },
+        {
+          "ruleId": "dead-code.unreferenced",
+          "message": "LWC:caseCard: no incoming references",
+          "level": "note",
+          "location": {
+            "qualifiedName": "LWC:caseCard"
+          },
+          "properties": {
+            "label": "LWC"
+          }
+        },
+        {
+          "ruleId": "dead-code.unreferenced",
+          "message": "Flow:Old_Flow: no incoming references",
+          "level": "note",
+          "location": {
+            "qualifiedName": "Flow:Old_Flow"
+          },
+          "properties": {
+            "label": "Flow"
+          }
+        },
+        {
+          "ruleId": "graph.dangling-edge",
+          "message": "ApexMethod:CaseService.save(1) --EXECUTES_DML--> DML:update: dst node missing",
+          "level": "note",
+          "location": {
+            "qualifiedName": "ApexMethod:CaseService.save(1)"
+          },
+          "properties": {
+            "relType": "EXECUTES_DML",
+            "danglingDst": "DML:update"
+          }
+        },
+        {
+          "ruleId": "graph.dangling-edge",
+          "message": "ApexMethod:OrderService.load(0) --EXECUTES_SOQL--> CustomObject:Order: dst node missing",
+          "level": "note",
+          "location": {
+            "qualifiedName": "ApexMethod:OrderService.load(0)"
+          },
+          "properties": {
+            "relType": "EXECUTES_SOQL",
+            "danglingDst": "CustomObject:Order"
+          }
+        }
+      ],
+      "lintErrors": [],
+      "sources": {
+        "governor": "live",
+        "security": "live",
+        "dead-code": "live",
+        "dangling": "live"
+      }
+    },
+    "markdown": "**SARIF 2.1.0** — 11 findings\n\n_sources: governor=live, security=live, dead-code=live, dangling=live_\n\nSaved to `<exports>/org1.sarif`. Upload it to GitHub Code Scanning with the `github/codeql-action/upload-sarif` action."
+  },
+  "export_sarif.none": {
+    "data": {
+      "report": {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+          {
+            "tool": {
+              "driver": {
+                "name": "sfgraph",
+                "version": "1.6.0",
+                "informationUri": "https://github.com/ryanStark24/sfgraph",
+                "rules": []
+              }
+            },
+            "results": []
+          }
+        ]
+      },
+      "findings": [],
+      "lintErrors": [],
+      "sources": {
+        "governor": "live",
+        "security": "live",
+        "dead-code": "live",
+        "dangling": "live"
+      }
+    },
+    "markdown": "**SARIF 2.1.0** — 0 findings\n\n_sources: governor=live, security=live, dead-code=live, dangling=live_\n\nSaved to `<exports>/org1.sarif`. Upload it to GitHub Code Scanning with the `github/codeql-action/upload-sarif` action."
+  },
+  "deployment_manifest_gen.ab": {
+    "data": {
+      "packageXml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>CaseService</members>\n    <members>OldHelper</members>\n    <name>ApexClass</name>\n  </types>\n  <types>\n    <members>Account.SSN__c</members>\n    <members>Case.Priority__c</members>\n    <name>CustomField</name>\n  </types>\n  <types>\n    <members>Old_Flow</members>\n    <name>Flow</name>\n  </types>\n  <types>\n    <members>caseCard</members>\n    <name>LightningComponentBundle</name>\n  </types>\n  <types>\n    <members>Support</members>\n    <name>PermissionSet</name>\n  </types>\n  <types>\n    <members>Case</members>\n    <name>SharingRules</name>\n  </types>\n  <version>59.0</version>\n</Package>\n",
+      "destructiveXml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>NewThing</members>\n    <name>ApexClass</name>\n  </types>\n  <version>59.0</version>\n</Package>\n",
+      "summary": {
+        "apiVersion": "59.0",
+        "addedOrChanged": 11,
+        "removed": 1,
+        "byType": {
+          "ApexClass": 3,
+          "Flow": 1,
+          "LightningComponentBundle": 1,
+          "CustomField": 2,
+          "PermissionSet": 1,
+          "SharingRules": 1
+        }
+      },
+      "incomplete": {
+        "diffTruncated": false,
+        "unmappedLabels": {}
+      },
+      "hidden": {
+        "managed": 0,
+        "standard": 1
+      }
+    },
+    "markdown": "### package.xml\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>CaseService</members>\n    <members>OldHelper</members>\n    <name>ApexClass</name>\n  </types>\n  <types>\n    <members>Account.SSN__c</members>\n    <members>Case.Priority__c</members>\n    <name>CustomField</name>\n  </types>\n  <types>\n    <members>Old_Flow</members>\n    <name>Flow</name>\n  </types>\n  <types>\n    <members>caseCard</members>\n    <name>LightningComponentBundle</name>\n  </types>\n  <types>\n    <members>Support</members>\n    <name>PermissionSet</name>\n  </types>\n  <types>\n    <members>Case</members>\n    <name>SharingRules</name>\n  </types>\n  <version>59.0</version>\n</Package>\n```\n\n### destructiveChanges.xml\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>NewThing</members>\n    <name>ApexClass</name>\n  </types>\n  <version>59.0</version>\n</Package>\n```"
+  },
+  "ping.ok": {
+    "data": {
+      "ok": true,
+      "ts": 0
+    },
+    "markdown": "pong"
+  },
+  "list_orgs.none": {
+    "data": {
+      "orgs": [],
+      "defaultAlias": null
+    },
+    "markdown": "_no orgs_"
+  },
+  "snapshot_create.named": {
+    "data": {
+      "id": "snap_X",
+      "orgId": "org1",
+      "label": "before-release",
+      "createdAt": 0,
+      "isAuto": false
+    },
+    "markdown": "Snapshot `snap_X` (\"before-release\") created for org `org1`."
+  },
+  "snapshot_list.one": {
+    "data": [
+      {
+        "id": "snap_X",
+        "orgId": "org1",
+        "label": "nightly",
+        "createdAt": 0,
+        "isAuto": true
+      }
+    ],
+    "markdown": "| id | label | createdAt | kind |\n|---|---|---|---|\n| `snap_X` | nightly | T | auto |"
+  },
+  "snapshot_list.none": {
+    "data": [],
+    "markdown": "_no snapshots_"
+  },
+  "get_ingest_job.unknown": {
+    "data": {
+      "found": false
+    },
+    "markdown": "> No job with id `job-1`"
+  },
+  "staleness_check.never": {
+    "data": {
+      "org": "org1",
+      "lastSyncedAt": null,
+      "ageDays": null,
+      "stale": true,
+      "recommendation": "ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis"
+    },
+    "markdown": "| org | last synced | age (days) | stale | recommendation |\n|---|---|---|---|---|\n| `org1` | _never_ | - | yes | ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis |"
+  },
+  "freshness_report.all": {
+    "data": {
+      "buckets": {
+        "hot": [],
+        "current": [],
+        "stale": [],
+        "dead": [
+          {
+            "qualifiedName": "ApexClass:CaseService",
+            "score": 0.05,
+            "label": "ApexClass"
+          },
+          {
+            "qualifiedName": "ApexClass:OrderService",
+            "score": 0.05,
+            "label": "ApexClass"
+          },
+          {
+            "qualifiedName": "ApexClass:OldHelper",
+            "score": 0.05,
+            "label": "ApexClass"
+          },
+          {
+            "qualifiedName": "LWC:caseCard",
+            "score": 0.05,
+            "label": "LWC"
+          },
+          {
+            "qualifiedName": "Flow:Old_Flow",
+            "score": 0.05,
+            "label": "Flow"
+          },
+          {
+            "qualifiedName": "CustomObject:Case",
+            "score": 0.05,
+            "label": "CustomObject"
+          }
+        ]
+      },
+      "truncated": false
+    },
+    "markdown": "### hot\n\n| qname | label | score |\n|---|---|---|\n_empty_\n\n### current\n\n| qname | label | score |\n|---|---|---|\n_empty_\n\n### stale\n\n| qname | label | score |\n|---|---|---|\n_empty_\n\n### dead\n\n| qname | label | score |\n|---|---|---|\n| `ApexClass:CaseService` | ApexClass | 0.05 |\n| `ApexClass:OrderService` | ApexClass | 0.05 |\n| `ApexClass:OldHelper` | ApexClass | 0.05 |\n| `LWC:caseCard` | LWC | 0.05 |\n| `Flow:Old_Flow` | Flow | 0.05 |\n| `CustomObject:Case` | CustomObject | 0.05 |"
+  },
+  "start_ingest_job.live": {
+    "data": {
+      "executed": false,
+      "run_this_command": "sfgraph ingest --org dev"
+    },
+    "markdown": "> **The MCP server cannot start ingests itself.** Run the command below in a shell.\n\n```bash\nsfgraph ingest --org dev\n```\n\nWhen it completes, MCP tools like `trace_upstream` / `what_broke` against `dev` will see the new data."
+  }
+}

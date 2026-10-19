@@ -186,3 +186,52 @@ describe("governor risk detection — edge-based (live ingest, no body)", () => 
     expect(count).toBe(0);
   });
 });
+
+/**
+ * Task 14 batch S, S4 at the governor body scan: an inline query ends at
+ * its depth-0 `]` outside string literals (`findInlineQueries`), not at
+ * the first `]`, and comments are masked before the scan.
+ */
+describe("governor body scan: inline SOQL end (S4)", () => {
+  const risks = () =>
+    db
+      .prepare(
+        "SELECT risk_type AS t, evidence AS e FROM _sfgraph_governor_risks ORDER BY risk_type, evidence",
+      )
+      .all() as Array<{ t: string; e: string }>;
+
+  it("soql_in_loop evidence is the whole query, past a nested index and a ] in a string", () => {
+    store.mergeNodes([
+      n(
+        "ApexClass:Nested",
+        "public class N { void r(List<Id> ids){ for(Id x : ids){ List<Account> l = [SELECT Id FROM Account WHERE Id = :ids[0] AND Name = 'a]b']; } } }",
+      ),
+    ]);
+    populateGovernorRisks(store, ORG, db);
+    expect(risks()).toEqual([
+      { t: "soql_in_loop", e: "[SELECT Id FROM Account WHERE Id = :ids[0] AND Name = 'a]b']" },
+    ]);
+  });
+
+  it("checks an inline query held in a bind on its own for WHERE / LIMIT", () => {
+    store.mergeNodes([
+      n(
+        "ApexClass:Bind",
+        "public class B { void r(){ List<Contact> c = [SELECT Id FROM Contact WHERE AccountId IN :[SELECT Id FROM Account]]; } }",
+      ),
+    ]);
+    populateGovernorRisks(store, ORG, db);
+    expect(risks()).toEqual([{ t: "unbounded_query", e: "[SELECT Id FROM Account]" }]);
+  });
+
+  it("an unterminated query or one in a comment is not a finding", () => {
+    store.mergeNodes([
+      n(
+        "ApexClass:Broken",
+        "public class C { void r(List<Id> ids){ for(Id x : ids){ // [SELECT Id FROM Lead]\n Object o = [SELECT Id FROM Account WHERE Id = :ids[0]; } } }",
+      ),
+    ]);
+    populateGovernorRisks(store, ORG, db);
+    expect(risks()).toEqual([]);
+  });
+});

@@ -1,6 +1,6 @@
 {
   "name": "@ryanstark24/sfgraph-skills",
-  "version": "1.2.1",
+  "version": "1.6.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,7 +16,8 @@
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "node ../../scripts/assert-pnpm-publish.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
@@ -30,7 +31,7 @@
     "url": "https://github.com/ryanStark24/sfgraph"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
@@ -38,6 +39,7 @@
   "description": "sfgraph SKILL.md playbooks for Cursor and Claude",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "skills",
     "README.md"
   ],

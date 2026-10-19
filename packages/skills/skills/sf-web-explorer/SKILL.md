@@ -7,7 +7,8 @@ triggers:
   - "open the web view"
   - "see the relationships visually"
   - "render the whole org"
-tools_used: []
+tools_used:
+  - staleness_check
 when_to_use: Visual exploration of an ingested org. Pairs with `analyze_field`, `trace_upstream`, `trace_downstream`, and `cross_layer_flow_map` when the markdown answers are not enough and the user wants to click around.
 ---
 

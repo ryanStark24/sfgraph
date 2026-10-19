@@ -53,6 +53,46 @@ describe("security_audit", () => {
     expect(m.some((x) => x.field === "CustomField:Account.X")).toBe(true);
   });
 
+  it("treats a <readable>false</readable> entry as no access, on the full and the field path", async () => {
+    fix.addNode({ qualifiedName: "CustomField:Account.SSN__c", label: "CustomField" });
+    fix.addNode({ qualifiedName: "Profile:Guest", label: "Profile" });
+    fix.addEdge({
+      srcQualifiedName: "Profile:Guest",
+      dstQualifiedName: "CustomField:Account.SSN__c",
+      relType: REL_TYPES.GRANTS_FIELD_ACCESS,
+      attributes: { readable: false, editable: false },
+    });
+    const all = await callTool("security_audit", { org: fix.orgId });
+    expect((all.data as { flsGaps: string[] }).flsGaps).toContain("CustomField:Account.SSN__c");
+    const one = await callTool("security_audit", {
+      org: fix.orgId,
+      field: "CustomField:Account.SSN__c",
+    });
+    const d = one.data as { flsGaps: string[]; fieldAccessMatrix: unknown[] };
+    expect(d.flsGaps).toEqual(["CustomField:Account.SSN__c"]);
+    expect(d.fieldAccessMatrix).toEqual([]);
+  });
+
+  it("names the grantors in the text for a single-field audit", async () => {
+    fix.addNode({ qualifiedName: "CustomField:Account.Tier__c", label: "CustomField" });
+    for (const g of ["PermissionSet:Sales", "Profile:Support"]) {
+      fix.addNode({ qualifiedName: g, label: g.split(":")[0]! });
+      fix.addEdge({
+        srcQualifiedName: g,
+        dstQualifiedName: "CustomField:Account.Tier__c",
+        relType: REL_TYPES.GRANTS_FIELD_ACCESS,
+        attributes: { readable: true, editable: false },
+      });
+    }
+    const r = await callTool("security_audit", {
+      org: fix.orgId,
+      field: "CustomField:Account.Tier__c",
+    });
+    expect(r.markdown).toContain("**Granted by (read or edit):** 2");
+    expect(r.markdown).toContain("- `PermissionSet:Sales`");
+    expect(r.markdown).toContain("- `Profile:Support`");
+  });
+
   it("returns zero gaps for empty graph", async () => {
     const r = await callTool("security_audit", { org: fix.orgId });
     const d = r.data as { flsGaps: string[]; sharingFullAccess: string[] };

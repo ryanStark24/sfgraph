@@ -262,7 +262,7 @@ The build-order spine is consistent across all three non-stack research files an
 
 ### Primary (HIGH confidence)
 
-- `/Users/anshulmehta/Documents/salesforceMCP/.planning/PROJECT.md` — milestone scope, key decisions, validated capabilities, constraints, out-of-scope items
+- `.planning/PROJECT.md` — milestone scope, key decisions, validated capabilities, constraints, out-of-scope items
 - `packages/core/src/ingest/live-ingest.ts:680-809` — post-merge pass shape, atomicity decision in code, resolver integration points
 - `packages/core/src/parsers/common.ts:10-47` — verified `makeEdge` drops `ctx.sourceUri` while `makeNode` preserves it
 - `packages/core/src/domain/edge-fact.ts` — current 12-line EdgeFact interface, no provenance fields

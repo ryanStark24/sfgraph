@@ -1,6 +1,6 @@
 import { asOrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
-import type { NodeFact } from "../../domain/index.js";
+import type { EdgeFact, NodeFact } from "../../domain/index.js";
 import type { GraphStore } from "../../storage/interfaces.js";
 import { makeEdge } from "../common.js";
 import type { ParseContext } from "../contract.js";
@@ -17,9 +17,13 @@ import type { ParseContext } from "../contract.js";
  *   - zero overloads → original edge left in place so the dangling-edge audit
  *     surfaces it (managed-package targets, typos, third-party imports).
  *
- * The new edges carry `resolvedBy:"arity-resolver"` in their attributes so
- * downstream consumers can distinguish resolver-emitted edges from
- * extractor-emitted ones.
+ * The new edges carry `arityResolvedFrom: "<the (?) qname>"` so consumers can
+ * tell them from extractor-emitted ones. Deliberately NOT `resolvedBy`:
+ * member reconcile exempts `resolvedBy` edges, and these must stay owned by
+ * their source method. When the caller is re-parsed, reconcile drops the
+ * resolved edge (the parser re-emits only the `(?)` placeholder), and this
+ * pass re-derives it if the call still exists — so a deleted call never
+ * leaves a stale CALLS edge behind (audit corecorr-09).
  */
 export interface ArityResolveOpts {
   orgId: OrgId | string;
@@ -29,6 +33,12 @@ export interface ArityResolveOpts {
   /** Maximum stranded edges to inspect per call (safety valve for huge orgs).
    *  Default Number.POSITIVE_INFINITY. */
   limit?: number;
+  /**
+   * Task 11c (delta ingest): inspect only the stranded edges FROM `srcs`
+   * (re-parsed members) plus those whose target class is in `classNames`
+   * (classes that gained or lost methods). Unset: every stranded edge.
+   */
+  scope?: { srcs: ReadonlySet<string>; classNames: ReadonlySet<string> };
 }
 
 export interface ArityResolveResult {
@@ -71,6 +81,35 @@ function parseResolved(
   };
 }
 
+function scopedStranded(
+  store: GraphStore,
+  orgId: OrgId,
+  scope: NonNullable<ArityResolveOpts["scope"]>,
+): EdgeFact[] {
+  const out: EdgeFact[] = [];
+  const seen = new Set<string>();
+  const add = (e: EdgeFact): void => {
+    const dst = String(e.dstQualifiedName);
+    if (!parseStranded(dst)) return;
+    const k = `${e.relType}|${String(e.srcQualifiedName).toLowerCase()}|${dst.toLowerCase()}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(e);
+  };
+  for (const src of scope.srcs) {
+    for (const e of store.listEdgesFrom(orgId, asQualifiedName(src))) add(e);
+  }
+  for (const cls of scope.classNames) {
+    // LIKE: `_` is a wildcard and matching is case-insensitive; the exact
+    // class is confirmed below.
+    for (const e of store.listEdgesByDstLike(orgId, `ApexMethod:${cls}.%(?)`)) {
+      if (parseStranded(String(e.dstQualifiedName))?.className.toLowerCase() === cls.toLowerCase())
+        add(e);
+    }
+  }
+  return out;
+}
+
 export function resolveApexMethodArity(
   store: GraphStore,
   opts: ArityResolveOpts,
@@ -95,7 +134,9 @@ export function resolveApexMethodArity(
   }
 
   // ---- Find stranded edges ---------------------------------------------
-  const stranded = store.listEdgesByDstLike(orgId, STRANDED_PATTERN, undefined, opts.limit);
+  const stranded = opts.scope
+    ? scopedStranded(store, orgId, opts.scope)
+    : store.listEdgesByDstLike(orgId, STRANDED_PATTERN, undefined, opts.limit);
 
   const result: ArityResolveResult = {
     scanned: stranded.length,
@@ -132,7 +173,7 @@ export function resolveApexMethodArity(
           {
             ...edge.attributes,
             unresolvedArity: undefined,
-            resolvedBy: "arity-resolver",
+            arityResolvedFrom: dst,
             ambiguous: candidates.length > 1,
             overloadCount: candidates.length,
           },

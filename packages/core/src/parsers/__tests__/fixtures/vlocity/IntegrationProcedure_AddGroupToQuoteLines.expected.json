@@ -1,0 +1,54 @@
+{
+  "nodes": [
+    {
+      "qualifiedName": "IntegrationProcedure:AddGroupToQuoteLines",
+      "label": "IntegrationProcedure",
+      "attributes": {
+        "name": "AddGroupToQuoteLines",
+        "flavor": "IP"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "srcQualifiedName": "IntegrationProcedure:AddGroupToQuoteLines",
+      "dstQualifiedName": "NamedCredential:Acme_NC",
+      "relType": "CALLS_NAMED_CREDENTIAL",
+      "attributes": {
+        "restMethod": "POST"
+      }
+    },
+    {
+      "srcQualifiedName": "IntegrationProcedure:AddGroupToQuoteLines",
+      "dstQualifiedName": "DataRaptor:DR_Pre",
+      "relType": "IP_CALLS_DR",
+      "attributes": {
+        "role": "preTransform"
+      }
+    },
+    {
+      "srcQualifiedName": "IntegrationProcedure:AddGroupToQuoteLines",
+      "dstQualifiedName": "IntegrationProcedure:CopyCart_ToQuoteLines",
+      "relType": "IP_CALLS_IP",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "IntegrationProcedure:AddGroupToQuoteLines",
+      "dstQualifiedName": "Remote:vlocity_cmt.B2BCmexAppHandler",
+      "relType": "IP_INVOKES_REMOTE",
+      "attributes": {
+        "remoteClass": "vlocity_cmt.B2BCmexAppHandler",
+        "remoteMethod": "cloneQuoteToCart"
+      }
+    },
+    {
+      "srcQualifiedName": "IntegrationProcedure:AddGroupToQuoteLines",
+      "dstQualifiedName": "Remote:vlocity_cmt.Svc",
+      "relType": "IP_INVOKES_REMOTE",
+      "attributes": {
+        "remoteClass": "vlocity_cmt.Svc",
+        "remoteMethod": "go"
+      }
+    }
+  ]
+}

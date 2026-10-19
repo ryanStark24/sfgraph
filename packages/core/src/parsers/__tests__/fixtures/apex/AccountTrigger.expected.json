@@ -17,6 +17,15 @@
   "edges": [
     {
       "srcQualifiedName": "ApexTrigger:AccountTrigger",
+      "dstQualifiedName": "ApexMethod:System.debug(1)",
+      "relType": "CALLS",
+      "attributes": {
+        "callResolution": "regex-arg-count",
+        "arity": 1
+      }
+    },
+    {
+      "srcQualifiedName": "ApexTrigger:AccountTrigger",
       "dstQualifiedName": "CustomObject:Account",
       "relType": "TRIGGERS_ON",
       "attributes": {

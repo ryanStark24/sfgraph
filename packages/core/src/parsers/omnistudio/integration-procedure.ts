@@ -1,7 +1,14 @@
 import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../../domain/index.js";
 import { makeEdge, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
-import { asStructured, buildBaseNode, sha256, walk } from "../vlocity/common.js";
+import {
+  asStructured,
+  buildBaseNode,
+  payloadParseErrors,
+  sha256,
+  walk,
+} from "../vlocity/common.js";
+import { omniRemoteEdges } from "./remote-refs.js";
 
 export interface OmniIntegrationProcedureInput {
   name: string;
@@ -26,7 +33,7 @@ export class OmniIntegrationProcedureParser implements Parser<OmniIntegrationPro
       raw: md,
       hash,
     });
-    nodes.push(node);
+    nodes.push(node, ...payloadParseErrors(ctx, node, md));
     const src = node.qualifiedName as unknown as string;
     walk(md, (v) => {
       if (!v || typeof v !== "object") return;
@@ -56,10 +63,9 @@ export class OmniIntegrationProcedureParser implements Parser<OmniIntegrationPro
               `OmniIntegrationProcedure:${stripNs(target, ctx.namespace)}`,
             ),
           );
-      } else if (type.includes("remote") || type.includes("rest")) {
-        edges.push(makeEdge(ctx, src, REL_TYPES.OMNI_INVOKES_REMOTE, "Remote:unknown"));
       }
     });
+    edges.push(...omniRemoteEdges(md, ctx, src));
     return { nodes, edges };
   }
 }

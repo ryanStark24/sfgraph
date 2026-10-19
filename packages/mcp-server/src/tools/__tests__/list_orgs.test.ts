@@ -1,19 +1,76 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __setListOrgsDeps } from "../list_orgs.js";
 import { callTool } from "./_runner.js";
 
 let workDir: string;
+let prevFallback: string | undefined;
+let prevTimeout: string | undefined;
 
 beforeEach(() => {
   workDir = mkdtempSync(path.join(tmpdir(), "sfg-list-orgs-"));
+  prevFallback = process.env.SFGRAPH_ALIAS_SF_FALLBACK;
+  prevTimeout = process.env.SFGRAPH_ALIAS_RESOLVE_TIMEOUT_MS;
+  // The sf-CLI auth read is opt-in (audit I1); these cases exercise it.
+  process.env.SFGRAPH_ALIAS_SF_FALLBACK = "1";
 });
 
 afterEach(() => {
   __setListOrgsDeps(null);
   rmSync(workDir, { recursive: true, force: true });
+  // biome-ignore lint/performance/noDelete: assigning undefined to process.env coerces to the string "undefined"
+  if (prevFallback === undefined) delete process.env.SFGRAPH_ALIAS_SF_FALLBACK;
+  else process.env.SFGRAPH_ALIAS_SF_FALLBACK = prevFallback;
+  // biome-ignore lint/performance/noDelete: assigning undefined to process.env coerces to the string "undefined"
+  if (prevTimeout === undefined) delete process.env.SFGRAPH_ALIAS_RESOLVE_TIMEOUT_MS;
+  else process.env.SFGRAPH_ALIAS_RESOLVE_TIMEOUT_MS = prevTimeout;
+});
+
+describe("list_orgs default: no sf CLI / keychain access (audit review I1)", () => {
+  it("never loads @salesforce/core or calls AuthInfo without the opt-in", async () => {
+    // biome-ignore lint/performance/noDelete: see afterEach
+    delete process.env.SFGRAPH_ALIAS_SF_FALLBACK;
+    const listAll = vi.fn(async () => []);
+    const loadSfCore = vi.fn(async () => ({ AuthInfo: { listAllAuthorizations: listAll } }));
+    const resolveDefaultOrgAlias = vi.fn(async () => null);
+    writeFileSync(
+      path.join(workDir, "orgs-snapshot.json"),
+      JSON.stringify({
+        defaultAlias: "snap",
+        aliases: { snap: "u@snap.com" },
+        authorizations: {
+          "u@snap.com": { orgId: "00Dsnap0000000000", instanceUrl: "https://snap.example" },
+        },
+        recordedAt: Date.now(),
+      }),
+    );
+    __setListOrgsDeps({ loadSfCore, resolveDefaultOrgAlias, dataDir: workDir, openDb: () => null });
+    const r = await callTool("list_orgs", {});
+    expect(loadSfCore).not.toHaveBeenCalled();
+    expect(listAll).not.toHaveBeenCalled();
+    expect(resolveDefaultOrgAlias).not.toHaveBeenCalled();
+    const d = r.data as { orgs: Array<{ alias: string | null; isDefault: boolean }> };
+    expect(d.orgs).toEqual([expect.objectContaining({ alias: "snap", isDefault: true })]);
+    expect(r.summary).toMatch(/sf CLI not consulted/);
+  });
+
+  it("bounds the opt-in sf CLI read with the alias-resolve timeout", async () => {
+    process.env.SFGRAPH_ALIAS_RESOLVE_TIMEOUT_MS = "50";
+    __setListOrgsDeps({
+      loadSfCore: async () => ({
+        AuthInfo: { listAllAuthorizations: () => new Promise<never>(() => {}) },
+      }),
+      resolveDefaultOrgAlias: () => new Promise<never>(() => {}),
+      dataDir: workDir,
+      openDb: () => null,
+    });
+    const t0 = Date.now();
+    const r = await callTool("list_orgs", {});
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(r.summary).toMatch(/timed out after 50 ms/);
+  });
 });
 
 describe("list_orgs", () => {
@@ -129,7 +186,7 @@ describe("list_orgs", () => {
             {
               alias: null, // <-- the bug: AuthInfo returns null here
               username: "user@example.com",
-              orgId: "00DdL00000gzWVpUAM",
+              orgId: "00Dxx0000000XYZEAA",
               instanceUrl: "https://x.my.salesforce.com",
             },
           ],

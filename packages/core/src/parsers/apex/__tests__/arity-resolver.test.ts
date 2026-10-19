@@ -73,7 +73,8 @@ describe("resolveApexMethodArity", () => {
 
     const edges = store.listEdgesFrom(orgId, asQualifiedName(caller), REL_TYPES.CALLS);
     expect(edges.map((e) => e.dstQualifiedName)).toEqual([target]);
-    expect(edges[0]?.attributes.resolvedBy).toBe("arity-resolver");
+    expect(edges[0]?.attributes.arityResolvedFrom).toBe("ApexMethod:Foo.bar(?)");
+    expect(edges[0]?.attributes.resolvedBy).toBeUndefined();
     expect(edges[0]?.attributes.ambiguous).toBe(false);
 
     await store.close();
@@ -152,6 +153,45 @@ describe("resolveApexMethodArity", () => {
     expect(edges).toHaveLength(1);
     expect(edges[0]?.dstQualifiedName).toBe("ApexMethod:Foo.bar(?)");
 
+    await store.close();
+  });
+
+  it("audit corecorr-09: a deleted call leaves no stale resolved edge after re-parse", async () => {
+    const { store, orgId } = await seedStore("org_arity_prune");
+    const caller = "ApexMethod:Caller.run(0)";
+    const target = "ApexMethod:Foo.bar(2)";
+    store.mergeNodes([
+      node(orgId, caller, "ApexMethod"),
+      node(orgId, "ApexClass:Foo", "ApexClass"),
+      node(orgId, target, "ApexMethod"),
+    ]);
+    const soql = {
+      ...edge(orgId, caller, "CustomObject:Account"),
+      relType: REL_TYPES.EXECUTES_SOQL,
+      attributes: {},
+    };
+    // Parse 1: run() calls Foo.bar(x, y) (arity unknown) and runs a query.
+    store.mergeEdges([edge(orgId, caller, "ApexMethod:Foo.bar(?)"), soql], {
+      reconcileSources: true,
+    });
+    resolveApexMethodArity(store, { orgId, ctx: makeTestCtx() });
+    const calls = () =>
+      store
+        .listEdgesFrom(orgId, asQualifiedName(caller), REL_TYPES.CALLS)
+        .map((e) => String(e.dstQualifiedName));
+    expect(calls()).toEqual([target]);
+
+    // Parse 2: the call is deleted; the member's edges are reconciled.
+    store.mergeEdges([soql], { reconcileSources: true });
+    resolveApexMethodArity(store, { orgId, ctx: makeTestCtx() });
+    expect(calls()).toEqual([]);
+
+    // Parse 3: the call comes back and is re-derived.
+    store.mergeEdges([edge(orgId, caller, "ApexMethod:Foo.bar(?)"), soql], {
+      reconcileSources: true,
+    });
+    resolveApexMethodArity(store, { orgId, ctx: makeTestCtx() });
+    expect(calls()).toEqual([target]);
     await store.close();
   });
 });

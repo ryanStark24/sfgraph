@@ -84,10 +84,12 @@ xychart-beta
 
 ## Common failure modes & how to handle them
 
-- **`reason: vector_index_unavailable`** — the org's graph was ingested before embeddings were wired up, or the optional `@ryanstark24/sfgraph-models` install was skipped. Tell the user verbatim what the tool's markdown suggests: re-install with `npm install -g @ryanstark24/sfgraph` and re-ingest with `--rebuild`.
-- **`reason: no_focal_vector`** (qname mode) — the qname is wrong or its label isn't embedded. Confirm the qname spelling. If correct, suggest re-trying with `text` mode using the user's description of the node.
-- **`reason: embedder_unavailable`** (text mode) — the MiniLM runtime isn't present. Fall back to qname mode if the user can name a similar node.
-- **`reason: no_neighbours`** — genuinely no similar nodes. Suggest dropping the `label` filter, or running structural `trace_upstream` / `trace_downstream` instead.
+The report says which case applies in plain words; the reason code below is only in the tool's structured data.
+
+- **Search by meaning not set up** (`vector_index_unavailable`) — the org's graph was ingested before embeddings were wired up, or the optional `@ryanstark24/sfgraph-models` install was skipped. Tell the user verbatim what the tool's markdown suggests: re-install with `npm install -g @ryanstark24/sfgraph` and re-ingest with `--rebuild`.
+- **No stored meaning for the qname** (`no_focal_vector`, qname mode) — the qname is wrong or its label isn't embedded. Confirm the qname spelling. If correct, suggest re-trying with `text` mode using the user's description of the node.
+- **Model files missing** (`embedder_unavailable`, text mode) — the MiniLM runtime isn't present. Fall back to qname mode if the user can name a similar node.
+- **Nothing similar** (`no_neighbours`) — genuinely no similar nodes. Suggest dropping the `label` filter, or running structural `trace_upstream` / `trace_downstream` instead.
 
 ## Response shape
 

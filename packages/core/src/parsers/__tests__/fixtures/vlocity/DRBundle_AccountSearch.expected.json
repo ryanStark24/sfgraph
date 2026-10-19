@@ -12,6 +12,18 @@
   "edges": [
     {
       "srcQualifiedName": "DataRaptor:AccountSearch",
+      "dstQualifiedName": "CustomField:Account.AccountNumber",
+      "relType": "DR_READS_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "DataRaptor:AccountSearch",
+      "dstQualifiedName": "CustomField:Account.Id",
+      "relType": "DR_READS_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "DataRaptor:AccountSearch",
       "dstQualifiedName": "CustomField:Account.Name",
       "relType": "DR_READS_FIELD",
       "attributes": {}

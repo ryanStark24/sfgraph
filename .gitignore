@@ -33,3 +33,17 @@ Thumbs.db
 # Transient README copied by apps/sfgraph prepack — postpack cleans it up,
 # but ignore it in case a pack is interrupted between the two hooks.
 apps/sfgraph/README.md
+
+# Benchmark graph data (per-run SQLite)
+bench/.data/
+bench/.data-org/
+bench/.data-prof/
+bench/.data-replay/
+bench/authoring/work/
+
+# cycle 2 T1 sandbox canary (live headless runs); never committed
+bench/keys-v2/__canary__/
+
+# Bench run transcripts and MCP configs hold local paths (final review bench I-5)
+bench/results/**/transcripts/
+bench/results/**/mcp.json

@@ -11,10 +11,8 @@ import { runGolden } from "./_harness.js";
 
 /**
  * Golden tests for the four Vlocity-CMT DataPack parsers. Fixtures are
- * redacted samples pulled from a real Vlocity-CMT org by the user; the
- * extraction prompt is in the docs (chat history) and the redaction
- * applied: Salesforce record IDs swapped for deterministic stand-ins,
- * LastModifiedDate normalised, secrets-shaped fields removed.
+ * synthetic records in the raw Vlocity-CMT query shape: made-up names,
+ * deterministic stand-in record IDs, LastModifiedDate normalised.
  *
  * Important: the fixtures are RAW `conn.query` shape (vlocity_cmt__*
  * namespaced keys, PropertySet still as JSON strings). At runtime the
@@ -70,13 +68,14 @@ const cardParser = new VlocityCardParser();
  * What each golden currently captures (regenerate via UPDATE_GOLDENS=1
  * after intentional parser changes):
  *
- * - DataRaptor (AccountSearch Extract, 4 DRMapItem children): 2 edges —
- *   DR_READS_FIELD on CustomField:Account.Name plus REFERENCES_OBJECT on
- *   CustomObject:Account. The parser reads the DRMapItem rows structurally
- *   (InterfaceObjectName/InterfaceFieldAPIName vs DomainObject* sides);
- *   JSON-path sides (`Details:AccountNumber`) correctly emit nothing.
- * - IntegrationProcedure (AddQGToSalesQLIs, 3 elements): IP_CALLS_IP to
- *   IntegrationProcedure:CloneModifyTo_SalesQLIs and one resolved
+ * - DataRaptor (AccountSearch Extract, 4 DRMapItem children): 4 edges —
+ *   DR_READS_FIELD on CustomField:Account.{Name,AccountNumber,Id} plus
+ *   REFERENCES_OBJECT on CustomObject:Account. The parser reads the
+ *   DRMapItem rows structurally: the step row maps alias `Details` to
+ *   Account, so the `Details:AccountNumber` interface rows resolve to
+ *   Account fields; the output (Domain) JSON paths emit nothing.
+ * - IntegrationProcedure (AddGroupToQuoteLines, 3 elements): IP_CALLS_IP to
+ *   IntegrationProcedure:CopyCart_ToQuoteLines and one resolved
  *   IP_INVOKES_REMOTE (`Remote:vlocity_cmt.B2BCmexAppHandler`); the
  *   Response Action element emits nothing.
  * - OmniScript (AccountSearch, 8 elements): 15 edges — 14
@@ -84,7 +83,7 @@ const cardParser = new VlocityCardParser();
  *   with bundle=AccountSearch). The OS_USES_DR edge is the high-value
  *   one — proves the parser correctly resolves DataRaptor references
  *   from OmniScript elements.
- * - VlocityCard (CampaignDetail): 0 edges. The card is a pure
+ * - VlocityCard (EventSummary): 0 edges. The card is a pure
  *   field-rendering card on the Campaign SObject — no nested
  *   DataRaptor / IP / LWC / Card references for the parser to walk.
  *   Confirms no-false-positive behaviour.
@@ -99,14 +98,14 @@ describe("vlocity golden", () => {
     );
   });
 
-  it("IntegrationProcedure: AddQGToSalesQLIs (Remote + IP + Response)", async () => {
+  it("IntegrationProcedure: AddGroupToQuoteLines (Remote + IP + Response)", async () => {
     const datapack = normaliseDatapack(
-      loadFixture("IntegrationProcedure_AddQGToSalesQLIs.input.json"),
+      loadFixture("IntegrationProcedure_AddGroupToQuoteLines.input.json"),
     );
     await runGolden(
       ipParser,
-      { name: "AddQGToSalesQLIs", datapack },
-      path.join(FIXTURES_DIR, "IntegrationProcedure_AddQGToSalesQLIs.expected.json"),
+      { name: "AddGroupToQuoteLines", datapack },
+      path.join(FIXTURES_DIR, "IntegrationProcedure_AddGroupToQuoteLines.expected.json"),
     );
   });
 
@@ -119,12 +118,12 @@ describe("vlocity golden", () => {
     );
   });
 
-  it("VlocityCard: CampaignDetail (Campaign field refs)", async () => {
-    const datapack = normaliseDatapack(loadFixture("VlocityCard_CampaignDetail.input.json"));
+  it("VlocityCard: EventSummary (Campaign field refs)", async () => {
+    const datapack = normaliseDatapack(loadFixture("VlocityCard_EventSummary.input.json"));
     await runGolden(
       cardParser,
-      { name: "CampaignDetail", datapack },
-      path.join(FIXTURES_DIR, "VlocityCard_CampaignDetail.expected.json"),
+      { name: "EventSummary", datapack },
+      path.join(FIXTURES_DIR, "VlocityCard_EventSummary.expected.json"),
     );
   });
 });

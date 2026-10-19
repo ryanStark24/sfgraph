@@ -32,7 +32,7 @@ A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-s
 Verify:
 
 ```bash
-node --version          # v20+ (v22 LTS recommended)
+node --version          # v22+
 sf org list             # at least one org marked as default
 ```
 
@@ -52,7 +52,7 @@ After install, `sfgraph` is on your PATH.
 sfgraph install
 ```
 
-Idempotent. Copies 20 skill playbooks into `~/.claude/skills/` + `~/.cursor/rules/` and adds a `sfgraph` entry to your editor's MCP config. Existing MCP entries are preserved. Use `--target=claude|cursor|vscode` to wire only one, or `--dry-run` to preview. Start with **`sf-graph-router`** — it routes intent to the right skill and enforces grounding answers in the org graph before generating Salesforce code.
+Idempotent. Copies 21 skill playbooks into `~/.claude/skills/` + `~/.cursor/rules/` and adds a `sfgraph` entry to your editor's MCP config. Existing MCP entries are preserved. Use `--target=claude|cursor|vscode` to wire only one, or `--dry-run` to preview. Start with **`sf-graph-router`** — it routes intent to the right skill and enforces grounding answers in the org graph before generating Salesforce code.
 
 #### Using a different IDE or LLM client?
 
@@ -77,7 +77,7 @@ On Windows, use `"npx.cmd"` instead of `"npx"`.
 {
   "mcpServers": {
     "sfgraph": {
-      "command": "/Users/you/.nvm/versions/node/v22.21.1/bin/node",
+      "command": "/Users/dev/.nvm/versions/node/v22.21.1/bin/node",
       "args": ["/usr/local/bin/sfgraph", "mcp"]
     }
   }
@@ -171,6 +171,16 @@ Agent: *invokes sf-impact-from-diff*
 
 More worked examples: [`docs/SAMPLES.md`](docs/SAMPLES.md).
 
+### Org aliases in the MCP server
+
+Every tool takes `org` as either a 15/18-char orgId or an alias. The MCP server resolves an alias using only sfgraph's own data, in this order:
+
+1. the local registry: the `_sfgraph_orgs` row in each ingested `<orgId>.sqlite` under the data dir (exact alias first, then case-insensitive; a case-insensitive match that hits two orgs is an error);
+2. `orgs-snapshot.json` in the data dir, written by `sfgraph install` / `sfgraph refresh-orgs`;
+3. otherwise the call fails fast with `unknown org alias` and lists the ingested orgs. It never creates an empty `<alias>.sqlite`.
+
+By default the server never reads the sf CLI auth store, because that can block on a keychain prompt. Set `SFGRAPH_ALIAS_SF_FALLBACK=1` to add the sf CLI as a last resort. Each lookup is then capped at `SFGRAPH_ALIAS_RESOLVE_TIMEOUT_MS` (default 5000 ms). `list_orgs` follows the same rule: by default it lists ingested orgs plus `orgs-snapshot.json`; with the opt-in it also lists sf CLI auths. Run `sfgraph refresh-orgs` after adding or renaming an sf alias.
+
 ---
 
 ## Optional: web visualiser
@@ -253,6 +263,8 @@ Authoritative inventory — every `SFGRAPH_*` env var read at runtime, sorted al
 
 | Name | Type | Default | Purpose | Since |
 |---|---|---|---|---|
+| `SFGRAPH_ALIAS_RESOLVE_TIMEOUT_MS` | int (ms) | `5000` | Time limit for each sf CLI auth lookup made under `SFGRAPH_ALIAS_SF_FALLBACK` (alias resolution and `list_orgs`); on timeout the call fails fast or falls back to sfgraph's own data. | 1.0 |
+| `SFGRAPH_ALIAS_SF_FALLBACK` | bool (`1`/`true`) | unset | Let the MCP server consult the sf CLI auth store (AuthInfo, which can trigger a macOS keychain prompt) for aliases that sfgraph's own registry does not know, and include sf CLI auths in `list_orgs`. Off by default. See [Org aliases in the MCP server](#org-aliases-in-the-mcp-server). | 1.0 |
 | `SFGRAPH_ALLOW_ANY_DB` | bool (`1`) | unset | Bypass the "graph DB must live under data dir" safety check. | 1.0 |
 | `SFGRAPH_APEX_PARSER` | string | `regex` | Apex class parser strategy (`regex` is the default; other values reserved). | 1.0 |
 | `SFGRAPH_AUTO_RETRY_THRESHOLD` | int | `10` | Skip-count threshold above which `ingest` auto-retries the wedged sources. | 1.0 |

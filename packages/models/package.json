@@ -1,6 +1,6 @@
 {
   "name": "@ryanstark24/sfgraph-models",
-  "version": "1.1.0",
+  "version": "1.6.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,7 +16,8 @@
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "node ../../scripts/assert-pnpm-publish.mjs"
   },
   "dependencies": {
     "@ryanstark24/sfgraph-shared": "workspace:*"
@@ -36,7 +37,7 @@
     "url": "https://github.com/ryanStark24/sfgraph"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
@@ -44,6 +45,7 @@
   "description": "Vendored MiniLM ONNX embedding model for sfgraph",
   "files": [
     "dist",
+    "!dist/**/__tests__",
     "data",
     "README.md"
   ],

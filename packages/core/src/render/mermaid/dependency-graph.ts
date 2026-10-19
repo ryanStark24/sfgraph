@@ -44,11 +44,22 @@ export function renderDependencyGraph(opts: RenderDependencyGraphOpts): string {
   if (truncated > 0) {
     lines.push(`  __more["(+${truncated} more)"]`);
   }
+  // One arrow per (src, dst) pair, its rel types joined in first-seen order.
+  const pairs = new Map<string, { a: string; b: string; rels: string[] }>();
   for (const e of edges) {
     if (!keptSet.has(e.srcQualifiedName) || !keptSet.has(e.dstQualifiedName)) continue;
     const a = mermaidId(e.srcQualifiedName);
     const b = mermaidId(e.dstQualifiedName);
-    const lbl = e.relType ? `|${e.relType}|` : "";
+    const key = `${a}\u0000${b}`;
+    let p = pairs.get(key);
+    if (!p) {
+      p = { a, b, rels: [] };
+      pairs.set(key, p);
+    }
+    if (e.relType && !p.rels.includes(e.relType)) p.rels.push(e.relType);
+  }
+  for (const { a, b, rels } of pairs.values()) {
+    const lbl = rels.length ? `|${rels.join(", ")}|` : "";
     lines.push(`  ${a} -->${lbl} ${b}`);
   }
   for (const [label, cls] of labelClasses) {

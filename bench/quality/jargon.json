@@ -1,0 +1,9 @@
+{
+  "patterns": [
+    { "id": "relationship-constant", "regex": "\\b[A-Z]{2,}(?:_[A-Z]+)+\\b", "flags": "" },
+    { "id": "relationship-constant", "regex": "\\b(?:CALLS|CONTAINS|EXTENDS|GRANTS|IMPLEMENTS|OVERRIDES|QUERIES|REFERENCES)\\b", "flags": "" },
+    { "id": "qname", "regex": "\\b[A-Z][A-Za-z]+:[A-Za-z_]", "flags": "" },
+    { "id": "word:edge", "regex": "\\bedges?\\b(?!\\s+cases?\\b)", "flags": "i" }
+  ],
+  "words": ["pseudo", "roll-up", "qname", "hop", "node row"]
+}

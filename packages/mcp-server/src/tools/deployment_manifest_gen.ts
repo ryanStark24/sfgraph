@@ -1,11 +1,17 @@
 import { analyze } from "@ryanstark24/sfgraph-core";
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
+import { andList, code, countNoun, renderReport } from "./_report.js";
+
+/** How many `<members>` entries a manifest XML lists. */
+const memberCount = (xml: string): number => (xml.match(/<members>/g) ?? []).length;
 
 const inputSchema = z.object({
   from_org: z.string().min(1),
   to_org: z.string().min(1),
   category: z.string().optional(),
+  include_managed: z.boolean().default(false),
+  include_standard: z.boolean().default(false),
 });
 
 defineTool({
@@ -24,7 +30,25 @@ defineTool({
       storeB: ctxB.graphStore,
       orgB: ctxB.orgId,
       category: input.category ?? "all",
+      // Managed-package and standard items in one org only are left out by default, as in
+      // cross_org_diff: in destructiveChanges.xml they would delete a package's or
+      // Salesforce's own component from the target.
+      includeManaged: input.include_managed,
+      includeStandard: input.include_standard,
     });
+    const { hidden } = manifest;
+    const hiddenParts = [
+      ...(hidden.managed ? [countNoun(hidden.managed, "managed-package item")] : []),
+      ...(hidden.standard ? [countNoun(hidden.standard, "standard Salesforce item")] : []),
+    ];
+    const hiddenFlags = [
+      ...(hidden.managed ? ["`include_managed: true`"] : []),
+      ...(hidden.standard ? ["`include_standard: true`"] : []),
+    ];
+    const hiddenOne = hidden.managed + hidden.standard === 1;
+    const hiddenNote = hiddenParts.length
+      ? `Left out of both files: ${andList(hiddenParts)} found in only one org (what each org installed or retrieved, not a change). Set ${hiddenFlags.join(" or ")} to include ${hiddenOne ? "it" : "them"}.`
+      : null;
     const unmapped = Object.entries(manifest.incomplete.unmappedLabels);
     const incompleteNote =
       manifest.incomplete.diffTruncated || unmapped.length > 0
@@ -45,11 +69,31 @@ defineTool({
               : []),
           ]
         : [];
-    return {
-      summary: `${manifest.summary.addedOrChanged} added/changed, ${manifest.summary.removed} removed${
-        incompleteNote.length ? " (INCOMPLETE)" : ""
-      }`,
-      markdown: [
+    const a = code(input.from_org);
+    const b = code(input.to_org);
+    const deploy = memberCount(manifest.packageXml);
+    const remove = memberCount(manifest.destructiveXml);
+    const droppedN = unmapped.reduce((s, [, c]) => s + c, 0);
+    const markdown = renderReport({
+      title: `Deployment files to make ${b} match ${a}`,
+      inShort: [
+        `To make ${b} match ${a}, the package file lists ${countNoun(deploy, "component")} to deploy (new in ${a} or changed) and the delete file lists ${countNoun(remove, "component")} to remove (only in ${b}).`,
+        input.category
+          ? `Compared: the ${code(input.category)} category only.`
+          : "Compared: every category.",
+        ...(manifest.incomplete.diffTruncated
+          ? [
+              "The comparison hit its row limit, so these files are incomplete; narrow it with `category`.",
+            ]
+          : []),
+        ...(droppedN > 0
+          ? [
+              `${countNoun(droppedN, "changed component")} ${droppedN === 1 ? "has" : "have"} no deployment type and ${droppedN === 1 ? "was" : "were"} left out of the files.`,
+            ]
+          : []),
+        ...(hiddenNote ? [hiddenNote] : []),
+      ],
+      details: [
         "### package.xml",
         "```xml",
         manifest.packageXml.trimEnd(),
@@ -61,6 +105,13 @@ defineTool({
         "```",
         ...incompleteNote,
       ].join("\n"),
+      next: ["Review both files before deploying; run `cross_org_diff` to see each difference."],
+    });
+    return {
+      summary: `${manifest.summary.addedOrChanged} added/changed, ${manifest.summary.removed} removed${
+        incompleteNote.length ? " (INCOMPLETE)" : ""
+      }`,
+      markdown,
       data: manifest,
       follow_up_tools: ["cross_org_diff"],
     };

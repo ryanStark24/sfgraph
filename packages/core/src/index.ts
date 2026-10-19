@@ -22,3 +22,5 @@ export {
   type DanglingEdgeSample,
 } from "./analyze/audit-graph.js";
 export type { ToolResponse } from "./tools/types.js";
+// Cycle 3 T2: the labels Vlocity references point at, for the server's plain-word dictionary coverage test.
+export { TARGET_LABEL as VLOCITY_TARGET_LABEL } from "./parsers/vlocity/common.js";

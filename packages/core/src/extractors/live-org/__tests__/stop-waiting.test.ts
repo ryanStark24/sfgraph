@@ -97,20 +97,26 @@ describe("W1.5-03: scheduleQuery stop-waiting", () => {
     // has maxConcurrent=5 by default, so we exhaust slots with five hangers
     // and then submit a sixth target job whose stopSignal we flip while
     // it's queued).
+    // Bottleneck starts queued jobs one timer tick apart, and on Windows a
+    // tick is ~15.6 ms, so the five fillers took longer to start than the
+    // target took to reject. A filler that started after the release
+    // registered a resolver nobody called, and Promise.all below hung.
+    // Wait until all five run, and release them through one shared gate.
+    let openGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      openGate = r;
+    });
+    let started = 0;
     const slotFillers: Promise<unknown>[] = [];
-    const releaseFillers: Array<() => void> = [];
     for (let i = 0; i < 5; i += 1) {
       slotFillers.push(
-        scheduleQuery(
-          () =>
-            new Promise<void>((r) => {
-              releaseFillers.push(r);
-            }),
-        ),
+        scheduleQuery(() => {
+          started += 1;
+          return gate;
+        }),
       );
     }
-    // Yield once so Bottleneck binds the fillers to slots.
-    await new Promise((r) => setTimeout(r, 10));
+    while (started < 5) await new Promise((r) => setTimeout(r, 5));
 
     let targetInvoked = false;
     const stopSignal: StopSignal = { value: false };
@@ -128,7 +134,7 @@ describe("W1.5-03: scheduleQuery stop-waiting", () => {
     expect(targetInvoked).toBe(false);
 
     // Release the fillers so the pool drains cleanly for downstream tests.
-    for (const release of releaseFillers) release();
+    openGate();
     await Promise.all(slotFillers);
   });
 
@@ -256,9 +262,16 @@ describe("W1.5-03: integration with keystone (AsyncLocalStorage propagation)", (
     const wrappedA = bulkRetrieveTesting.failSoft("wedge:A", wedgedFactory, undefined, coordinator);
     const wrappedB = bulkRetrieveTesting.failSoft("wedge:B", wedge2Factory, undefined, coordinator);
 
+    // Start B 50 ms after A. Both watchdogs have the same budget, so started
+    // together their order was scheduling jitter, and when B tripped first
+    // the cap evicted B instead of A (seen in CI under parallel load).
+    const later = async function* (src: AsyncIterable<RawMember>): AsyncIterable<RawMember> {
+      await new Promise((r) => setTimeout(r, 50));
+      yield* src;
+    };
     // Drain through the parallel merger with concurrency=2 so both wedges
     // enter their bodies and trip the watchdog.
-    const merger = bulkRetrieveTesting.mergeAsyncIterablesParallel([wrappedA, wrappedB], {
+    const merger = bulkRetrieveTesting.mergeAsyncIterablesParallel([wrappedA, later(wrappedB)], {
       concurrency: 2,
     });
 

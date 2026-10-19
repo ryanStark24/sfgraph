@@ -68,6 +68,26 @@ describe("wip_impact", () => {
   });
 });
 
+// Cycle 3 T5 fix 1 (I1): the removed-piece note shows only when something was removed.
+describe("wip_impact removed-piece note", () => {
+  const NOTE = "A removed piece's dependents are the references its removal breaks.";
+  it("is shown when a piece was removed", async () => {
+    const r = await callTool("wip_impact", {
+      org: fix.orgId,
+      project_root: projectRoot,
+      mode: "full-folder",
+    });
+    expect((r.data as { removed: string[] }).removed).toContain("ApexClass:Bar");
+    expect(r.markdown).toContain(NOTE);
+  });
+
+  it("is left out when nothing was removed", async () => {
+    const r = await callTool("wip_impact", { org: fix.orgId, project_root: projectRoot });
+    expect((r.data as { removed: string[] }).removed).toEqual([]);
+    expect(r.markdown).not.toContain(NOTE);
+  });
+});
+
 describe("wip_diff", () => {
   it("returns sets and no mermaid", async () => {
     const r = await callTool("wip_diff", {

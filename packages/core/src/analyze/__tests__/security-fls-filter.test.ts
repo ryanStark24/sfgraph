@@ -8,7 +8,7 @@ describe("isFlsRelevantField", () => {
     expect(isFlsRelevantField("CustomField:Account.Industry")).toBe(true);
   });
   it("drops Custom Metadata Type fields", () => {
-    expect(isFlsRelevantField("CustomField:AMS_Bulk_Template__mdt.Is_Active__c")).toBe(false);
+    expect(isFlsRelevantField("CustomField:Acme_Template__mdt.Is_Active__c")).toBe(false);
     expect(isFlsRelevantField("CustomField:Foo__mdt.DeveloperName")).toBe(false);
   });
   it("drops standard system/audit fields on any object", () => {
@@ -17,7 +17,7 @@ describe("isFlsRelevantField", () => {
     }
   });
   it("drops platform-event and big-object fields", () => {
-    expect(isFlsRelevantField("CustomField:MyEvent__e.Payload__c")).toBe(false);
+    expect(isFlsRelevantField("CustomField:MyEvent__e.Body_Data__c")).toBe(false);
     expect(isFlsRelevantField("CustomField:MyBig__b.Data__c")).toBe(false);
   });
 });

@@ -13,7 +13,7 @@
   "edges": [
     {
       "srcQualifiedName": "FlexiPage:Account_Record_Page",
-      "dstQualifiedName": "LightningComponentBundle:MyLwc",
+      "dstQualifiedName": "LWC:MyLwc",
       "relType": "EMBEDS_LWC",
       "attributes": {}
     }
