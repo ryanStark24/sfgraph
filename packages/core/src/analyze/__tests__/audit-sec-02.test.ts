@@ -45,7 +45,8 @@ describe("audit sec-02: find_nodes ReDoS", () => {
     if (err) {
       expect(String((err as Error).message)).toMatch(/pattern|wildcard|glob/i);
     } else {
-      expect(ms).toBeLessThan(500);
+      // Generous bound (see the 40k-name scans below): a ReDoS runs for seconds.
+      expect(ms).toBeLessThan(2000);
     }
   });
 });
@@ -56,7 +57,7 @@ describe("audit sec-02: linear glob matcher", () => {
     const text = `ApexClass:${"A".repeat(2000)}`;
     const t0 = performance.now();
     for (let i = 0; i < 200; i++) expect(m(text)).toBe(false);
-    expect(performance.now() - t0).toBeLessThan(500);
+    expect(performance.now() - t0).toBeLessThan(2000);
   });
 
   it("rejects brace patterns with too many alternatives", () => {
@@ -96,7 +97,9 @@ describe("audit sec-02: pathological brace patterns over 40k names", () => {
       for (const n of names) if (m(n)) hits++;
       const ms = performance.now() - t0;
       expect(hits).toBe(0);
-      expect(ms).toBeLessThan(300);
+      // ~50-80 ms alone; the bug took 3.5-8 s. A wide bound still catches it
+      // and holds when every package's suite runs at once (pnpm -r test).
+      expect(ms).toBeLessThan(1500);
     });
   }
 
@@ -155,6 +158,8 @@ describe("audit sec-02: DFA blow-up is bounded", () => {
     }
     const ms = performance.now() - t0;
     if (err) expect(String((err as Error).message)).toMatch(/too complex/);
-    expect(ms).toBeLessThan(400);
+    // An unbounded DFA here would run for seconds or more; 709 ms was seen
+    // under `pnpm -r test` load against a 400 ms bound.
+    expect(ms).toBeLessThan(2000);
   });
 });
