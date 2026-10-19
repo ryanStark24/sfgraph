@@ -475,13 +475,15 @@ function checkTests() {
     return;
   }
   try {
-    execSync("pnpm -r test", {
+    // One package at a time, as CI does on Windows: suites running side by
+    // side starve each other and trip the timing-based tests.
+    execSync("pnpm -r --workspace-concurrency=1 test", {
       cwd: REPO_ROOT,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    pass("pnpm -r test (full monorepo suite green)");
+    pass("pnpm -r --workspace-concurrency=1 test (full monorepo suite green)");
   } catch (e) {
-    fail("test suite failed", "Run `pnpm -r test` directly and fix before publishing");
+    fail("test suite failed", "Run `pnpm -r --workspace-concurrency=1 test` directly and fix before publishing");
   }
 }
 
