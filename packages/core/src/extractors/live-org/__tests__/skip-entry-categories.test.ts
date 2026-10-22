@@ -109,4 +109,13 @@ describe("failSoft log line counts unreadable and lost members separately (M6)",
     );
     expect(line).toContain("✗ unreadable (listing refused)");
   });
+
+  it("classifies a SOQL 'sObject type ... is not supported' as not_found, not a retryable unknown", () => {
+    const err = new Error(
+      "\nSelect Id from vlocity_cmt__QueryBuilder__c\n               ^\nERROR at Row:1:Column:16\nsObject type 'vlocity_cmt__QueryBuilder__c' is not supported.",
+    );
+    expect(skipEntriesFor("vlocity:QueryBuilder:vlocity_cmt", err)).toEqual([
+      { label: "vlocity:QueryBuilder:vlocity_cmt", reason: err.message, category: "not_found" },
+    ]);
+  });
 });
