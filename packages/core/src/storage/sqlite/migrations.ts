@@ -506,6 +506,16 @@ export class MigrationRunner {
     this.validateRegistry();
     const sorted = [...this.migrations].sort((a, b) => a.version - b.version);
     let current = this.getCurrentVersion();
+    // A graph written by a newer sfgraph has tables this build does not know
+    // (v14 turned the old snapshot tables into views): writing to it fails
+    // part-way ("cannot modify _sfgraph_node_snapshots because it is a view").
+    // Refuse up front instead.
+    const known = sorted.at(-1)?.version ?? 0;
+    if (current > known) {
+      throw new MigrationError(
+        `this graph database is at schema v${current}, but this sfgraph only knows up to v${known}: it was written by a newer sfgraph. Upgrade sfgraph (and any MCP client config pinned to an older version) and retry.`,
+      );
+    }
     // review I1: one backup per run (of the pre-run state), not one per step;
     // a 12 -> 14 upgrade used to write two full-size copies.
     let backedUp = false;

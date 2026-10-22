@@ -661,6 +661,19 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     } else {
       mode = requestedMode;
     }
+    // Incremental reads the Tooling SourceMember table, which exists only on
+    // source-tracked orgs (scratch orgs, Developer / Developer Pro sandboxes
+    // with tracking on). Asked for it on any other org, the query fails with
+    // "sObject type 'SourceMember' is not supported" and nothing is ingested;
+    // run a full sync instead, the same choice auto makes.
+    let modeFallback: string | undefined;
+    if (mode === "incremental" && !caps.sourceTracking) {
+      mode = "full";
+      modeFallback = "mode:incremental-unavailable:no-source-tracking";
+      logger.warn(
+        `live-ingest: ${resolved.alias} has no source tracking (no SourceMember table), so incremental is not possible here; running a full sync instead`,
+      );
+    }
 
     if (!opts.skipSnapshot && opts.snapshotStore) {
       try {
@@ -702,6 +715,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // the legacy `${label}: ${reason}` strings from skipReport.skips into the
     // final LiveIngestResult.warnings array. See bulk-retrieve.ts WedgeCoordinator.
     const wedgeWarnings: string[] = [];
+    if (modeFallback) wedgeWarnings.push(modeFallback);
 
     // Task 10 rebuild fast path. On a full ingest into an org whose graph is
     // empty at start, run the fan-out inside the store's bulk-load window:

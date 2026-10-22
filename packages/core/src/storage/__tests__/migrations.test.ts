@@ -50,6 +50,17 @@ describe("MigrationRunner", () => {
     expect(currentVersion(db)).toBe(15);
   });
 
+  it("refuses a database written by a newer sfgraph", () => {
+    const runner = new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 });
+    runner.applyPending();
+    const known = currentVersion(db);
+    db.prepare(
+      "INSERT INTO _sfgraph_schema_version(version, applied_at, description) VALUES (?, ?, ?)",
+    ).run(known + 1, Date.now(), "from the future");
+    expect(() => runner.applyPending()).toThrow(MigrationError);
+    expect(() => runner.applyPending()).toThrow(/newer sfgraph/);
+  });
+
   it("is idempotent on re-run", () => {
     const runner = new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 });
     runner.applyPending();

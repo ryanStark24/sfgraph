@@ -63,6 +63,7 @@ describe("liveIngest incremental deletion via SourceMember", () => {
     expect(graphStore.listEdgesFrom(orgId, qname).length).toBeGreaterThan(0);
 
     const conn = buildJsforceMock({
+      toolingDescribeResults: { SourceMember: true },
       // Use wildcard so any SourceMember SOQL (dynamic timestamp) matches.
       toolingQueryResults: {
         "*": {

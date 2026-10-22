@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **`--mode incremental` on an org without source tracking now runs a full sync.** Incremental reads the Tooling `SourceMember` table, which exists only on scratch orgs and on Developer / Developer Pro sandboxes with tracking on. On any other org (Partial or Full Copy sandboxes, production) the ingest stopped with `sObject type 'SourceMember' is not supported` and loaded nothing, even though its own capability probe had reported `sourceTracking: false`. It now logs a warning, runs a full sync (the same choice `auto` makes), and records `mode:incremental-unavailable:no-source-tracking` in the result warnings.
+- **An older sfgraph refuses a graph written by a newer one.** A build that meets a schema version higher than any it knows now stops with a clear "upgrade sfgraph" error. Before, it ran anyway and failed part-way, for example `snapshot failed: cannot modify _sfgraph_node_snapshots because it is a view` when sfgraph 1.4.0 (often a stale MCP client config or npx cache) opened a graph that 1.6.0 had migrated to schema v14. This protects future upgrades; releases before this one have no such check.
+
 ## 1.6.0 — 2026-10-19
 
 **Performance and stabilization.** This release makes ingest faster on large projects and orgs, fixes a wide set of audit and tool accuracy problems, and makes the MCP tool reports easier to read. Re-ingest with `sfgraph ingest --rebuild` after upgrading (see the upgrade notes below).

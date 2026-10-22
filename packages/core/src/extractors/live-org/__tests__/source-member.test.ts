@@ -90,4 +90,20 @@ describe("iterChanges (SourceMember)", () => {
     expect(captured).toMatch(/LastModifiedDate > 2025-06-15T12:34:56Z/);
     expect(captured).not.toContain("'2025");
   });
+
+  it("explains a missing SourceMember table instead of passing the raw error on", async () => {
+    const conn = {
+      tooling: {
+        query: async () => {
+          throw new Error("sObject type 'SourceMember' is not supported.");
+        },
+      },
+    };
+    const run = async () => {
+      for await (const _ of iterChanges(conn as any, asOrgId("org_1"), "2025-01-01T00:00:00Z")) {
+        /* drain */
+      }
+    };
+    await expect(run()).rejects.toThrow(/needs source tracking.*--mode full/);
+  });
 });
