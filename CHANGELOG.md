@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.6.1 — 2026-10-22
+
+Ingest stabilization for large live orgs. No upgrade steps: the first ingest after upgrading re-parses every member once, as after any release, because the parser generation stamp includes the version.
 
 ### Fixes
 
