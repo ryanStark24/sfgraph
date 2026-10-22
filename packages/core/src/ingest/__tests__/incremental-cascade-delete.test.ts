@@ -72,6 +72,7 @@ describe("incremental obsolete-member deletion — label mapping + child cascade
     ]);
 
     const conn = buildJsforceMock({
+      toolingDescribeResults: { SourceMember: true },
       toolingQueryResults: {
         "*": {
           records: [

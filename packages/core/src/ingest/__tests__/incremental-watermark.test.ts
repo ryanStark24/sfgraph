@@ -42,6 +42,7 @@ describe("liveIngest incremental — watermark held when changes go unfetched", 
     // SourceMember reports a CHANGED (not obsolete) class — incremental detects
     // it but cannot fetch its body, so it's counted + skipped.
     const conn = buildJsforceMock({
+      toolingDescribeResults: { SourceMember: true },
       toolingQueryResults: {
         "*": {
           records: [

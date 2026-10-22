@@ -233,7 +233,12 @@ function classifySkip(msg: string): SkipCategory {
   if (m.includes("INSUFFICIENT_ACCESS") || m.includes("INSUFFICIENT") || m.includes("FORBIDDEN")) {
     return "insufficient_access";
   }
-  if (m.includes("NOT_FOUND") || m.includes("INVALID_TYPE")) return "not_found";
+  // SOQL against an object the org lacks (a vlocity_cmt version without
+  // QueryBuilder__c) reads "sObject type 'X' is not supported" with no
+  // INVALID_TYPE in the message: absent, not a transient loss to retry.
+  if (m.includes("NOT_FOUND") || m.includes("INVALID_TYPE") || m.includes("IS NOT SUPPORTED")) {
+    return "not_found";
+  }
   if (m.includes("REQUEST_LIMIT_EXCEEDED") || m.includes("RATE_LIMIT")) return "rate_limit";
   if (m.includes("ECONNREFUSED") || m.includes("ENOTFOUND") || m.includes("ETIMEDOUT")) {
     return "network";

@@ -40,9 +40,21 @@ export async function* iterChanges(
   const since = sinceIso.replace(/'/g, "");
   const baseSoql = `SELECT Id, MemberType, MemberName, RevisionCounter, IsNameObsolete, LastModifiedDate FROM SourceMember WHERE LastModifiedDate > ${since} ORDER BY LastModifiedDate ASC`;
 
-  let result: any = await scheduleQuery(() =>
-    soqlWithTimeout(conn.tooling.query(baseSoql), "tooling SourceMember"),
-  );
+  let result: any;
+  try {
+    result = await scheduleQuery(() =>
+      soqlWithTimeout(conn.tooling.query(baseSoql), "tooling SourceMember"),
+    );
+  } catch (e) {
+    // Orgs without source tracking have no SourceMember table at all.
+    if (/SourceMember' is not supported|INVALID_TYPE/i.test((e as Error)?.message ?? "")) {
+      throw new Error(
+        `incremental ingest needs source tracking, and this org has none (${(e as Error).message}). Run a full ingest instead: --mode full (add --detect-deletions to also drop deleted components).`,
+        { cause: e },
+      );
+    }
+    throw e;
+  }
   while (result) {
     const records = (result.records ?? []) as SourceMemberRow[];
     for (const r of records) {
