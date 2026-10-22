@@ -409,6 +409,12 @@ export function carriedOverSkips(
 function bulletReason(s: { label: string; reason: string }): string {
   return s.reason.startsWith(`${s.label}: `) ? s.reason.slice(s.label.length + 2) : s.reason;
 }
+/** The user permission an INSUFFICIENT_ACCESS error names, if it names one
+ *  ("User does not have the User permission EventLogRead" → `EventLogRead`). */
+export function requiredUserPermission(reason: string): string | undefined {
+  return /does not have the User permission (\w+)/i.exec(reason)?.[1];
+}
+
 export function printSkipSummary(report: IngestSkipReport, orgAlias: string): void {
   const byCategory = new Map<string, Array<{ label: string; reason: string }>>();
   for (const s of report.skips) {
@@ -437,18 +443,39 @@ export function printSkipSummary(report: IngestSkipReport, orgAlias: string): vo
     console.log("");
     console.log(`  Insufficient access (${list.length}):`);
     for (const s of list) console.log(`    • ${s.label}: ${bulletReason(s)}`);
+    // An error that names the exact user permission it wants (EventLogObject
+    // settings: "does not have the User permission EventLogRead") gets that
+    // permission as its fix; the generic admin advice would send an admin
+    // after permissions the user most likely already has.
+    const named = [...new Set(list.map((s) => requiredUserPermission(s.reason)))];
+    const specific = named.filter((p): p is string => p !== undefined);
+    const generic = named.includes(undefined);
     console.log("");
     console.log("  How to fix permanently:");
-    console.log("    1. Have an admin assign your user a permission set with:");
-    console.log("         - 'Modify Metadata Through Metadata API Functions'");
-    console.log("         - 'View All Data' (or assign the System Administrator profile)");
+    if (specific.length > 0) {
+      console.log("    1. Have an admin grant your user the user permission(s) the org asked for:");
+      for (const p of specific) console.log(`         - '${p}'`);
+      console.log(
+        "       (the permission may require an add-on license; if the org does not have it,",
+      );
+      console.log("       this warning is expected and the rest of the graph is unaffected)");
+    }
+    if (generic) {
+      console.log(
+        `    ${specific.length > 0 ? "   For the others, assign" : "1. Have an admin assign"} your user a permission set with:`,
+      );
+      console.log("         - 'Modify Metadata Through Metadata API Functions'");
+      console.log("         - 'View All Data' (or assign the System Administrator profile)");
+    }
     console.log("    2. Re-run with --rebuild to pick up the now-accessible types:");
     console.log(`         sfgraph ingest --org ${orgAlias} --rebuild`);
-    console.log("    Note: if you ARE already an admin and still see this, it usually means the");
-    console.log(
-      "    extractor is hitting a system entity that doesn't expose CustomObject metadata.",
-    );
-    console.log("    File an issue with the error text above so we can deny-list the entity.");
+    if (generic) {
+      console.log("    Note: if you ARE already an admin and still see this, it usually means the");
+      console.log(
+        "    extractor is hitting a system entity that doesn't expose CustomObject metadata.",
+      );
+      console.log("    File an issue with the error text above so we can deny-list the entity.");
+    }
   }
 
   if (byCategory.has("rate_limit")) {

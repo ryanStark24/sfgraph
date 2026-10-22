@@ -333,6 +333,29 @@ describe("iterObject — EntityDefinition is paged without queryMore", () => {
     expect(error?.message).toMatch(/partition incomplete: 2500 of 2600/);
   });
 
+  it("a partition a row short of COUNT() keeps the classification instead of falling back", async () => {
+    // A large live org came up 1 short on every run; the whitelist fallback
+    // then dropped every namespaced object.
+    const names = nsRows("ns__O", 2500);
+    const { conn } = edConn(names, [sobj("Account"), sobj("ns__O1__c")], {
+      countTotal: names.length + 1,
+    });
+    const { names: got, error } = await drain(iterObject(conn, { retryBackoffMs: 0 }));
+    expect(error).toBeUndefined();
+    expect(got).toContain("ns__O1__c");
+  });
+
+  it("rows sharing a QualifiedApiName are not mistaken for a partition gap", async () => {
+    const names = [...nsRows("ns__O", 2500), "ns__O7__c", "ns__O8__c", ...nsRows("nt__O", 20)];
+    const { conn } = edConn(names, [sobj("ns__O7__c"), sobj("nt__O3__c")], {
+      // At the tolerated gap (10) counting rows; 2 past it counting unique names.
+      countTotal: names.length + 10,
+    });
+    const { names: got, error } = await drain(iterObject(conn, { retryBackoffMs: 0 }));
+    expect(error).toBeUndefined();
+    expect(got.sort()).toEqual(["ns__O7__c", "nt__O3__c"]);
+  });
+
   it("a COUNT() without totalSize is treated as unverifiable, not as success", async () => {
     const names = nsRows("ns__O", 2500);
     const { conn } = edConn(names, [sobj("Account")], { countTotal: null });
