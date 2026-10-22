@@ -510,7 +510,7 @@
             "tool": {
               "driver": {
                 "name": "sfgraph",
-                "version": "1.6.0",
+                "version": "<version>",
                 "informationUri": "https://github.com/ryanStark24/sfgraph",
                 "rules": [
                   {
@@ -972,7 +972,7 @@
             "tool": {
               "driver": {
                 "name": "sfgraph",
-                "version": "1.6.0",
+                "version": "<version>",
                 "informationUri": "https://github.com/ryanStark24/sfgraph",
                 "rules": []
               }

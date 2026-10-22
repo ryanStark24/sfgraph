@@ -300,10 +300,16 @@ export function registerT4Reports(part: { from: number; to?: number; rest: boole
       .replace(/snap_[0-9a-f-]{36}/g, "snap_X")
       .replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z/g, "T")
       .replace(/\b(manual|scheduled)-T\b/g, "$1-T");
+  // The SARIF tool driver reports the package version, which every release
+  // bumps; the golden compares everything else.
   const stable = (d: unknown): unknown =>
-    JSON.parse(stableText(JSON.stringify(d ?? null)), (k, v) =>
-      (/At$/.test(k) || k === "ts") && typeof v === "number" ? 0 : v,
-    );
+    JSON.parse(stableText(JSON.stringify(d ?? null)), (k, v) => {
+      if ((/At$/.test(k) || k === "ts") && typeof v === "number") return 0;
+      if (k === "driver" && v && typeof v === "object" && "version" in v) {
+        return { ...v, version: "<version>" };
+      }
+      return v;
+    });
 
   const sentences = (t: string): number =>
     (stripCode(t).match(/[.!?](?=\s|$)/g) ?? []).length || (t.trim() ? 1 : 0);
