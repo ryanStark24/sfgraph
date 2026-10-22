@@ -210,15 +210,16 @@ interface EntityDefRow {
 async function fetchEntityDefinitionClassification(
   conn: any,
   retry: RetryOptions,
-): Promise<Set<string> | null> {
+): Promise<EntityDefClassification | null> {
   const userRelevant = new Set<string>();
   let rows = 0;
+  const drained = await drainEntityDefinition(conn.tooling, retry);
   // Every query is re-tried; one that still fails throws (the caller falls
   // back to the static whitelist AND reports the degradation). The old loop
   // `break`-ed on a failed queryMore and kept the PARTIAL set, which silently
   // excluded every namespaced custom object / standard object on the lost
   // pages.
-  for (const r of await drainEntityDefinition(conn.tooling, retry)) {
+  for (const r of drained.rows) {
     rows += 1;
     if (!r.QualifiedApiName) continue;
     if (r.IsDeprecatedAndHidden) continue;
@@ -229,7 +230,16 @@ async function fetchEntityDefinitionClassification(
     }
   }
   if (rows === 0) return null;
-  return userRelevant.size > 0 ? userRelevant : null;
+  if (userRelevant.size === 0) return null;
+  return { relevant: userRelevant, unclassified: drained.unclassified };
+}
+
+/** Salesforce's classification of the org's SObjects; `unclassified` counts
+ *  the rows COUNT() reported beyond those returned (see
+ *  {@link ED_MAX_UNCLASSIFIED}). */
+interface EntityDefClassification {
+  relevant: Set<string>;
+  unclassified: number;
 }
 
 const ED_FIELDS =
@@ -243,6 +253,16 @@ const ED_BATCH = 2000;
 const ED_NAME_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
 /** Longer than any API name: a bucket still full at this depth is a bug. */
 const ED_MAX_PREFIX_LEN = 80;
+/**
+ * Rows COUNT() may report beyond what the prefix partition returned before
+ * the classification is distrusted. A large live org came up 1 short (5884 of
+ * 5885) on every run, which threw away the whole classification for the static
+ * whitelist — a far bigger loss than the row itself. A gap this small keeps
+ * the classification (the missing rows are treated like any name
+ * EntityDefinition does not return); a larger gap is a real partitioning
+ * failure and still throws.
+ */
+const ED_MAX_UNCLASSIFIED = 10;
 
 function soqlString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
@@ -252,8 +272,13 @@ function soqlLikePrefix(s: string): string {
   return soqlString(s).replace(/[_%]/g, (c) => `\\${c}`);
 }
 
-/** Every EntityDefinition row, using only single-batch (LIMIT-ed) queries. */
-async function drainEntityDefinition(tooling: any, retry: RetryOptions): Promise<EntityDefRow[]> {
+/** Every EntityDefinition row, using only single-batch (LIMIT-ed) queries,
+ *  and how many rows COUNT() reports beyond them (at most
+ *  {@link ED_MAX_UNCLASSIFIED}). */
+async function drainEntityDefinition(
+  tooling: any,
+  retry: RetryOptions,
+): Promise<{ rows: EntityDefRow[]; unclassified: number }> {
   const query = (where: string, label: string) =>
     querySoqlAll<EntityDefRow>(
       tooling,
@@ -263,10 +288,14 @@ async function drainEntityDefinition(tooling: any, retry: RetryOptions): Promise
       retry,
     );
   const first = await query("", "tooling EntityDefinition");
-  if (first.length < ED_BATCH) return first;
+  if (first.length < ED_BATCH) return { rows: first, unclassified: 0 };
 
   const byName = new Map<string, EntityDefRow>();
+  // The buckets are disjoint, so every row returned counts toward COUNT(),
+  // including one whose QualifiedApiName repeats another's (byName keeps one).
+  let returned = 0;
   const add = (rs: EntityDefRow[]) => {
+    returned += rs.length;
     for (const r of rs) if (r.QualifiedApiName) byName.set(r.QualifiedApiName, r);
   };
   const bucket = async (prefix: string): Promise<void> => {
@@ -312,12 +341,13 @@ async function drainEntityDefinition(tooling: any, retry: RetryOptions): Promise
       `tooling EntityDefinition COUNT() returned no totalSize (${byName.size} rows partitioned; cannot verify)`,
     );
   }
-  if (byName.size < total) {
+  const unclassified = Math.max(0, total - returned);
+  if (unclassified > ED_MAX_UNCLASSIFIED) {
     throw new Error(
-      `tooling EntityDefinition partition incomplete: ${byName.size} of ${total} rows classified`,
+      `tooling EntityDefinition partition incomplete: ${returned} of ${total} rows classified`,
     );
   }
-  return [...byName.values()];
+  return { rows: [...byName.values()], unclassified };
 }
 
 /** Build a shouldIncludeSObject predicate closed over the EntityDefinition
@@ -326,7 +356,7 @@ async function drainEntityDefinition(tooling: any, retry: RetryOptions): Promise
  *  ingest (org A's classification leaks into org B's filter). Closure-bound
  *  state has no such hazard. */
 function makeShouldIncludeSObject(
-  entityDefRelevant: Set<string> | null,
+  entityDefRelevant: EntityDefClassification | null,
 ): (s: SObjectGlobal) => boolean {
   return function shouldIncludeSObject(s: SObjectGlobal): boolean {
     if (!s.name) return false;
@@ -356,7 +386,7 @@ function makeShouldIncludeSObject(
     // (no `__` namespace prefix) are always included.
     if (isCustomSObject(s.name)) {
       const isNamespaced = s.name.includes("__") && s.name.split("__").length >= 3;
-      if (isNamespaced && entityDefRelevant && !entityDefRelevant.has(s.name)) {
+      if (isNamespaced && entityDefRelevant && !entityDefRelevant.relevant.has(s.name)) {
         return false;
       }
       return true;
@@ -371,7 +401,7 @@ function makeShouldIncludeSObject(
     // (AuthConfig, ApexLog, EntityParticle, etc.) come back as false and
     // get skipped — exactly the right behavior, no hardcoded list needed.
     if (entityDefRelevant) {
-      return entityDefRelevant.has(s.name);
+      return entityDefRelevant.relevant.has(s.name);
     }
     // Fallback path: EntityDefinition unavailable / empty (some scratch
     // orgs return 0 rows here). Use the curated whitelist.
@@ -439,7 +469,7 @@ export async function* iterObject(
   // StopWaitingError instead of holding Tooling pool slots for minutes after
   // the source already fell back. SFGRAPH_ENTITYDEF_PROBE_TIMEOUT_MS
   // overrides the ceiling (orgs where the probe reliably needs longer).
-  let entityDefRelevant: Set<string> | null;
+  let entityDefRelevant: EntityDefClassification | null;
   const probeTimeoutMs =
     envInt("SFGRAPH_ENTITYDEF_PROBE_TIMEOUT_MS") || ENTITY_DEF_PROBE_TIMEOUT_MS;
   const outer = stopSignalContext.getStore();
@@ -469,7 +499,7 @@ export async function* iterObject(
   if (debug) {
     if (entityDefRelevant) {
       console.log(
-        `ingest: [debug] object EntityDefinition probe → ${entityDefRelevant.size} user-relevant SObjects classified`,
+        `ingest: [debug] object EntityDefinition probe → ${entityDefRelevant.relevant.size} user-relevant SObjects classified${entityDefRelevant.unclassified > 0 ? ` (${entityDefRelevant.unclassified} row(s) COUNT() reported were not returned)` : ""}`,
       );
     } else {
       console.log(

@@ -952,6 +952,25 @@ const GENERIC_TYPE_WHITELIST = new Set([
  */
 const CONTAINER_COVERED_TYPES: ReadonlySet<string> = new Set(["CustomLabel"]);
 
+/**
+ * Child types the Metadata API lists but cannot read on their own, mapped to
+ * the container whose read already returns them. Reading the child directly
+ * fails on every member: `AssignmentRule` / `AutoResponseRule` /
+ * `EscalationRule` and `WorkflowFlowAutomation` answer "unexpected metadata"
+ * (one org reported 463 WorkflowFlowAutomation members, all refused — the
+ * flows themselves come from the Flow extractor), and `ManagedTopic` refuses
+ * the listing itself ("Invalid input. See ManagedTopics documentation.").
+ * The child is skipped only when its container is dispatched in this run;
+ * without the container it is still tried, so nothing silently goes missing.
+ */
+export const CHILD_READ_VIA_CONTAINER: ReadonlyMap<string, string> = new Map([
+  ["AssignmentRule", "AssignmentRules"],
+  ["AutoResponseRule", "AutoResponseRules"],
+  ["EscalationRule", "EscalationRules"],
+  ["ManagedTopic", "ManagedTopics"],
+  ["WorkflowFlowAutomation", "Workflow"],
+]);
+
 function shouldRouteGeneric(type: string): boolean {
   // Never route a type a container already covers with richer data.
   if (CONTAINER_COVERED_TYPES.has(type)) return false;
@@ -1169,6 +1188,8 @@ export async function* bulkRetrieve(
       for (const child of childTypes) {
         if (dispatch.has(child) || typedOwned.has(child)) continue;
         if (CONTAINER_COVERED_TYPES.has(child)) continue; // CustomLabel ⊂ CustomLabels
+        const container = CHILD_READ_VIA_CONTAINER.get(child);
+        if (container !== undefined && dispatch.has(container)) continue;
         invoke(`generic:${child}`, () =>
           iterGenericMetadata(conn, String(orgId), child, {}, genericOpts),
         );
