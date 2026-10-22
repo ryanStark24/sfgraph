@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.6.1 — 2026-10-22
+
+Bug-fix release. No schema change and no re-ingest required. Like every release, the first `--project --delta` ingest after upgrading does one full rebuild, because the member-row generation stamp includes the core version.
 
 ### Fixes
 

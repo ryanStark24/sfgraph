@@ -299,7 +299,9 @@ export function registerT4Reports(part: { from: number; to?: number; rest: boole
       .replace(/<exports>\\+/g, "<exports>/")
       .replace(/snap_[0-9a-f-]{36}/g, "snap_X")
       .replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z/g, "T")
-      .replace(/\b(manual|scheduled)-T\b/g, "$1-T");
+      .replace(/\b(manual|scheduled)-T\b/g, "$1-T")
+      // SARIF names the sfgraph release; a version bump is not a report change.
+      .replace(/("name":"sfgraph","version":)"[^"]+"/g, '$1"<version>"');
   const stable = (d: unknown): unknown =>
     JSON.parse(stableText(JSON.stringify(d ?? null)), (k, v) =>
       (/At$/.test(k) || k === "ts") && typeof v === "number" ? 0 : v,
