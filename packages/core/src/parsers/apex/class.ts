@@ -1294,21 +1294,17 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       methodNodes.set(methodQname, methodNode);
       edges.push(makeEdge(ctx, classQname, REL_TYPES.CONTAINS_METHOD, methodQname));
 
-      // Snippet: emit the raw method body from the ORIGINAL source (preserves
-      // comments + strings) keyed on the method's qname.
-      const rawBody = (() => {
-        const idx = input.body.indexOf(m.name);
-        if (idx < 0) return m.body;
-        const open = input.body.indexOf("{", idx);
-        if (open < 0) return m.body;
-        const close = findMatchingBrace(input.body, open);
-        return close > 0 ? input.body.slice(open + 1, close) : m.body;
-      })();
-      const startLine = (() => {
-        const idx = input.body.indexOf(m.name);
-        if (idx < 0) return undefined;
-        return input.body.slice(0, idx).split("\n").length;
-      })();
+      // The method's own declaration (not the first textual occurrence of its
+      // name, which can be a call site, a comment or another method's
+      // parameter), from the ORIGINAL source so comments and strings survive.
+      const decl = declRawBody(input.body, maskedBody, m, usedDecls);
+      if (decl) declRanges.push(decl);
+
+      // Snippet: the raw method body keyed on the method's qname. startLine is
+      // the line the body text starts on (the line of its opening brace), so
+      // line N of sourceText is file line startLine + N - 1.
+      const rawBody = decl?.text ?? m.body;
+      const startLine = decl ? input.body.slice(0, decl.start).split("\n").length : undefined;
       const endLine = startLine != null ? startLine + rawBody.split("\n").length - 1 : undefined;
       const snippetRec: SnippetRecord = {
         orgId: asOrgId(ctx.orgId),
@@ -1322,10 +1318,6 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       snippets.push(snippetRec);
 
       // Apex -> Vlocity calls (IP / DataRaptor), extracted from the raw body.
-      // `rawBody` above locates the method by first textual occurrence of its
-      // name (which can be a call site), so locate the declaration properly here.
-      const decl = declRawBody(input.body, maskedBody, m, usedDecls);
-      if (decl) declRanges.push(decl);
       const rawDecl = decl?.text ?? null;
       const vc = extractVlocityCalls(rawDecl ?? "", stringConstants, m.params);
       for (const k of vc.ipKeys)

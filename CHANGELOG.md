@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.2 — 2026-10-26
+
+### Fixes
+
+- **`explain_code` shows a method's own body.** An Apex method's stored source was the block after the first place its name appeared in the class, which can be a call site, a comment or part of another name. A Queueable's `execute(1)` came back as a 5-line block from elsewhere in the class (lines 365-369 of a ~400-line method). The snippet now comes from the method's declaration, matched by name and arity and not a call, which the Vlocity call extraction already used. `startLine`/`endLine` now give the lines of the body itself, so line N of `sourceText` is file line `startLine + N - 1`. No upgrade steps: the first ingest after upgrading re-parses every member, which rewrites the snippets.
+
 ## 1.6.1 — 2026-10-22
 
 Ingest stabilization for large live orgs. No upgrade steps: the first ingest after upgrading re-parses every member once, as after any release, because the parser generation stamp includes the version.
