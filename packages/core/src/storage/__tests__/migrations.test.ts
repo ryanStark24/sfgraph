@@ -47,7 +47,7 @@ describe("MigrationRunner", () => {
   it("applyPending brings DB to highest version", () => {
     const runner = new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 });
     runner.applyPending();
-    expect(currentVersion(db)).toBe(15);
+    expect(currentVersion(db)).toBe(16);
   });
 
   it("refuses a database written by a newer sfgraph", () => {
@@ -65,9 +65,9 @@ describe("MigrationRunner", () => {
     const runner = new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 });
     runner.applyPending();
     runner.applyPending();
-    expect(currentVersion(db)).toBe(15);
+    expect(currentVersion(db)).toBe(16);
     const rows = db.prepare("SELECT version FROM _sfgraph_schema_version ORDER BY version").all();
-    expect(rows).toHaveLength(15);
+    expect(rows).toHaveLength(16);
   });
 
   it("creates snippet table at v6", () => {
@@ -97,7 +97,7 @@ describe("MigrationRunner", () => {
 
     // Now apply through v3; should produce backups.
     new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 }).applyPending();
-    expect(currentVersion(db)).toBe(15);
+    expect(currentVersion(db)).toBe(16);
     const files = readdirSync(backupDir).filter((f) => f.endsWith(".sqlite"));
     expect(files.length).toBeGreaterThanOrEqual(1);
   });
@@ -144,5 +144,48 @@ describe("migration 11 (FTS rowid side table backfill)", () => {
     // The unreachable NULL-key doc is purged; the valid one survives.
     const fts = db.prepare("SELECT qualified_name FROM _sfgraph_node_fts").all();
     expect(fts).toEqual([{ qualified_name: "ApexClass:Good" }]);
+  });
+});
+
+describe("migration 16 (Apex stack-frame index)", () => {
+  it("backfills class methods, nested classes and triggers from stored snippets", () => {
+    new MigrationRunner(
+      db,
+      MIGRATIONS.filter((m) => m.version <= 15),
+      { backupDir, retainBackups: 5 },
+    ).applyPending();
+    const insert = db.prepare(
+      `INSERT INTO _sfgraph_snippets
+         (org_id, qualified_name, source_format, source_text, start_line, end_line, source_hash)
+       VALUES (?, ?, 'apex', 'body', ?, ?, 'hash')`,
+    );
+    insert.run("org1", "ApexMethod:Outer.Inner.run(1)", 40, 48);
+    insert.run("org1", "ApexTrigger:CaseTrigger", 1, 12);
+
+    new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 }).applyPending();
+    const rows = db
+      .prepare(
+        `SELECT qualified_name, frame_kind, owner_name, member_name, start_line, end_line
+           FROM _sfgraph_apex_frame_index ORDER BY qualified_name`,
+      )
+      .all();
+    expect(rows).toEqual([
+      {
+        qualified_name: "ApexMethod:Outer.Inner.run(1)",
+        frame_kind: "class",
+        owner_name: "Outer.Inner",
+        member_name: "run",
+        start_line: 40,
+        end_line: 48,
+      },
+      {
+        qualified_name: "ApexTrigger:CaseTrigger",
+        frame_kind: "trigger",
+        owner_name: "CaseTrigger",
+        member_name: null,
+        start_line: 1,
+        end_line: 12,
+      },
+    ]);
   });
 });

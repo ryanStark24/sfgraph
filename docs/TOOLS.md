@@ -1,6 +1,6 @@
-# sfgraph 1.0 MCP Tools
+# sfgraph 1.7 MCP Tools
 
-Twenty-five MCP tools ship in `@ryanstark24/sfgraph-server`. Every tool returns a
+Twenty-nine MCP tools ship in `@ryanstark24/sfgraph-server`. Every tool returns a
 `{ summary, markdown, data }` envelope; many include a `mermaid` field in
 `data` for IDE rendering. Every org-scoped tool takes `org`, either a 15/18-char
 orgId or an alias.
@@ -45,6 +45,7 @@ follows the same rule.
 | `list_orgs`                       | List ingested orgs with last-sync timestamps.            |
 | `staleness_check`                 | Check how old the local ingest is (warns at >=7 days).   |
 | `explain_code`                    | Read a stored code snippet; optionally cache an LLM explanation. |
+| `resolve_frame`                   | Resolve a Salesforce stack frame to exact, line-aware stored Apex source. |
 | `find_similar`                    | Semantic KNN over node embeddings — find similar metadata by qname or by free-text concept. |
 | `wip_impact`                      | Blast-radius for uncommitted local changes.              |
 | `wip_diff`                        | Compute the WIP overlay vs the ingested baseline.        |
@@ -451,6 +452,32 @@ Stale threshold is 7 days.
 Source comes from the `_sfgraph_snippets` table populated by code parsers
 during ingest. Currently emitted for Apex methods; future work covers LWC and
 Flow.
+
+### `resolve_frame`
+
+Use this before `explain_code` when a debug log or exception contains a Salesforce frame. It uses
+the persistent frame index, not a broad node-name search, and only returns a source when the
+stack line falls inside exactly one stored method or trigger range.
+
+```jsonc
+// Frame text can be embedded in a longer exception.
+{ "org": "alias", "frame": "Class.OrderBillingService.sendInvoice: line 142", "context_lines": 12 }
+// Or supply the already-parsed form.
+{ "org": "alias", "kind": "class", "class_name": "OrderBillingService", "method": "sendInvoice", "line": 142 }
+// output.data (resolved)
+{
+  "status": "resolved",
+  "qname": "ApexMethod:OrderBillingService.sendInvoice(1)",
+  "sourceHash": "…",
+  "sourceRange": { "startLine": 120, "endLine": 180 },
+  "excerpt": { "startLine": 130, "endLine": 154, "focusLine": 142, "sourceText": "…" }
+}
+```
+
+`status: "not_found"`, `"line_outside_source"`, or `"ambiguous"` is an evidence result, not a
+fallback: re-ingest or retrieve current source rather than choosing a plausible method. MCP
+freshness is attached separately in response metadata. `resolve_frame` is available in the full
+tool profile; it is intentionally excluded from `SFGRAPH_TOOLS=core`.
 
 ### `wip_impact`
 

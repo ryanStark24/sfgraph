@@ -67,6 +67,16 @@ export interface SnippetUpsertResult {
   unchanged: boolean;
 }
 
+/** A source-bearing Apex unit addressable from a Salesforce stack frame. */
+export interface ApexFrameCandidate extends SnippetRecord {
+  /** `class` for an `Class.Foo.method: line N` frame; `trigger` for `Trigger.Foo: line N`. */
+  frameKind: "class" | "trigger";
+  /** The Apex class or trigger name exactly as indexed. */
+  ownerName: string;
+  /** The method name for a class frame; absent for a trigger frame. */
+  memberName?: string;
+}
+
 /**
  * W1.5-08: combined sync-state snapshot read by MCP tool responses so
  * concurrent readers can detect "the graph is currently being rewritten"
@@ -182,6 +192,15 @@ export interface GraphStore {
   transaction<T>(fn: () => T): T;
   upsertSnippet(rec: SnippetRecord): SnippetUpsertResult;
   getSnippet(orgId: OrgId, qname: QualifiedName): SnippetRecord | null;
+  /**
+   * Read source-bearing Apex units by their stack-frame identity. The lookup
+   * uses a persistent SQLite index, not a qname glob, so it stays bounded on
+   * large org graphs and can discriminate overloads by source line.
+   */
+  findApexFrameCandidates(
+    orgId: OrgId,
+    frame: { kind: "class" | "trigger"; ownerName: string; memberName?: string },
+  ): ApexFrameCandidate[];
   updateSnippetExplanation(
     orgId: OrgId,
     qname: QualifiedName,

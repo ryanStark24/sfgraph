@@ -8,6 +8,7 @@ import { splitIdentifierWords } from "../../embedding/tokenize.js";
 import { isThisHost, ownStartMs, ownerIsStale, thisHost } from "../../util/process-owner.js";
 import { edgeTableName, nodeTableName, validateLabel, validateRelType } from "../identifier.js";
 import type {
+  ApexFrameCandidate,
   BetterSqlite3Database,
   DanglingEdgeRow,
   GraphStore,
@@ -30,6 +31,7 @@ import { MIGRATIONS, MigrationRunner } from "./migrations.js";
  * history must survive a node's deletion).
  */
 const DERIVED_QNAME_TABLES = [
+  "_sfgraph_apex_frame_index",
   "_sfgraph_snippets",
   "_sfgraph_governor_risks",
   "_sfgraph_findings",
@@ -123,6 +125,22 @@ function nocaseKey(s: string): string {
     if (s.charCodeAt(i) > 0x7f) return s.replace(/[A-Z]/g, (c) => c.toLowerCase());
   }
   return s.toLowerCase();
+}
+
+/** Parse the qnames emitted by the Apex parsers into Salesforce stack-frame keys. */
+function apexFrameKey(
+  qname: string,
+):
+  | { frameKind: "class"; ownerName: string; memberName: string }
+  | { frameKind: "trigger"; ownerName: string; memberName?: undefined }
+  | null {
+  // Greedy owner capture deliberately leaves the final dot-separated segment
+  // as the method, preserving inner classes such as Outer.Inner.run(0).
+  const method = /^ApexMethod:(.+)\.([^.()]+)\(\d+\)$/i.exec(qname);
+  if (method) return { frameKind: "class", ownerName: method[1]!, memberName: method[2]! };
+  const trigger = /^ApexTrigger:(.+)$/i.exec(qname);
+  if (trigger) return { frameKind: "trigger", ownerName: trigger[1]! };
+  return null;
 }
 
 export interface BeginBulkOptions {
@@ -1618,6 +1636,7 @@ export class SqliteGraphStore implements GraphStore {
         rec.orgId,
         rec.qualifiedName,
       );
+      this.upsertApexFrameIndex(rec);
       return { inserted: false, updated: true, unchanged: false };
     }
     this.stmt(
@@ -1635,7 +1654,35 @@ export class SqliteGraphStore implements GraphStore {
       rec.llmExplanation ?? null,
       rec.explainedAt ?? null,
     );
+    this.upsertApexFrameIndex(rec);
     return { inserted: true, updated: false, unchanged: false };
+  }
+
+  /** Keep the incident/debug lookup index in lock-step with persisted Apex source. */
+  private upsertApexFrameIndex(rec: SnippetRecord): void {
+    const key = apexFrameKey(String(rec.qualifiedName));
+    if (!key) return;
+    this.stmt(
+      `INSERT INTO _sfgraph_apex_frame_index
+         (org_id, qualified_name, frame_kind, owner_name, member_name, start_line, end_line, source_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(org_id, qualified_name) DO UPDATE SET
+         frame_kind = excluded.frame_kind,
+         owner_name = excluded.owner_name,
+         member_name = excluded.member_name,
+         start_line = excluded.start_line,
+         end_line = excluded.end_line,
+         source_hash = excluded.source_hash`,
+    ).run(
+      rec.orgId,
+      rec.qualifiedName,
+      key.frameKind,
+      key.ownerName,
+      key.memberName ?? null,
+      rec.startLine ?? null,
+      rec.endLine ?? null,
+      rec.sourceHash,
+    );
   }
 
   getSnippet(orgId: OrgId, qname: QualifiedName): SnippetRecord | null {
@@ -1671,6 +1718,59 @@ export class SqliteGraphStore implements GraphStore {
     if (row.llm_explanation != null) rec.llmExplanation = row.llm_explanation;
     if (row.explained_at != null) rec.explainedAt = row.explained_at;
     return rec;
+  }
+
+  findApexFrameCandidates(
+    orgId: OrgId,
+    frame: { kind: "class" | "trigger"; ownerName: string; memberName?: string },
+  ): ApexFrameCandidate[] {
+    if (frame.kind === "class" && !frame.memberName) return [];
+    const memberClause =
+      frame.kind === "class" ? "AND i.member_name = ?" : "AND i.member_name IS NULL";
+    const params: unknown[] = [orgId, frame.kind, frame.ownerName];
+    if (frame.kind === "class") params.push(frame.memberName);
+    const rows = this.db
+      .prepare(
+        `SELECT i.frame_kind, i.owner_name, i.member_name,
+                s.org_id, s.qualified_name, s.source_format, s.source_text, s.start_line, s.end_line,
+                s.source_hash, s.llm_explanation, s.explained_at
+           FROM _sfgraph_apex_frame_index i
+           JOIN _sfgraph_snippets s
+             ON s.org_id = i.org_id AND s.qualified_name = i.qualified_name
+          WHERE i.org_id = ? AND i.frame_kind = ? AND i.owner_name = ? ${memberClause}
+          ORDER BY i.start_line IS NULL, i.start_line, i.qualified_name`,
+      )
+      .all(...params) as Array<{
+      frame_kind: "class" | "trigger";
+      owner_name: string;
+      member_name: string | null;
+      org_id: string;
+      qualified_name: string;
+      source_format: string;
+      source_text: string;
+      start_line: number | null;
+      end_line: number | null;
+      source_hash: string;
+      llm_explanation: string | null;
+      explained_at: number | null;
+    }>;
+    return rows.map((row) => {
+      const candidate: ApexFrameCandidate = {
+        orgId: asOrgId(row.org_id),
+        qualifiedName: asQualifiedName(row.qualified_name),
+        sourceFormat: row.source_format as SnippetSourceFormat,
+        sourceText: row.source_text,
+        sourceHash: asSha256(row.source_hash),
+        frameKind: row.frame_kind,
+        ownerName: row.owner_name,
+      };
+      if (row.member_name != null) candidate.memberName = row.member_name;
+      if (row.start_line != null) candidate.startLine = row.start_line;
+      if (row.end_line != null) candidate.endLine = row.end_line;
+      if (row.llm_explanation != null) candidate.llmExplanation = row.llm_explanation;
+      if (row.explained_at != null) candidate.explainedAt = row.explained_at;
+      return candidate;
+    });
   }
 
   updateSnippetExplanation(

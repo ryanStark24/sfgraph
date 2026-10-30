@@ -348,6 +348,74 @@ export const MIGRATIONS: Migration[] = [
       ensureSnapshotEdgeIndexes(db);
     },
   },
+  {
+    version: 16,
+    description:
+      "persistent Apex stack-frame index. Maps Salesforce Class./Trigger. frames to source snippets by owner, method and line range, avoiding an unbounded qname scan for incident/debug tooling. Existing Apex snippets are backfilled during the migration.",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS _sfgraph_apex_frame_index (
+          org_id TEXT NOT NULL,
+          qualified_name TEXT NOT NULL COLLATE NOCASE,
+          frame_kind TEXT NOT NULL CHECK(frame_kind IN ('class', 'trigger')),
+          owner_name TEXT NOT NULL COLLATE NOCASE,
+          member_name TEXT COLLATE NOCASE,
+          start_line INTEGER,
+          end_line INTEGER,
+          source_hash TEXT NOT NULL,
+          PRIMARY KEY (org_id, qualified_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_apex_frame_lookup
+          ON _sfgraph_apex_frame_index(org_id, frame_kind, owner_name, member_name, start_line, end_line);
+      `);
+
+      const rows = db
+        .prepare(
+          `SELECT org_id, qualified_name, start_line, end_line, source_hash
+             FROM _sfgraph_snippets
+            WHERE qualified_name LIKE 'ApexMethod:%' OR qualified_name LIKE 'ApexTrigger:%'`,
+        )
+        .all() as Array<{
+        org_id: string;
+        qualified_name: string;
+        start_line: number | null;
+        end_line: number | null;
+        source_hash: string;
+      }>;
+      const insert = db.prepare(
+        `INSERT OR REPLACE INTO _sfgraph_apex_frame_index
+           (org_id, qualified_name, frame_kind, owner_name, member_name, start_line, end_line, source_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const row of rows) {
+        const method = /^ApexMethod:(.+)\.([^.()]+)\(\d+\)$/i.exec(row.qualified_name);
+        const trigger = /^ApexTrigger:(.+)$/i.exec(row.qualified_name);
+        if (method) {
+          insert.run(
+            row.org_id,
+            row.qualified_name,
+            "class",
+            method[1],
+            method[2],
+            row.start_line,
+            row.end_line,
+            row.source_hash,
+          );
+        } else if (trigger) {
+          insert.run(
+            row.org_id,
+            row.qualified_name,
+            "trigger",
+            trigger[1],
+            null,
+            row.start_line,
+            row.end_line,
+            row.source_hash,
+          );
+        }
+      }
+    },
+  },
 ];
 
 /**

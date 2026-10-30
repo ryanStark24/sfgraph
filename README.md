@@ -4,7 +4,7 @@
 [![license](https://img.shields.io/npm/l/@ryanstark24/sfgraph.svg)](LICENSE)
 [![node](https://img.shields.io/node/v/@ryanstark24/sfgraph.svg)](https://nodejs.org)
 
-A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-syncs your org to a SQLite + vector index on your machine and exposes 28 MCP tools to **Cursor, Claude Code/Desktop, and VS Code**, so the AI you already use can reason about Apex, LWC, Flow, Vlocity, OmniStudio, security, and integrations **without your code or schema ever leaving your laptop**.
+A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-syncs your org to a SQLite + vector index on your machine and exposes 29 MCP tools to **Cursor, Claude Code/Desktop, and VS Code**, so the AI you already use can reason about Apex, LWC, Flow, Vlocity, OmniStudio, security, and integrations **without your code or schema ever leaving your laptop**.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -101,7 +101,7 @@ Use `which node` and `which sfgraph` to fill in the paths. Same effect as `sfgra
 
 After editing the file, fully restart the client so it re-reads the MCP server list. Then ask the agent something like *"list orgs from sfgraph"* to confirm the tools are visible.
 
-The skill playbooks (`sf-impact-from-diff`, `sf-security-audit`, etc.) are Claude/Cursor-specific. On other clients, the agent still has direct access to all 28 MCP tools — it just routes by tool name instead of by skill trigger.
+The skill playbooks (`sf-impact-from-diff`, `sf-security-audit`, etc.) are Claude/Cursor-specific. On other clients, the agent still has direct access to all 29 MCP tools — it just routes by tool name instead of by skill trigger.
 
 ### 4. Verify the install
 
@@ -329,7 +329,7 @@ See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the full status matrix: every typ
 | | |
 |---|---|
 | [`docs/CLI.md`](docs/CLI.md) | Full CLI reference — every command, every flag |
-| [`docs/TOOLS.md`](docs/TOOLS.md) | The 28 MCP tools — schemas, examples, algorithms |
+| [`docs/TOOLS.md`](docs/TOOLS.md) | The 29 MCP tools — schemas, examples, algorithms |
 | [`docs/SKILLS.md`](docs/SKILLS.md) | The 20 skill playbooks installed into your editor |
 | [`docs/SAMPLES.md`](docs/SAMPLES.md) | Worked agent-conversation examples |
 | [`docs/COVERAGE.md`](docs/COVERAGE.md) | Metadata coverage matrix and SObject classification logic |

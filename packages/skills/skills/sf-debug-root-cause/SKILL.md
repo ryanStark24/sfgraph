@@ -13,6 +13,7 @@ triggers:
   - "flow fault"
   - "root cause"
 tools_used:
+  - resolve_frame
   - find_nodes
   - explain_code
   - trace_upstream
@@ -44,7 +45,8 @@ State a fact about this org or the Salesforce platform **only when evidence back
 
 1. **Anchor the symptom to a node.** Parse the error / test name / symptom for the failing
    unit and resolve its qname:
-   - Apex class/method in the trace → `find_nodes ApexClass:<Name>` / `ApexMethod:<Name>.*`.
+   - Apex class/method or trigger in a stack frame → `resolve_frame(frame=<exact frame>)` first. Keep its qname, line, source range and hash with the investigation. If it reports `not_found`, `line_outside_source` or `ambiguous`, do not substitute a same-named method: check freshness, re-ingest or retrieve current source.
+   - Apex name without a usable trace line → `find_nodes ApexClass:<Name>` / `ApexMethod:<Name>.*`.
    - Failing test → the test method, then its `IS_TEST_FOR` target.
    - "Field X isn't updating" → `analyze_field` on `<Object>.<Field>`.
    If you can't anchor it, ask the user for the class/object name — don't guess.

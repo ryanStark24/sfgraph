@@ -24,6 +24,7 @@ import "./wip_test_gap.js";
 import "./list_orgs.js";
 import "./staleness_check.js";
 import "./explain_code.js";
+import "./resolve_frame.js";
 import "./find_similar.js";
 import "./export_sarif.js";
 import "./find_nodes.js";
