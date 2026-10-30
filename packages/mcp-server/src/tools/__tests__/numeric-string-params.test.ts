@@ -70,6 +70,7 @@ const BASE: Record<string, (orgId: string) => Record<string, unknown>> = {
   security_audit: (org) => ({ org }),
   what_broke: (org) => ({ org, since: "snap-nope" }),
   point_in_time_diff: (org) => ({ org, from: "snap-nope" }),
+  resolve_frame: (org) => ({ org, frame: "Class.Nope.run: line 1" }),
 };
 
 interface Prop {

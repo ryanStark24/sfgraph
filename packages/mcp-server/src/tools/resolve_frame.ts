@@ -143,7 +143,7 @@ function renderedExcerpt(sourceText: string, startLine: number, focusLine: numbe
 defineTool({
   name: "resolve_frame",
   description:
-    "Resolve a Salesforce Class./Trigger. stack frame to one exact, line-aware stored source excerpt with qname, source range and hash. Use for debugging logs before tracing impact.",
+    "Resolve a Salesforce stack frame to exact stored source lines.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
