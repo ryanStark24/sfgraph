@@ -18,6 +18,7 @@ import type {
   SnippetRecord,
   SnippetSourceFormat,
   SnippetUpsertResult,
+  SourceRevision,
   SyncStatus,
 } from "../interfaces.js";
 import { wrapAbiError } from "./load-better-sqlite3.js";
@@ -1771,6 +1772,31 @@ export class SqliteGraphStore implements GraphStore {
       if (row.explained_at != null) candidate.explainedAt = row.explained_at;
       return candidate;
     });
+  }
+
+  setSourceRevision(orgId: OrgId, revision: SourceRevision): void {
+    this.db
+      .prepare(
+        `INSERT INTO _sfgraph_source_revisions (org_id, git_branch, git_commit, captured_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(org_id) DO UPDATE SET
+           git_branch = excluded.git_branch,
+           git_commit = excluded.git_commit,
+           captured_at = excluded.captured_at`,
+      )
+      .run(orgId, revision.gitBranch, revision.gitCommit, revision.capturedAt);
+  }
+
+  getSourceRevision(orgId: OrgId): SourceRevision | null {
+    const row = this.db
+      .prepare(
+        `SELECT git_branch, git_commit, captured_at
+           FROM _sfgraph_source_revisions WHERE org_id = ?`,
+      )
+      .get(orgId) as { git_branch: string; git_commit: string; captured_at: string } | undefined;
+    return row
+      ? { gitBranch: row.git_branch, gitCommit: row.git_commit, capturedAt: row.captured_at }
+      : null;
   }
 
   updateSnippetExplanation(

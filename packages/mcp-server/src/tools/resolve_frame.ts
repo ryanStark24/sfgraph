@@ -14,7 +14,8 @@ type ParsedFrame = {
 // intentionally match a frame anywhere in the supplied text. The identifiers
 // are deliberately conservative: a malformed trace must not turn into a
 // broad graph lookup.
-const CLASS_FRAME = /\bClass\.([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.([A-Za-z_]\w*)\s*:\s*line\s+(\d+)\b/i;
+const CLASS_FRAME =
+  /\bClass\.([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.([A-Za-z_]\w*)\s*:\s*line\s+(\d+)\b/i;
 const TRIGGER_FRAME = /\bTrigger\.([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*:\s*line\s+(\d+)\b/i;
 
 export function parseSalesforceFrame(raw: string): ParsedFrame | null {
@@ -50,6 +51,8 @@ const inputSchema = z
     class_name: z.string().trim().min(1).max(255).optional(),
     method: z.string().trim().min(1).max(255).optional(),
     line: numeric(z.number().int().positive().max(2_000_000).optional()),
+    /** Exact Git commit (or branch) expected for an offline project graph. */
+    git_ref: z.string().trim().min(1).max(255).optional(),
     /** Source lines on either side of the failing line (0–50, default 12). */
     context_lines: numeric(z.number().int().min(0).max(50).default(12)),
   })
@@ -59,8 +62,7 @@ const inputSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["frame"],
-          message:
-            "frame must contain `Class.Name.method: line N` or `Trigger.Name: line N`",
+          message: "frame must contain `Class.Name.method: line N` or `Trigger.Name: line N`",
         });
       }
       return;
@@ -146,6 +148,26 @@ defineTool({
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
     const frame = requestedFrame(input);
+    const revision = ctx.graphStore.getSourceRevision(ctx.orgId);
+    if (
+      input.git_ref &&
+      (!revision || (input.git_ref !== revision.gitCommit && input.git_ref !== revision.gitBranch))
+    ) {
+      const reason = revision
+        ? `The graph was built from ${revision.gitBranch} at ${revision.gitCommit}, not requested ref ${input.git_ref}.`
+        : "This graph has no captured Git revision (it may be a live-org graph or predate revision provenance).";
+      return {
+        summary: `git ref mismatch: ${reason}`,
+        markdown: `> Could not safely use this source: ${reason} Re-ingest the selected checkout before relying on its frame evidence.`,
+        data: {
+          status: "git_ref_mismatch",
+          frame,
+          requestedGitRef: input.git_ref,
+          sourceRevision: revision,
+        },
+        follow_up_tools: ["freshness_report"],
+      };
+    }
     const candidates = ctx.graphStore.findApexFrameCandidates(ctx.orgId, frame);
     const ranged = candidates.filter(
       (candidate) =>
@@ -171,7 +193,7 @@ defineTool({
           "",
           `\`\`\`${candidate.sourceFormat}`,
           renderedExcerpt(focused.sourceText, focused.startLine, frame.line),
-          "\`\`",
+          "``",
           "",
           "The server attaches graph freshness in the MCP response metadata; re-run after an ingest if it says a sync was in progress.",
         ].join("\n"),
@@ -187,6 +209,7 @@ defineTool({
           qname: String(candidate.qualifiedName),
           sourceFormat: candidate.sourceFormat,
           sourceHash: String(candidate.sourceHash),
+          sourceRevision: revision,
           sourceRange: { startLine: candidate.startLine, endLine: candidate.endLine },
           excerpt: { ...focused, focusLine: frame.line },
         },

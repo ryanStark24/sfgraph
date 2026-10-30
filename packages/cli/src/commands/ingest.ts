@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import path from "node:path";
@@ -357,6 +358,7 @@ export async function buildProjectIngestOpts(
     "@ryanstark24/sfgraph-core"
   );
   const alias = opts.org ?? path.basename(root);
+  const sourceRevision = gitRevision(root);
   const built = await buildSingleIngestOpts(alias, opts, logger, {
     resolveOrg: (async () => offlineResolvedOrg(root, alias)) as never,
     ...(deps.onResolved ? { onResolved: deps.onResolved } : {}),
@@ -366,10 +368,31 @@ export async function buildProjectIngestOpts(
       ...built,
       mode: "full",
       metadataSource: await FilesystemMetadataSource.fromProjectRoot(root),
+      ...(sourceRevision ? { sourceRevision } : {}),
     };
   } catch (e) {
     await (built.graphStore as SqliteGraphStore).close().catch(() => {});
     throw e;
+  }
+}
+
+/** Read a checkout's immutable identity without making Git a project-ingest prerequisite. */
+function gitRevision(
+  root: string,
+): { gitBranch: string; gitCommit: string; capturedAt: string } | undefined {
+  try {
+    const git = (...args: string[]) =>
+      execFileSync("git", args, {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    const gitCommit = git("rev-parse", "HEAD");
+    if (!/^[0-9a-f]{40,64}$/i.test(gitCommit)) return undefined;
+    const gitBranch = git("symbolic-ref", "--short", "-q", "HEAD") || "HEAD";
+    return { gitBranch, gitCommit, capturedAt: new Date().toISOString() };
+  } catch {
+    return undefined;
   }
 }
 

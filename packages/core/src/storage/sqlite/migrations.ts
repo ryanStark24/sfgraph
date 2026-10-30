@@ -416,6 +416,21 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 17,
+    description:
+      "offline source revision provenance. Records the Git branch and immutable commit that produced a project graph so debug evidence can reject a stack-frame lookup from a different checkout.",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS _sfgraph_source_revisions (
+          org_id TEXT PRIMARY KEY,
+          git_branch TEXT NOT NULL,
+          git_commit TEXT NOT NULL,
+          captured_at TEXT NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 /**

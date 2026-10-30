@@ -11,7 +11,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await fix.cleanup();
+  // A native-module startup failure can prevent beforeEach from assigning the
+  // fixture; keep its root cause visible instead of masking it with cleanup.
+  if (fix) await fix.cleanup();
 });
 
 function source(f: Fixture, qname: string, text: string, startLine: number, endLine: number): void {
@@ -69,8 +71,45 @@ describe("resolve_frame", () => {
     expect((r.data as { qname: string }).qname).toBe("ApexMethod:InvoiceService.send(1)");
   });
 
+  it("rejects a frame from a different Git ref instead of attributing current source to it", async () => {
+    source(fix, "ApexMethod:InvoiceService.send(0)", "void send() {}", 30, 30);
+    fix.ctx.graphStore.setSourceRevision(fix.orgId, {
+      gitBranch: "feature/invoices",
+      gitCommit: "a".repeat(40),
+      capturedAt: "2026-10-31T00:00:00.000Z",
+    });
+    const stale = await callTool("resolve_frame", {
+      org: fix.orgId,
+      kind: "class",
+      class_name: "InvoiceService",
+      method: "send",
+      line: 30,
+      git_ref: "b".repeat(40),
+    });
+    expect((stale.data as { status: string }).status).toBe("git_ref_mismatch");
+    expect(stale.markdown).toContain("Re-ingest");
+    const found = await callTool("resolve_frame", {
+      org: fix.orgId,
+      kind: "class",
+      class_name: "InvoiceService",
+      method: "send",
+      line: 30,
+      git_ref: "a".repeat(40),
+    });
+    expect(
+      (found.data as { status: string; sourceRevision: { gitCommit: string } }).sourceRevision
+        .gitCommit,
+    ).toBe("a".repeat(40));
+  });
+
   it("resolves trigger frames and explains a stale or mismatched line without guessing", async () => {
-    source(fix, "ApexTrigger:CaseTrigger", "trigger CaseTrigger on Case (before insert) {\n}\n", 1, 2);
+    source(
+      fix,
+      "ApexTrigger:CaseTrigger",
+      "trigger CaseTrigger on Case (before insert) {\n}\n",
+      1,
+      2,
+    );
     const found = await callTool("resolve_frame", {
       org: fix.orgId,
       frame: "Trigger.CaseTrigger: line 1, column 1",

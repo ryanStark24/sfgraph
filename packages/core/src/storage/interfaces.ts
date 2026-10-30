@@ -77,6 +77,16 @@ export interface ApexFrameCandidate extends SnippetRecord {
   memberName?: string;
 }
 
+/** Immutable Git identity captured when an offline project graph finished ingesting. */
+export interface SourceRevision {
+  /** The checked-out branch, or `HEAD` for a detached checkout. */
+  gitBranch: string;
+  /** Full commit SHA resolved from that checkout. */
+  gitCommit: string;
+  /** ISO timestamp captured immediately before the ingest began. */
+  capturedAt: string;
+}
+
 /**
  * W1.5-08: combined sync-state snapshot read by MCP tool responses so
  * concurrent readers can detect "the graph is currently being rewritten"
@@ -201,6 +211,10 @@ export interface GraphStore {
     orgId: OrgId,
     frame: { kind: "class" | "trigger"; ownerName: string; memberName?: string },
   ): ApexFrameCandidate[];
+  /** Persist the Git identity of the source that produced this graph. */
+  setSourceRevision(orgId: OrgId, revision: SourceRevision): void;
+  /** Git identity for an offline project graph, or null for a live-org graph. */
+  getSourceRevision(orgId: OrgId): SourceRevision | null;
   updateSnippetExplanation(
     orgId: OrgId,
     qname: QualifiedName,

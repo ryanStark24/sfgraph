@@ -7,10 +7,11 @@
 - **`resolve_frame` for evidence-led Salesforce debugging.** Give the MCP server a normal Salesforce stack frame such as `Class.OrderBillingService.sendInvoice: line 142` (or structured `kind`, `class_name`, `method`, `line`) and it returns one exact Apex method or trigger source excerpt, with the failing line marked, its graph qname, stored source range and source hash. It accepts a frame embedded in a longer exception message, handles inner classes and resolves overloads by the line range rather than guessing from the method name.
 - **Deliberate failure states instead of a plausible wrong source.** Missing, stale/out-of-range and ambiguous frames return distinct machine-readable statuses and candidate provenance. Normal MCP freshness metadata still states when the graph was being synced, so callers can present evidence and freshness together.
 - **Persistent SQLite frame index (schema v16).** The index is keyed by org, frame kind, class/trigger, method and source range. It is maintained when snippets are ingested and backfilled from existing Apex method and trigger snippets on upgrade, avoiding broad qname scans in the incident path.
+- **Git-ref-gated project evidence (schema v17).** Project ingest records its checked-out branch and immutable commit. `resolve_frame` returns that provenance and accepts optional `git_ref`; a mismatch yields `git_ref_mismatch` rather than attributing one checkout's source to another revision.
 
 ### Upgrade notes
 
-- Existing graphs migrate automatically on first open; a normal migration backup is created as for prior schema upgrades. No rebuild is required for snippets already present. Re-ingest an org if the frame refers to source that was not previously captured or has changed since the last sync.
+- Existing graphs migrate automatically on first open; a normal migration backup is created as for prior schema upgrades. No rebuild is required for snippets already present. Re-ingest a project checkout once to capture its Git provenance; live-org graphs intentionally have no Git ref.
 - `resolve_frame` is intentionally in the full MCP profile, not the compact `SFGRAPH_TOOLS=core` profile, so it adds no static tool-schema mass to constrained agent sessions. Enable the full profile for debugging clients that use it.
 
 ## 1.6.2 — 2026-10-26

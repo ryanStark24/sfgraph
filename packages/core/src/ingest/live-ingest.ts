@@ -45,7 +45,12 @@ const MEMBER_TYPE_TO_NODE_LABEL: Record<string, string> = {
   AuraDefinitionBundle: "AuraComponent",
 };
 import { loadAllRules } from "../parsers/rules/_loader.js";
-import type { BetterSqlite3Database, GraphStore, MemberRow } from "../storage/interfaces.js";
+import type {
+  BetterSqlite3Database,
+  GraphStore,
+  MemberRow,
+  SourceRevision,
+} from "../storage/interfaces.js";
 import type { SnapshotStore } from "../storage/interfaces.js";
 import {
   evaluateDeletionGuard,
@@ -84,6 +89,8 @@ export interface LiveIngestOpts {
    *  liveness probe and bulkRetrieve are skipped and the source's members
    *  are streamed through processOne. Forces mode "full". */
   metadataSource?: MetadataSource;
+  /** Git identity captured for an offline project source before it is read. */
+  sourceRevision?: SourceRevision;
   alias: string;
   mode?: IngestMode;
   graphStore: GraphStore;
@@ -2060,6 +2067,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       }
     }
     try {
+      if (opts.sourceRevision) graph.setSourceRevision(resolved.orgId, opts.sourceRevision);
       // W1.5-08: markSyncComplete subsumes the old touchSync — it updates
       // last_synced_at AND increments sync_generation AND clears the
       // in-progress flag, atomically in one transaction.

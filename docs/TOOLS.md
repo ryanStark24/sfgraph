@@ -464,17 +464,20 @@ stack line falls inside exactly one stored method or trigger range.
 { "org": "alias", "frame": "Class.OrderBillingService.sendInvoice: line 142", "context_lines": 12 }
 // Or supply the already-parsed form.
 { "org": "alias", "kind": "class", "class_name": "OrderBillingService", "method": "sendInvoice", "line": 142 }
+// For an offline project graph, require the exact branch or commit that was ingested.
+{ "org": "local-billing", "frame": "Class.OrderBillingService.sendInvoice: line 142", "git_ref": "a1b2c3d4…" }
 // output.data (resolved)
 {
   "status": "resolved",
   "qname": "ApexMethod:OrderBillingService.sendInvoice(1)",
   "sourceHash": "…",
+  "sourceRevision": { "gitBranch": "feature/billing", "gitCommit": "…", "capturedAt": "…" },
   "sourceRange": { "startLine": 120, "endLine": 180 },
   "excerpt": { "startLine": 130, "endLine": 154, "focusLine": 142, "sourceText": "…" }
 }
 ```
 
-`status: "not_found"`, `"line_outside_source"`, or `"ambiguous"` is an evidence result, not a
+`status: "not_found"`, `"line_outside_source"`, `"ambiguous"`, or `"git_ref_mismatch"` is an evidence result, not a
 fallback: re-ingest or retrieve current source rather than choosing a plausible method. MCP
 freshness is attached separately in response metadata. `resolve_frame` is available in the full
 tool profile; it is intentionally excluded from `SFGRAPH_TOOLS=core`.
