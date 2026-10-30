@@ -71,7 +71,7 @@ describe("migration v15: covering snapshot edge indexes", () => {
     expect(
       (db.prepare("SELECT MAX(version) AS v FROM _sfgraph_schema_version").get() as { v: number })
         .v,
-    ).toBe(15);
+    ).toBe(17);
     expect(indexCols(db, "_sfgraph_snap_edges_key")).toEqual([
       "org_id",
       "src_qname",
