@@ -2514,6 +2514,30 @@ export class SqliteGraphStore implements GraphStore {
     this.stmt("DELETE FROM _sfgraph_delta_pending WHERE org_id = ?").run(orgId);
   }
 
+  /** Persist the org's latest coverage report (JSON text). Table created on first use. */
+  setCoverageReport(orgId: OrgId, json: string): void {
+    this.db.exec(`CREATE TABLE IF NOT EXISTS _sfgraph_coverage (
+        org_id TEXT PRIMARY KEY,
+        report TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );`);
+    this.stmt(
+      "INSERT INTO _sfgraph_coverage(org_id, report, updated_at) VALUES (?, ?, ?) ON CONFLICT(org_id) DO UPDATE SET report = excluded.report, updated_at = excluded.updated_at",
+    ).run(orgId, json, Date.now());
+  }
+
+  /** The org's latest coverage report (JSON text), or null. Never creates the table. */
+  getCoverageReport(orgId: OrgId): string | null {
+    const has = this.stmt(
+      "SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = '_sfgraph_coverage'",
+    ).get();
+    if (!has) return null;
+    const row = this.stmt("SELECT report FROM _sfgraph_coverage WHERE org_id = ?").get(orgId) as
+      | { report: string }
+      | undefined;
+    return row?.report ?? null;
+  }
+
   /** The subset of `qnames` that exist as nodes (stored spelling). */
   existingQnames(orgId: OrgId, qnames: Iterable<string>): Set<string> {
     const out = new Set<string>();

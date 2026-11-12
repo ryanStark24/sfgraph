@@ -74,4 +74,25 @@ describe("staleness_check", () => {
     const r = await callTool("staleness_check", { org: fix.orgId });
     expect((r.data as { recommendation: string }).recommendation).toMatch(/1 day old/);
   });
+  it("includes the stored ingest coverage report in data.coverage", async () => {
+    const store = fix.ctx.graphStore as unknown as {
+      setCoverageReport(org: string, json: string): void;
+    };
+    const report = {
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      byType: { AgentWidget: { opaque: 3, nameOnly: 2, withGenericEdges: 1, ruleParsed: 0 } },
+      totals: { opaque: 3, nameOnly: 2, withGenericEdges: 1, ruleParsed: 0, types: 1 },
+      unknownTypes: ["AgentWidget"],
+    };
+    store.setCoverageReport(fix.orgId, JSON.stringify(report));
+    const r = await callTool("staleness_check", { org: fix.orgId });
+    const d = r.data as { coverage?: typeof report };
+    expect(d.coverage?.byType.AgentWidget?.nameOnly).toBe(2);
+    expect(r.markdown).toContain("AgentWidget");
+  });
+
+  it("has no coverage field before any ingest stored one", async () => {
+    const r = await callTool("staleness_check", { org: fix.orgId });
+    expect((r.data as { coverage?: unknown }).coverage).toBeUndefined();
+  });
 });

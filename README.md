@@ -294,6 +294,9 @@ Authoritative inventory — every `SFGRAPH_*` env var read at runtime, sorted al
 | `SFGRAPH_SEQUENTIAL_SOURCES` | bool (`1`) | unset | Force serial source execution (debug aid; bypasses the sliding-window merger). | 1.0 |
 | `SFGRAPH_SKIP_LWC` | csv | unset | Skip specific LWC bundle `DeveloperName`s (also accepts `1` to skip the source entirely). | 1.0 |
 | `SFGRAPH_SKIP_SOBJECT` | csv | unset | Skip specific SObjects by `QualifiedApiName` (escape hatch for `describe()`-crashing tables). | 1.0 |
+| `SFGRAPH_RULES_DIR` | path | unset | Load extra YAML parser rules from this directory (CLI: `ingest --rules-dir`). Format: [docs/RULES.md](docs/RULES.md). | next |
+| `SFGRAPH_RECOVER_OBJECTS` | `0` to disable | on | After the fan-out, describe SObjects that code / flows / metadata reference but an object gate dropped (only if the org's `describeGlobal` lists them). | next |
+| `SFGRAPH_RECOVER_OBJECTS_MAX` | int | `50` | Cap on objects recovered per ingest. | next |
 | `SFGRAPH_SKIP_THRESHOLD` | int | (impl default) | Skip-count threshold for `ingest`-level retry/abort behavior. | 1.0 |
 | `SFGRAPH_SOURCE_CONCURRENCY` | int | `12` | Concurrency of the sliding-window source merger in `bulk-retrieve.ts`. | 1.0 |
 | `SFGRAPH_TEMP_DIR` | path | platform default | Override OS temp directory. | 1.0 |

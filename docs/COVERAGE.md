@@ -17,6 +17,17 @@ See also: [`../README.md#coverage`](../README.md#coverage) for the high-level su
 
 ---
 
+## New clouds and unknown types
+
+A metadata type with no parser and no YAML rule is not name-only any more:
+
+- **Generic reference scanner.** The opaque node keeps a bounded list of candidate references found in the body (Apex classes, Flows, `ns__Name__suffix` objects, `Object.Field`, merge fields, values under `*object*` / `*apexClass*` / `*flow*` / `*actionName*` / `*field*` elements). After the merge, a candidate that matches a real node becomes a heuristic edge: `GENERIC_REFERENCES_APEX`, `_FLOW`, `_OBJECT` or `_FIELD` (attributes `via`, `confidence: heuristic`). Unmatched candidates are dropped.
+- **Object recovery.** SObjects that code, flows or metadata reference but an object gate dropped are described and added after the fan-out (default on; `SFGRAPH_RECOVER_OBJECTS=0` disables, `SFGRAPH_RECOVER_OBJECTS_MAX` caps it at 50).
+- **User rules.** Add YAML rules without a release: `--rules-dir` / `SFGRAPH_RULES_DIR`, format in [RULES.md](RULES.md).
+- **Coverage report.** Each ingest stores per-type counts (`opaque`, `nameOnly`, `withGenericEdges`, `ruleParsed`, and `unknownTypes`); `staleness_check` returns it as `data.coverage`.
+
+---
+
 ## Status matrix
 
 ### Apex

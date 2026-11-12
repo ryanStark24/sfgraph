@@ -49,6 +49,9 @@ export const RuleSchema = z
     applies_when: WhenSchema.default({ always: true }),
     nodes: z.array(NodeRuleSchema).default([]),
     edges: z.array(EdgeRuleSchema).default([]),
+    /** User rule files only (SFGRAPH_RULES_DIR): replace a built-in parser of the
+     *  same `type` instead of being skipped. Ignored in built-in rule files. */
+    override: z.boolean().optional(),
   })
   .strict();
 

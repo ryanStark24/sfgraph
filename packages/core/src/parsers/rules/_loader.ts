@@ -5,12 +5,15 @@ import { parse as parseYaml } from "yaml";
 import { parserRegistry } from "../registry.js";
 import { RuleBasedParser } from "./_engine.js";
 import { type Rule, RuleSchema } from "./_schema.js";
+import { type UserRulesResult, loadUserRules } from "./_user-rules.js";
 
 export interface LoadResult {
   loaded: string[];
   parsers: RuleBasedParser[];
   /** Parsers built from a rule's `aliases` (registered alongside `parsers`). */
   aliasParsers: RuleBasedParser[];
+  /** Set when SFGRAPH_RULES_DIR named a directory (see `_user-rules.ts`). */
+  user?: UserRulesResult;
 }
 
 /**
@@ -79,6 +82,11 @@ export async function loadAllRules(opts?: {
     }
     loaded.push(ent.name);
     parsers.push(parser);
+  }
+  // User rule files (no release needed): only on the default, registering load.
+  const userDir = process.env.SFGRAPH_RULES_DIR?.trim();
+  if (!opts?.dir && !opts?.skipRegister && userDir) {
+    return { loaded, parsers, aliasParsers, user: await loadUserRules(userDir) };
   }
   return { loaded, parsers, aliasParsers };
 }

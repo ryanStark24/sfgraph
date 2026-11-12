@@ -1,3 +1,4 @@
+import path from "node:path";
 import { Command } from "commander";
 import { auditCmd } from "./commands/audit.js";
 import { diagnoseCmd } from "./commands/diagnose.js";
@@ -159,6 +160,10 @@ export function buildProgram(): Command {
       "--no-auto-retry-skipped",
       "disable the post-ingest auto-retry. By default, if more than SFGRAPH_AUTO_RETRY_THRESHOLD (10) sources were skipped with transient errors (rate_limit/network/unknown), sfgraph waits briefly and re-ingests just those sources. Pass this flag (or set SFGRAPH_NO_AUTO_RETRY=1) to skip it.",
     )
+    .option(
+      "--rules-dir <path>",
+      "load extra YAML parser rules from this directory (same format as the built-in rules; see docs/RULES.md). Also reads SFGRAPH_RULES_DIR. A built-in rule wins on a type-name clash unless the file sets `override: true`; invalid files are skipped with a warning.",
+    )
     .option("--no-cross-flavor", "skip the post-merge Vlocity↔OmniStudio canonical-of resolver.")
     .option(
       "--no-arity-resolve",
@@ -204,8 +209,12 @@ export function buildProgram(): Command {
         audit?: boolean; // commander inverts --no-audit
         waitEmbeddings?: boolean; // commander inverts --no-wait-embeddings
         skipThreshold?: number;
+        rulesDir?: string;
       }) => {
         if (opts.debug) process.env.SFGRAPH_DEBUG_INGEST = "1";
+        // An env var (not an ingest option) so parse workers, which re-load the
+        // rule registry in their own threads, see the same directory.
+        if (opts.rulesDir) process.env.SFGRAPH_RULES_DIR = path.resolve(opts.rulesDir);
         await ingestCmd({
           org: opts.org,
           orgs: opts.orgs,

@@ -2,8 +2,9 @@ import { type EdgeFact, METADATA_CATEGORY, type NodeFact } from "../../domain/in
 import { sha256 } from "../_xml-helpers.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
-import { OPAQUE_DATAPACK_HASH_SALT } from "../hash-salts.js";
+import { GENERIC_SCAN_HASH_SALT, OPAQUE_DATAPACK_HASH_SALT } from "../hash-salts.js";
 import { collectNameMatchCandidates, scanDataPackRefs } from "../vlocity/datapack-refs.js";
+import { scanGenericRefs } from "./ref-scanner.js";
 
 export interface OpaqueInput {
   metadataType: string;
@@ -16,8 +17,11 @@ export interface OpaqueInput {
 
 /**
  * Fallback for long-tail XML metadata types not given a dedicated parser.
- * Emits a single node with the raw blob as `rawSize`; edges only for Vlocity
- * DataPack members (`scanDataPackRefs`).
+ * Emits a single node with the raw blob as `rawSize` (the body is discarded)
+ * plus, when the generic scanner (`ref-scanner.ts`) finds any, a bounded
+ * `genericRefs` candidate list that the post-merge resolver turns into
+ * GENERIC_REFERENCES_* edges where a candidate matches a real node. Edges here
+ * only for Vlocity DataPack members (`scanDataPackRefs`).
  */
 export class OpaqueNodeParser implements Parser<OpaqueInput> {
   readonly category = METADATA_CATEGORY.OPAQUE;
@@ -43,6 +47,8 @@ export class OpaqueNodeParser implements Parser<OpaqueInput> {
         edges.push(makeEdge(ctx, qname, r.rel, r.dst, r.attrs));
       candidates = collectNameMatchCandidates(rec);
     }
+    const scan = scanGenericRefs(input.raw);
+    const scanned = scan.candidates.length > 0;
     const node = makeNode(
       ctx,
       input.metadataType,
@@ -52,13 +58,17 @@ export class OpaqueNodeParser implements Parser<OpaqueInput> {
         metadataType: input.metadataType,
         rawSize: input.raw?.length ?? 0,
         ...(candidates.length > 0 ? { nameMatchCandidates: candidates } : {}),
+        ...(scanned ? { genericRefs: scan.candidates } : {}),
+        ...(scanned && scan.truncated ? { genericRefsTruncated: true } : {}),
       },
       // Salted for scanned DataPack members so existing graphs re-parse when
       // the scanner's output changes (v2: cards, dataSource, LWC, name-match).
       sha256(
         input.scanDataPackRefs
-          ? `${OPAQUE_DATAPACK_HASH_SALT}\n${input.raw ?? ""}`
-          : (input.raw ?? ""),
+          ? `${OPAQUE_DATAPACK_HASH_SALT}\n${scanned ? `${GENERIC_SCAN_HASH_SALT}\n` : ""}${input.raw ?? ""}`
+          : scanned
+            ? `${GENERIC_SCAN_HASH_SALT}\n${input.raw ?? ""}`
+            : (input.raw ?? ""),
       ),
     );
     return { nodes: [node], edges };

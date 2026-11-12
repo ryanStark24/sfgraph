@@ -168,6 +168,14 @@ export const NOT_FOLLOWED: Readonly<Record<string, string>> = {
   [REL_TYPES.MAPS_TO_OBJECT]: "Data Cloud mapping, not a flow-map entry",
   [REL_TYPES.MAPS_TO_FIELD]: "Data Cloud mapping, not a flow-map entry",
   [REL_TYPES.SEGMENT_ON_OBJECT]: "Data Cloud configuration, not a flow-map entry",
+  [REL_TYPES.GENERIC_REFERENCES_APEX]:
+    "heuristic reference from a type with no parser, not a verified step",
+  [REL_TYPES.GENERIC_REFERENCES_FLOW]:
+    "heuristic reference from a type with no parser, not a verified step",
+  [REL_TYPES.GENERIC_REFERENCES_OBJECT]:
+    "heuristic reference from a type with no parser, not a verified step",
+  [REL_TYPES.GENERIC_REFERENCES_FIELD]:
+    "heuristic reference from a type with no parser, not a verified step",
 };
 
 /** Data endpoints: listed, never expanded (no formula field -> field reads). */
