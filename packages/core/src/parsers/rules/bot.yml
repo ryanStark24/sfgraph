@@ -1,0 +1,43 @@
+type: Bot
+category: OpaqueMetadata
+input: xml-string
+root: Bot
+applies_when:
+  always: true
+
+# A chatbot / Agentforce agent. In source format the versions live in their
+# own `<Bot>.<vN>` BotVersion members (see bot-version.yml); a Metadata API
+# read may also return them inline (`botVersions`), so the planner link and
+# dialog invocations found anywhere in the record are attributed to the Bot too.
+nodes:
+  - label: Bot
+    qname: "Bot:${record.name}"
+    props:
+      name: "${record.name}"
+      description: "${record.description | raw}"
+      botType: "${record.type | raw}"
+      agentType: "${record.agentType | raw}"
+
+edges:
+  - relType: BOT_HAS_VERSION
+    iterate: "${record.botVersions}"
+    when: "${item.fullName}"
+    src: "Bot:${record.name}"
+    dst: "BotVersion:${record.name}.${item.fullName}"
+
+  - relType: BOT_USES_PLANNER
+    iterate: "${uniq(walkAll(record,'genAiPlannerName'))}"
+    src: "Bot:${record.name}"
+    dst: "GenAiPlanner:${item}"
+
+  - relType: BOT_INVOKES_APEX
+    iterate: "${walkAll(record,'botInvocation')}"
+    when: "${item.invocationActionName && lower(toString(item.invocationActionType)) == 'apex'}"
+    src: "Bot:${record.name}"
+    dst: "ApexClass:${item.invocationActionName}"
+
+  - relType: BOT_INVOKES_FLOW
+    iterate: "${walkAll(record,'botInvocation')}"
+    when: "${item.invocationActionName && lower(toString(item.invocationActionType)) == 'flow'}"
+    src: "Bot:${record.name}"
+    dst: "Flow:${item.invocationActionName}"

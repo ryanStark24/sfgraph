@@ -23,6 +23,9 @@
 
 import { vfRefs } from "../vf/refs.js";
 
+/** Upper bound on the text `jsonText` returns (no unbounded body scans). */
+const JSON_TEXT_MAX = 256 * 1024;
+
 export interface EvalCtx {
   record: unknown;
   item: unknown;
@@ -166,6 +169,32 @@ function evalAtom(token: string, ctx: EvalCtx): unknown {
     } else if (name === "vfRefs") {
       // vfRefs(markup, 'kind') -> [{dst, via}] Visualforce references (vf/refs.ts)
       result = vfRefs(String(args[0] ?? ""), String(args[1] ?? ""), ctx.ns);
+    } else if (name === "jsonText") {
+      // jsonText(value) -> bounded JSON text of a parsed value, so matchAll can
+      // scan every string inside a nested record (e.g. all template versions).
+      let text = "";
+      try {
+        text = JSON.stringify(args[0] ?? "") ?? "";
+      } catch {
+        text = "";
+      }
+      result = text.length > JSON_TEXT_MAX ? text.slice(0, JSON_TEXT_MAX) : text;
+    } else if (name === "uniq") {
+      // uniq(array) -> array without duplicates (order kept)
+      result = Array.isArray(args[0]) ? [...new Set(args[0] as unknown[])] : [];
+    } else if (name === "pluck") {
+      // pluck(array, 'key') -> the string value of `key` of each element
+      const key = String(args[1] ?? "");
+      const out: unknown[] = [];
+      for (const el of Array.isArray(args[0]) ? (args[0] as unknown[]) : []) {
+        const v = el && typeof el === "object" ? (el as Record<string, unknown>)[key] : undefined;
+        if (typeof v === "string" || typeof v === "number") out.push(String(v));
+      }
+      result = out;
+    } else if (name === "take") {
+      // take(array, n) -> first n elements (bounded attributes)
+      const n = Number(args[1] ?? 0);
+      result = Array.isArray(args[0]) ? (args[0] as unknown[]).slice(0, Math.max(0, n)) : [];
     } else if (name === "stripPrefix") {
       // stripPrefix(text, 'pfx') — remove leading prefix if present
       const text = String(args[0] ?? "");

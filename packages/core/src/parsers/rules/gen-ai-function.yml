@@ -1,0 +1,36 @@
+type: GenAiFunction
+category: OpaqueMetadata
+input: xml-string
+root: GenAiFunction
+applies_when:
+  always: true
+
+# An agent action. `invocationTargetType` says what it runs; apex / flow /
+# prompt targets become edges, standardInvocableAction (and the rest) stay
+# attributes because there is no node to join.
+nodes:
+  - label: GenAiFunction
+    qname: "GenAiFunction:${record.name}"
+    props:
+      name: "${record.name}"
+      description: "${record.description | raw}"
+      masterLabel: "${record.masterLabel | raw}"
+      invocationTarget: "${record.invocationTarget | raw}"
+      invocationTargetType: "${record.invocationTargetType | raw}"
+      isConfirmationRequired: "${record.isConfirmationRequired | raw}"
+
+edges:
+  - relType: FUNCTION_INVOKES_APEX
+    when: "${record.invocationTarget && lower(toString(record.invocationTargetType)) == 'apex'}"
+    src: "GenAiFunction:${record.name}"
+    dst: "ApexClass:${record.invocationTarget}"
+
+  - relType: FUNCTION_INVOKES_FLOW
+    when: "${record.invocationTarget && lower(toString(record.invocationTargetType)) == 'flow'}"
+    src: "GenAiFunction:${record.name}"
+    dst: "Flow:${record.invocationTarget}"
+
+  - relType: FUNCTION_USES_PROMPT
+    when: "${record.invocationTarget && (lower(toString(record.invocationTargetType)) == 'prompt' || lower(toString(record.invocationTargetType)) == 'generatepromptresponse')}"
+    src: "GenAiFunction:${record.name}"
+    dst: "GenAiPromptTemplate:${record.invocationTarget}"

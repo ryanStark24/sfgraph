@@ -1,0 +1,33 @@
+type: ObjectSourceTargetMap
+category: OpaqueMetadata
+input: xml-string
+root: ObjectSourceTargetMap
+applies_when:
+  always: true
+
+# Data Cloud mapping of a data lake object (`X__dll`) onto a data model object
+# (`Y__dlm`). Both ends use the CustomObject / CustomField qnames; field-level
+# edges come from fieldSourceTargetMaps when the XML lists them.
+nodes:
+  - label: ObjectSourceTargetMap
+    qname: "ObjectSourceTargetMap:${record.name}"
+    props:
+      name: "${record.name}"
+      sourceObject: "${record.sourceObjectName | raw}"
+      targetObject: "${record.targetObjectName | raw}"
+
+edges:
+  - relType: MAPS_TO_OBJECT
+    when: "${record.sourceObjectName && record.targetObjectName}"
+    src: "CustomObject:${record.sourceObjectName}"
+    dst: "CustomObject:${record.targetObjectName}"
+    props:
+      map: "${record.name}"
+
+  - relType: MAPS_TO_FIELD
+    iterate: "${record.fieldSourceTargetMaps}"
+    when: "${record.sourceObjectName && record.targetObjectName && (item.sourceField || item.sourceFieldName) && (item.targetField || item.targetFieldName)}"
+    src: "CustomField:${record.sourceObjectName}.${item.sourceField || item.sourceFieldName}"
+    dst: "CustomField:${record.targetObjectName}.${item.targetField || item.targetFieldName}"
+    props:
+      map: "${record.name}"

@@ -1,0 +1,18 @@
+type: DecisionMatrixDefinition
+category: OpaqueMetadata
+input: xml-string
+root: DecisionMatrixDefinition
+applies_when:
+  always: true
+
+# A decision matrix (lookup table). The node is the join target of
+# ExpressionSetDefinition > EXPRESSION_SET_USES_MATRIX; its input/output
+# column names are an attribute (bounded to 50 names).
+nodes:
+  - label: DecisionMatrixDefinition
+    qname: "DecisionMatrixDefinition:${record.name}"
+    props:
+      name: "${record.name}"
+      description: "${record.description | raw}"
+      matrixType: "${record.decisionMatrixType | raw}"
+      columns: "${take(pluck(walkAll(record,'columns'),'name'),50) | raw}"

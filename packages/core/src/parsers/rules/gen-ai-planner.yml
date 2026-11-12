@@ -1,4 +1,10 @@
 type: GenAiPlanner
+# Live orgs on API 64+ return GenAiPlannerBundle; older ones GenAiPlanner (and
+# some tooling calls it GenAiPlannerDefinition). All three share one node
+# (`GenAiPlanner:<name>`) so edges from Bot / Plugin / Function join either way.
+aliases:
+  - GenAiPlannerBundle
+  - GenAiPlannerDefinition
 category: GenAiPlanner
 input: xml-string
 root: GenAiPlanner
@@ -17,3 +23,24 @@ edges:
     when: "${item.genAiPluginName || item.name}"
     src: "GenAiPlanner:${record.name}"
     dst: "GenAiPlugin:${item.genAiPluginName || item.name}"
+
+  # Functions the bundle lists directly (not through a plugin/topic).
+  - relType: PLANNER_USES_FUNCTION
+    iterate: "${record.genAiFunctions}"
+    when: "${item.functionName || item.genAiFunctionName}"
+    src: "GenAiPlanner:${record.name}"
+    dst: "GenAiFunction:${item.functionName || item.genAiFunctionName}"
+
+  # Agentforce bundles define topics inline (localTopics) whose localActions
+  # invoke a flow / Apex class straight from the bundle.
+  - relType: PLANNER_INVOKES_APEX
+    iterate: "${walkAll(record,'localActions')}"
+    when: "${item.invocationTarget && lower(toString(item.invocationTargetType)) == 'apex'}"
+    src: "GenAiPlanner:${record.name}"
+    dst: "ApexClass:${item.invocationTarget}"
+
+  - relType: PLANNER_INVOKES_FLOW
+    iterate: "${walkAll(record,'localActions')}"
+    when: "${item.invocationTarget && lower(toString(item.invocationTargetType)) == 'flow'}"
+    src: "GenAiPlanner:${record.name}"
+    dst: "Flow:${item.invocationTarget}"

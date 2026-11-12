@@ -57,6 +57,46 @@ describe("FilesystemMetadataSource", () => {
     ]);
   });
 
+  it("walks Agentforce, Industries and Data Cloud folders (flat and folder-per-member)", async () => {
+    const D = "force-app/main/default";
+    const flat: Array<[string, string]> = [
+      ["genAiPlugins/P.genAiPlugin-meta.xml", "<GenAiPlugin/>"],
+      ["genAiPromptTemplates/T.genAiPromptTemplate-meta.xml", "<GenAiPromptTemplate/>"],
+      ["expressionSetDefinitions/E.expressionSetDefinition-meta.xml", "<ExpressionSetDefinition/>"],
+      [
+        "decisionMatrixDefinitions/M.decisionMatrixDefinition-meta.xml",
+        "<DecisionMatrixDefinition/>",
+      ],
+      ["dataStreamDefinitions/S.dataStreamDefinition-meta.xml", "<DataStreamDefinition/>"],
+      ["objectSourceTargetMaps/O.objectSourceTargetMap-meta.xml", "<ObjectSourceTargetMap/>"],
+      ["marketSegments/G.marketSegment-meta.xml", "<MarketSegment/>"],
+    ];
+    for (const [rel, body] of flat) w(`${D}/${rel}`, body);
+    // Folder-per-member: only the XML is read, schema/input files are ignored.
+    w(`${D}/genAiFunctions/F/F.genAiFunction-meta.xml`, "<GenAiFunction/>");
+    w(`${D}/genAiFunctions/F/schema.json`, "{}");
+    w(`${D}/genAiFunctions/F/input/schema.json`, "{}");
+    w(`${D}/genAiPlannerBundles/B/B.genAiPlannerBundle`, "<GenAiPlannerBundle/>");
+    w(`${D}/bots/Support/Support.bot-meta.xml`, "<Bot/>");
+    w(`${D}/bots/Support/v1.botVersion-meta.xml`, "<BotVersion/>");
+    w(`${D}/bots/Support/v2.botVersion-meta.xml`, "<BotVersion/>");
+    const members = await collect(new FilesystemMetadataSource(workDir));
+    expect(members.map((m) => `${m.type}:${m.name}`).sort()).toEqual([
+      "Bot:Support",
+      "BotVersion:Support.v1",
+      "BotVersion:Support.v2",
+      "DataStreamDefinition:S",
+      "DecisionMatrixDefinition:M",
+      "ExpressionSetDefinition:E",
+      "GenAiFunction:F",
+      "GenAiPlannerBundle:B",
+      "GenAiPlugin:P",
+      "GenAiPromptTemplate:T",
+      "MarketSegment:G",
+      "ObjectSourceTargetMap:O",
+    ]);
+  });
+
   it("bundles LWC files into one RawMember", async () => {
     w("force-app/main/default/lwc/accountTile/accountTile.js", "export default class {}");
     w("force-app/main/default/lwc/accountTile/accountTile.html", "<template></template>");
