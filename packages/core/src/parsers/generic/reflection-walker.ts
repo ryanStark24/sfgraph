@@ -243,6 +243,7 @@ export function walkBlobsForReferences(
           nameMatchCandidates: _skip,
           apexRelationshipPaths: _paths,
           testTargetCandidates: _cands,
+          genericRefs: _generic,
           ...scanAttrs
         } = node.attributes as Record<string, unknown>;
 

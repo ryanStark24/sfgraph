@@ -13,6 +13,12 @@ class DefaultParserRegistry implements ParserRegistry {
     this.map.set(parser.type, parser);
   }
 
+  /** Swap the parser for `parser.type` (a user rule file with `override: true`);
+   *  registers it when none exists. */
+  replace(parser: Parser<unknown>): void {
+    this.map.set(parser.type, parser);
+  }
+
   for(type: string): Parser<unknown> | undefined {
     return this.map.get(type);
   }

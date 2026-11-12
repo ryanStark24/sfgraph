@@ -352,6 +352,8 @@ export async function schema(orgId: string, limit = 1500): Promise<GraphPayload>
 
   const wantedRels = new Set([
     REL_TYPES.REFERENCES_OBJECT,
+    REL_TYPES.GENERIC_REFERENCES_OBJECT,
+    REL_TYPES.GENERIC_REFERENCES_FIELD,
     REL_TYPES.REFERENCES,
     REL_TYPES.EXECUTES_SOQL,
     REL_TYPES.EXECUTES_DML,

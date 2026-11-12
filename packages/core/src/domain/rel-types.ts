@@ -127,6 +127,17 @@ export const REL_TYPES = {
   USES_GLOBAL_VALUE_SET: "USES_GLOBAL_VALUE_SET",
   /** Dependent-picklist CustomField depends on a controlling CustomField. */
   DEPENDS_ON_FIELD: "DEPENDS_ON_FIELD",
+
+  // Generic reference scanner (parsers/generic/ref-scanner.ts). Heuristic edges
+  // from a member of a metadata type with no dedicated parser or rule (so any
+  // new cloud's types) to an Apex class / Flow / SObject / field it names.
+  // Emitted only when the target exists; attributes `via` (element path),
+  // `confidence: 'heuristic'`. Edge tables are created on first use, so these
+  // need no storage schema change.
+  GENERIC_REFERENCES_APEX: "GENERIC_REFERENCES_APEX",
+  GENERIC_REFERENCES_FLOW: "GENERIC_REFERENCES_FLOW",
+  GENERIC_REFERENCES_OBJECT: "GENERIC_REFERENCES_OBJECT",
+  GENERIC_REFERENCES_FIELD: "GENERIC_REFERENCES_FIELD",
 } as const;
 
 export type RelType = (typeof REL_TYPES)[keyof typeof REL_TYPES];
