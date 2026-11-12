@@ -1,0 +1,30 @@
+type: MarketSegment
+category: OpaqueMetadata
+input: xml-string
+root: MarketSegment
+applies_when:
+  always: true
+
+# A Data Cloud segment, built on a data model object (`segmentOn`, e.g.
+# `UnifiedIndividual__dlm`). A bare name without a Data Cloud suffix is taken
+# as a DMO and gets `__dlm`.
+nodes:
+  - label: MarketSegment
+    qname: "MarketSegment:${record.name}"
+    props:
+      name: "${record.name}"
+      description: "${record.description | raw}"
+      segmentOn: "${record.segmentOn | raw}"
+      segmentType: "${record.segmentType | raw}"
+      dataSpace: "${record.dataSpace | raw}"
+
+edges:
+  - relType: SEGMENT_ON_OBJECT
+    when: "${record.segmentOn && match(toString(record.segmentOn),'__(?:dlm|dll|c|x)$')}"
+    src: "MarketSegment:${record.name}"
+    dst: "CustomObject:${record.segmentOn}"
+
+  - relType: SEGMENT_ON_OBJECT
+    when: "${record.segmentOn && !match(toString(record.segmentOn),'__(?:dlm|dll|c|x)$')}"
+    src: "MarketSegment:${record.name}"
+    dst: "CustomObject:${record.segmentOn}__dlm"

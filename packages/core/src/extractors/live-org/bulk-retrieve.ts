@@ -931,7 +931,16 @@ const GENERIC_TYPE_WHITELIST = new Set([
   "GenAiPlugin",
   // Bot / Einstein
   "Bot",
+  "BotVersion",
   "GenAiPlannerBundle",
+  "GenAiPlanner",
+  // Revenue / Industries / Data Cloud
+  "ExpressionSetDefinition",
+  "ExpressionSetDefinitionVersion",
+  "DecisionMatrixDefinition",
+  "DataStreamDefinition",
+  "ObjectSourceTargetMap",
+  "MarketSegment",
   // OmniStudio on-Core — exposed via Metadata API, not SObject SOQL.
   // The on-core SObject (OmniProcess) is the storage backing but real
   // metadata access goes through metadata.list/read of these type names.

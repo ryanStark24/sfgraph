@@ -1,0 +1,42 @@
+type: ExpressionSetDefinitionVersion
+category: OpaqueMetadata
+input: xml-string
+root: ExpressionSetDefinitionVersion
+applies_when:
+  always: true
+
+# One version of an expression set, named `<ExpressionSet>.<version>`; its
+# steps carry the matrix / Apex / object references (collected by key).
+nodes:
+  - label: ExpressionSetDefinitionVersion
+    qname: "ExpressionSetDefinitionVersion:${record.name}"
+    props:
+      name: "${record.name}"
+      expressionSet: "${split(toString(record.name),'.')[0]}"
+      description: "${record.description | raw}"
+
+edges:
+  - relType: CONTAINS
+    when: "${split(toString(record.name),'.')[1]}"
+    src: "ExpressionSetDefinition:${split(toString(record.name),'.')[0]}"
+    dst: "ExpressionSetDefinitionVersion:${record.name}"
+
+  - relType: EXPRESSION_SET_USES_MATRIX
+    iterate: "${uniq(walkAll(record,'decisionMatrixName'))}"
+    src: "ExpressionSetDefinitionVersion:${record.name}"
+    dst: "DecisionMatrixDefinition:${item}"
+
+  - relType: EXPRESSION_SET_CALLS_APEX
+    iterate: "${uniq(walkAll(record,'apexClass'))}"
+    src: "ExpressionSetDefinitionVersion:${record.name}"
+    dst: "ApexClass:${item}"
+
+  - relType: EXPRESSION_SET_CALLS_APEX
+    iterate: "${uniq(walkAll(record,'apexClassName'))}"
+    src: "ExpressionSetDefinitionVersion:${record.name}"
+    dst: "ApexClass:${item}"
+
+  - relType: EXPRESSION_SET_REFERENCES_OBJECT
+    iterate: "${uniq(walkAll(record,'objectApiName'))}"
+    src: "ExpressionSetDefinitionVersion:${record.name}"
+    dst: "CustomObject:${item}"

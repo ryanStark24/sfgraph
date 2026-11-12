@@ -39,6 +39,9 @@ const EdgeRuleSchema = z
 export const RuleSchema = z
   .object({
     type: z.string(),
+    /** Further metadata type names this rule also parses (same body; the XML
+     *  root defaults to the alias name), e.g. a type renamed across API versions. */
+    aliases: z.array(z.string()).optional(),
     category: z.string(),
     input: z.enum(["object", "json", "xml-string"]),
     /** Optional dot-path to the root element after XML parsing (e.g. "Profile"). */

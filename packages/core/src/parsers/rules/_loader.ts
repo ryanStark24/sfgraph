@@ -9,6 +9,8 @@ import { type Rule, RuleSchema } from "./_schema.js";
 export interface LoadResult {
   loaded: string[];
   parsers: RuleBasedParser[];
+  /** Parsers built from a rule's `aliases` (registered alongside `parsers`). */
+  aliasParsers: RuleBasedParser[];
 }
 
 /**
@@ -26,6 +28,7 @@ export async function loadAllRules(opts?: {
   const entries = await readdir(here, { withFileTypes: true }).catch(() => []);
   const loaded: string[] = [];
   const parsers: RuleBasedParser[] = [];
+  const aliasParsers: RuleBasedParser[] = [];
   const seenTypes = new Map<string, string>();
   for (const ent of entries) {
     if (!ent.isFile()) continue;
@@ -58,10 +61,26 @@ export async function loadAllRules(opts?: {
         parserRegistry.register(parser);
       }
     }
+    for (const alias of rule.aliases ?? []) {
+      const priorAlias = seenTypes.get(alias);
+      if (priorAlias) {
+        throw new Error(
+          `Duplicate parser type "${alias}" in ${ent.name} (already registered by ${priorAlias})`,
+        );
+      }
+      seenTypes.set(alias, ent.name);
+      const aliasParser = new RuleBasedParser({
+        ...rule,
+        type: alias,
+        root: rule.root === rule.type ? alias : rule.root,
+      });
+      if (!opts?.skipRegister && !parserRegistry.for(alias)) parserRegistry.register(aliasParser);
+      aliasParsers.push(aliasParser);
+    }
     loaded.push(ent.name);
     parsers.push(parser);
   }
-  return { loaded, parsers };
+  return { loaded, parsers, aliasParsers };
 }
 
 let defaultLoad: Promise<LoadResult> | null = null;

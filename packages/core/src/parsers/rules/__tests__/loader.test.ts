@@ -34,4 +34,23 @@ describe("rule loader", () => {
     const out = await loadAllRules({ dir, skipRegister: true });
     expect(out.loaded).toEqual([]);
   });
+
+  it("registers a rule's aliases as parsers of their own and rejects alias clashes", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "rules-alias-"));
+    const body = (type: string, extra: string) =>
+      `type: ${type}\n${extra}category: Profile\ninput: xml-string\nroot: ${type}\napplies_when:\n  always: true\nnodes: []\nedges: []\n`;
+    writeFileSync(
+      path.join(dir, "a.yml"),
+      body("AliasMain", "aliases: [AliasOld, AliasNew]\n"),
+      "utf8",
+    );
+    const out = await loadAllRules({ dir, skipRegister: true });
+    expect(out.loaded).toEqual(["a.yml"]);
+    expect(out.parsers.map((p) => p.type)).toEqual(["AliasMain"]);
+    expect(out.aliasParsers.map((p) => p.type).sort()).toEqual(["AliasNew", "AliasOld"]);
+    writeFileSync(path.join(dir, "b.yml"), body("Other", "aliases: [AliasOld]\n"), "utf8");
+    await expect(loadAllRules({ dir, skipRegister: true })).rejects.toThrow(
+      /Duplicate parser type/,
+    );
+  });
 });

@@ -1,0 +1,48 @@
+type: GenAiPromptTemplate
+category: OpaqueMetadata
+input: xml-string
+root: GenAiPromptTemplate
+applies_when:
+  always: true
+
+# Prompt template. Grounding comes from `relatedEntity` and the SOBJECT://
+# input definitions; fields from merge fields in the version content
+# ({!$Input:Account.Name}, {!$RecordSnapshot:Account.Industry}); data
+# providers from flow:// / apex:// definitions (or {!$Flow:Name} merge fields).
+nodes:
+  - label: GenAiPromptTemplate
+    qname: "GenAiPromptTemplate:${record.name}"
+    props:
+      name: "${record.name}"
+      description: "${record.description | raw}"
+      masterLabel: "${record.masterLabel | raw}"
+      templateType: "${record.type | raw}"
+      relatedEntity: "${record.relatedEntity | raw}"
+      visibility: "${record.visibility | raw}"
+
+edges:
+  - relType: PROMPT_GROUNDS_ON_OBJECT
+    when: "${record.relatedEntity}"
+    src: "GenAiPromptTemplate:${record.name}"
+    dst: "CustomObject:${record.relatedEntity}"
+
+  - relType: PROMPT_GROUNDS_ON_OBJECT
+    iterate: "${uniq(matchAll(jsonText(record.templateVersions),'SOBJECT://([A-Za-z0-9_]+)'))}"
+    when: "${item != record.relatedEntity}"
+    src: "GenAiPromptTemplate:${record.name}"
+    dst: "CustomObject:${item}"
+
+  - relType: PROMPT_READS_FIELD
+    iterate: "${uniq(matchAll(jsonText(record.templateVersions),'[{]!\\$(?:Input|RecordSnapshot|Record|Context):([A-Za-z0-9_]+[.][A-Za-z0-9_]+)'))}"
+    src: "GenAiPromptTemplate:${record.name}"
+    dst: "CustomField:${item}"
+
+  - relType: PROMPT_CALLS_FLOW
+    iterate: "${uniq(matchAll(jsonText(record.templateVersions),'(?:flow://|[{]!\\$Flow:)([A-Za-z0-9_]+)'))}"
+    src: "GenAiPromptTemplate:${record.name}"
+    dst: "Flow:${item}"
+
+  - relType: PROMPT_CALLS_APEX
+    iterate: "${uniq(matchAll(jsonText(record.templateVersions),'(?:apex://|[{]!\\$Apex:)([A-Za-z0-9_]+)'))}"
+    src: "GenAiPromptTemplate:${record.name}"
+    dst: "ApexClass:${item}"

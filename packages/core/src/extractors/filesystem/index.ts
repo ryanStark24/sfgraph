@@ -339,6 +339,107 @@ const LEAF_SPECS: MdLeafDirSpec[] = [
   },
 ];
 
+/**
+ * Agentforce / Industries / Data Cloud members. Most are flat
+ * `<Name>.<type>-meta.xml` files; `bots`, `genAiFunctions` and
+ * `genAiPlannerBundles` are folder-per-member in source format
+ * (`bots/<Name>/<Name>.bot-meta.xml` + `v1.botVersion-meta.xml`,
+ * `genAiFunctions/<Name>/<Name>.genAiFunction-meta.xml` + schema files,
+ * `genAiPlannerBundles/<Name>/<Name>.genAiPlannerBundle`), so each spec is
+ * read both as flat files in the folder and as one meta file per subfolder.
+ * Only the XML file is read (never the folder's schema / input / output files).
+ * All route to the same rule parsers as the live generic path.
+ */
+interface MdFolderSpec {
+  segment: string;
+  /** Meta-file suffixes (longest first); the member name is what precedes it. */
+  suffixes: string[];
+  memberType: string;
+  category: MetadataCategory;
+  /** A second member type living in the same subfolder (a bot's versions):
+   *  named `<folder>.<file base>` like the Metadata API fullName. */
+  child?: { suffix: string; memberType: string };
+}
+
+const FOLDER_SPECS: MdFolderSpec[] = [
+  {
+    segment: "bots",
+    suffixes: [".bot-meta.xml"],
+    memberType: "Bot",
+    category: METADATA_CATEGORY.OPAQUE,
+    child: { suffix: ".botVersion-meta.xml", memberType: "BotVersion" },
+  },
+  {
+    segment: "genAiPlugins",
+    suffixes: [".genAiPlugin-meta.xml"],
+    memberType: "GenAiPlugin",
+    category: METADATA_CATEGORY.GEN_AI_PLUGIN,
+  },
+  {
+    segment: "genAiFunctions",
+    suffixes: [".genAiFunction-meta.xml"],
+    memberType: "GenAiFunction",
+    category: METADATA_CATEGORY.OPAQUE,
+  },
+  {
+    segment: "genAiPromptTemplates",
+    suffixes: [".genAiPromptTemplate-meta.xml"],
+    memberType: "GenAiPromptTemplate",
+    category: METADATA_CATEGORY.OPAQUE,
+  },
+  {
+    segment: "genAiPlannerBundles",
+    suffixes: [".genAiPlannerBundle-meta.xml", ".genAiPlannerBundle"],
+    memberType: "GenAiPlannerBundle",
+    category: METADATA_CATEGORY.GEN_AI_PLANNER,
+  },
+  {
+    segment: "genAiPlanners",
+    suffixes: [".genAiPlanner-meta.xml"],
+    memberType: "GenAiPlanner",
+    category: METADATA_CATEGORY.GEN_AI_PLANNER,
+  },
+  {
+    segment: "expressionSetDefinitions",
+    suffixes: [".expressionSetDefinition-meta.xml"],
+    memberType: "ExpressionSetDefinition",
+    category: METADATA_CATEGORY.OPAQUE,
+  },
+  {
+    segment: "decisionMatrixDefinitions",
+    suffixes: [".decisionMatrixDefinition-meta.xml"],
+    memberType: "DecisionMatrixDefinition",
+    category: METADATA_CATEGORY.OPAQUE,
+  },
+  {
+    segment: "dataStreamDefinitions",
+    suffixes: [".dataStreamDefinition-meta.xml"],
+    memberType: "DataStreamDefinition",
+    category: METADATA_CATEGORY.OPAQUE,
+  },
+  {
+    segment: "objectSourceTargetMaps",
+    suffixes: [".objectSourceTargetMap-meta.xml"],
+    memberType: "ObjectSourceTargetMap",
+    category: METADATA_CATEGORY.OPAQUE,
+  },
+  {
+    segment: "marketSegments",
+    suffixes: [".marketSegment-meta.xml"],
+    memberType: "MarketSegment",
+    category: METADATA_CATEGORY.OPAQUE,
+  },
+];
+
+const FOLDER_SPEC_SEGMENTS: ReadonlySet<string> = new Set(FOLDER_SPECS.map((s) => s.segment));
+
+function metaNameOf(file: string, suffixes: string[]): string | null {
+  for (const sfx of suffixes) {
+    if (file.endsWith(sfx) && file.length > sfx.length) return file.slice(0, -sfx.length);
+  }
+  return null;
+}
+
 const BUNDLE_SPECS = [
   { segment: "lwc", memberType: "LightningComponentBundle", category: METADATA_CATEGORY.LWC },
   { segment: "aura", memberType: "AuraDefinitionBundle", category: METADATA_CATEGORY.AURA },
@@ -393,7 +494,8 @@ function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<Inde
         e.name === "approvalProcesses" ||
         e.name === "duplicateRules" ||
         e.name === "messageChannels" ||
-        e.name === "tabs"
+        e.name === "tabs" ||
+        FOLDER_SPEC_SEGMENTS.has(e.name)
       ) {
         foundMdFolder = true;
       }
@@ -427,6 +529,64 @@ function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<Inde
           ref: makeRef(spec.category, spec.memberType, memberName, full),
           content: safeReadFile(full),
         }));
+      }
+    }
+
+    // Agentforce / Industries / Data Cloud: flat meta files, or one meta file
+    // per member folder (bots, genAiFunctions, genAiPlannerBundles).
+    for (const spec of FOLDER_SPECS) {
+      const segDir = path.join(root, spec.segment);
+      if (!safeIsDir(segDir)) continue;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(segDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const ent of entries) {
+        if (ent.isFile()) {
+          const name = metaNameOf(ent.name, spec.suffixes);
+          if (name === null) continue;
+          const full = path.join(segDir, ent.name);
+          yield indexed(`file://${full}`, spec.memberType, fileStamp(full), () => ({
+            ref: makeRef(spec.category, spec.memberType, name, full),
+            content: safeReadFile(full),
+          }));
+          continue;
+        }
+        if (!ent.isDirectory() || SKIP_DIR_NAMES.has(ent.name)) continue;
+        const memberDir = path.join(segDir, ent.name);
+        let files: fs.Dirent[];
+        try {
+          files = fs.readdirSync(memberDir, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        let parentSeen = false;
+        for (const f of files) {
+          if (!f.isFile()) continue;
+          const full = path.join(memberDir, f.name);
+          if (!parentSeen && metaNameOf(f.name, spec.suffixes) !== null) {
+            parentSeen = true;
+            // The member is named for its folder (the Metadata API fullName).
+            yield indexed(`file://${full}`, spec.memberType, fileStamp(full), () => ({
+              ref: makeRef(spec.category, spec.memberType, ent.name, full),
+              content: safeReadFile(full),
+            }));
+            continue;
+          }
+          if (spec.child) {
+            const childBase = metaNameOf(f.name, [spec.child.suffix]);
+            if (childBase !== null) {
+              const childType = spec.child.memberType;
+              yield indexed(`file://${full}`, childType, fileStamp(full), () => ({
+                ref: makeRef(METADATA_CATEGORY.OPAQUE, childType, `${ent.name}.${childBase}`, full),
+                content: safeReadFile(full),
+              }));
+            }
+          }
+        }
       }
     }
 
