@@ -107,12 +107,12 @@ describe("reference-driven object recovery", () => {
       { ...scanned.nodes[0]!, orgId: ORG },
     ]);
     s.mergeEdges([
-      edge("ApexClass:A", "EXECUTES_SOQL", "CustomObject:AccountHistory"),
+      edge("ApexClass:A", "EXECUTES_SOQL", "CustomObject:Quote"),
       edge("ApexClass:A", "READS_FIELD", "CustomField:Contract__b.Amount__c"),
       edge("ApexClass:B", "EXECUTES_SOQL", "CustomObject:NotAnObject"),
       edge("ApexClass:B", "EXECUTES_DML", "CustomObject:Third__c"),
     ]);
-    const { conn, calls } = fakeConn(["AccountHistory", "Contract__b", "Gated__c", "Third__c"]);
+    const { conn, calls } = fakeConn(["Quote", "Contract__b", "Gated__c", "Third__c"]);
     const applied: Array<{ name: string; content: string }> = [];
     const r = await recoverReferencedObjects({
       conn,
@@ -165,6 +165,20 @@ describe("reference-driven object recovery", () => {
     });
     expect(calls.describeGlobal).toBe(0);
     expect(r.summary).toBe("");
+  });
+
+  it("never recovers History/Share/Feed companion tables, even when referenced and listed", async () => {
+    const s = await setup();
+    s.mergeNodes([node("ApexClass", "ApexClass:A")]);
+    s.mergeEdges([
+      edge("ApexClass:A", "EXECUTES_SOQL", "CustomObject:AccountHistory"),
+      edge("ApexClass:A", "EXECUTES_SOQL", "CustomObject:CaseShare"),
+      edge("ApexClass:A", "EXECUTES_SOQL", "CustomObject:AccountFeed"),
+    ]);
+    const { conn, calls } = fakeConn(["AccountHistory", "CaseShare", "AccountFeed"]);
+    const r = await recoverReferencedObjects({ conn, graph: s, orgId: ORG, apply: () => {} });
+    expect(calls.describe.length).toBe(0);
+    expect(r.recovered).toEqual([]);
   });
 
   it("env switches and the envelope", () => {
