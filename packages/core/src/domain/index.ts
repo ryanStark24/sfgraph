@@ -6,3 +6,4 @@ export * from "./snapshot.js";
 export * from "./metadata-category.js";
 export * from "./standard-sobjects.js";
 export * from "./apex-platform.js";
+export * from "./industries-sobjects.js";

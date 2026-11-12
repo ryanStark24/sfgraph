@@ -44,7 +44,7 @@ export interface FieldAccess {
 }
 
 const STANDARD_LOWER = new Set([...STANDARD_SOBJECT_WHITELIST].map((s) => s.toLowerCase()));
-const CUSTOM_SUFFIX_RE = /__(c|mdt|e|x|b|kav)$/i;
+const CUSTOM_SUFFIX_RE = /__(c|mdt|e|x|b|kav|dlm|dll|cio|ChangeEvent)$/i;
 const NOT_SOBJECT = new Set([
   "sobject",
   "string",

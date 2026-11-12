@@ -1039,6 +1039,9 @@ export async function* bulkRetrieve(
   const coordinator: WedgeCoordinator | undefined = normalized.warnings
     ? createWedgeCoordinator(normalized.warnings)
     : undefined;
+  const onGateSummary = (line: string) => {
+    normalized.warnings?.push(`coverage: ${line}`);
+  };
   const onSkip = skipReport
     ? (label: string, err: Error) => {
         skipReport.skips.push(...skipEntriesFor(label, err));
@@ -1116,7 +1119,7 @@ export async function* bulkRetrieve(
     invoke("apex", () => iterApex(conn));
     invoke("lwc", () => iterLwc(conn));
     invoke("flow", () => iterFlow(conn));
-    invoke("object", () => iterObject(conn));
+    invoke("object", () => iterObject(conn, {}, onGateSummary));
     invoke("security", () => iterSecurity(conn));
     invoke("integration", () => iterIntegration(conn));
   } else {
@@ -1139,7 +1142,8 @@ export async function* bulkRetrieve(
           break;
         case "metadataReadList":
           if (FLOW_TYPES.has(type)) invoke("flow", () => iterFlow(conn));
-          else if (OBJECT_TYPES.has(type)) invoke("object", () => iterObject(conn));
+          else if (OBJECT_TYPES.has(type))
+            invoke("object", () => iterObject(conn, {}, onGateSummary));
           else if (SECURITY_TYPES.has(type)) invoke("security", () => iterSecurity(conn));
           else if (INTEGRATION_TYPES.has(type)) invoke("integration", () => iterIntegration(conn));
           else if (shouldRouteGeneric(type)) {
