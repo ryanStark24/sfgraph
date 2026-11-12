@@ -38,6 +38,9 @@ describe("GenAiPlanner / GenAiPlannerBundle / GenAiPlannerDefinition", () => {
   for (const type of ["GenAiPlanner", "GenAiPlannerBundle", "GenAiPlannerDefinition"]) {
     it(`${type} emits the planner node and its edges`, async () => {
       const { nodes, edges } = await run(type, { name: "Svc", xml: xml(type) });
+      expect((nodes[0]?.attributes as { metadataType?: string }).metadataType).toBe(
+        type === "GenAiPlanner" ? undefined : type,
+      );
       expect(nodes.map((n) => n.qualifiedName)).toEqual(["GenAiPlanner:Svc"]);
       expect(edges).toEqual([
         "GenAiPlanner:Svc -PLANNER_INVOKES_APEX-> ApexClass:OrderSvc",

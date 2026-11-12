@@ -76,10 +76,19 @@ export function computeCoverage(
     const r = byType[type];
     if (r) r.withGenericEdges = Math.min(n, r.opaque);
   }
+  // Rule-parsed: count the nodes a rule emits, by the labels it emits. An alias
+  // parser (GenAiPlannerBundle) shares its primary's labels, so it lands on the
+  // same row once; a rule whose label differs from its type (CustomLabels ->
+  // CustomLabel) is counted under that label.
+  const seen = new Set<string>();
   for (const p of parserRegistry.all()) {
     if (!(p instanceof RuleBasedParser)) continue;
-    const n = store.countNodesByLabel(orgId, p.type);
-    if (n > 0) row(p.type).ruleParsed = n - (byType[p.type]?.opaque ?? 0);
+    const labels = p.nodeLabels.length > 0 ? p.nodeLabels : [p.type];
+    const key = labels.includes(p.type) ? p.type : (labels[0] as string);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const n = labels.reduce((a, l) => a + store.countNodesByLabel(orgId, l), 0);
+    if (n > 0) row(key).ruleParsed = Math.max(0, n - (byType[key]?.opaque ?? 0));
   }
   const totals = { ...blank(), types: 0 };
   for (const r of Object.values(byType)) {

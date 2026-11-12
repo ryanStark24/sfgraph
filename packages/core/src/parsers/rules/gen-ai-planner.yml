@@ -12,8 +12,20 @@ applies_when:
   always: true
 
 nodes:
+  # Recorded only when the member arrived under a different type name than
+  # GenAiPlanner (GenAiPlannerBundle on API 64+, GenAiPlannerDefinition):
+  # package.xml needs the name it was retrieved as. A plain GenAiPlanner member
+  # has no attribute, and the manifest falls back to GenAiPlanner.
   - label: GenAiPlanner
     qname: "GenAiPlanner:${record.name}"
+    when: "${record.__type != 'GenAiPlanner'}"
+    props:
+      name: "${record.name}"
+      metadataType: "${record.__type}"
+
+  - label: GenAiPlanner
+    qname: "GenAiPlanner:${record.name}"
+    when: "${record.__type == 'GenAiPlanner'}"
     props:
       name: "${record.name}"
 

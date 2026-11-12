@@ -95,6 +95,33 @@ describe("user rule files (SFGRAPH_RULES_DIR)", () => {
     expect(res.nodes.map((n) => String(n.qualifiedName))).toEqual(["UserTypeThree:N1"]);
   });
 
+  it("user rules can declare aliases; a built-in alias name clash is skipped without override", async () => {
+    await loadAllRules();
+    const planner = parserRegistry.for("GenAiPlannerBundle");
+    expect(planner).toBeDefined();
+    const r = await loadUserRules(
+      dir({
+        "x.yml": rule(
+          "UserTypeAliased",
+          "aliases:\n  - UserTypeAliasedV2\n  - GenAiPlannerBundle\n",
+        ),
+      }),
+    );
+    expect(r.loaded).toEqual(["x.yml"]);
+    expect(parserRegistry.for("UserTypeAliasedV2")).toBeDefined();
+    expect(parserRegistry.for("GenAiPlannerBundle")).toBe(planner);
+    expect(r.warnings.some((w) => /alias "GenAiPlannerBundle".*built-in/.test(w))).toBe(true);
+    const out = await parserRegistry
+      .for("UserTypeAliasedV2")!
+      .parse({ name: "N2", xml: "<UserTypeAliasedV2><x>1</x></UserTypeAliasedV2>" }, {
+        orgId: "o",
+        parseTimestamp: new Date().toISOString(),
+        namespace: null,
+        sourceUri: "t",
+      } as never);
+    expect(out.nodes.map((n) => String(n.qualifiedName))).toEqual(["UserTypeAliased:N2"]);
+  });
+
   it("dryRun validates without registering", async () => {
     const r = await loadUserRules(dir({ "d.yml": rule("UserTypeDry") }), { dryRun: true });
     expect(r.loaded).toEqual(["d.yml"]);

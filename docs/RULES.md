@@ -30,6 +30,7 @@ The same schema as the built-in rules in `packages/core/src/parsers/rules/` (see
 | Key | Meaning |
 |---|---|
 | `type` | The metadata type name, exactly as `describeMetadata` spells it (`Layout`, `GenAiPlugin`). Members of this type are sent to the rule. |
+| `aliases` | Further metadata type names this rule also parses (same body; the XML root defaults to the alias name), for a type renamed across API versions. The built-in parser wins on a clash with an alias name too, unless the file sets `override: true`. In the rule, `${record.__type}` is the type name the member arrived as. |
 | `category` | A label for the family (free text). |
 | `input` | `xml-string` for metadata (a live read arrives as JSON, a project checkout as XML; both work), `json` or `object`. |
 | `root` | Root element after XML parsing (usually the type name). |

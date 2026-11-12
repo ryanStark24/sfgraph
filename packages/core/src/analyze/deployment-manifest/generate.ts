@@ -4,7 +4,7 @@ import type { GraphStore } from "../../storage/interfaces.js";
 import { ownerOf } from "../containment.js";
 import { type HiddenCounts, diffOrgs, hideOneSided } from "../cross-org.js";
 import { formatMemberName } from "./member-name-formatters.js";
-import { LABEL_TO_METADATA_TYPE } from "./member-types.js";
+import { metadataTypeFor } from "./member-types.js";
 
 export interface DeploymentManifest {
   packageXml: string;
@@ -128,8 +128,13 @@ export function generateManifest(
   const byType: Record<string, number> = {};
 
   const unmappedLabels: Record<string, number> = {};
-  const add = (target: Map<string, Set<string>>, label: string, qname: string): void => {
-    const type = LABEL_TO_METADATA_TYPE[label];
+  const add = (
+    target: Map<string, Set<string>>,
+    label: string,
+    qname: string,
+    attributes?: unknown,
+  ): void => {
+    const type = metadataTypeFor(label, attributes as Record<string, unknown> | undefined);
     const name = type ? formatMemberName(label, qname) : null;
     if (!type || !name) {
       // No Metadata API type mapping (or no formattable member name): this
@@ -155,13 +160,16 @@ export function generateManifest(
     ownerOf(store, org, qname) !== null;
 
   for (const n of diff.onlyInA) {
-    if (!isMember(storeA, orgA, n.qualifiedName)) add(pkgMembers, n.label, n.qualifiedName);
+    if (!isMember(storeA, orgA, n.qualifiedName))
+      add(pkgMembers, n.label, n.qualifiedName, n.attributes);
   }
   for (const { a } of diff.changed) {
-    if (!isMember(storeA, orgA, a.qualifiedName)) add(pkgMembers, a.label, a.qualifiedName);
+    if (!isMember(storeA, orgA, a.qualifiedName))
+      add(pkgMembers, a.label, a.qualifiedName, a.attributes);
   }
   for (const n of diff.onlyInB) {
-    if (!isMember(storeB, orgB, n.qualifiedName)) add(destMembers, n.label, n.qualifiedName);
+    if (!isMember(storeB, orgB, n.qualifiedName))
+      add(destMembers, n.label, n.qualifiedName, n.attributes);
   }
 
   return {

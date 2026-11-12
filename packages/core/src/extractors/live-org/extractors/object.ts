@@ -53,6 +53,48 @@ interface FieldDescribe {
   inlineHelpText?: string | null;
 }
 
+/**
+ * The CustomObject-shaped envelope the Object parser reads, built from a
+ * describeGlobal entry and its describe result. Shared by `iterObject` and the
+ * reference-driven object recovery (ingest/recover-objects.ts), so a recovered
+ * object is parsed exactly like a normally-extracted one.
+ */
+export function buildObjectEnvelope(
+  s: { name: string; label?: string; customSetting?: boolean },
+  desc: any,
+): string {
+  const fields: FieldDescribe[] = Array.isArray(desc?.fields) ? desc.fields : [];
+  const built = xml.build({
+    CustomObject: {
+      fullName: s.name,
+      label: desc?.label ?? s.label ?? s.name,
+      pluralLabel: desc?.labelPlural ?? null,
+      sharingModel: desc?.sharingModel ?? null,
+      customSettingsType: s.customSetting ? "List" : null,
+      enableHistory: Boolean(desc?.replicateable),
+      description: desc?.description ?? null,
+      fields: fields.map((f) => ({
+        fullName: f.name,
+        label: f.label ?? f.name,
+        type: f.type ?? "Text",
+        length: f.length,
+        precision: f.precision,
+        scale: f.scale,
+        unique: f.unique,
+        externalId: f.externalId,
+        required: f.nillable === false,
+        custom: f.custom,
+        referenceTo: f.referenceTo ?? [],
+        relationshipName: f.relationshipName ?? null,
+        formula: f.calculatedFormula ?? null,
+        description: f.inlineHelpText ?? null,
+        picklistValues: f.picklistValues ?? [],
+      })),
+    },
+  });
+  return typeof built === "string" ? built : String(built);
+}
+
 /** Suffixes that Salesforce uses for auto-generated companion tables.
  *  These tables proxy the parent SObject's full field map (so a describe()
  *  on `AccountFeed` returns ~100+ fields — every Account field plus
@@ -102,7 +144,7 @@ function isCustomSObject(name: string): boolean {
   return CUSTOM_SUFFIXES.some((suffix) => name.endsWith(suffix));
 }
 
-function isCompanionTable(name: string): boolean {
+export function isCompanionTable(name: string): boolean {
   if (isCustomSObject(name)) return false;
   return COMPANION_SUFFIXES.some((suffix) => name.endsWith(suffix));
 }
@@ -708,39 +750,6 @@ export async function* iterObject(
     }
     const { s, desc } = settled;
     if (!desc) continue;
-    const fields: FieldDescribe[] = Array.isArray(desc?.fields) ? desc.fields : [];
-
-    // Build the CustomObject-shaped envelope expected by the Phase-2 Object
-    // parser (which already knows how to walk this structure).
-    const objectXml = xml.build({
-      CustomObject: {
-        fullName: s.name,
-        label: desc?.label ?? s.label ?? s.name,
-        pluralLabel: desc?.labelPlural ?? null,
-        sharingModel: desc?.sharingModel ?? null,
-        customSettingsType: s.customSetting ? "List" : null,
-        enableHistory: Boolean(desc?.replicateable),
-        description: desc?.description ?? null,
-        fields: fields.map((f) => ({
-          fullName: f.name,
-          label: f.label ?? f.name,
-          type: f.type ?? "Text",
-          length: f.length,
-          precision: f.precision,
-          scale: f.scale,
-          unique: f.unique,
-          externalId: f.externalId,
-          required: f.nillable === false,
-          custom: f.custom,
-          referenceTo: f.referenceTo ?? [],
-          relationshipName: f.relationshipName ?? null,
-          formula: f.calculatedFormula ?? null,
-          description: f.inlineHelpText ?? null,
-          picklistValues: f.picklistValues ?? [],
-        })),
-      },
-    });
-
     yield {
       ref: {
         category: METADATA_CATEGORY.OBJECT,
@@ -750,7 +759,7 @@ export async function* iterObject(
         sourceUri: `sf://describe/${s.name}`,
         namespace: null,
       },
-      content: typeof objectXml === "string" ? objectXml : String(objectXml),
+      content: buildObjectEnvelope(s, desc),
     };
   }
   throwIfIncomplete("object", failures);

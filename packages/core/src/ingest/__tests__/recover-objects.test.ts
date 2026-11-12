@@ -1,11 +1,11 @@
 import { asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it } from "vitest";
 import type { EdgeFact, NodeFact } from "../../domain/index.js";
+import { buildObjectEnvelope } from "../../extractors/live-org/extractors/object.js";
 import { makeTestCtx } from "../../parsers/__tests__/_harness.js";
 import { OpaqueNodeParser } from "../../parsers/generic/opaque-node-parser.js";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";
 import {
-  buildObjectEnvelope,
   recoverObjectsEnabled,
   recoverObjectsMax,
   recoverReferencedObjects,

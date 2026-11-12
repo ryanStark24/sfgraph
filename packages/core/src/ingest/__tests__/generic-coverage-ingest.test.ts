@@ -38,6 +38,12 @@ describe("generic scanner + coverage, end to end through liveIngest", () => {
       member("AgentWidget", "W2", JSON.stringify({ label: "no references here" })),
       // a type with a built-in YAML rule
       member("CustomTab", "T1", "<CustomTab><label>x</label></CustomTab>"),
+      // a rule alias: arrives as GenAiPlannerBundle, becomes a GenAiPlanner node
+      member(
+        "GenAiPlannerBundle",
+        "P1",
+        "<GenAiPlannerBundle><genAiPlugins><genAiPluginName>Pl</genAiPluginName></genAiPlugins></GenAiPlannerBundle>",
+      ),
     ];
     const source = {
       iter: async function* () {
@@ -80,6 +86,9 @@ describe("generic scanner + coverage, end to end through liveIngest", () => {
       ruleParsed: 0,
     });
     expect(cov.byType.CustomTab?.ruleParsed).toBe(1);
+    // an alias (GenAiPlannerBundle) shares the GenAiPlanner row; no row of its own
+    expect(cov.byType.GenAiPlanner?.ruleParsed).toBe(1);
+    expect(cov.byType.GenAiPlannerBundle).toBeUndefined();
     expect(cov.unknownTypes).toContain("AgentWidget");
     // persisted for MCP
     const stored = JSON.parse(graphStore.getCoverageReport(resolved.orgId)!);

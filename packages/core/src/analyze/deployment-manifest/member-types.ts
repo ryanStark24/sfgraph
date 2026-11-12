@@ -46,3 +46,24 @@ export const LABEL_TO_METADATA_TYPE: Record<string, string> = {
   GenAiPlanner: "GenAiPlanner",
   GenAiPlugin: "GenAiPlugin",
 };
+
+/** Metadata type names a GenAiPlanner node may carry as `metadataType`. */
+const PLANNER_SOURCE_TYPES = new Set(["GenAiPlannerBundle"]);
+
+/**
+ * The package.xml type for a node. Planner nodes share one label whichever way
+ * they were retrieved, so they carry the source type in `metadataType`
+ * only when it differs from `GenAiPlanner` (GenAiPlannerBundle on API 64+).
+ * Plain `GenAiPlanner` members and nodes ingested before the attribute
+ * existed use `GenAiPlanner`.
+ */
+export function metadataTypeFor(
+  label: string,
+  attributes?: Record<string, unknown> | null,
+): string | undefined {
+  if (label === "GenAiPlanner") {
+    const t = attributes?.metadataType;
+    if (typeof t === "string" && PLANNER_SOURCE_TYPES.has(t)) return t;
+  }
+  return LABEL_TO_METADATA_TYPE[label];
+}

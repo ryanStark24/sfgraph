@@ -1,7 +1,7 @@
 import { type OrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
-import { XMLBuilder } from "fast-xml-parser";
 import { METADATA_CATEGORY } from "../domain/index.js";
 import type { RawMember } from "../extractors/interfaces/metadata-source.js";
+import { buildObjectEnvelope, isCompanionTable } from "../extractors/live-org/extractors/object.js";
 import {
   DESCRIBE_GLOBAL_TIMEOUT_MS,
   scheduleData,
@@ -24,6 +24,12 @@ import type { GraphStore } from "../storage/interfaces.js";
  * checks them against the org's describeGlobal list and describes at most
  * SFGRAPH_RECOVER_OBJECTS_MAX of them (default 50) through the same
  * rate-limited data pool and 12 s per-describe timeout as the object extractor.
+ *
+ * Recovery deliberately bypasses the classification gates (EntityDefinition,
+ * big-object / non-queryable checks, the system-table list): a reference is
+ * stronger evidence than a gate heuristic. It never recovers auto-generated
+ * companion tables (History/Share/Feed/Tag/...; standard change events are recoverable) or names in
+ * SFGRAPH_SKIP_SOBJECT.
  *
  * Cost: nothing when no reference points at a missing object (no API call);
  * otherwise one describeGlobal plus at most `max` describes.
@@ -147,67 +153,6 @@ function existingObjects(store: ProbeStore, orgId: OrgId, names: string[]): Set<
   return have;
 }
 
-const xml = new XMLBuilder({ ignoreAttributes: false, format: false, suppressEmptyNode: true });
-
-interface FieldDescribe {
-  name: string;
-  label?: string;
-  type?: string;
-  length?: number;
-  precision?: number;
-  scale?: number;
-  unique?: boolean;
-  externalId?: boolean;
-  nillable?: boolean;
-  custom?: boolean;
-  referenceTo?: string[];
-  relationshipName?: string | null;
-  picklistValues?: Array<{ value: string; label?: string; active?: boolean }>;
-  calculatedFormula?: string | null;
-  inlineHelpText?: string | null;
-}
-
-/**
- * The CustomObject-shaped envelope the object parser reads: the same one
- * `iterObject` (extractors/object.ts) builds from a describe, so a recovered
- * object is parsed exactly like a normally-extracted one.
- */
-export function buildObjectEnvelope(
-  s: { name: string; label?: string; customSetting?: boolean },
-  desc: any,
-): string {
-  const fields: FieldDescribe[] = Array.isArray(desc?.fields) ? desc.fields : [];
-  const built = xml.build({
-    CustomObject: {
-      fullName: s.name,
-      label: desc?.label ?? s.label ?? s.name,
-      pluralLabel: desc?.labelPlural ?? null,
-      sharingModel: desc?.sharingModel ?? null,
-      customSettingsType: s.customSetting ? "List" : null,
-      enableHistory: Boolean(desc?.replicateable),
-      description: desc?.description ?? null,
-      fields: fields.map((f) => ({
-        fullName: f.name,
-        label: f.label ?? f.name,
-        type: f.type ?? "Text",
-        length: f.length,
-        precision: f.precision,
-        scale: f.scale,
-        unique: f.unique,
-        externalId: f.externalId,
-        required: f.nillable === false,
-        custom: f.custom,
-        referenceTo: f.referenceTo ?? [],
-        relationshipName: f.relationshipName ?? null,
-        formula: f.calculatedFormula ?? null,
-        description: f.inlineHelpText ?? null,
-        picklistValues: f.picklistValues ?? [],
-      })),
-    },
-  });
-  return typeof built === "string" ? built : String(built);
-}
-
 export interface RecoverObjectsOpts {
   conn: any;
   graph: GraphStore;
@@ -242,6 +187,10 @@ export async function recoverReferencedObjects(
   const missing: string[] = [];
   for (const n of referenced) {
     if (have.has(n.toLowerCase())) continue;
+    // History/Share/Feed/... companion tables are never recovered: they
+    // proxy the parent's field map and are not graph targets. A standard
+    // change event (AccountChangeEvent) is kept: triggers subscribe to it.
+    if (isCompanionTable(n) && !/ChangeEvent$/.test(n)) continue;
     if (skipSet.has(n.toLowerCase())) {
       userSkipped += 1;
       continue;

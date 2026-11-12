@@ -30,6 +30,13 @@ export class RuleBasedParser implements Parser<unknown> {
     return this.rule.type;
   }
 
+  /** Static node labels this rule emits (templated labels are left out). An
+   *  alias parser shares them with its primary, e.g. GenAiPlannerBundle and
+   *  GenAiPlanner both emit `GenAiPlanner` nodes. */
+  get nodeLabels(): string[] {
+    return [...new Set(this.rule.nodes.map((n) => n.label).filter((l) => !l.includes("${")))];
+  }
+
   get category(): MetadataCategory {
     // The rule files use the same string constants as METADATA_CATEGORY values.
     return this.rule.category as MetadataCategory;
@@ -139,6 +146,9 @@ export class RuleBasedParser implements Parser<unknown> {
       // Markup sources (a filesystem `.page` / `.component`) arrive as
       // `{ name, xml }`: the raw text is the body rules match against.
       if (merged.body === undefined && xml) merged.body = xml;
+      // The metadata type the member arrived as (an alias keeps its own name),
+      // addressable as ${record.__type}: lets a rule record its source type.
+      merged.__type = this.rule.type;
       return merged;
     }
     return input;
