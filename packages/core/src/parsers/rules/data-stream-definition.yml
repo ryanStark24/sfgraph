@@ -1,0 +1,27 @@
+type: DataStreamDefinition
+category: OpaqueMetadata
+input: xml-string
+root: DataStreamDefinition
+applies_when:
+  always: true
+
+# A Data Cloud data stream. It lands in a data lake object (DLO) `<X>__dll`,
+# named in dataLakeObjectInfo (or a flat `dataLakeObjectName`/`mktDataLakeObject`);
+# the DLO uses the CustomObject qname so it joins once objects are ingested.
+# The source system is kept as attributes.
+nodes:
+  - label: DataStreamDefinition
+    qname: "DataStreamDefinition:${record.name}"
+    props:
+      name: "${record.name}"
+      label: "${record.label | raw}"
+      dataConnectorType: "${record.dataConnectorType | raw}"
+      dataSource: "${record.dataSource || record.sourceName || record.connectorName | raw}"
+      refreshMode: "${record.refreshConfig.refreshMode | raw}"
+      dataLakeObject: "${record.dataLakeObjectInfo.name || record.dataLakeObjectName || record.mktDataLakeObject | raw}"
+
+edges:
+  - relType: DATA_STREAM_FEEDS_OBJECT
+    when: "${record.dataLakeObjectInfo.name || record.dataLakeObjectName || record.mktDataLakeObject}"
+    src: "DataStreamDefinition:${record.name}"
+    dst: "CustomObject:${match(toString(record.dataLakeObjectInfo.name || record.dataLakeObjectName || record.mktDataLakeObject),'^(.*?)(?:__dll)?$')}__dll"

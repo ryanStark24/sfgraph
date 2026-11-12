@@ -39,6 +39,9 @@ const EdgeRuleSchema = z
 export const RuleSchema = z
   .object({
     type: z.string(),
+    /** Further metadata type names this rule also parses (same body; the XML
+     *  root defaults to the alias name), e.g. a type renamed across API versions. */
+    aliases: z.array(z.string()).optional(),
     category: z.string(),
     input: z.enum(["object", "json", "xml-string"]),
     /** Optional dot-path to the root element after XML parsing (e.g. "Profile"). */
@@ -46,6 +49,9 @@ export const RuleSchema = z
     applies_when: WhenSchema.default({ always: true }),
     nodes: z.array(NodeRuleSchema).default([]),
     edges: z.array(EdgeRuleSchema).default([]),
+    /** User rule files only (SFGRAPH_RULES_DIR): replace a built-in parser of the
+     *  same `type` instead of being skipped. Ignored in built-in rule files. */
+    override: z.boolean().optional(),
   })
   .strict();
 

@@ -30,12 +30,31 @@ defineTool({
     } catch {
       // table missing or no row — treat as never synced
     }
+    // Latest ingest coverage report (per metadata type: name-only / generic
+    // edges / rule-parsed), when the last ingest stored one.
+    let coverage: unknown;
+    try {
+      const raw = ctx.graphStore.getCoverageReport?.(ctx.orgId);
+      if (raw) coverage = JSON.parse(raw);
+    } catch {
+      // no report, or an older / unreadable one: leave it out
+    }
     const now = Date.now();
     const ageDays = lastSyncedAt != null ? Math.floor((now - lastSyncedAt) / DAY_MS) : null;
     const stale = ageDays == null || ageDays >= STALE_THRESHOLD_DAYS;
     const recommendation = stale
       ? `ingest is ${ageDays == null ? "missing" : `${ageDays} days old`} — run \`sfgraph ingest --org ${input.org}\` to refresh before relying on this analysis`
       : `ingest is ${ageDays} day${ageDays === 1 ? "" : "s"} old — fresh enough to use`;
+    const cov = coverage as
+      | {
+          totals?: { nameOnly?: number; withGenericEdges?: number; ruleParsed?: number };
+          unknownTypes?: string[];
+        }
+      | undefined;
+    const coverageNote =
+      cov?.unknownTypes && cov.unknownTypes.length > 0
+        ? `\n\nCoverage: ${cov.totals?.ruleParsed ?? 0} members rule-parsed, ${cov.totals?.withGenericEdges ?? 0} with heuristic edges, ${cov.totals?.nameOnly ?? 0} name-only. Types with names only: ${cov.unknownTypes.slice(0, 10).join(", ")}${cov.unknownTypes.length > 10 ? ", ..." : ""}.`
+        : "";
     const summary = stale ? `STALE: ${recommendation}` : `fresh: ${recommendation}`;
     const md = [
       "| org | last synced | age (days) | stale | recommendation |",
@@ -52,7 +71,7 @@ defineTool({
                 ? ", so it may be out of date; reload it before relying on it."
                 : ", so it is recent enough to use."
             }`,
-        md,
+        `${md}${coverageNote}`,
       ),
       data: {
         org: input.org,
@@ -60,6 +79,7 @@ defineTool({
         ageDays,
         stale,
         recommendation,
+        ...(coverage ? { coverage } : {}),
       },
       follow_up_tools: ["freshness_report", "start_ingest_job"],
     };

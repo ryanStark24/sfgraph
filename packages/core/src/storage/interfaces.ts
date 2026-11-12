@@ -269,6 +269,9 @@ export interface GraphStore {
     orgId: OrgId,
     srcs: Iterable<string>,
   ): Array<{ relType: string; src: string; dst: string; firstSeenAt: number }>;
+  /** Persist / read the org's latest ingest coverage report (JSON text; see ingest/coverage.ts). */
+  setCoverageReport?(orgId: OrgId, json: string): void;
+  getCoverageReport?(orgId: OrgId): string | null;
   /** Task 11c: delete reflection-walker edges from `srcs` / into `dsts` (neither: all). */
   deleteReflectionEdges?(
     orgId: OrgId,

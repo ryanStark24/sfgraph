@@ -259,7 +259,7 @@ function guardedValue(
   return null;
 }
 
-const CUSTOM_OBJECT_RE = /__(c|mdt|e|x|b|kav|share|history|feed)$/i;
+const CUSTOM_OBJECT_RE = /__(c|mdt|e|x|b|kav|dlm|dll|cio|ChangeEvent|share|history|feed)$/i;
 const STANDARD_LOWER = new Set([...STANDARD_SOBJECT_WHITELIST].map((s) => s.toLowerCase()));
 const AFTER_FROM_RE = /^(?:WHERE|WITH|GROUP|ORDER|LIMIT|OFFSET|FOR|USING|ALL|UPDATE)\b/i;
 

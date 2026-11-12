@@ -1,0 +1,41 @@
+type: BotVersion
+category: OpaqueMetadata
+input: xml-string
+root: BotVersion
+applies_when:
+  always: true
+
+# One version of a bot, named `<Bot>.<version>` (e.g. `Support_Bot.v1`).
+# Edges: owning Bot, the planner it is wired to, and the Apex / Flow that its
+# dialogs invoke (botSteps > botInvocation, possibly nested in conditional steps).
+nodes:
+  - label: BotVersion
+    qname: "BotVersion:${record.name}"
+    props:
+      name: "${record.name}"
+      bot: "${split(toString(record.name),'.')[0]}"
+      status: "${record.status | raw}"
+      entryDialog: "${record.entryDialog | raw}"
+
+edges:
+  - relType: BOT_HAS_VERSION
+    when: "${split(toString(record.name),'.')[1]}"
+    src: "Bot:${split(toString(record.name),'.')[0]}"
+    dst: "BotVersion:${record.name}"
+
+  - relType: BOT_USES_PLANNER
+    iterate: "${uniq(walkAll(record,'genAiPlannerName'))}"
+    src: "BotVersion:${record.name}"
+    dst: "GenAiPlanner:${item}"
+
+  - relType: BOT_INVOKES_APEX
+    iterate: "${walkAll(record,'botInvocation')}"
+    when: "${item.invocationActionName && lower(toString(item.invocationActionType)) == 'apex'}"
+    src: "BotVersion:${record.name}"
+    dst: "ApexClass:${item.invocationActionName}"
+
+  - relType: BOT_INVOKES_FLOW
+    iterate: "${walkAll(record,'botInvocation')}"
+    when: "${item.invocationActionName && lower(toString(item.invocationActionType)) == 'flow'}"
+    src: "BotVersion:${record.name}"
+    dst: "Flow:${item.invocationActionName}"

@@ -147,6 +147,35 @@ export const NOT_FOLLOWED: Readonly<Record<string, string>> = {
   [REL_TYPES.PLANNER_USES_PLUGIN]: "agent configuration, not a flow-map entry",
   [REL_TYPES.PLUGIN_INVOKES_FUNCTION]: "agent configuration, not a flow-map entry",
   [REL_TYPES.NETWORK_USES_BUNDLE]: "site configuration, not a flow-map entry",
+  [REL_TYPES.PLANNER_USES_FUNCTION]: "agent configuration, not a flow-map entry",
+  [REL_TYPES.PLANNER_INVOKES_APEX]: "agent configuration, not a flow-map entry",
+  [REL_TYPES.PLANNER_INVOKES_FLOW]: "agent configuration, not a flow-map entry",
+  [REL_TYPES.FUNCTION_INVOKES_APEX]: "agent configuration, not a flow-map entry",
+  [REL_TYPES.FUNCTION_INVOKES_FLOW]: "agent configuration, not a flow-map entry",
+  [REL_TYPES.FUNCTION_USES_PROMPT]: "agent configuration, not a flow-map entry",
+  [REL_TYPES.PROMPT_GROUNDS_ON_OBJECT]: "prompt configuration, not a flow-map entry",
+  [REL_TYPES.PROMPT_READS_FIELD]: "prompt configuration, not a flow-map entry",
+  [REL_TYPES.PROMPT_CALLS_APEX]: "prompt configuration, not a flow-map entry",
+  [REL_TYPES.PROMPT_CALLS_FLOW]: "prompt configuration, not a flow-map entry",
+  [REL_TYPES.BOT_HAS_VERSION]: "bot configuration, not a flow-map entry",
+  [REL_TYPES.BOT_USES_PLANNER]: "bot configuration, not a flow-map entry",
+  [REL_TYPES.BOT_INVOKES_APEX]: "bot configuration, not a flow-map entry",
+  [REL_TYPES.BOT_INVOKES_FLOW]: "bot configuration, not a flow-map entry",
+  [REL_TYPES.EXPRESSION_SET_USES_MATRIX]: "pricing/rules configuration, not a flow-map entry",
+  [REL_TYPES.EXPRESSION_SET_CALLS_APEX]: "pricing/rules configuration, not a flow-map entry",
+  [REL_TYPES.EXPRESSION_SET_REFERENCES_OBJECT]: "pricing/rules configuration, not a flow-map entry",
+  [REL_TYPES.DATA_STREAM_FEEDS_OBJECT]: "Data Cloud configuration, not a flow-map entry",
+  [REL_TYPES.MAPS_TO_OBJECT]: "Data Cloud mapping, not a flow-map entry",
+  [REL_TYPES.MAPS_TO_FIELD]: "Data Cloud mapping, not a flow-map entry",
+  [REL_TYPES.SEGMENT_ON_OBJECT]: "Data Cloud configuration, not a flow-map entry",
+  [REL_TYPES.GENERIC_REFERENCES_APEX]:
+    "heuristic reference from a type with no parser, not a verified step",
+  [REL_TYPES.GENERIC_REFERENCES_FLOW]:
+    "heuristic reference from a type with no parser, not a verified step",
+  [REL_TYPES.GENERIC_REFERENCES_OBJECT]:
+    "heuristic reference from a type with no parser, not a verified step",
+  [REL_TYPES.GENERIC_REFERENCES_FIELD]:
+    "heuristic reference from a type with no parser, not a verified step",
 };
 
 /** Data endpoints: listed, never expanded (no formula field -> field reads). */

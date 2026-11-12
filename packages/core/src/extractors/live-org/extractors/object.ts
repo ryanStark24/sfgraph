@@ -1,5 +1,9 @@
 import { XMLBuilder } from "fast-xml-parser";
-import { METADATA_CATEGORY, STANDARD_SOBJECT_WHITELIST } from "../../../domain/index.js";
+import {
+  INDUSTRIES_STANDARD_SOBJECTS,
+  METADATA_CATEGORY,
+  STANDARD_SOBJECT_WHITELIST,
+} from "../../../domain/index.js";
 import type { RawMember } from "../../interfaces/metadata-source.js";
 import {
   DESCRIBE_GLOBAL_TIMEOUT_MS,
@@ -49,6 +53,48 @@ interface FieldDescribe {
   inlineHelpText?: string | null;
 }
 
+/**
+ * The CustomObject-shaped envelope the Object parser reads, built from a
+ * describeGlobal entry and its describe result. Shared by `iterObject` and the
+ * reference-driven object recovery (ingest/recover-objects.ts), so a recovered
+ * object is parsed exactly like a normally-extracted one.
+ */
+export function buildObjectEnvelope(
+  s: { name: string; label?: string; customSetting?: boolean },
+  desc: any,
+): string {
+  const fields: FieldDescribe[] = Array.isArray(desc?.fields) ? desc.fields : [];
+  const built = xml.build({
+    CustomObject: {
+      fullName: s.name,
+      label: desc?.label ?? s.label ?? s.name,
+      pluralLabel: desc?.labelPlural ?? null,
+      sharingModel: desc?.sharingModel ?? null,
+      customSettingsType: s.customSetting ? "List" : null,
+      enableHistory: Boolean(desc?.replicateable),
+      description: desc?.description ?? null,
+      fields: fields.map((f) => ({
+        fullName: f.name,
+        label: f.label ?? f.name,
+        type: f.type ?? "Text",
+        length: f.length,
+        precision: f.precision,
+        scale: f.scale,
+        unique: f.unique,
+        externalId: f.externalId,
+        required: f.nillable === false,
+        custom: f.custom,
+        referenceTo: f.referenceTo ?? [],
+        relationshipName: f.relationshipName ?? null,
+        formula: f.calculatedFormula ?? null,
+        description: f.inlineHelpText ?? null,
+        picklistValues: f.picklistValues ?? [],
+      })),
+    },
+  });
+  return typeof built === "string" ? built : String(built);
+}
+
 /** Suffixes that Salesforce uses for auto-generated companion tables.
  *  These tables proxy the parent SObject's full field map (so a describe()
  *  on `AccountFeed` returns ~100+ fields — every Account field plus
@@ -60,7 +106,7 @@ const COMPANION_SUFFIXES = [
   "Feed", // Chatter feed
   "History", // field history tracking
   "Share", // sharing records
-  "ChangeEvent", // Change Data Capture event
+  "ChangeEvent", // Change Data Capture event (standard `XChangeEvent`; custom `X__ChangeEvent` is kept)
   "StatusChangeEvent", // case/quote status CDC variant
   "Tag", // entity tag join table
   "OwnerSharingRule", // sharing rule definition (owner-based)
@@ -71,20 +117,37 @@ const COMPANION_SUFFIXES = [
 /** Custom-object suffixes — we use these to detect "real" user-or-package
  *  SObjects so we don't accidentally false-positive on user objects whose
  *  name happens to end in 'Feed' (e.g. `MyFeed__c` is real, not a companion). */
-const CUSTOM_SUFFIXES = ["__c", "__e", "__b", "__mdt", "__x", "__ka", "__kav", "__chn"];
+const CUSTOM_SUFFIXES = [
+  "__c",
+  "__e",
+  "__b", // big objects: few, describable fields
+  "__mdt",
+  "__x",
+  "__ka",
+  "__kav",
+  "__chn",
+  "__dlm", // Data Cloud data model object
+  "__dll", // Data Cloud data lake object
+  "__cio", // Data Cloud calculated insight
+  "__ChangeEvent", // custom-object Change Data Capture event
+];
+
+/** Data Cloud objects and custom CDC events: describable but usually absent
+ *  from EntityDefinition and not SOQL-queryable, so they skip both gates. */
+const GATE_EXEMPT_SUFFIXES = ["__dlm", "__dll", "__cio", "__ChangeEvent"];
+
+function isGateExempt(name: string): boolean {
+  return GATE_EXEMPT_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
 
 function isCustomSObject(name: string): boolean {
   return CUSTOM_SUFFIXES.some((suffix) => name.endsWith(suffix));
 }
 
-function isCompanionTable(name: string): boolean {
+export function isCompanionTable(name: string): boolean {
   if (isCustomSObject(name)) return false;
   return COMPANION_SUFFIXES.some((suffix) => name.endsWith(suffix));
 }
-
-/** Legacy big-object skip — matches both `*__b` (handled separately) and
- *  Salesforce's audit-trail variants that aren't covered by COMPANION_SUFFIXES. */
-const LEGACY_SKIP_PATTERNS = [/__b$/];
 
 /**
  * High-volume platform / telemetry / audit SObjects that never appear in
@@ -350,49 +413,72 @@ async function drainEntityDefinition(
   return { rows: [...byName.values()], unclassified };
 }
 
-/** Build a shouldIncludeSObject predicate closed over the EntityDefinition
- *  probe result. Previously this state lived at module scope as a `let` —
- *  worked for single-org ingest but broke subtly under multi-org parallel
- *  ingest (org A's classification leaks into org B's filter). Closure-bound
- *  state has no such hazard. */
-function makeShouldIncludeSObject(
+/** Why an SObject listed by describeGlobal was not described. */
+export type ObjectExclusion =
+  | "invalid"
+  | "deprecated"
+  | "nonQueryable"
+  | "companion"
+  | "system"
+  | "namespacedEntityDef"
+  | "standardEntityDef"
+  | "standardFallback";
+
+/** Per-gate exclusion counts, reported once per ingest. */
+export type ObjectGateCounts = Record<ObjectExclusion, number>;
+
+/** Build a classifier closed over the EntityDefinition probe result: null when
+ *  the SObject is kept, else the gate that dropped it. Previously this state
+ *  lived at module scope as a `let` — worked for single-org ingest but broke
+ *  subtly under multi-org parallel ingest (org A's classification leaks into
+ *  org B's filter). Closure-bound state has no such hazard. */
+export function makeSObjectClassifier(
   entityDefRelevant: EntityDefClassification | null,
-): (s: SObjectGlobal) => boolean {
-  return function shouldIncludeSObject(s: SObjectGlobal): boolean {
-    if (!s.name) return false;
-    if (s.deprecatedAndHidden) return false;
-    // Platform events (`__e`) are describable but never SOQL-queryable, so
-    // describeGlobal reports queryable=false for them; they still belong in
-    // the graph (triggers, flows and Apex publish/subscribe to them).
-    if (!s.queryable && !s.name.endsWith("__e")) return false;
+): (s: SObjectGlobal) => ObjectExclusion | null {
+  return function classifySObject(s: SObjectGlobal): ObjectExclusion | null {
+    if (!s.name) return "invalid";
+    if (s.deprecatedAndHidden) return "deprecated";
+    // Platform events (`__e`), Data Cloud objects and custom change events are
+    // describable but never SOQL-queryable, so describeGlobal reports
+    // queryable=false for them; they still belong in the graph (triggers,
+    // flows and Apex publish/subscribe to them).
+    if (!s.queryable && !s.name.endsWith("__e") && !isGateExempt(s.name)) return "nonQueryable";
     // Filter out auto-generated companion tables — works for BOTH the custom
     // form (`MyObj__c` → `MyObj__Feed`) AND the standard form (`Account` →
     // `AccountFeed`).
-    if (isCompanionTable(s.name)) return false;
-    for (const re of LEGACY_SKIP_PATTERNS) {
-      if (re.test(s.name)) return false;
-    }
+    if (isCompanionTable(s.name)) return "companion";
     // Hardcoded skip list for known-useless / known-pathological system
     // tables (kept as a hard ceiling — even if EntityDefinition says
     // ApexLog is customizable, we still don't want it in the graph).
     const includeSystem = process.env.SFGRAPH_INCLUDE_SYSTEM_SOBJECTS === "1";
-    if (!includeSystem && SYSTEM_SKIP_NAMES.has(s.name)) return false;
+    if (!includeSystem && SYSTEM_SKIP_NAMES.has(s.name)) return "system";
     // Custom SObjects (user or managed-package). describeGlobal lists every
     // SObject the managed-package metadata declared, including objects that
     // SOQL doesn't actually expose (`omnistudio__TestResult__c` etc.) and
     // whose describe() can wedge for minutes server-side. EntityDefinition
     // is the authoritative "actually exists + reachable" list — gate
     // namespaced custom SObjects through it. User-namespace custom SObjects
-    // (no `__` namespace prefix) are always included.
+    // (no `__` namespace prefix) are always included. Data Cloud objects and
+    // custom change events are exempt (EntityDefinition does not reliably
+    // list them); a failing describe is a recorded skip, not a crash.
     if (isCustomSObject(s.name)) {
       const isNamespaced = s.name.includes("__") && s.name.split("__").length >= 3;
-      if (isNamespaced && entityDefRelevant && !entityDefRelevant.relevant.has(s.name)) {
-        return false;
+      if (
+        isNamespaced &&
+        !isGateExempt(s.name) &&
+        entityDefRelevant &&
+        !entityDefRelevant.relevant.has(s.name)
+      ) {
+        return "namespacedEntityDef";
       }
-      return true;
+      return null;
     }
     // Full-surface override.
-    if (process.env.SFGRAPH_INCLUDE_ALL_SOBJECTS === "1") return true;
+    if (process.env.SFGRAPH_INCLUDE_ALL_SOBJECTS === "1") return null;
+    // Industries backstop: core FSC / Revenue Cloud / Insurance objects are
+    // kept when describeGlobal lists them, even if the EntityDefinition flags
+    // are all false or the probe failed. Costs nothing for orgs without them.
+    if (INDUSTRIES_STANDARD_SOBJECTS.has(s.name)) return null;
     // Primary path: ask Salesforce. EntityDefinition's IsCustomizable +
     // IsApexTriggerable flags tell us which standard SObjects are
     // user-relevant vs platform-internal. Industry-cloud SObjects
@@ -401,12 +487,29 @@ function makeShouldIncludeSObject(
     // (AuthConfig, ApexLog, EntityParticle, etc.) come back as false and
     // get skipped — exactly the right behavior, no hardcoded list needed.
     if (entityDefRelevant) {
-      return entityDefRelevant.relevant.has(s.name);
+      return entityDefRelevant.relevant.has(s.name) ? null : "standardEntityDef";
     }
     // Fallback path: EntityDefinition unavailable / empty (some scratch
     // orgs return 0 rows here). Use the curated whitelist.
-    return STANDARD_SOBJECT_WHITELIST.has(s.name);
+    return STANDARD_SOBJECT_WHITELIST.has(s.name) ? null : "standardFallback";
   };
+}
+
+/** One-line summary of the SObjects each gate excluded (null when none), so
+ *  missed coverage is visible instead of silent. */
+export function formatObjectGateSummary(counts: ObjectGateCounts, kept: number): string | null {
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  if (total === 0) return null;
+  const parts = [
+    `namespaced-by-EntityDefinition=${counts.namespacedEntityDef}`,
+    `standard-by-EntityDefinition=${counts.standardEntityDef}`,
+    `standard-not-whitelisted=${counts.standardFallback}`,
+    `companion=${counts.companion}`,
+    `non-queryable=${counts.nonQueryable}`,
+    `system=${counts.system}`,
+    `deprecated=${counts.deprecated}`,
+  ];
+  return `object gates: excluded ${total} of ${total + kept} SObjects (${parts.join(", ")})`;
 }
 
 /** Wrap a promise with a hard timeout. Used to bound describe() calls so a
@@ -447,6 +550,9 @@ const ENTITY_DEF_PROBE_TIMEOUT_MS = 60_000;
 export async function* iterObject(
   conn: any,
   retryOpts: RetryOptions = {},
+  /** Receives the one-per-ingest gate summary (callers route it to the
+   *  ingest warnings). It is also logged. */
+  onGateSummary?: (line: string) => void,
 ): AsyncIterable<RawMember> {
   const debug = process.env.SFGRAPH_DEBUG_INGEST === "1";
   // Members (or classification passes) lost after retries. Re-thrown as an
@@ -495,7 +601,7 @@ export async function* iterObject(
   } finally {
     probeStopped.value = true;
   }
-  const shouldIncludeSObject = makeShouldIncludeSObject(entityDefRelevant);
+  const classifySObject = makeSObjectClassifier(entityDefRelevant);
   if (debug) {
     if (entityDefRelevant) {
       console.log(
@@ -518,7 +624,27 @@ export async function* iterObject(
     retryOpts,
   )) as { sobjects?: SObjectGlobal[] } | null;
   const all = global?.sobjects ?? [];
-  const included = all.filter(shouldIncludeSObject);
+  const gateCounts: ObjectGateCounts = {
+    invalid: 0,
+    deprecated: 0,
+    nonQueryable: 0,
+    companion: 0,
+    system: 0,
+    namespacedEntityDef: 0,
+    standardEntityDef: 0,
+    standardFallback: 0,
+  };
+  const included: SObjectGlobal[] = [];
+  for (const s of all) {
+    const why = classifySObject(s);
+    if (why === null) included.push(s);
+    else gateCounts[why] += 1;
+  }
+  const gateSummary = formatObjectGateSummary(gateCounts, included.length);
+  if (gateSummary) {
+    console.log(`ingest:   ${gateSummary}`);
+    onGateSummary?.(gateSummary);
+  }
   // SFGRAPH_SKIP_SOBJECT=name1,name2,... lets users work around a specific
   // SObject whose describe crashes jsforce (same failure mode as managed-
   // package LWC bundles — silent SIGKILL on macOS 26+, no error in any
@@ -624,39 +750,6 @@ export async function* iterObject(
     }
     const { s, desc } = settled;
     if (!desc) continue;
-    const fields: FieldDescribe[] = Array.isArray(desc?.fields) ? desc.fields : [];
-
-    // Build the CustomObject-shaped envelope expected by the Phase-2 Object
-    // parser (which already knows how to walk this structure).
-    const objectXml = xml.build({
-      CustomObject: {
-        fullName: s.name,
-        label: desc?.label ?? s.label ?? s.name,
-        pluralLabel: desc?.labelPlural ?? null,
-        sharingModel: desc?.sharingModel ?? null,
-        customSettingsType: s.customSetting ? "List" : null,
-        enableHistory: Boolean(desc?.replicateable),
-        description: desc?.description ?? null,
-        fields: fields.map((f) => ({
-          fullName: f.name,
-          label: f.label ?? f.name,
-          type: f.type ?? "Text",
-          length: f.length,
-          precision: f.precision,
-          scale: f.scale,
-          unique: f.unique,
-          externalId: f.externalId,
-          required: f.nillable === false,
-          custom: f.custom,
-          referenceTo: f.referenceTo ?? [],
-          relationshipName: f.relationshipName ?? null,
-          formula: f.calculatedFormula ?? null,
-          description: f.inlineHelpText ?? null,
-          picklistValues: f.picklistValues ?? [],
-        })),
-      },
-    });
-
     yield {
       ref: {
         category: METADATA_CATEGORY.OBJECT,
@@ -666,7 +759,7 @@ export async function* iterObject(
         sourceUri: `sf://describe/${s.name}`,
         namespace: null,
       },
-      content: typeof objectXml === "string" ? objectXml : String(objectXml),
+      content: buildObjectEnvelope(s, desc),
     };
   }
   throwIfIncomplete("object", failures);

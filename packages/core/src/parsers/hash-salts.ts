@@ -77,6 +77,11 @@ export const LWC_NODE_HASH_SALT = "lwc-attrs:v5";
 // generic/opaque-node-parser.ts
 export const OPAQUE_DATAPACK_HASH_SALT = "vlocity-datapack-refs:v2";
 
+// generic/opaque-node-parser.ts
+/** Folded into the hash of an opaque node that carries scanner candidates
+ *  (`genericRefs`), so a re-ingest rewrites its attributes. */
+export const GENERIC_SCAN_HASH_SALT = "generic-ref-scan:v1";
+
 // flow/parser.ts
 /**
  * Folded into the Flow node hash. Bump it when the Flow parser emits new node
@@ -96,5 +101,6 @@ export const HASH_SALTS: readonly string[] = [
   AURA_NODE_HASH_SALT,
   LWC_NODE_HASH_SALT,
   OPAQUE_DATAPACK_HASH_SALT,
+  GENERIC_SCAN_HASH_SALT,
   FLOW_NODE_HASH_SALT,
 ];

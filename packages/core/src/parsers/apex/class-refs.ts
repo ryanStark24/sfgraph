@@ -26,7 +26,7 @@ export const NEW_INSTANCE_RE = /\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\(/g;
 export const STATIC_CALL_RE = /(?<![\w.])([A-Z][A-Za-z0-9_]*)\.([a-z][A-Za-z0-9_]*)\s*\(/g;
 const NEW_RE = /(?<![\w.])new\s+([A-Z][A-Za-z0-9_]*)\s*\(/g;
 const MEMBER_RE = /(?<![\w.$])([A-Z][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)(?![\w])/g;
-const CUSTOM_SUFFIX_RE = /__(c|r|mdt|e|x|b|kav|share|history|feed)$/i;
+const CUSTOM_SUFFIX_RE = /__(c|r|mdt|e|x|b|kav|dlm|dll|cio|ChangeEvent|share|history|feed)$/i;
 const STANDARD_LOWER = new Set([...STANDARD_SOBJECT_WHITELIST].map((s) => s.toLowerCase()));
 /** Standard objects commonly used from Apex but absent from the whitelist. */
 const EXTRA_STANDARD_SOBJECTS = new Set(
@@ -104,6 +104,10 @@ const MANAGED_NAMESPACES = new Set([
   "sbqq",
   "sbaa",
   "blng",
+  "finserv",
+  "vlocity_hc",
+  "vlocity_fs",
+  "vlocity_ins_fsc",
 ]);
 
 export function isStandardSObject(lower: string): boolean {
@@ -464,7 +468,7 @@ export function emitTypeRefEdges(
 
 const DESCRIBE_TYPE_RE = /(?<![\w.$])(?:Schema\s*\.\s*)?SObjectType\s*\.\s*([A-Za-z_]\w*)/gi;
 const TYPE_TOKEN_RE = /(?<![\w.$])([A-Za-z_]\w*)\s*\.\s*SObjectType(?![\w])/gi;
-const DESCRIBE_OBJECT_SUFFIX_RE = /__(c|mdt|e|x|b|kav)$/i;
+const DESCRIBE_OBJECT_SUFFIX_RE = /__(c|mdt|e|x|b|kav|dlm|dll|cio|ChangeEvent)$/i;
 
 /**
  * Cycle 3 T7: an object describe (`Schema.SObjectType.Obj.getRecordTypeInfosByName()`,

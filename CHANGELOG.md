@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.8.0 — 2026-11-12
+
+### Added
+
+- **Coverage for Agentforce, Data Cloud, Revenue/Industries, FSC, big objects and custom CDC.** New YAML rules parse `GenAiFunction`, `GenAiPromptTemplate`, `Bot`, `BotVersion`, `ExpressionSetDefinition` (+ version), `DecisionMatrixDefinition`, `DataStreamDefinition`, `ObjectSourceTargetMap` and `MarketSegment`, and the `GenAiPlanner` rule now also matches `GenAiPlannerBundle` and `GenAiPlannerDefinition` (new rule key `aliases`; all three share one `GenAiPlanner:<name>` node). New edge kinds link planners, plugins, functions, prompt templates, bots, expression sets, data streams and mappings to the Apex classes, flows, objects and fields they use. A project checkout reads the matching sfdx folders, including the folder-per-member `bots`, `genAiFunctions` and `genAiPlannerBundles`. In the live-org object extractor, big objects (`__b`), Data Cloud objects (`__dlm`, `__dll`, `__cio`) and custom change events (`__ChangeEvent`) are described, and core Financial Services Cloud, Revenue Cloud and Insurance standard objects are kept even when `EntityDefinition` flags them false. Apex parsing recognises the Data Cloud / CDC suffixes and the `finserv`, `vlocity_hc`, `vlocity_fs` and `vlocity_ins_fsc` namespaces.
+- **Generic reference scanner.** A metadata type with no parser or rule used to be a name-only node. It now keeps a bounded list of candidate references (Apex classes, flows, objects, fields) found in its body, and each candidate that matches a real node becomes a heuristic `GENERIC_REFERENCES_APEX`, `_FLOW`, `_OBJECT` or `_FIELD` edge. `cross_layer_flow_map` does not follow these edges. Every type `describeMetadata` returns now reaches the generic path; `SFGRAPH_GENERIC_WHITELIST_ONLY=1` restores the curated subset.
+- **Object recovery.** SObjects that code, flows or metadata reference but an object gate dropped are described and added after the fan-out. On by default; `SFGRAPH_RECOVER_OBJECTS=0` turns it off and `SFGRAPH_RECOVER_OBJECTS_MAX` caps it (default 50). It never recovers History/Share/Feed-style companion tables or names in `SFGRAPH_SKIP_SOBJECT`, and costs nothing when no reference points at a missing object.
+- **User rule files.** Put YAML rules in a directory and pass `--rules-dir` (or set `SFGRAPH_RULES_DIR`) to parse a new metadata type without a release. The files use the built-in rule schema, including `aliases`; a built-in parser wins on a type or alias clash unless the file sets `override: true`. A bad file is skipped with a warning. Format: [docs/RULES.md](docs/RULES.md).
+- **Coverage report.** Each ingest stores per-type counts of opaque, name-only, heuristic-edge and rule-parsed members; `staleness_check` returns it as `data.coverage`, with a list of likely unknown types.
+- **Object-gate summary line.** Each ingest logs (and adds to the ingest warnings) one line saying how many SObjects each gate excluded, so dropped objects are visible.
+
+### Fixes
+
+- **Deployment manifest names planners by the type they were retrieved as.** A planner that arrived as `GenAiPlannerBundle` now records that as its `metadataType`, so `package.xml` lists it under that name (plain `GenAiPlanner` members and nodes ingested before this release stay `GenAiPlanner`).
+
+### Upgrade notes
+
+- The first ingest after upgrading re-parses every member once, as after any release, because the parser generation stamp includes the version. Re-ingest to pick up the new types and the `metadataType` attribute on planners.
+- Ingests of orgs with types that had no parser now store more nodes and edges (the generic path no longer filters types out). Set `SFGRAPH_GENERIC_WHITELIST_ONLY=1` to restore the old subset.
+- Coverage of the new types is tested with synthetic payloads; it has not been verified against a live org.
+
 ## 1.7.0 — 2026-10-31
 
 ### Added

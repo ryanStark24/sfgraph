@@ -79,7 +79,13 @@ import {
 } from "./parse-pool.js";
 
 export { adaptParserInput } from "./parse-member.js";
+import { type CoverageReport, computeCoverage, coverageSummaryLine } from "./coverage.js";
 import { createIngestProfiler } from "./profile.js";
+import {
+  type RecoverObjectsResult,
+  recoverObjectsEnabled,
+  recoverReferencedObjects,
+} from "./recover-objects.js";
 
 export type IngestMode = "full" | "incremental" | "auto";
 
@@ -180,6 +186,13 @@ export interface LiveIngestOpts {
    * parser-quality subset when precision matters.
    */
   disableReflectionWalker?: boolean;
+  /** Skip the post-merge resolver for the generic reference scanner
+   *  (GENERIC_REFERENCES_* edges from members of types with no parser). */
+  disableGenericRefs?: boolean;
+  /** Skip reference-driven object recovery (also SFGRAPH_RECOVER_OBJECTS=0). */
+  disableObjectRecovery?: boolean;
+  /** Skip computing / persisting the per-metadata-type coverage report. */
+  disableCoverageReport?: boolean;
   /** Skip the post-merge Apex method arity resolver pass. */
   disableArityResolve?: boolean;
   /**
@@ -338,6 +351,12 @@ export interface LiveIngestResult {
   /** REFERENCES edges emitted by the reflection walker. Zero when
    *  `disableReflectionWalker: true` was passed. */
   reflectionEdges: number;
+  /** GENERIC_REFERENCES_* edges from the generic reference scanner's resolver. */
+  genericRefEdges?: number;
+  /** Reference-driven object recovery (undefined when off or nothing referenced a missing object). */
+  objectRecovery?: RecoverObjectsResult;
+  /** Per-metadata-type coverage (name-only / generic edges / rule-parsed); also persisted for MCP. */
+  coverage?: CoverageReport;
   /**
    * Overlap-detector summary. Zero across the board when
    * `disableOverlapDetect: true` was passed; otherwise populated.
@@ -1569,6 +1588,48 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       }
     }
 
+    // Reference-driven object recovery: objects an object-extractor gate dropped
+    // that code / flows / metadata still reference. After the fan-out and before
+    // the embedding drain starts, so recovered objects are embedded like the rest.
+    let objectRecovery: RecoverObjectsResult | undefined;
+    if (
+      !deltaHooks &&
+      !opts.metadataSource &&
+      !opts.onlyLabels &&
+      !streamAborted &&
+      !opts.disableObjectRecovery &&
+      recoverObjectsEnabled() &&
+      typeof (resolved.conn as { describeGlobal?: unknown } | undefined)?.describeGlobal ===
+        "function"
+    ) {
+      const tPhase = performance.now();
+      try {
+        const rec = await recoverReferencedObjects({
+          conn: resolved.conn,
+          graph,
+          orgId: resolved.orgId,
+          logger,
+          apply: async (m) => {
+            const outcome = await parseMember(
+              m.ref,
+              m.content,
+              { orgId: parseCtxBase.orgId, parseTimestamp: parseCtxBase.parseTimestamp },
+              logger,
+            );
+            applyMember(m.ref, outcome);
+          },
+        });
+        if (rec.summary) {
+          objectRecovery = rec;
+          console.log(`ingest: ${rec.summary}`);
+          logger.info("live-ingest: object recovery", { ...rec });
+        }
+      } catch (e) {
+        logger.warn("live-ingest: object recovery failed", { err: (e as Error).message });
+      }
+      profiler.phase("recover-objects", performance.now() - tPhase);
+    }
+
     // Mark the end of input (the held queue still runs nothing until graph ready).
     embedQueue?.startDrain();
 
@@ -1708,6 +1769,9 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     let danglingEdges = 0;
     let overlapResult = { matched: 0, diverged: 0, empty: 0, annotated: 0 };
     let reflectionEdges = 0;
+    let genericRefEdges = 0;
+    let genericWithEdgesByType: Record<string, number> = {};
+    let coverage: CoverageReport | undefined;
     // T15 I-2: post-merge steps that threw. A full ingest only warns; a delta
     // must not finalize (see below).
     const postFailures: string[] = [];
@@ -1965,6 +2029,55 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       profiler.phase("resolver:formula-hop", performance.now() - tPhase);
     }
 
+    // Generic reference scanner's resolver: candidates the opaque parser kept ->
+    // GENERIC_REFERENCES_* edges, only where a real node matches. Cheap (touches
+    // only nodes carrying candidates) and self-reconciling, so a delta runs it at
+    // full scope and matches a rebuild.
+    if (!opts.disableGenericRefs) {
+      const tPhase = performance.now();
+      try {
+        const { resolveGenericReferences } = await import(
+          "../parsers/generic/generic-ref-resolver.js"
+        );
+        const g = resolveGenericReferences(graph, {
+          orgId: resolved.orgId,
+          ctx: postCtx,
+          // A fresh graph has no earlier generic edges to reconcile.
+          reconcile: !graphEmptyAtStart,
+        });
+        genericRefEdges = g.edgesEmitted;
+        genericWithEdgesByType = g.withEdgesByLabel;
+        if (g.scanned > 0) {
+          logger.info("live-ingest: generic reference resolver", {
+            scanned: g.scanned,
+            edges: g.edgesEmitted,
+            dropped: g.dropped,
+            removed: g.removed,
+          });
+        }
+      } catch (e) {
+        postFailures.push("generic reference resolver");
+        logger.warn("live-ingest: generic reference resolver failed", {
+          err: (e as Error).message,
+        });
+      }
+      profiler.phase("resolver:generic-refs", performance.now() - tPhase);
+    }
+
+    // Coverage report: per metadata type, name-only / generic-edge / rule-parsed
+    // counts. Persisted so MCP (staleness_check) can serve it.
+    if (!opts.disableCoverageReport) {
+      const tPhase = performance.now();
+      try {
+        coverage = computeCoverage(graph, resolved.orgId, genericWithEdgesByType);
+        graph.setCoverageReport?.(resolved.orgId, JSON.stringify(coverage));
+        if (coverage.totals.types > 0) console.log(`ingest: ${coverageSummaryLine(coverage)}`);
+      } catch (e) {
+        logger.warn("live-ingest: coverage report failed", { err: (e as Error).message });
+      }
+      profiler.phase("coverage", performance.now() - tPhase);
+    }
+
     // Reflection walker: runs BEFORE the dangling-edge audit so any
     // REFERENCES edges it emits are validated by the audit alongside
     // parser-emitted edges. Default on; disable via disableReflectionWalker.
@@ -2188,6 +2301,9 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       drRelationships: drRelationshipsResult,
       danglingEdges,
       reflectionEdges,
+      genericRefEdges,
+      ...(objectRecovery ? { objectRecovery } : {}),
+      ...(coverage ? { coverage } : {}),
       overlap: overlapResult,
       warnings: [
         ...skipReport.skips.map((s) => `${s.label}: ${s.reason}`),

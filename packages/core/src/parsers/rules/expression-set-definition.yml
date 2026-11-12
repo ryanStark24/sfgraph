@@ -1,0 +1,54 @@
+type: ExpressionSetDefinition
+# Versions may be returned inline in the definition's body, so they are read
+# by the deep walks below; a standalone ExpressionSetDefinitionVersion member
+# has its own rule (expression-set-definition-version.yml).
+category: OpaqueMetadata
+input: xml-string
+root: ExpressionSetDefinition
+applies_when:
+  always: true
+
+# Revenue Cloud / Industries expression set (pricing, rating, eligibility
+# logic). The body shape varies by usage type, so references are collected by
+# key from anywhere in the record (deep walk) rather than from fixed paths;
+# any key that is absent simply yields no edge.
+nodes:
+  - label: ExpressionSetDefinition
+    qname: "ExpressionSetDefinition:${record.name}"
+    props:
+      name: "${record.name}"
+      description: "${record.description | raw}"
+      usageType: "${record.usageType | raw}"
+      interfaceSourceType: "${record.interfaceSourceType | raw}"
+
+edges:
+  - relType: EXPRESSION_SET_USES_MATRIX
+    iterate: "${uniq(walkAll(record,'decisionMatrixName'))}"
+    src: "ExpressionSetDefinition:${record.name}"
+    dst: "DecisionMatrixDefinition:${item}"
+
+  - relType: EXPRESSION_SET_USES_MATRIX
+    iterate: "${uniq(walkAll(record,'decisionMatrix'))}"
+    when: "${toString(item) != '[object Object]'}"
+    src: "ExpressionSetDefinition:${record.name}"
+    dst: "DecisionMatrixDefinition:${item}"
+
+  - relType: EXPRESSION_SET_CALLS_APEX
+    iterate: "${uniq(walkAll(record,'apexClass'))}"
+    src: "ExpressionSetDefinition:${record.name}"
+    dst: "ApexClass:${item}"
+
+  - relType: EXPRESSION_SET_CALLS_APEX
+    iterate: "${uniq(walkAll(record,'apexClassName'))}"
+    src: "ExpressionSetDefinition:${record.name}"
+    dst: "ApexClass:${item}"
+
+  - relType: EXPRESSION_SET_REFERENCES_OBJECT
+    iterate: "${uniq(walkAll(record,'objectApiName'))}"
+    src: "ExpressionSetDefinition:${record.name}"
+    dst: "CustomObject:${item}"
+
+  - relType: EXPRESSION_SET_REFERENCES_OBJECT
+    iterate: "${uniq(walkAll(record,'referenceObject'))}"
+    src: "ExpressionSetDefinition:${record.name}"
+    dst: "CustomObject:${item}"

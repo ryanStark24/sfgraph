@@ -348,7 +348,7 @@ const DESCRIBE_FIELD_RE = new RegExp(
 );
 const TOKEN_RE = new RegExp(`(?<![\\w.$])(${IDENT})\\s*\\.\\s*(${IDENT})(?![\\w])`, "g");
 const PUBLISH_RE = /(?<![\w.$])EventBus\s*\.\s*publish\s*\(/gi;
-const OBJECT_SUFFIX_RE = /__(c|mdt|e|x|b|kav)$/i;
+const OBJECT_SUFFIX_RE = /__(c|mdt|e|x|b|kav|dlm|dll|cio|ChangeEvent)$/i;
 /** `Obj.<member>` names that are not fields. */
 const NOT_FIELD_MEMBER = new Set(["sobjecttype", "fields", "class", "id"]);
 

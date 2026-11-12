@@ -31,6 +31,22 @@ beforeEach(async () => {
 });
 
 describe("deployment manifest", () => {
+  it("maps planner nodes to the type they were retrieved as", () => {
+    const withType = (qn: string, metadataType?: string): NodeFact => ({
+      ...n(A, "GenAiPlanner", qn),
+      attributes: { sourceUri: "x", ...(metadataType ? { metadataType } : {}) },
+    });
+    store.mergeNodes([
+      withType("GenAiPlanner:Bundled", "GenAiPlannerBundle"),
+      withType("GenAiPlanner:Legacy", "GenAiPlanner"),
+      withType("GenAiPlanner:Old"), // ingested before the attribute existed
+    ]);
+    const m = generateManifest(store, A, B);
+    expect(m.summary.byType).toMatchObject({ GenAiPlannerBundle: 1, GenAiPlanner: 2 });
+    expect(m.packageXml).toMatch(/<members>Bundled<\/members>\s*<name>GenAiPlannerBundle<\/name>/);
+    expect(m.incomplete.unmappedLabels).toEqual({});
+  });
+
   it("emits well-formed package.xml with sorted types and members", () => {
     store.mergeNodes([
       n(A, "ApexClass", "ApexClass:NewFoo"),

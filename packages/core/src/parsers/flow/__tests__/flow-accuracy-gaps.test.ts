@@ -205,6 +205,16 @@ describe("Flow platform events", () => {
     ]);
   });
 
+  it("a Data Cloud-triggered flow fires on its __dlm start object", async () => {
+    const r = await parse(
+      "<start><object>Individual__dlm</object><triggerType>RecordAfterSave</triggerType><recordTriggerType>Create</recordTriggerType></start>",
+    );
+    const fires = r.edges
+      .filter((e) => e.relType === "TRIGGER_FIRES_ON")
+      .map((e) => String(e.dstQualifiedName));
+    expect(fires).toEqual(["CustomObject:Individual__dlm"]);
+  });
+
   it("a platform-event-triggered flow subscribes to its event", async () => {
     const edges = await edgesOf(
       "<start><object>Order_Event__e</object><triggerType>PlatformEvent</triggerType></start>",
