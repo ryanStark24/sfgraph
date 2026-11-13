@@ -121,6 +121,41 @@ async function trace(extra: Record<string, unknown> = {}) {
   return { text, listed };
 }
 
+describe("folded FlowVersion edges (parser shape)", () => {
+  it("active_only drops a Draft flow's FlowVersion edges from data and the diagram", async () => {
+    const V = "FlowVersion:Acme_Order_Draft.v59";
+    graphStore.mergeNodes([node(V, { status: "Draft" })]);
+    graphStore.mergeEdges([
+      { ...edge(FLOW_DRAFT, "CONTAINS"), dstQualifiedName: asQualifiedName(V) },
+      edge(V, "TRIGGER_FIRES_ON"),
+    ]);
+    const server = new SfgraphMcpServer();
+    await server.loadAllTools();
+    const call = async (extra: Record<string, unknown>) => {
+      const res = await server.dispatch("trace_upstream", {
+        org: ORG,
+        qname: OBJ,
+        depth: 1,
+        mermaid: true,
+        ...extra,
+      });
+      return res.content.map((c) => c.text).join("\n");
+    };
+    expect(await call({})).toContain("Acme_Order_Draft");
+    const filtered = await call({ active_only: true });
+    expect(filtered).not.toContain("Acme_Order_Draft");
+    const data = (
+      (await server.registry.get("trace_upstream")?.handler({
+        org: ORG,
+        qname: OBJ,
+        depth: 1,
+        active_only: true,
+      })) as { data: { edges: Array<{ srcQualifiedName: string }> } }
+    ).data;
+    expect(data.edges.some((e) => e.srcQualifiedName.startsWith("FlowVersion:"))).toBe(false);
+  });
+});
+
 describe("trace_upstream status, active and events (S-1.8.1-002)", () => {
   it("defaults list everything and show the new fields on the markdown line", async () => {
     const { text, listed } = await trace();
