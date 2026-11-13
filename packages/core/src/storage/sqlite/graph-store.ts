@@ -956,13 +956,16 @@ export class SqliteGraphStore implements GraphStore {
           `UPDATE ${tbl} SET attributes = ?, source_hash = ?, last_seen_at = ?, last_modified_at = ? WHERE org_id = ? AND qualified_name = ?`,
         );
         const updateUnchangedStmt = this.stmt(
-          // An unchanged node only ever moves its change time EARLIER: a graph
-          // built before the source's real change time was used (ingest-time
-          // stamps) heals on re-ingest, while an ingest-time fallback (always
-          // later) never makes an untouched node look newer. A real later
-          // change changes the hash and takes the branch above. Nothing else
-          // is written, so FTS, embeddings and edges are not touched.
-          `UPDATE ${tbl} SET last_seen_at = ?, last_modified_at = MIN(last_modified_at, ?) WHERE org_id = ? AND qualified_name = ?`,
+          // Unchanged hash. An authoritative source change time (commit time,
+          // file mtime, org LastModifiedDate) is written, so a graph built
+          // before it was used heals and a change the hash does not see (a
+          // field file under an object folder) advances. An ingest-time
+          // fallback never overwrites the stored value. Nothing else is
+          // written, so FTS, embeddings and edges are not touched.
+          `UPDATE ${tbl} SET last_seen_at = ? WHERE org_id = ? AND qualified_name = ?`,
+        );
+        const updateUnchangedAuthStmt = this.stmt(
+          `UPDATE ${tbl} SET last_seen_at = ?, last_modified_at = ? WHERE org_id = ? AND qualified_name = ?`,
         );
         const indexStmt = this.stmt(
           `INSERT INTO _sfgraph_node_index(org_id, qualified_name, label) VALUES (?, ?, ?)
@@ -1005,12 +1008,16 @@ export class SqliteGraphStore implements GraphStore {
             );
             updated += 1;
           } else {
-            updateUnchangedStmt.run(
-              fact.lastSeenAt,
-              fact.lastModifiedAt,
-              fact.orgId,
-              fact.qualifiedName,
-            );
+            if (fact.lastModifiedAuthoritative === true) {
+              updateUnchangedAuthStmt.run(
+                fact.lastSeenAt,
+                fact.lastModifiedAt,
+                fact.orgId,
+                fact.qualifiedName,
+              );
+            } else {
+              updateUnchangedStmt.run(fact.lastSeenAt, fact.orgId, fact.qualifiedName);
+            }
             unchanged += 1;
           }
         }

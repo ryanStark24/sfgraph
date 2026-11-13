@@ -57,7 +57,9 @@ export function mtimeMs(p: string): number | null {
 export const WALK_MAX_ENTRIES = 5000;
 
 /** mtime of a file, or the newest file mtime under a directory (bounded walk; the directory's own mtime if empty or unreadable). */
-export function newestMtime(p: string): number | null {
+const ALL = (): boolean => true;
+
+export function newestMtime(p: string, include: (file: string) => boolean = ALL): number | null {
   let st: fs.Stats;
   try {
     st = fs.statSync(p);
@@ -83,14 +85,16 @@ export function newestMtime(p: string): number | null {
         if (e.name !== ".git" && e.name !== "node_modules") queue.push(full);
       } else if (e.isFile()) {
         try {
-          newest = Math.max(newest, fs.statSync(full).mtimeMs);
+          if (include(full)) newest = Math.max(newest, fs.statSync(full).mtimeMs);
         } catch {
           /* vanished mid-walk */
         }
       }
     }
   }
-  return newest > 0 ? newest : st.mtimeMs;
+  if (newest > 0) return newest;
+  // Nothing matched: the directory's own mtime only for the unfiltered walk.
+  return include === ALL ? st.mtimeMs : null;
 }
 
 const splitZ = (s: string): string[] => s.split("\0").filter((p) => p.length > 0);
@@ -219,17 +223,33 @@ export class ChangeTimes {
    */
   lookup(abs: string): string | null {
     const p = path.resolve(abs);
-    let ms: number | null | undefined = this.files.get(p) ?? this.dirs.get(p);
-    if (ms === undefined) {
-      const cached = this.walked.get(p);
-      if (cached !== undefined) ms = cached;
-      else {
-        ms = newestMtime(p);
-        this.walked.set(p, ms);
-      }
+    const known = this.files.get(p) ?? this.dirs.get(p);
+    if (known !== undefined && !this.isDirectory(p)) return new Date(known).toISOString();
+    // A directory: git's time for its tracked files, and the mtime of every
+    // descendant file git does not track (ignored files are not listed by
+    // git, but the extractor still reads them). Bounded and memoised.
+    let walked = this.walked.get(p);
+    if (walked === undefined) {
+      walked = this.newestUntracked(p);
+      this.walked.set(p, walked);
     }
-    return ms === null || ms === undefined ? null : new Date(ms).toISOString();
+    const ms = known === undefined ? walked : walked === null ? known : Math.max(known, walked);
+    return ms === null ? null : new Date(ms).toISOString();
   }
 
   private readonly walked = new Map<string, number | null>();
+
+  private isDirectory(p: string): boolean {
+    try {
+      return fs.statSync(p).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  /** Newest mtime among descendant files git has no time for; the plain mtime walk when git gave nothing at all. */
+  private newestUntracked(dir: string): number | null {
+    if (this.files.size === 0 && this.dirs.size === 0) return newestMtime(dir);
+    return newestMtime(dir, (full) => !this.files.has(full));
+  }
 }

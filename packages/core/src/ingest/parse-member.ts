@@ -318,7 +318,10 @@ function stampSourceChangeTime(result: ParseResult, lastModifiedAt: string | nul
   if (!lastModifiedAt) return;
   const ms = Date.parse(lastModifiedAt);
   if (!Number.isFinite(ms) || ms <= 0) return;
-  for (const n of result.nodes) n.lastModifiedAt = ms;
+  for (const n of result.nodes) {
+    n.lastModifiedAt = ms;
+    n.lastModifiedAuthoritative = true;
+  }
 }
 
 function errorParts(e: unknown): { message: string; stack?: string } {

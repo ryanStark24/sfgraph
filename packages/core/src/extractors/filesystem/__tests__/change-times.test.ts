@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ConsoleLogger } from "@ryanstark24/sfgraph-shared";
+import { ConsoleLogger, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { freshnessBucket, freshnessScore } from "../../../analyze/freshness.js";
 import { liveIngest } from "../../../ingest/live-ingest.js";
@@ -145,6 +145,108 @@ describe("project ingest: lastModifiedAt from git", () => {
     // Another run changes nothing: later fallback stamps never win.
     const again = await ingestAndRead(undefined, { dbPath, rebuild: false });
     expect(again.get("OldService")?.ageDays).toBeGreaterThan(399);
+  });
+
+  it("a change the node hash does not see (a field file) advances the object's time on re-ingest", async () => {
+    sh("git", ["init", "-q"]);
+    const objDir = path.join(proj, MD, "objects", "Acme_Order__c");
+    mkdirSync(path.join(objDir, "fields"), { recursive: true });
+    writeFileSync(
+      path.join(objDir, "Acme_Order__c.object-meta.xml"),
+      `<?xml version="1.0" encoding="UTF-8"?><CustomObject xmlns="http://soap.sforce.com/2006/04/metadata"><label>Acme Order</label></CustomObject>`,
+    );
+    commitAt(400, "object");
+    const dbPath = path.join(dir, "adv.sqlite");
+    const org = offlineResolvedOrg(proj, "fixture").orgId;
+    const objectAge = async (rebuild: boolean): Promise<number> => {
+      const store = new SqliteGraphStore({ dbPath, backupDir: path.join(dir, "bk") });
+      await store.init();
+      try {
+        await liveIngest({
+          alias: "fixture",
+          graphStore: store,
+          mode: "full",
+          rebuild,
+          preResolved: offlineResolvedOrg(proj, "fixture"),
+          metadataSource: new FilesystemMetadataSource(proj, ["force-app"]),
+          logger,
+          skipSnapshot: true,
+          analysisDb: store.db,
+        });
+        const n = store.listNodesByLabel(org, "CustomObject", 10)[0];
+        return (Date.now() - (n?.lastModifiedAt ?? 0)) / DAY;
+      } finally {
+        await store.close();
+      }
+    };
+    expect(await objectAge(true)).toBeGreaterThan(399);
+    writeFileSync(
+      path.join(objDir, "fields", "Total__c.field-meta.xml"),
+      `<?xml version="1.0" encoding="UTF-8"?><CustomField xmlns="http://soap.sforce.com/2006/04/metadata"><fullName>Total__c</fullName><type>Number</type></CustomField>`,
+    );
+    commitAt(2, "field");
+    const age = await objectAge(false);
+    expect(age).toBeGreaterThan(1.9);
+    expect(age).toBeLessThan(2.1);
+  });
+
+  it("mergeNodes: an ingest-time fallback never overwrites an unchanged node; an authoritative stamp does", async () => {
+    const store = new SqliteGraphStore({
+      dbPath: path.join(dir, "merge.sqlite"),
+      backupDir: path.join(dir, "bk"),
+    });
+    await store.init();
+    try {
+      const org = offlineResolvedOrg(proj, "fixture").orgId;
+      const mk = (at: number, auth?: boolean) => ({
+        orgId: org,
+        qualifiedName: asQualifiedName("ApexClass:Widget"),
+        label: "ApexClass",
+        attributes: {},
+        sourceHash: asSha256("h1"),
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+        lastModifiedAt: at,
+        ...(auth === undefined ? {} : { lastModifiedAuthoritative: auth }),
+      });
+      const read = (): number | undefined =>
+        store.listNodesByLabel(org, "ApexClass", 10)[0]?.lastModifiedAt;
+      store.mergeNodes([mk(1000, true)]);
+      expect(read()).toBe(1000);
+      store.mergeNodes([mk(9_000_000)]); // fallback, later
+      expect(read()).toBe(1000);
+      store.mergeNodes([mk(9_000_000, false)]);
+      expect(read()).toBe(1000);
+      store.mergeNodes([mk(5000, true)]); // authoritative advance
+      expect(read()).toBe(5000);
+      store.mergeNodes([mk(200, true)]); // authoritative heal (earlier)
+      expect(read()).toBe(200);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("a folder member counts ignored descendant files git does not list", async () => {
+    sh("git", ["init", "-q"]);
+    const objDir = path.join(proj, MD, "objects", "Acme_Order__c");
+    mkdirSync(path.join(objDir, "fields"), { recursive: true });
+    writeFileSync(
+      path.join(objDir, "Acme_Order__c.object-meta.xml"),
+      `<?xml version="1.0" encoding="UTF-8"?><CustomObject xmlns="http://soap.sforce.com/2006/04/metadata"><label>Acme Order</label></CustomObject>`,
+    );
+    writeFileSync(path.join(proj, ".gitignore"), "Hidden__c.field-meta.xml\n");
+    commitAt(400, "object");
+    writeFileSync(
+      path.join(objDir, "fields", "Hidden__c.field-meta.xml"),
+      `<?xml version="1.0" encoding="UTF-8"?><CustomField xmlns="http://soap.sforce.com/2006/04/metadata"><fullName>Hidden__c</fullName><type>Text</type></CustomField>`,
+    );
+    const items: Array<{ memberType: string; at: string | null }> = [];
+    for await (const m of new FilesystemMetadataSource(proj, ["force-app"]).iter()) {
+      items.push({ memberType: m.ref.memberType, at: m.ref.lastModifiedAt });
+    }
+    const obj = items.find((i) => i.memberType === "CustomObject");
+    const ageDays = (Date.now() - Date.parse(obj?.at ?? "0")) / DAY;
+    expect(ageDays).toBeLessThan(0.1);
   });
 
   it("a file edited since HEAD counts as its mtime (newest)", async () => {
