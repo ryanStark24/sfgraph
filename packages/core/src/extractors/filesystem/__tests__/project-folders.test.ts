@@ -83,6 +83,17 @@ describe("S-1.8.1-001: everyday metadata folders", () => {
     for await (const e of src.iterIndexed()) expect(e.memberType).toBe("Gadget");
   });
 
+  it("S-1.8.1-014: an upper-case suffix maps to the proper type, in a known folder and in the fallback", async () => {
+    w(`${MD}/roles/Sales_Lead.ROLE-meta.xml`);
+    w(`${MD}/staticresources/Logo.Resource-meta.xml`);
+    w(`${MD}/gadgets/Left.GADGET-meta.xml`);
+    w(`${MD}/other/Acme_Dept.ROLE-meta.xml`); // no spec for the folder: suffix table
+    const got = keys(await collect());
+    expect(got).toEqual(
+      ["GADGET:Left", "Role:Acme_Dept", "Role:Sales_Lead", "StaticResource:Logo"].sort(),
+    );
+  });
+
   it("never double-counts files other specs claim", async () => {
     w(`${MD}/classes/Svc.cls`, "public class Svc {}");
     w(`${MD}/classes/Svc.cls-meta.xml`);

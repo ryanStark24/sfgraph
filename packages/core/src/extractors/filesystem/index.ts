@@ -547,8 +547,18 @@ const CLAIMED_SUFFIXES: ReadonlySet<string> = new Set([
 
 /** The Metadata API type a `<Name>.<suffix>-meta.xml` file stands for. */
 function typeForSuffix(suffix: string): string {
-  return SUFFIX_TYPE_OVERRIDES[suffix] ?? suffix.charAt(0).toUpperCase() + suffix.slice(1);
+  return (
+    SUFFIX_TYPE_OVERRIDES[suffix] ??
+    OVERRIDES_BY_LOWER.get(suffix.toLowerCase()) ??
+    suffix.charAt(0).toUpperCase() + suffix.slice(1)
+  );
 }
+
+/** Override lookup that ignores case, so `A.ROLE-meta.xml` maps like `A.role-meta.xml`. */
+const OVERRIDES_BY_LOWER: ReadonlyMap<string, string> = new Map([
+  ...EXTRA_SPECS.map((e) => [e.suffix.toLowerCase(), e.memberType] as const),
+  ...Object.entries(SUFFIX_TYPE_OVERRIDES).map(([k, v]) => [k.toLowerCase(), v] as const),
+]);
 
 const EXTRA_BY_SEGMENT: ReadonlyMap<string, MdExtraSpec[]> = (() => {
   const m = new Map<string, MdExtraSpec[]>();
@@ -643,7 +653,10 @@ function* walkMetaFolders(
         if (!isFileEntry(cur.dir, e)) continue;
         const parts = splitMetaName(e.name);
         if (!parts || CLAIMED_SUFFIXES.has(parts.suffix)) continue;
-        const spec = specs?.find((s) => s.suffix === parts.suffix);
+        const lowerSuffix = parts.suffix.toLowerCase();
+        const spec =
+          specs?.find((s) => s.suffix === parts.suffix) ??
+          specs?.find((s) => s.suffix.toLowerCase() === lowerSuffix);
         const memberType = spec ? spec.memberType : typeForSuffix(parts.suffix);
         const memberName = `${cur.rel}${parts.name}`;
         const full = path.join(cur.dir, e.name);

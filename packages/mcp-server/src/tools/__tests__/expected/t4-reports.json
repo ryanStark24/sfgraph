@@ -1072,7 +1072,8 @@
       "lastSyncedAt": null,
       "ageDays": null,
       "stale": true,
-      "recommendation": "ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis"
+      "recommendation": "ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis",
+      "sourceRevision": null
     },
     "markdown": "| org | last synced | age (days) | stale | recommendation |\n|---|---|---|---|---|\n| `org1` | _never_ | - | yes | ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis |"
   },

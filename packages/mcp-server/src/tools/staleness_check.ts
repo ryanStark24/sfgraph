@@ -39,6 +39,13 @@ defineTool({
     } catch {
       // no report, or an older / unreadable one: leave it out
     }
+    // Source checkout the graph was last built from (project ingest only).
+    let sourceRevision: { gitBranch: string; gitCommit: string; capturedAt: string } | null = null;
+    try {
+      sourceRevision = ctx.graphStore.getSourceRevision?.(ctx.orgId) ?? null;
+    } catch {
+      // table missing: no revision recorded
+    }
     const now = Date.now();
     const ageDays = lastSyncedAt != null ? Math.floor((now - lastSyncedAt) / DAY_MS) : null;
     const stale = ageDays == null || ageDays >= STALE_THRESHOLD_DAYS;
@@ -55,6 +62,9 @@ defineTool({
       cov?.unknownTypes && cov.unknownTypes.length > 0
         ? `\n\nCoverage: ${cov.totals?.ruleParsed ?? 0} members rule-parsed, ${cov.totals?.withGenericEdges ?? 0} with heuristic edges, ${cov.totals?.nameOnly ?? 0} name-only. Types with names only: ${cov.unknownTypes.slice(0, 10).join(", ")}${cov.unknownTypes.length > 10 ? ", ..." : ""}.`
         : "";
+    const revisionNote = sourceRevision
+      ? `\n\nSource revision: \`${sourceRevision.gitCommit}\` on \`${sourceRevision.gitBranch}\` (recorded ${sourceRevision.capturedAt}).`
+      : "";
     const summary = stale ? `STALE: ${recommendation}` : `fresh: ${recommendation}`;
     const md = [
       "| org | last synced | age (days) | stale | recommendation |",
@@ -71,7 +81,7 @@ defineTool({
                 ? ", so it may be out of date; reload it before relying on it."
                 : ", so it is recent enough to use."
             }`,
-        `${md}${coverageNote}`,
+        `${md}${revisionNote}${coverageNote}`,
       ),
       data: {
         org: input.org,
@@ -79,6 +89,7 @@ defineTool({
         ageDays,
         stale,
         recommendation,
+        sourceRevision,
         ...(coverage ? { coverage } : {}),
       },
       follow_up_tools: ["freshness_report", "start_ingest_job"],

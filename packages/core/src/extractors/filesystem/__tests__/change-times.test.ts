@@ -441,4 +441,102 @@ describe("project ingest: lastModifiedAt from git", () => {
     expect(calls.filter((a) => a.includes("log")).length).toBe(1);
     expect(got.get("Svc7")?.ageDays).toBeGreaterThan(9.9);
   });
+
+  /** memberType:name -> lastModifiedAt for every member under `root`. */
+  async function stamps(root: string, git?: GitRunner): Promise<Map<string, string | null>> {
+    const items = new Map<string, string | null>();
+    for await (const m of new FilesystemMetadataSource(
+      root,
+      ["force-app"],
+      git ? { git } : {},
+    ).iter()) {
+      items.set(`${m.ref.memberType}:${m.ref.memberName}`, m.ref.lastModifiedAt);
+    }
+    return items;
+  }
+  const ageOf = (v: string | null | undefined): number => (Date.now() - Date.parse(v ?? "0")) / DAY;
+
+  it("S-1.8.1-014: a shallow clone gives no authoritative time to files last seen at the boundary", async () => {
+    sh("git", ["init", "-q"]);
+    cls("OldService");
+    commitAt(400, "old");
+    cls("MidService");
+    commitAt(45, "mid");
+    cls("NewService");
+    commitAt(2, "new");
+    const clone = path.join(dir, "clone");
+    execFileSync("git", ["clone", "-q", "--depth", "2", `file://${proj}`, clone], {
+      stdio: "ignore",
+    });
+    expect(
+      execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: clone })
+        .toString()
+        .trim(),
+    ).toBe("true");
+    // The clone stamps every mtime "now": that must not be taken for a change time.
+    const calls: string[][] = [];
+    const got = await stamps(clone, (args, cwd) => {
+      calls.push(args);
+      return execGit(args, cwd);
+    });
+    expect(ageOf(got.get("ApexClass:NewService"))).toBeGreaterThan(1.9);
+    expect(ageOf(got.get("ApexClass:NewService"))).toBeLessThan(2.1);
+    expect(got.get("ApexClass:MidService")).toBeNull(); // boundary commit
+    expect(got.get("ApexClass:OldService")).toBeNull(); // before the boundary
+    // Still a fixed number of git calls.
+    expect(calls.length).toBeLessThanOrEqual(6);
+    expect(calls.filter((a) => a.includes("log")).length).toBe(1);
+    // A full (non-shallow) checkout of the same history knows every time.
+    const full = await stamps(proj);
+    expect(ageOf(full.get("ApexClass:OldService"))).toBeGreaterThan(399);
+  });
+
+  it("S-1.8.1-014: a shallow clone still uses mtime for untracked files", async () => {
+    sh("git", ["init", "-q"]);
+    cls("OldService");
+    commitAt(400, "old");
+    const clone = path.join(dir, "clone2");
+    execFileSync("git", ["clone", "-q", "--depth", "1", `file://${proj}`, clone], {
+      stdio: "ignore",
+    });
+    const f = path.join(clone, MD, "classes", "LocalOnly.cls");
+    writeFileSync(f, "public class LocalOnly {}");
+    writeFileSync(`${f}-meta.xml`, "<ApexClass/>");
+    const got = await stamps(clone);
+    expect(got.get("ApexClass:OldService")).toBeNull();
+    expect(ageOf(got.get("ApexClass:LocalOnly"))).toBeLessThan(0.1);
+  });
+
+  it("S-1.8.1-014: a git log timeout leaves unreached tracked files without a time, untracked keep mtime", async () => {
+    sh("git", ["init", "-q"]);
+    cls("OldService");
+    commitAt(400, "old");
+    cls("NewService");
+    commitAt(2, "new");
+    cls("LocalOnly"); // untracked
+    const now = new Date();
+    for (const n of ["OldService", "NewService", "LocalOnly"]) {
+      utimesSync(path.join(proj, MD, "classes", `${n}.cls`), now, now);
+      utimesSync(path.join(proj, MD, "classes", `${n}.cls-meta.xml`), now, now);
+    }
+    // Timeout with nothing read: no tracked file has a time.
+    const timedOut: GitRunner = (args, cwd) =>
+      args.includes("log") ? Promise.resolve(null) : execGit(args, cwd);
+    const none = await stamps(proj, timedOut);
+    expect(none.get("ApexClass:OldService")).toBeNull();
+    expect(none.get("ApexClass:NewService")).toBeNull();
+    expect(ageOf(none.get("ApexClass:LocalOnly"))).toBeLessThan(0.1);
+    // Truncated at the byte cap: the newest commit was read, the rest was not.
+    const truncated: GitRunner = async (args, cwd) => {
+      const r = await execGit(args, cwd);
+      if (!args.includes("log") || typeof r !== "string") return r;
+      const second = r.indexOf("\x01", 1);
+      return { stdout: r.slice(0, second), partial: true };
+    };
+    const some = await stamps(proj, truncated);
+    expect(ageOf(some.get("ApexClass:NewService"))).toBeGreaterThan(1.9);
+    expect(ageOf(some.get("ApexClass:NewService"))).toBeLessThan(2.1);
+    expect(some.get("ApexClass:OldService")).toBeNull();
+    expect(ageOf(some.get("ApexClass:LocalOnly"))).toBeLessThan(0.1);
+  });
 });

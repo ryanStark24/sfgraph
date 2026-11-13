@@ -342,7 +342,8 @@ export interface PutHelper {
 }
 
 /** Lower-cased `name/arity` -> helper. */
-export type PutHelpers = ReadonlyMap<string, PutHelper>;
+/** One helper may put several of its parameters (`r.put(f1, a); r.put(f2, b);`). */
+export type PutHelpers = ReadonlyMap<string, readonly PutHelper[]>;
 
 export interface NameRefOpts {
   /** Types of variables in `code` (offsets in `code`). */
@@ -388,7 +389,7 @@ function splitParams(params: string[]): Array<{ name: string; type: string }> {
 export function collectPutHelpers(
   methods: ReadonlyArray<{ name: string; params: string[]; body: string }>,
 ): PutHelpers {
-  const out = new Map<string, PutHelper>();
+  const out = new Map<string, PutHelper[]>();
   // Every declared name/arity counts toward ambiguity, whether or not its body
   // has a `put`.
   const counts = new Map<string, number>();
@@ -400,7 +401,7 @@ export function collectPutHelpers(
     const params = splitParams(m.params);
     const key = `${m.name.toLowerCase()}/${params.length}`;
     if ((counts.get(key) ?? 0) > 1) continue;
-    let found: PutHelper | null = null;
+    const found: PutHelper[] = [];
     for (const hit of m.body.matchAll(GET_PUT_RE)) {
       if ((hit[2] ?? "").toLowerCase() !== "put") continue;
       const spans = argSpans(m.body, (hit.index ?? 0) + hit[0].length - 1);
@@ -421,10 +422,11 @@ export function collectPutHelpers(
         )
       )
         continue;
-      found = { recIdx, fieldIdx };
-      break;
+      if (!found.some((f) => f.recIdx === recIdx && f.fieldIdx === fieldIdx)) {
+        found.push({ recIdx, fieldIdx });
+      }
     }
-    if (found) out.set(key, found);
+    if (found.length > 0) out.set(key, found);
   }
   return out;
 }
@@ -555,22 +557,24 @@ export function emitNameRefEdges(
       if (/\bnew\s*$/i.test(code.slice(0, m.index ?? 0))) continue;
       const spans = argSpans(code, (m.index ?? 0) + m[0].length - 1);
       if (!spans) continue;
-      const helper = opts.putHelpers.get(`${(m[2] ?? "").toLowerCase()}/${spans.length}`);
-      const recSpan = helper ? spans[helper.recIdx] : undefined;
-      const fieldSpan = helper ? spans[helper.fieldIdx] : undefined;
-      if (!helper || !recSpan || !fieldSpan) continue;
-      const field = literalArg(code, raw, fieldSpan)?.trim();
-      if (!field || !/^[A-Za-z_]\w*$/.test(field) || field.toLowerCase() === "id") continue;
-      let at = recSpan.start;
-      while (at < recSpan.end && /\s/.test(code[at] ?? "")) at++;
-      const obj = recordTypeAt(code, at, {
-        lookup: opts.lookup,
-        excludedTypes: opts.scope.localTypes,
-      });
-      if (!obj || !isSObjectName(obj, opts.scope)) continue;
-      push(REL_TYPES.WRITES_FIELD, `CustomField:${stripNs(obj, ctx.namespace)}.${field}`, {
-        via: "sobject-put-helper",
-      });
+      const helpers = opts.putHelpers.get(`${(m[2] ?? "").toLowerCase()}/${spans.length}`);
+      for (const helper of helpers ?? []) {
+        const recSpan = spans[helper.recIdx];
+        const fieldSpan = spans[helper.fieldIdx];
+        if (!recSpan || !fieldSpan) continue;
+        const field = literalArg(code, raw, fieldSpan)?.trim();
+        if (!field || !/^[A-Za-z_]\w*$/.test(field) || field.toLowerCase() === "id") continue;
+        let at = recSpan.start;
+        while (at < recSpan.end && /\s/.test(code[at] ?? "")) at++;
+        const obj = recordTypeAt(code, at, {
+          lookup: opts.lookup,
+          excludedTypes: opts.scope.localTypes,
+        });
+        if (!obj || !isSObjectName(obj, opts.scope)) continue;
+        push(REL_TYPES.WRITES_FIELD, `CustomField:${stripNs(obj, ctx.namespace)}.${field}`, {
+          via: "sobject-put-helper",
+        });
+      }
     }
   }
 

@@ -14,8 +14,15 @@
 
 - **`freshness_report` uses the real change time, not ingest time.** Project ingest takes each member's last-changed time from its last git commit (read in one batched pass, not one process per file), or from the file modification time for files git has not committed or outside a git checkout. Org ingest uses Salesforce's `LastModifiedDate` where the source provides it. Folder members (objects with their fields, record types and rules, bundles, DataPacks) take the time of their newest file. Previously every member looked as new as the last ingest, so the hot/warm/cold buckets said little.
 - **Old freshness stamps heal on re-ingest.** A graph built by an earlier version has ingest-time stamps; a normal re-ingest of unchanged files now replaces them with the source change time, without `--rebuild`.
-- **A delta ingest with no changes still records the new commit.** Before, the stored source commit stayed at the old value when only unrelated files changed, so `staleness_check` and `resolve_frame` compared against an out-of-date revision.
+- **A delta ingest with no changes still records the new commit.** Before, the stored source commit stayed at the old value when only unrelated files changed, so `staleness_check` and `resolve_frame` compared against an out-of-date revision. `staleness_check` now also shows the stored source revision (`data.sourceRevision`, and one line in the text), so you can see which commit the map was built from.
+- **Shallow clones and git timeouts no longer give wrong change times.** In a shallow clone, a file whose last visible commit is the shallow boundary has an unknown real change time; it now gets no change time from git (instead of the boundary commit's time), so the ingest-time fallback applies and a time already stored is kept. The same holds for a file a timed-out or truncated `git log` never reached. Files git does not track still use their modification time.
+- **A helper with two dynamic `put` calls.** `twoPuts(SObject r, String f1, String f2) { r.put(f1, a); r.put(f2, b); }` now gives a write edge for both literal field names at a call site, not only the first.
+- **Upper-case metadata suffixes.** A file such as `roles/Sales_Lead.ROLE-meta.xml` is now typed `Role`, like `.role-meta.xml`, instead of the literal suffix `ROLE`.
 - **A Visualforce page missing from a project graph.** Two causes are fixed: a page under a sibling sub-root was never searched, and a page file that is a symlink was dropped.
+
+### Changes
+
+- **Shorter tool descriptions.** The `trace_upstream` and `trace_downstream` tool descriptions were shortened; behaviour and parameters are unchanged.
 
 ### Upgrade notes
 
@@ -27,6 +34,8 @@
   - If a Visualforce page is still missing after upgrading, the cause is not confirmed; a masked sample of the project tree is needed.
   - `SObject.put` helpers are followed in the same class only (not across classes, and one hop).
   - Standard (non-custom) fields in workflow formulas are not matched.
+  - Shallow clones: files last changed before the shallow boundary keep their previous time (or the ingest time on a first ingest), because their real change time is unknown. Fetch more history (`git fetch --deepen` or `--unshallow`) for accurate freshness.
+  - On a very large history, a `git log` that times out (60 seconds) or hits its output cap has the same effect for the files it did not reach.
 
 ## 1.8.0 — 2026-11-12
 
