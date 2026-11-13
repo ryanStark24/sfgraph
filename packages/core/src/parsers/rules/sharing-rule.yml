@@ -16,6 +16,7 @@ nodes:
       accessLevel: "${toString(item.accessLevel)}"
       audit: "${item.accessLevel == 'All'}"
 
+
   - label: SharingRule
     iterate: "${record.sharingCriteriaRules}"
     qname: "SharingRule:${record.object}.${item.fullName || item.name}"
@@ -23,6 +24,16 @@ nodes:
       ruleName: "${item.fullName || item.name}"
       object: "${record.object}"
       kind: "criteria"
+      accessLevel: "${toString(item.accessLevel)}"
+      audit: "${item.accessLevel == 'All'}"
+
+  - label: SharingRule
+    iterate: "${record.sharingGuestRules}"
+    qname: "SharingRule:${record.object}.${item.fullName || item.name}"
+    props:
+      ruleName: "${item.fullName || item.name}"
+      object: "${record.object}"
+      kind: "guest"
       accessLevel: "${toString(item.accessLevel)}"
       audit: "${item.accessLevel == 'All'}"
 
@@ -35,6 +46,7 @@ edges:
       accessLevel: "${toString(item.accessLevel)}"
       audit: "${item.accessLevel == 'All'}"
 
+
   - relType: SHARING_GRANTS
     iterate: "${record.sharingCriteriaRules}"
     src: "SharingRule:${record.object}.${item.fullName || item.name}"
@@ -43,17 +55,20 @@ edges:
       accessLevel: "${toString(item.accessLevel)}"
       audit: "${item.accessLevel == 'All'}"
 
+
   - relType: SHARING_TO_GROUP
     iterate: "${record.sharingOwnerRules}"
     when: "${item.sharedTo.group}"
     src: "SharingRule:${record.object}.${item.fullName || item.name}"
     dst: "Group:${item.sharedTo.group}"
 
+
   - relType: SHARING_TO_GROUP
     iterate: "${record.sharingCriteriaRules}"
     when: "${item.sharedTo.group}"
     src: "SharingRule:${record.object}.${item.fullName || item.name}"
     dst: "Group:${item.sharedTo.group}"
+
 
   - relType: SHARING_TO_ROLE
     iterate: "${record.sharingOwnerRules}"
@@ -63,6 +78,7 @@ edges:
     props:
       includesSubordinates: "${bool(item.sharedTo.roleAndSubordinates)}"
 
+
   - relType: SHARING_TO_ROLE
     iterate: "${record.sharingCriteriaRules}"
     when: "${item.sharedTo.role || item.sharedTo.roleAndSubordinates}"
@@ -70,9 +86,35 @@ edges:
     dst: "Role:${item.sharedTo.role || item.sharedTo.roleAndSubordinates}"
     props:
       includesSubordinates: "${bool(item.sharedTo.roleAndSubordinates)}"
+
 
   - relType: SHARING_FROM_OWNER_GROUP
     iterate: "${record.sharingOwnerRules}"
     when: "${item.sharedFrom.group}"
     src: "SharingRule:${record.object}.${item.fullName || item.name}"
     dst: "Group:${item.sharedFrom.group}"
+
+  - relType: SHARING_GRANTS
+    iterate: "${record.sharingGuestRules}"
+    src: "SharingRule:${record.object}.${item.fullName || item.name}"
+    dst: "CustomObject:${record.object}"
+    props:
+      accessLevel: "${toString(item.accessLevel)}"
+      audit: "${item.accessLevel == 'All'}"
+
+
+  - relType: SHARING_TO_GROUP
+    iterate: "${record.sharingGuestRules}"
+    when: "${item.sharedTo.group}"
+    src: "SharingRule:${record.object}.${item.fullName || item.name}"
+    dst: "Group:${item.sharedTo.group}"
+
+
+  - relType: SHARING_TO_ROLE
+    iterate: "${record.sharingGuestRules}"
+    when: "${item.sharedTo.role || item.sharedTo.roleAndSubordinates}"
+    src: "SharingRule:${record.object}.${item.fullName || item.name}"
+    dst: "Role:${item.sharedTo.role || item.sharedTo.roleAndSubordinates}"
+    props:
+      includesSubordinates: "${bool(item.sharedTo.roleAndSubordinates)}"
+

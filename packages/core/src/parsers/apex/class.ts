@@ -33,6 +33,7 @@ import {
 } from "./field-access.js";
 import {
   type RecordTypeOpts,
+  collectPutHelpers,
   emitInstanceCallEdges,
   emitNameRefEdges,
   makeTypeLookup,
@@ -1233,6 +1234,10 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         ...methods.flatMap((m) => paramDecls(m.params)),
       ]),
     };
+    // Same-class helpers that `put` a parameter-named field (S-1.8.1-010).
+    const putHelpers = collectPutHelpers(
+      methods.map((m) => ({ name: m.name, params: m.params, body: maskApex(m.body) })),
+    );
     // Methods declared in this file (inner classes' too: all are qnamed
     // under the outer class), for same-class call targets.
     const declared = new Map<string, { name: string; arities: Set<number> }>();
@@ -1447,7 +1452,7 @@ export class ApexClassParser implements Parser<ApexClassInput> {
         methodQname,
         callCode,
         rawDecl,
-        { lookup: callLookup, scope: methodScope },
+        { lookup: callLookup, scope: methodScope, putHelpers },
         edges,
         methodEdgeStart,
       );

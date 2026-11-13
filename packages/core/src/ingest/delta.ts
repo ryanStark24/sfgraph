@@ -243,6 +243,9 @@ export async function applyDelta(
     mergeOnly.length === 0;
   if (nothingChanged && !recovering) {
     if (plan.refreshed.length) store.upsertMemberRows(orgId, plan.refreshed);
+    // S-1.8.1-008: nothing indexable changed, but the checkout moved (a README
+    // commit): record the new source revision so staleness_check is not stale.
+    if (opts.sourceRevision) store.setSourceRevision(orgId, opts.sourceRevision);
     return null;
   }
   const ownedOf = (key: string): string[] => [

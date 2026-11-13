@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.8.1 — 2026-11-13
+
+### Added
+
+- **Project folders: more of a checkout is indexed.** Project ingest now reads the everyday metadata folders that gave no nodes before (roles, groups, queues, reports, report types, dashboards, quick actions, static resources, email templates, flow definitions, translations, custom permissions, global and standard value sets, connected apps, applications, remote site settings, auth providers, topics for objects, settings and path assistants). Any other folder of `*.<type>-meta.xml` files becomes a member typed from its suffix, so a folder sfgraph has no rule for still shows up (in `coverage.unknownTypes` when nothing parses it) instead of vanishing. Sibling sub-roots next to `main/default` (for example `force-app/extras/default`) are searched, and leaf files that are symlinks to files are followed.
+- **Loose fields and standard objects with only children.** A `*.field-meta.xml` placed directly in `objects/<Obj>/` (not in `fields/`) is indexed with its object edge. A standard object folder with no `.object-meta.xml` and no `fields/`, holding only record types and validation rules, now gives those nodes, and edits to them are noticed by delta ingest. Guest sharing rules (`sharingGuestRules`) are parsed like criteria-based rules.
+- **`trace_upstream` shows status and trigger events.** Reached rows carry `status` for flows, `active` for workflow rules and approval processes, and `events` for Apex triggers, and the markdown line shows them (for example `· Draft`, `· inactive`, `· before insert, after update`). Two new optional filters: `active_only` drops Draft, Obsolete, invalid and inactive members, and `events` keeps only triggers that fire on the given events. Rows hidden by a filter also drop their edges from `data` and the diagram; members that store no status stay.
+- **Workflow field updates are individual nodes with field lineage.** Each `fieldUpdates` entry becomes a `WorkflowFieldUpdate` node with a `WRITES_FIELD` edge to its target field, so `analyze_field` lists the exact update that writes a field. Workflow rules and field updates get `READS_FIELD` edges from their criteria and formulas, and a rule gets `WORKFLOW_TRIGGERS` to its field-update actions.
+- **`SObject.put` through a helper is a write.** When a method passes a record and a literal field name to a helper in the same class that calls `record.put(fieldName, value)`, the calling method now gets a `WRITES_FIELD` edge to that field.
+
+### Fixes
+
+- **`freshness_report` uses the real change time, not ingest time.** Project ingest takes each member's last-changed time from its last git commit (read in one batched pass, not one process per file), or from the file modification time for files git has not committed or outside a git checkout. Org ingest uses Salesforce's `LastModifiedDate` where the source provides it. Folder members (objects with their fields, record types and rules, bundles, DataPacks) take the time of their newest file. Previously every member looked as new as the last ingest, so the hot/warm/cold buckets said little.
+- **Old freshness stamps heal on re-ingest.** A graph built by an earlier version has ingest-time stamps; a normal re-ingest of unchanged files now replaces them with the source change time, without `--rebuild`.
+- **A delta ingest with no changes still records the new commit.** Before, the stored source commit stayed at the old value when only unrelated files changed, so `staleness_check` and `resolve_frame` compared against an out-of-date revision. `staleness_check` now also shows the stored source revision (`data.sourceRevision`, and one line in the text), so you can see which commit the map was built from.
+- **Shallow clones and git timeouts no longer give wrong change times.** In a shallow clone, a file whose last visible commit is the shallow boundary has an unknown real change time; it now gets no change time from git (instead of the boundary commit's time), so the ingest-time fallback applies and a time already stored is kept. The same holds for a file a timed-out or truncated `git log` never reached. Files git does not track still use their modification time.
+- **A helper with two dynamic `put` calls.** `twoPuts(SObject r, String f1, String f2) { r.put(f1, a); r.put(f2, b); }` now gives a write edge for both literal field names at a call site, not only the first.
+- **Upper-case metadata suffixes.** A file such as `roles/Sales_Lead.ROLE-meta.xml` is now typed `Role`, like `.role-meta.xml`, instead of the literal suffix `ROLE`.
+- **A Visualforce page missing from a project graph.** Two causes are fixed: a page under a sibling sub-root was never searched, and a page file that is a symlink was dropped.
+
+### Changes
+
+- **Shorter tool descriptions.** The `trace_upstream` and `trace_downstream` tool descriptions were shortened; behaviour and parameters are unchanged.
+
+### Upgrade notes
+
+- The first ingest after upgrading re-parses every member once, as after any release, because the parser generation stamp includes the version.
+- Existing maps' freshness heals on the next ingest of the project or org; no rebuild is needed.
+- Known limitations:
+  - If a file's content changes and is reverted before the next delta ingest, its node is unchanged, so the new change time is not applied until the next full ingest.
+  - A tracked child file deleted locally without a commit leaves its folder (object, bundle, DataPack) at the old git time until the next commit or full rebuild.
+  - If a Visualforce page is still missing after upgrading, the cause is not confirmed; a masked sample of the project tree is needed.
+  - `SObject.put` helpers are followed in the same class only (not across classes, and one hop).
+  - Standard (non-custom) fields in workflow formulas are not matched.
+  - Shallow clones: files last changed before the shallow boundary keep their previous time (or the ingest time on a first ingest), because their real change time is unknown. Fetch more history (`git fetch --deepen` or `--unshallow`) for accurate freshness.
+  - On a very large history, a `git log` that times out (60 seconds) or hits its output cap has the same effect for the files it did not reach.
+
 ## 1.8.0 — 2026-11-12
 
 ### Added

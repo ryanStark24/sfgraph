@@ -153,6 +153,12 @@ under their own markdown heading.
 // output.data: { buckets: { hot, current, stale, dead } }
 ```
 
+"Last change" is the real change time, not ingest time. A project ingest takes each
+file's last commit time from one batched `git log` pass (a bundle or object folder takes
+its newest file); a file edited since HEAD, an untracked file, or a project outside git
+uses the file's mtime. An org ingest uses the source's `LastModifiedDate` where the
+extractor gets one; ingest time is only the last fallback. Delta ingest follows the same rule.
+
 ### `analyze_field`
 
 ```jsonc
@@ -172,8 +178,10 @@ Readers/writers cover every `*_READS_FIELD` / `*_WRITES_FIELD` rel (Apex, Flow, 
 { "org": "alias", "qname": "ApexClass:Foo", "depth": 3,
   "include_security": false, "include_inferred": false,
   "include_structure": false,          // trace_downstream only
-  "rel_types": ["CALLS"], "labels": ["ApexClass"], "mermaid": false }
-// output.data: { found: true, nodes, edges, reached: [{ qualifiedName, label, hop, relType, hasNode, via?, role? }], pseudo, truncated, filtered }
+  "rel_types": ["CALLS"], "labels": ["ApexClass"], "mermaid": false,
+  "active_only": false,                // trace_upstream only: drop non-Active flows and inactive rules
+  "events": ["update"] }               // trace_upstream only: keep triggers with any of these events
+// output.data: { found: true, nodes, edges, reached: [{ qualifiedName, label, hop, relType, hasNode, via?, role?, status?, active?, events? }], pseudo, truncated, filtered }
 // unknown qname: summary "node not found: <qname>", data { found: false, qname, nodes: [], edges: [], reached: [], truncated: false },
 //                markdown suggests find_nodes { pattern: "*<name>*" }, follow_up_tools ["find_nodes"]
 ```
@@ -188,7 +196,9 @@ not expanded along DEFINES_FIELD, HAS_VALIDATION_RULE, HAS_RECORD_TYPE,
 CONTAINS, field→field READS_FIELD or DEPENDS_ON_FIELD; `include_structure:
 true` restores that), and Apex rolls up to class (reaching an ApexMethod also
 reaches its ApexClass and the class's other methods at the same hop).
-`trace_upstream` is unchanged.
+`trace_upstream` is unchanged apart from the status fields below.
+
+**Status and events (`trace_upstream`).** Reached rows carry `status` (flows: Active, Draft, Obsolete, InvalidDraft), `active` (workflow rules and approval processes, which store it) and `events` (triggers: `before insert`, `after update`, ...) when the node stores them, and the markdown line shows them compactly (`- Flow:X · Draft — hop 1 via TRIGGER_FIRES_ON`, `· inactive`, `· before insert, after update`). `active_only: true` drops flows whose status is not Active, other rows whose stored `status` is Draft, Obsolete, InvalidDraft, Inactive or Deleted (case-insensitive; a Network `Live` or a registration `Complete` stays) and members whose active flag is false; members with no status info (for example triggers) are kept. `events` (a string or array such as `"update"` or `["insert","update"]`) keeps triggers whose events include any of them, matching before and after both; non-trigger rows are unaffected. Both filters hide rows only: the traversal is unchanged, so things reached through a hidden row still list. Defaults leave the output unchanged.
 
 Rows with a `role` are shown but not counted: `root-member` (the root's own
 members) and, in `trace_downstream`, `standard-field` (a reached field with no
@@ -422,10 +432,16 @@ falls back to sfgraph's own data with a note.
 ```jsonc
 { "org": "alias" }
 // output.data
-{ "lastSyncedAt": 1715000000000, "ageDays": 3, "stale": false, "recommendation": "..." }
+{
+  "lastSyncedAt": 1715000000000, "ageDays": 3, "stale": false, "recommendation": "...",
+  "sourceRevision": { "gitBranch": "main", "gitCommit": "<40-hex commit>", "capturedAt": "2026-11-13T00:00:00.000Z" }
+}
 ```
 
-Stale threshold is 7 days.
+Stale threshold is 7 days. `sourceRevision` is the checkout the last project ingest
+recorded (a delta ingest that changed nothing indexable still moves it to the new
+commit); it is `null` for a live-org graph or one built before revisions were stored.
+The markdown adds one `Source revision:` line when a revision is stored.
 
 ### `explain_code`
 
