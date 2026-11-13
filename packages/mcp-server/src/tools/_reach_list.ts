@@ -134,8 +134,9 @@ export function renderReachList(opts: RenderReachListOpts): string {
       const rolled = k ? ` (+${k} method${k === 1 ? "" : "s"} via roll-up)` : "";
       const folded = e.folded?.length ? ` (+${e.folded.join(", ")})` : "";
       const owner = isMethodRow(e) ? ` (in ${owningClass(e.qualifiedName)})` : "";
+      const state = statusSuffix(e);
       lines.push(
-        `- ${e.qualifiedName}${owner}${rolled}${folded} — hop ${e.hop} via ${via}${e.hasNode ? "" : " (no node)"}`,
+        `- ${e.qualifiedName}${owner}${rolled}${folded}${state} — hop ${e.hop} via ${via}${e.hasNode ? "" : " (no node)"}`,
       );
     }
   }
@@ -208,6 +209,49 @@ export function renderReachList(opts: RenderReachListOpts): string {
     );
   }
   return lines.join("\n");
+}
+
+/** ` · Draft`, ` · inactive`, ` · before insert, after update`: what runs, compactly. */
+export function statusSuffix(e: {
+  status?: string | undefined;
+  active?: boolean | undefined;
+  events?: string[] | undefined;
+}): string {
+  const parts: string[] = [];
+  if (e.status) parts.push(e.status);
+  if (e.active === false) parts.push("inactive");
+  if (e.events && e.events.length > 0) parts.push(e.events.join(", "));
+  return parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
+}
+
+/** True when `want` ("update", "before insert") names one of a trigger's stored events. */
+function eventMatches(stored: string, want: string): boolean {
+  const s = stored.trim().toLowerCase();
+  const w = want.trim().toLowerCase();
+  return s === w || s.split(/\s+/).includes(w);
+}
+
+/**
+ * trace_upstream `active_only` / `events` filters, applied to the listed rows.
+ * `active_only` drops flows whose status is not Active and members whose
+ * stored active flag is false (no status info: kept). `events` keeps triggers
+ * whose events include any wanted event (`update` matches before and after
+ * update); rows that are not triggers are unaffected.
+ */
+export function keepByStatus(
+  e: ReachedEntry,
+  f: { activeOnly?: boolean; events?: string[] },
+): boolean {
+  if (f.activeOnly) {
+    if (e.status !== undefined && e.status !== "Active") return false;
+    if (e.active === false) return false;
+  }
+  if (f.events && f.events.length > 0 && e.label === "ApexTrigger" && e.events) {
+    if (e.events.length > 0 && !e.events.some((s) => f.events?.some((w) => eventMatches(s, w)))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** An Apex method row (ApexMethod or TestMethod label, `ApexMethod:` qname). */

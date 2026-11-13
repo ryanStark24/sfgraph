@@ -3,7 +3,7 @@ import { asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, numeric, relTypes, z } from "./_define.js";
 import { findNodesSuggestion, notFoundReport } from "./_not-found.js";
-import { renderReachList, shapeTrace, traceReport } from "./_reach_list.js";
+import { keepByStatus, renderReachList, shapeTrace, traceReport } from "./_reach_list.js";
 import { nameOf } from "./_report.js";
 
 const inputSchema = z.object({
@@ -26,6 +26,13 @@ const inputSchema = z.object({
   rel_types: relTypes(),
   /** Only list entries with these labels (traversal is unchanged). */
   labels: z.array(z.string()).optional(),
+  /** Drop flows whose status is not Active (Draft, Obsolete, InvalidDraft) and
+   *  members whose active flag is false (inactive workflow rules). Members with
+   *  no status info are kept. */
+  active_only: z.boolean().default(false),
+  /** Keep only triggers whose events include any of these ("update",
+   *  "insert", "before insert", ...). Other components are unaffected. */
+  events: z.union([z.string().min(1), z.array(z.string().min(1))]).optional(),
   /** Show the Picture (a diagram of at most 25 components); false hides it. */
   mermaid: z.boolean().default(true),
 });
@@ -71,10 +78,22 @@ defineTool({
     // The root is not a reached row, so name it for the Remote:<root>
     // duplicate check (review M2); a user class named like a platform
     // namespace is not platform Apex (review M1).
-    const { reached, pseudo, counted } = shapeTrace(r.reached ?? [], {
-      alsoPresent: [String(qname)],
-      hasClass: analyze.apexTypeExists(ctx.graphStore, ctx.orgId),
-    });
+    const statusFilter = {
+      activeOnly: input.active_only,
+      events: input.events === undefined ? [] : [input.events].flat(),
+    };
+    const dropped = new Set(
+      (r.reached ?? []).filter((e) => !keepByStatus(e, statusFilter)).map((e) => e.qualifiedName),
+    );
+    const live = (e: { srcQualifiedName: string; dstQualifiedName: string }): boolean =>
+      !dropped.has(String(e.srcQualifiedName)) && !dropped.has(String(e.dstQualifiedName));
+    const { reached, pseudo, counted } = shapeTrace(
+      (r.reached ?? []).filter((e) => !dropped.has(e.qualifiedName)),
+      {
+        alsoPresent: [String(qname)],
+        hasClass: analyze.apexTypeExists(ctx.graphStore, ctx.orgId),
+      },
+    );
     const truncated = r.truncated === true;
     const mdLines = [
       renderReachList({
@@ -112,7 +131,7 @@ defineTool({
         depth: input.depth,
         reached,
         pseudo,
-        edges: r.rowEdges ?? r.edges,
+        edges: (r.rowEdges ?? r.edges).filter(live),
         truncated,
         filtered: r.filtered ?? 0,
         structural: r.structural ?? 0,
@@ -122,8 +141,8 @@ defineTool({
       }),
       data: {
         found: true,
-        nodes: r.nodes,
-        edges: r.edges,
+        nodes: r.nodes.filter((n) => !dropped.has(String(n.qualifiedName))),
+        edges: r.edges.filter(live),
         reached,
         pseudo,
         truncated,
