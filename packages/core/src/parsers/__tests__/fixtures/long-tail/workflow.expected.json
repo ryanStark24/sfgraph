@@ -8,6 +8,17 @@
       }
     },
     {
+      "qualifiedName": "WorkflowFieldUpdate:Account.SetName",
+      "label": "WorkflowFieldUpdate",
+      "attributes": {
+        "name": "SetName",
+        "object": "Account",
+        "field": "Name",
+        "operation": null,
+        "formula": null
+      }
+    },
+    {
       "qualifiedName": "WorkflowRule:Account.Rule1",
       "label": "WorkflowRule",
       "attributes": {
@@ -20,6 +31,12 @@
   "edges": [
     {
       "srcQualifiedName": "Workflow:Account",
+      "dstQualifiedName": "WorkflowFieldUpdate:Account.SetName",
+      "relType": "CONTAINS",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "Workflow:Account",
       "dstQualifiedName": "WorkflowRule:Account.Rule1",
       "relType": "WORKFLOW_TRIGGERS",
       "attributes": {}
@@ -28,6 +45,12 @@
       "srcQualifiedName": "Workflow:Account",
       "dstQualifiedName": "CustomField:Account.Name",
       "relType": "WORKFLOW_UPDATES_FIELD",
+      "attributes": {}
+    },
+    {
+      "srcQualifiedName": "WorkflowFieldUpdate:Account.SetName",
+      "dstQualifiedName": "CustomField:Account.Name",
+      "relType": "WRITES_FIELD",
       "attributes": {}
     },
     {

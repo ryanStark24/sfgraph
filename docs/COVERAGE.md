@@ -55,7 +55,7 @@ Declarative YAML rules live in `packages/core/src/parsers/rules/`. Types and the
 | `PermissionSet` | `GRANTS_OBJECT_ACCESS`, `GRANTS_FIELD_ACCESS`, `GRANTS_APEX_ACCESS` |
 | `PermissionSetGroup` | `GRANTS_USER_PERMISSION` |
 | `SharingRules` | `SHARING_GRANTS`, `SHARING_TO_GROUP`, `SHARING_TO_ROLE`, `SHARING_FROM_OWNER_GROUP` |
-| `Workflow` | `WORKFLOW_TRIGGERS`, `WORKFLOW_UPDATES_FIELD`, `TRIGGER_FIRES_ON`, `CONTAINS` |
+| `Workflow` | `WORKFLOW_TRIGGERS` (also rule → its field updates), `WORKFLOW_UPDATES_FIELD`, `TRIGGER_FIRES_ON`, `CONTAINS`, `READS_FIELD` (rule criteria and formulas, field-update formulas), `WRITES_FIELD` from per-update `WorkflowFieldUpdate` nodes |
 | `ApprovalProcess` | `APPROVAL_USES_FORMULA` |
 | `Report`, `Dashboard` | `REPORTS_ON`, `READS_FIELD`; `DASHBOARD_USES_REPORT` |
 | `DuplicateRule` | `REFERENCES` |

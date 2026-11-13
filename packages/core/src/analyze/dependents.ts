@@ -47,6 +47,28 @@ export interface ReachedEntry {
   role?: "root-member" | "entry" | "standard-field";
   /** Containment partners folded into this row (containment.ts `row`). */
   folded?: string[];
+  /** Flow / FlowVersion `status` (Active, Draft, Obsolete, InvalidDraft), when stored. */
+  status?: string;
+  /** Stored active flag of a rule-backed member (WorkflowRule, approval process). */
+  active?: boolean;
+  /** ApexTrigger events, lowercase (`before insert`, `after update`, ...). */
+  events?: string[];
+}
+
+/** `status` / `active` / `events` of a node's attributes, only those present. */
+export function statusFieldsOf(
+  attrs: Record<string, unknown> | undefined,
+): Pick<ReachedEntry, "status" | "active" | "events"> {
+  const out: Pick<ReachedEntry, "status" | "active" | "events"> = {};
+  if (!attrs) return out;
+  if (typeof attrs.status === "string" && attrs.status !== "") out.status = attrs.status;
+  if (typeof attrs.active === "boolean") out.active = attrs.active;
+  else if (attrs.active === "true" || attrs.active === "false")
+    out.active = attrs.active === "true";
+  if (Array.isArray(attrs.events) && attrs.events.every((e) => typeof e === "string")) {
+    out.events = attrs.events as string[];
+  }
+  return out;
 }
 
 export interface TraversalResult {
@@ -151,6 +173,9 @@ export function foldRows(
     const gone = reached[fi];
     if (!row || !gone) continue;
     const folded = [...(row.folded ?? []), f].sort();
+    // Status stored only on the folded member (a FlowVersion) still shows on the row.
+    if (row.status === undefined && gone.status !== undefined) row.status = gone.status;
+    if (row.active === undefined && gone.active !== undefined) row.active = gone.active;
     const adopt =
       gone.hop < row.hop ||
       (row.via === "contained" && gone.via !== "contained" && gone.hop <= row.hop);
@@ -306,6 +331,7 @@ export function findDependents(
       relType,
       hasNode: n !== null,
       ...(via ? { via } : {}),
+      ...statusFieldsOf(n?.attributes),
     });
     next.push(q);
     return visited.size < cap;

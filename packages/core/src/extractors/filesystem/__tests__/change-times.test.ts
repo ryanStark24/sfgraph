@@ -283,6 +283,41 @@ describe("project ingest: lastModifiedAt from git", () => {
     expect(age("Other")).toBeGreaterThan(499);
   });
 
+  it("fallback opaque members and EXTRA_SPECS members get git-derived times", async () => {
+    sh("git", ["init", "-q"]);
+    const put = (rel: string): void => {
+      const f = path.join(proj, MD, rel);
+      mkdirSync(path.dirname(f), { recursive: true });
+      writeFileSync(f, "<x/>");
+    };
+    put("gadgets/Left.gadget-meta.xml"); // suffix fallback
+    put("roles/Sales_Lead.role-meta.xml"); // EXTRA_SPECS
+    put("reports/Acme_Folder/Pipeline.report-meta.xml"); // EXTRA_SPECS, nested
+    commitAt(400, "old");
+    put("gadgets/Right.gadget-meta.xml");
+    commitAt(3, "new");
+    // A checkout stamps every mtime "now": git must still win.
+    const now = new Date();
+    for (const rel of [
+      "gadgets/Left.gadget-meta.xml",
+      "roles/Sales_Lead.role-meta.xml",
+      "reports/Acme_Folder/Pipeline.report-meta.xml",
+      "gadgets/Right.gadget-meta.xml",
+    ]) {
+      utimesSync(path.join(proj, MD, rel), now, now);
+    }
+    const items = new Map<string, string | null>();
+    for await (const m of new FilesystemMetadataSource(proj, ["force-app"]).iter()) {
+      items.set(`${m.ref.memberType}:${m.ref.memberName}`, m.ref.lastModifiedAt);
+    }
+    const age = (k: string): number => (Date.now() - Date.parse(items.get(k) ?? "0")) / DAY;
+    expect(age("Gadget:Left")).toBeGreaterThan(399);
+    expect(age("Gadget:Right")).toBeGreaterThan(2.9);
+    expect(age("Gadget:Right")).toBeLessThan(3.1);
+    expect(age("Role:Sales_Lead")).toBeGreaterThan(399);
+    expect(age("Report:Acme_Folder/Pipeline")).toBeGreaterThan(399);
+  });
+
   it("a file edited since HEAD counts as its mtime (newest)", async () => {
     sh("git", ["init", "-q"]);
     cls("OldService");
