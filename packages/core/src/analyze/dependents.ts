@@ -173,6 +173,9 @@ export function foldRows(
     const gone = reached[fi];
     if (!row || !gone) continue;
     const folded = [...(row.folded ?? []), f].sort();
+    // Status stored only on the folded member (a FlowVersion) still shows on the row.
+    if (row.status === undefined && gone.status !== undefined) row.status = gone.status;
+    if (row.active === undefined && gone.active !== undefined) row.active = gone.active;
     const adopt =
       gone.hop < row.hop ||
       (row.via === "contained" && gone.via !== "contained" && gone.hop <= row.hop);

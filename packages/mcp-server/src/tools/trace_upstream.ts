@@ -81,8 +81,12 @@ defineTool({
       activeOnly: input.active_only === true,
       events: input.events ?? [],
     };
+    // A dropped row takes its folded members (a Flow's FlowVersion) with it, so
+    // their edges leave `data.edges` and the diagram too.
     const dropped = new Set(
-      (r.reached ?? []).filter((e) => !keepByStatus(e, statusFilter)).map((e) => e.qualifiedName),
+      (r.reached ?? [])
+        .filter((e) => !keepByStatus(e, statusFilter))
+        .flatMap((e) => [e.qualifiedName, ...(e.folded ?? [])]),
     );
     const live = (e: { srcQualifiedName: string; dstQualifiedName: string }): boolean =>
       !dropped.has(String(e.srcQualifiedName)) && !dropped.has(String(e.dstQualifiedName));
