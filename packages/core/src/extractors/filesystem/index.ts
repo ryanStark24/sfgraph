@@ -445,31 +445,228 @@ const BUNDLE_SPECS = [
   { segment: "aura", memberType: "AuraDefinitionBundle", category: METADATA_CATEGORY.AURA },
 ] as const;
 
+/**
+ * Everyday metadata folders with no dedicated parser. Each is read as an
+ * opaque member typed by the Metadata API type name the live generic path
+ * uses, so YAML rules (`Report`, `Dashboard`, ...) and the generic reference
+ * scanner treat a project member exactly like an org member (S-1.8.1-001).
+ * `nested`: folder-per-member layouts (`reports/<Folder>/<Name>.report-meta.xml`)
+ * are read recursively and named `<Folder>/<Name>`, the Metadata API fullName.
+ * Folders not listed here are still picked up by the suffix fallback in
+ * `walkMetaFolders`; listing a folder fixes its type names and makes it a
+ * recognised metadata root.
+ */
+interface MdExtraSpec {
+  segment: string;
+  /** Type suffix without the `-meta.xml` tail, e.g. `role` for `A.role-meta.xml`. */
+  suffix: string;
+  memberType: string;
+  nested?: boolean;
+}
+
+const EXTRA_SPECS: MdExtraSpec[] = [
+  { segment: "roles", suffix: "role", memberType: "Role" },
+  { segment: "groups", suffix: "group", memberType: "Group" },
+  { segment: "queues", suffix: "queue", memberType: "Queue" },
+  { segment: "reports", suffix: "report", memberType: "Report", nested: true },
+  { segment: "reportTypes", suffix: "reportType", memberType: "ReportType" },
+  { segment: "dashboards", suffix: "dashboard", memberType: "Dashboard", nested: true },
+  { segment: "quickActions", suffix: "quickAction", memberType: "QuickAction" },
+  { segment: "staticresources", suffix: "resource", memberType: "StaticResource" },
+  { segment: "email", suffix: "email", memberType: "EmailTemplate", nested: true },
+  { segment: "flowDefinitions", suffix: "flowDefinition", memberType: "FlowDefinition" },
+  { segment: "translations", suffix: "translation", memberType: "Translations" },
+  { segment: "customPermissions", suffix: "customPermission", memberType: "CustomPermission" },
+  { segment: "globalValueSets", suffix: "globalValueSet", memberType: "GlobalValueSet" },
+  { segment: "standardValueSets", suffix: "standardValueSet", memberType: "StandardValueSet" },
+  { segment: "connectedApps", suffix: "connectedApp", memberType: "ConnectedApp" },
+  { segment: "applications", suffix: "app", memberType: "CustomApplication" },
+  { segment: "remoteSiteSettings", suffix: "remoteSite", memberType: "RemoteSiteSetting" },
+  { segment: "authproviders", suffix: "authprovider", memberType: "AuthProvider" },
+  { segment: "topicsForObjects", suffix: "topicsForObjects", memberType: "TopicsForObjects" },
+  { segment: "settings", suffix: "settings", memberType: "Settings" },
+  { segment: "pathAssistants", suffix: "pathAssistant", memberType: "PathAssistant" },
+];
+
+/** Suffixes whose Metadata API type is not the suffix with a capital letter. */
+const SUFFIX_TYPE_OVERRIDES: Record<string, string> = {
+  app: "CustomApplication",
+  resource: "StaticResource",
+  email: "EmailTemplate",
+  md: "CustomMetadata",
+  translation: "Translations",
+  remoteSite: "RemoteSiteSetting",
+  authprovider: "AuthProvider",
+  objectTranslation: "CustomObjectTranslation",
+  site: "CustomSite",
+  tab: "CustomTab",
+  notiftype: "CustomNotificationType",
+  cachePartition: "PlatformCachePartition",
+  matchingRule: "MatchingRules",
+  weblink: "CustomPageWebLink",
+  emailservices: "EmailServicesFunction",
+  permissionset: "PermissionSet",
+  permissionsetgroup: "PermissionSetGroup",
+  labels: "CustomLabels",
+};
+
+/**
+ * Companion meta files of members other specs already claim (Apex, pages,
+ * bundles, objects and their children): the fallback never turns these into
+ * members, so nothing is counted twice.
+ */
+const CLAIMED_SUFFIXES: ReadonlySet<string> = new Set([
+  "cls",
+  "trigger",
+  "page",
+  "component",
+  "js",
+  "cmp",
+  "object",
+  "field",
+  "recordType",
+  "validationRule",
+  "businessProcess",
+  "compactLayout",
+  "listView",
+  "fieldSet",
+  "sharingReason",
+  "webLink",
+  "index",
+]);
+
+/** The Metadata API type a `<Name>.<suffix>-meta.xml` file stands for. */
+function typeForSuffix(suffix: string): string {
+  return SUFFIX_TYPE_OVERRIDES[suffix] ?? suffix.charAt(0).toUpperCase() + suffix.slice(1);
+}
+
+const EXTRA_BY_SEGMENT: ReadonlyMap<string, MdExtraSpec[]> = (() => {
+  const m = new Map<string, MdExtraSpec[]>();
+  for (const s of EXTRA_SPECS) m.set(s.segment, [...(m.get(s.segment) ?? []), s]);
+  return m;
+})();
+
+/** Folders `walkPackage` handles itself; the suffix fallback leaves them alone. */
+const HANDLED_SEGMENTS: ReadonlySet<string> = new Set([
+  ...LEAF_SPECS.map((s) => s.segment),
+  ...FOLDER_SPECS.map((s) => s.segment),
+  ...BUNDLE_SPECS.map((b) => b.segment),
+  "objects",
+]);
+
+/** Deepest folder level the fallback and the root search descend. */
+const MAX_WALK_DEPTH = 6;
+
+/** A directory entry that is a file, following a symlink to a file (never to a folder). */
+function isFileEntry(dir: string, e: fs.Dirent): boolean {
+  if (e.isFile()) return true;
+  if (!e.isSymbolicLink()) return false;
+  try {
+    return fs.statSync(path.join(dir, e.name)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** `Name` and type suffix of a `<Name>.<suffix>-meta.xml` file name, or null. */
+function splitMetaName(file: string): { name: string; suffix: string } | null {
+  const tail = "-meta.xml";
+  if (!file.endsWith(tail)) return null;
+  const base = file.slice(0, -tail.length);
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0 || dot === base.length - 1) return null;
+  return { name: base.slice(0, dot), suffix: base.slice(dot + 1) };
+}
+
+/**
+ * Members of the folders in EXTRA_SPECS plus every other
+ * `<folder>/**` + `/*.<type>-meta.xml` under `root` that no other spec claims
+ * (the suffix fallback). One opaque member per file, named by its path below
+ * the folder.
+ */
+function* walkMetaFolders(root: string): Iterable<IndexedMember> {
+  let top: fs.Dirent[];
+  try {
+    top = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  top.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const t of top) {
+    if (!t.isDirectory() || SKIP_DIR_NAMES.has(t.name)) continue;
+    if (HANDLED_SEGMENTS.has(t.name)) continue;
+    const specs = EXTRA_BY_SEGMENT.get(t.name);
+    const nested = !specs || specs.some((s) => s.nested);
+    const stack: Array<{ dir: string; rel: string; depth: number }> = [
+      { dir: path.join(root, t.name), rel: "", depth: 0 },
+    ];
+    while (stack.length > 0) {
+      const cur = stack.pop();
+      if (!cur) break;
+      let ents: fs.Dirent[];
+      try {
+        ents = fs.readdirSync(cur.dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      ents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      for (const e of ents) {
+        if (e.isDirectory()) {
+          // A flat listed folder (staticresources/Foo/ unzipped resources) is data.
+          if (!nested || SKIP_DIR_NAMES.has(e.name) || cur.depth + 1 >= MAX_WALK_DEPTH) continue;
+          stack.push({
+            dir: path.join(cur.dir, e.name),
+            rel: `${cur.rel}${e.name}/`,
+            depth: cur.depth + 1,
+          });
+          continue;
+        }
+        if (!isFileEntry(cur.dir, e)) continue;
+        const parts = splitMetaName(e.name);
+        if (!parts || CLAIMED_SUFFIXES.has(parts.suffix)) continue;
+        const spec = specs?.find((s) => s.suffix === parts.suffix);
+        const memberType = spec ? spec.memberType : typeForSuffix(parts.suffix);
+        const memberName = `${cur.rel}${parts.name}`;
+        const full = path.join(cur.dir, e.name);
+        yield indexed(`file://${full}`, memberType, fileStamp(full), () => ({
+          ref: makeRef(METADATA_CATEGORY.OPAQUE, memberType, memberName, full),
+          content: safeReadFile(full),
+        }));
+      }
+    }
+  }
+}
+
 function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<IndexedMember> {
   // sfdx source-format usually has `main/default` (and sometimes other subroots).
   // We walk every subdirectory of pkgRoot (besides skip-list) looking for
   // canonical metadata folders.
-  const queue: string[] = [pkgRoot];
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: pkgRoot, depth: 0 }];
   const mdRoots: string[] = [];
   while (queue.length > 0) {
-    const dir = queue.shift();
-    if (!dir) break;
+    const item = queue.shift();
+    if (!item) break;
+    const { dir, depth } = item;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
       continue;
     }
-    let foundMdFolder = false;
+    // sfdx's `default` subroot is a metadata root even when it holds only
+    // folders no spec lists (the suffix fallback reads those).
+    let foundMdFolder = path.basename(dir) === "default" && dir !== pkgRoot;
+    const subdirs: string[] = [];
     for (const e of entries) {
       if (!e.isDirectory()) continue;
       if (SKIP_DIR_NAMES.has(e.name)) continue;
       const full = path.join(dir, e.name);
       // Heuristic: a "main" or "default" subdir suggests we keep descending.
       if (e.name === "main" || e.name === "default") {
-        queue.push(full);
+        queue.push({ dir: full, depth: depth + 1 });
         continue;
       }
+      subdirs.push(full);
       // Recognized leaf folders trigger handling at this level.
       if (
         e.name === "classes" ||
@@ -495,13 +692,19 @@ function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<Inde
         e.name === "duplicateRules" ||
         e.name === "messageChannels" ||
         e.name === "tabs" ||
-        FOLDER_SPEC_SEGMENTS.has(e.name)
+        FOLDER_SPEC_SEGMENTS.has(e.name) ||
+        EXTRA_BY_SEGMENT.has(e.name)
       ) {
         foundMdFolder = true;
       }
     }
     if (foundMdFolder) {
       mdRoots.push(dir);
+    } else if (depth + 1 < MAX_WALK_DEPTH) {
+      // No metadata folder here: other subroots next to `main` (`force-app/
+      // extras/default`, `force-app/unpackaged/pages`) are searched too
+      // (S-1.8.1-007) instead of being silently skipped.
+      for (const sub of subdirs) queue.push({ dir: sub, depth: depth + 1 });
     }
   }
   if (mdRoots.length === 0) {
@@ -521,7 +724,7 @@ function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<Inde
         continue;
       }
       for (const f of files) {
-        if (!f.isFile()) continue;
+        if (!isFileEntry(dir, f)) continue;
         if (!f.name.endsWith(spec.suffix)) continue;
         const full = path.join(dir, f.name);
         const memberName = f.name.slice(0, -spec.suffix.length);
@@ -590,6 +793,10 @@ function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<Inde
       }
     }
 
+    // Everyday folders with no dedicated parser, and the suffix fallback for
+    // any other `<folder>/**/*.<type>-meta.xml` (opaque members, S-1.8.1-001).
+    yield* walkMetaFolders(root);
+
     // Component bundles (folder per bundle): LWC, and Aura (corecorr-08: Aura
     // bundles were recognised as a metadata folder but never yielded).
     for (const bundleSpec of BUNDLE_SPECS) {
@@ -642,21 +849,47 @@ function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<Inde
         objectNames?.add(o.name);
         const objDir = path.join(objectsDir, o.name);
         const objectXmlPath = path.join(objDir, `${o.name}.object-meta.xml`);
-        const fieldStamps = dirStamps(path.join(objDir, "fields"), ".field-meta.xml");
-        // Source trees often carry only `fields/` for standard / managed
-        // objects (no `<O>.object-meta.xml`). Still yield the object as a
-        // stub so its CustomField nodes exist; skip folders with neither.
+        const fieldsDir = path.join(objDir, "fields");
+        // Fields normally live in `fields/`; some trees put `*.field-meta.xml`
+        // straight in the object folder (S-1.8.1-004), so both are read.
+        const fieldStamps = dirStamps(fieldsDir, ".field-meta.xml");
+        const directFieldStamps = dirStamps(objDir, ".field-meta.xml");
+        const recordTypeStamps = dirStamps(
+          path.join(objDir, "recordTypes"),
+          ".recordType-meta.xml",
+        );
+        const validationRuleStamps = dirStamps(
+          path.join(objDir, "validationRules"),
+          ".validationRule-meta.xml",
+        );
+        // Source trees often carry only children (`fields/`, `recordTypes/`,
+        // `validationRules/`) for standard / managed objects (no
+        // `<O>.object-meta.xml`). Still yield the object as a stub so those
+        // nodes exist (S-1.8.1-005); skip folders with none of them.
         const stub = !fs.existsSync(objectXmlPath);
-        if (stub && fieldStamps === "") continue;
+        if (
+          stub &&
+          fieldStamps === "" &&
+          directFieldStamps === "" &&
+          recordTypeStamps === "" &&
+          validationRuleStamps === ""
+        ) {
+          continue;
+        }
         const fp = [
           stub ? "stub" : fileStamp(objectXmlPath),
           `fields=${fieldStamps}`,
-          `recordTypes=${dirStamps(path.join(objDir, "recordTypes"), ".recordType-meta.xml")}`,
-          `validationRules=${dirStamps(path.join(objDir, "validationRules"), ".validationRule-meta.xml")}`,
+          ...(directFieldStamps === "" ? [] : [`directFields=${directFieldStamps}`]),
+          `recordTypes=${recordTypeStamps}`,
+          `validationRules=${validationRuleStamps}`,
         ].join("\n");
-        const uriPath = stub ? path.join(objDir, "fields") : objectXmlPath;
+        const uriPath = stub ? (safeIsDir(fieldsDir) ? fieldsDir : objDir) : objectXmlPath;
         yield indexed(`file://${uriPath}`, "CustomObject", fp, () => {
-          const fields = readSubMap(path.join(objDir, "fields"), ".field-meta.xml");
+          // `fields/` wins over a same-named field placed directly in the folder.
+          const fields = {
+            ...readSubMap(objDir, ".field-meta.xml"),
+            ...readSubMap(fieldsDir, ".field-meta.xml"),
+          };
           const objectXml = stub ? "" : safeReadFile(objectXmlPath);
           const recordTypes = readSubMap(path.join(objDir, "recordTypes"), ".recordType-meta.xml");
           const validationRules = readSubMap(
