@@ -29,18 +29,17 @@ const inputSchema = z.object({
   /** Drop flows whose status is not Active (Draft, Obsolete, InvalidDraft) and
    *  members whose active flag is false (inactive workflow rules). Members with
    *  no status info are kept. */
-  active_only: z.boolean().default(false),
+  active_only: z.boolean().optional(),
   /** Keep only triggers whose events include any of these ("update",
    *  "insert", "before insert", ...). Other components are unaffected. */
-  events: z.union([z.string().min(1), z.array(z.string().min(1))]).optional(),
+  events: z.preprocess((v) => (typeof v === "string" ? [v] : v), z.array(z.string()).optional()),
   /** Show the Picture (a diagram of at most 25 components); false hides it. */
   mermaid: z.boolean().default(true),
 });
 
 defineTool({
   name: "trace_upstream",
-  description:
-    "Use for 'what depends on / calls X'. Lists what reaches `qname`, `depth` hops back, with each link. Unknown qname: 'node not found'.",
+  description: "Use for 'what depends on / calls X' (`qname`, `depth`). Unknown: not found.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
@@ -79,8 +78,8 @@ defineTool({
     // duplicate check (review M2); a user class named like a platform
     // namespace is not platform Apex (review M1).
     const statusFilter = {
-      activeOnly: input.active_only,
-      events: input.events === undefined ? [] : [input.events].flat(),
+      activeOnly: input.active_only === true,
+      events: input.events ?? [],
     };
     const dropped = new Set(
       (r.reached ?? []).filter((e) => !keepByStatus(e, statusFilter)).map((e) => e.qualifiedName),
