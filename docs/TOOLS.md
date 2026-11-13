@@ -153,6 +153,12 @@ under their own markdown heading.
 // output.data: { buckets: { hot, current, stale, dead } }
 ```
 
+"Last change" is the real change time, not ingest time. A project ingest takes each
+file's last commit time from one batched `git log` pass (a bundle or object folder takes
+its newest file); a file edited since HEAD, an untracked file, or a project outside git
+uses the file's mtime. An org ingest uses the source's `LastModifiedDate` where the
+extractor gets one; ingest time is only the last fallback. Delta ingest follows the same rule.
+
 ### `analyze_field`
 
 ```jsonc

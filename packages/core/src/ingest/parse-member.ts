@@ -301,9 +301,26 @@ export async function parseMember(
   const t0 = performance.now();
   try {
     const result = await parser.parse(adapted.input, ctx);
+    stampSourceChangeTime(result, ref.lastModifiedAt);
     return { kind: "parsed", result, parseMs: performance.now() - t0 };
   } catch (e) {
     return { kind: "error", phase: "parse", ...errorParts(e), parseMs: performance.now() - t0 };
+  }
+}
+
+/**
+ * S-1.8.1-003: parsers stamp `lastModifiedAt` with the parse time, which makes
+ * every node look hot. The member's own change time (a commit time or mtime
+ * from the project source, `LastModifiedDate` from an org) replaces it when
+ * the source gave one; the parse time stays the last fallback.
+ */
+function stampSourceChangeTime(result: ParseResult, lastModifiedAt: string | null): void {
+  if (!lastModifiedAt) return;
+  const ms = Date.parse(lastModifiedAt);
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  for (const n of result.nodes) {
+    n.lastModifiedAt = ms;
+    n.lastModifiedAuthoritative = true;
   }
 }
 

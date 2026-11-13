@@ -8,6 +8,7 @@ import type {
   RawMember,
 } from "../interfaces/metadata-source.js";
 import { VLOCITY_NAMESPACE_CANDIDATES } from "../live-org/capabilities.js";
+import { ChangeTimes, type GitRunner } from "./change-times.js";
 import { type DataPackReport, indexDataPacks } from "./vlocity-datapacks.js";
 
 const SKIP_DIR_NAMES = new Set(["node_modules", ".git", "dist", "coverage", ".sfdx", ".sf"]);
@@ -25,7 +26,11 @@ export class FilesystemMetadataSource implements MetadataSource {
   /** Populated while iter() walks vlocity/datapacks (type counts + skipped packs). */
   readonly dataPackReport: DataPackReport = { skipped: [], types: {} };
 
-  constructor(rootDir: string, packageDirs?: string[]) {
+  /** Runs the VCS for change times; tests inject a counting fake. */
+  private readonly gitRunner: GitRunner | undefined;
+
+  constructor(rootDir: string, packageDirs?: string[], opts: { git?: GitRunner } = {}) {
+    this.gitRunner = opts.git;
     this.rootDir = rootDir;
     this.packageDirs = packageDirs && packageDirs.length > 0 ? packageDirs : ["force-app"];
   }
@@ -77,12 +82,18 @@ export class FilesystemMetadataSource implements MetadataSource {
    */
   async *iterIndexed(): AsyncIterable<IndexedMember> {
     const objectNames = new Set<string>();
+    // One batched pass over history for every member's change time (never per file).
+    const dp = path.join(this.rootDir, "vlocity", "datapacks");
+    const times = await ChangeTimes.load(
+      this.rootDir,
+      [...this.packageDirs.map((p) => path.resolve(this.rootDir, p)), dp],
+      this.gitRunner,
+    );
     for (const pkg of this.packageDirs) {
       const pkgRoot = path.resolve(this.rootDir, pkg);
       if (!safeIsDir(pkgRoot)) continue;
-      yield* walkPackage(pkgRoot, objectNames);
+      yield* walkPackage(pkgRoot, objectNames, times);
     }
-    const dp = path.join(this.rootDir, "vlocity", "datapacks");
     if (safeIsDir(dp)) {
       const packs = indexDataPacks(dp, this.dataPackReport, {
         vlocityNamespace: detectVlocityNamespace(objectNames),
@@ -92,7 +103,14 @@ export class FilesystemMetadataSource implements MetadataSource {
           ...e,
           load: async () => {
             const m = await e.load();
-            return m ? { ...m, fingerprint: e.fingerprint } : null;
+            if (!m) return null;
+            // The whole pack folder: child element files are inlined by loadPack.
+            const at = times.lookup(path.dirname(e.key.replace(/^file:\/\//, "")));
+            return {
+              ...m,
+              ref: at ? { ...m.ref, lastModifiedAt: at } : m.ref,
+              fingerprint: e.fingerprint,
+            };
           },
         };
       }
@@ -190,14 +208,6 @@ function safeReadFile(p: string): string {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") readFailures += 1;
     return "";
-  }
-}
-
-function mtimeIso(p: string): string | null {
-  try {
-    return fs.statSync(p).mtime.toISOString();
-  } catch {
-    return null;
   }
 }
 
@@ -584,7 +594,11 @@ function splitMetaName(file: string): { name: string; suffix: string } | null {
  * (the suffix fallback). One opaque member per file, named by its path below
  * the folder.
  */
-function* walkMetaFolders(root: string, allRoots: readonly string[]): Iterable<IndexedMember> {
+function* walkMetaFolders(
+  root: string,
+  allRoots: readonly string[],
+  times: ChangeTimes,
+): Iterable<IndexedMember> {
   // A folder that is, or holds, another metadata root is walked as that root.
   const holdsRoot = (d: string): boolean =>
     allRoots.some((r) => r !== root && (r === d || r.startsWith(d + path.sep)));
@@ -634,7 +648,7 @@ function* walkMetaFolders(root: string, allRoots: readonly string[]): Iterable<I
         const memberName = `${cur.rel}${parts.name}`;
         const full = path.join(cur.dir, e.name);
         yield indexed(`file://${full}`, memberType, fileStamp(full), () => ({
-          ref: makeRef(METADATA_CATEGORY.OPAQUE, memberType, memberName, full),
+          ref: makeRef(METADATA_CATEGORY.OPAQUE, memberType, memberName, full, times),
           content: safeReadFile(full),
         }));
       }
@@ -643,16 +657,24 @@ function* walkMetaFolders(root: string, allRoots: readonly string[]): Iterable<I
 }
 
 /** Every member once: a source path another walker already yielded is dropped. */
-function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<IndexedMember> {
+function* walkPackage(
+  pkgRoot: string,
+  objectNames: Set<string> | undefined,
+  times: ChangeTimes,
+): Iterable<IndexedMember> {
   const seen = new Set<string>();
-  for (const m of walkPackageRoots(pkgRoot, objectNames)) {
+  for (const m of walkPackageRoots(pkgRoot, objectNames, times)) {
     if (seen.has(m.key)) continue;
     seen.add(m.key);
     yield m;
   }
 }
 
-function* walkPackageRoots(pkgRoot: string, objectNames?: Set<string>): Iterable<IndexedMember> {
+function* walkPackageRoots(
+  pkgRoot: string,
+  objectNames: Set<string> | undefined,
+  times: ChangeTimes,
+): Iterable<IndexedMember> {
   // sfdx source-format usually has `main/default` (and sometimes other subroots).
   // We walk every subdirectory of pkgRoot (besides skip-list) looking for
   // canonical metadata folders.
@@ -744,7 +766,7 @@ function* walkPackageRoots(pkgRoot: string, objectNames?: Set<string>): Iterable
         const full = path.join(dir, f.name);
         const memberName = f.name.slice(0, -spec.suffix.length);
         yield indexed(`file://${full}`, spec.memberType, fileStamp(full), () => ({
-          ref: makeRef(spec.category, spec.memberType, memberName, full),
+          ref: makeRef(spec.category, spec.memberType, memberName, full, times),
           content: safeReadFile(full),
         }));
       }
@@ -767,7 +789,7 @@ function* walkPackageRoots(pkgRoot: string, objectNames?: Set<string>): Iterable
           if (name === null) continue;
           const full = path.join(segDir, ent.name);
           yield indexed(`file://${full}`, spec.memberType, fileStamp(full), () => ({
-            ref: makeRef(spec.category, spec.memberType, name, full),
+            ref: makeRef(spec.category, spec.memberType, name, full, times),
             content: safeReadFile(full),
           }));
           continue;
@@ -789,7 +811,7 @@ function* walkPackageRoots(pkgRoot: string, objectNames?: Set<string>): Iterable
             parentSeen = true;
             // The member is named for its folder (the Metadata API fullName).
             yield indexed(`file://${full}`, spec.memberType, fileStamp(full), () => ({
-              ref: makeRef(spec.category, spec.memberType, ent.name, full),
+              ref: makeRef(spec.category, spec.memberType, ent.name, full, times),
               content: safeReadFile(full),
             }));
             continue;
@@ -799,7 +821,13 @@ function* walkPackageRoots(pkgRoot: string, objectNames?: Set<string>): Iterable
             if (childBase !== null) {
               const childType = spec.child.memberType;
               yield indexed(`file://${full}`, childType, fileStamp(full), () => ({
-                ref: makeRef(METADATA_CATEGORY.OPAQUE, childType, `${ent.name}.${childBase}`, full),
+                ref: makeRef(
+                  METADATA_CATEGORY.OPAQUE,
+                  childType,
+                  `${ent.name}.${childBase}`,
+                  full,
+                  times,
+                ),
                 content: safeReadFile(full),
               }));
             }
@@ -810,7 +838,7 @@ function* walkPackageRoots(pkgRoot: string, objectNames?: Set<string>): Iterable
 
     // Everyday folders with no dedicated parser, and the suffix fallback for
     // any other `<folder>/**/*.<type>-meta.xml` (opaque members, S-1.8.1-001).
-    yield* walkMetaFolders(root, mdRoots);
+    yield* walkMetaFolders(root, mdRoots, times);
 
     // Component bundles (folder per bundle): LWC, and Aura (corecorr-08: Aura
     // bundles were recognised as a metadata folder but never yielded).
@@ -843,7 +871,7 @@ function* walkPackageRoots(pkgRoot: string, objectNames?: Set<string>): Iterable
           const files: Record<string, string> = {};
           for (const n of names) files[n] = safeReadFile(path.join(bundleDir, n));
           return {
-            ref: makeRef(bundleSpec.category, bundleSpec.memberType, b.name, bundleDir),
+            ref: makeRef(bundleSpec.category, bundleSpec.memberType, b.name, bundleDir, times),
             content: JSON.stringify({ bundleName: b.name, files }),
           };
         });
@@ -920,7 +948,7 @@ function* walkPackageRoots(pkgRoot: string, objectNames?: Set<string>): Iterable
             validationRules,
           });
           return {
-            ref: makeRef(METADATA_CATEGORY.OBJECT, "CustomObject", o.name, uriPath),
+            ref: makeRef(METADATA_CATEGORY.OBJECT, "CustomObject", o.name, uriPath, times, objDir),
             content,
           };
         });
@@ -952,12 +980,15 @@ function makeRef(
   memberType: string,
   memberName: string,
   absPath: string,
+  times: ChangeTimes,
+  /** Where the change time comes from when wider than the uri (an object folder). */
+  timePath: string = absPath,
 ): MemberRef {
   return {
     category,
     memberType,
     memberName,
-    lastModifiedAt: mtimeIso(absPath),
+    lastModifiedAt: times.lookup(timePath),
     sourceUri: `file://${absPath}`,
     namespace: null,
   };
