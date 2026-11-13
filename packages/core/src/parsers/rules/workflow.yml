@@ -33,6 +33,19 @@ nodes:
       template: "${item.template | raw}"
       description: "${item.description | raw}"
 
+  # One node per <fieldUpdates> block (S-1.8.1-009), so "who writes field X"
+  # names the update, not the whole workflow file.
+  - label: WorkflowFieldUpdate
+    iterate: "${record.fieldUpdates}"
+    when: "${item.fullName}"
+    qname: "WorkflowFieldUpdate:${record.object || record.name}.${item.fullName}"
+    props:
+      name: "${toString(item.fullName)}"
+      object: "${record.object || record.name}"
+      field: "${item.field | raw}"
+      operation: "${item.operation | raw}"
+      formula: "${item.formula | raw}"
+
 edges:
   - relType: CONTAINS
     iterate: "${record.alerts}"
@@ -55,3 +68,66 @@ edges:
     when: "${item.field}"
     src: "Workflow:${record.object || record.name}"
     dst: "CustomField:${record.object || record.name}.${item.field}"
+
+  # --- Per-update writers and reads (S-1.8.1-009) ---
+  - relType: CONTAINS
+    iterate: "${record.fieldUpdates}"
+    when: "${item.fullName}"
+    src: "Workflow:${record.object || record.name}"
+    dst: "WorkflowFieldUpdate:${record.object || record.name}.${item.fullName}"
+
+  # The update writes its target field (a bare field name of the object).
+  - relType: WRITES_FIELD
+    iterate: "${record.fieldUpdates}"
+    when: "${item.fullName && item.field}"
+    src: "WorkflowFieldUpdate:${record.object || record.name}.${item.fullName}"
+    dst: "CustomField:${record.object || record.name}.${item.field}"
+
+  # Rule -> field update, from the rule's <actions> of type FieldUpdate.
+  - relType: WORKFLOW_TRIGGERS
+    iterate: "${flatChildren(record.rules,'actions')}"
+    when: "${item.child.type == 'FieldUpdate' && item.child.name}"
+    src: "WorkflowRule:${record.object || record.name}.${item.parent.fullName || item.parent.name}"
+    dst: "WorkflowFieldUpdate:${record.object || record.name}.${item.child.name}"
+
+  # Formula reads, same pattern as the approval-process entry formula: bare
+  # X__c names are this object's fields; a Rel__r.F hop reads the lookup Rel__c
+  # (the far object is unknown, so nothing is guessed for F); names inside
+  # string literals and after a . or $ are not this object's fields.
+
+  - relType: READS_FIELD
+    iterate: "${flatMatches(record.fieldUpdates,'formula','(?<![\\w.$])([A-Za-z_][A-Za-z0-9_]*__c)\\b(?!\\s*\\.)(?=(?:[^\\x22]*\\x22[^\\x22]*\\x22)*[^\\x22]*$)(?=(?:[^\\x27]*\\x27[^\\x27]*\\x27)*[^\\x27]*$)')}"
+    src: "WorkflowFieldUpdate:${record.object || record.name}.${item.parent.fullName}"
+    dst: "CustomField:${record.object || record.name}.${item.child}"
+
+  - relType: READS_FIELD
+    iterate: "${flatMatches(record.fieldUpdates,'formula','(?<![\\w.$])([A-Za-z_][A-Za-z0-9_]*)__r\\s*\\.(?=(?:[^\\x22]*\\x22[^\\x22]*\\x22)*[^\\x22]*$)(?=(?:[^\\x27]*\\x27[^\\x27]*\\x27)*[^\\x27]*$)')}"
+    src: "WorkflowFieldUpdate:${record.object || record.name}.${item.parent.fullName}"
+    dst: "CustomField:${record.object || record.name}.${item.child}__c"
+
+  - relType: READS_FIELD
+    iterate: "${flatMatches(record.rules,'formula','(?<![\\w.$])([A-Za-z_][A-Za-z0-9_]*__c)\\b(?!\\s*\\.)(?=(?:[^\\x22]*\\x22[^\\x22]*\\x22)*[^\\x22]*$)(?=(?:[^\\x27]*\\x27[^\\x27]*\\x27)*[^\\x27]*$)')}"
+    src: "WorkflowRule:${record.object || record.name}.${item.parent.fullName || item.parent.name}"
+    dst: "CustomField:${record.object || record.name}.${item.child}"
+
+  - relType: READS_FIELD
+    iterate: "${flatMatches(record.rules,'formula','(?<![\\w.$])([A-Za-z_][A-Za-z0-9_]*)__r\\s*\\.(?=(?:[^\\x22]*\\x22[^\\x22]*\\x22)*[^\\x22]*$)(?=(?:[^\\x27]*\\x27[^\\x27]*\\x27)*[^\\x27]*$)')}"
+    src: "WorkflowRule:${record.object || record.name}.${item.parent.fullName || item.parent.name}"
+    dst: "CustomField:${record.object || record.name}.${item.child}__c"
+
+  # Rule criteria items name `Object.Field` (or a bare field of this object).
+  - relType: READS_FIELD
+    iterate: "${flatChildren(record.rules,'criteriaItems')}"
+    when: "${item.child.field && split(toString(item.child.field),'.')[1]}"
+    src: "WorkflowRule:${record.object || record.name}.${item.parent.fullName || item.parent.name}"
+    dst: "CustomField:${item.child.field}"
+    props:
+      criteria: true
+
+  - relType: READS_FIELD
+    iterate: "${flatChildren(record.rules,'criteriaItems')}"
+    when: "${item.child.field && !split(toString(item.child.field),'.')[1]}"
+    src: "WorkflowRule:${record.object || record.name}.${item.parent.fullName || item.parent.name}"
+    dst: "CustomField:${record.object || record.name}.${item.child.field}"
+    props:
+      criteria: true
