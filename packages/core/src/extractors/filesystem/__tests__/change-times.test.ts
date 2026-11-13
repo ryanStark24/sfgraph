@@ -539,4 +539,18 @@ describe("project ingest: lastModifiedAt from git", () => {
     expect(some.get("ApexClass:OldService")).toBeNull();
     expect(ageOf(some.get("ApexClass:LocalOnly"))).toBeLessThan(0.1);
   });
+
+  it("S-1.8.1-014: a repo with no commits yet (unborn HEAD) keeps mtime for staged files", async () => {
+    sh("git", ["init", "-q"]);
+    cls("StagedService");
+    sh("git", ["add", "-A"]);
+    const old = new Date(Date.now() - 30 * DAY);
+    for (const f of ["StagedService.cls", "StagedService.cls-meta.xml"]) {
+      utimesSync(path.join(proj, MD, "classes", f), old, old);
+    }
+    const got = await stamps(proj);
+    const age = ageOf(got.get("ApexClass:StagedService"));
+    expect(age).toBeGreaterThan(29.9);
+    expect(age).toBeLessThan(30.1);
+  });
 });

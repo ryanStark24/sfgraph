@@ -215,7 +215,13 @@ export class ChangeTimes {
       root,
     );
     // A failed, timed-out or truncated log leaves tracked files unseen.
-    const partial = log === null || (typeof log === "object" && log.partial);
+    let partial = log === null || (typeof log === "object" && log.partial);
+    // An unborn HEAD (no commits yet) is "no history", not a partial log: every
+    // file, staged or not, keeps its mtime.
+    if (log === null) {
+      const head = await run([...cfg, "rev-parse", "--verify", "-q", "HEAD"], root);
+      if (head === null || textOf(head).trim() === "") partial = false;
+    }
     for (const [rel, v] of parseGitLogDetailed(textOf(log))) {
       const abs = path.join(root, rel);
       if (boundary.has(v.hash)) this.unknown.add(abs);
