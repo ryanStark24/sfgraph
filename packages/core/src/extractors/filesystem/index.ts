@@ -584,7 +584,10 @@ function splitMetaName(file: string): { name: string; suffix: string } | null {
  * (the suffix fallback). One opaque member per file, named by its path below
  * the folder.
  */
-function* walkMetaFolders(root: string): Iterable<IndexedMember> {
+function* walkMetaFolders(root: string, allRoots: readonly string[]): Iterable<IndexedMember> {
+  // A folder that is, or holds, another metadata root is walked as that root.
+  const holdsRoot = (d: string): boolean =>
+    allRoots.some((r) => r !== root && (r === d || r.startsWith(d + path.sep)));
   let top: fs.Dirent[];
   try {
     top = fs.readdirSync(root, { withFileTypes: true });
@@ -595,6 +598,7 @@ function* walkMetaFolders(root: string): Iterable<IndexedMember> {
   for (const t of top) {
     if (!t.isDirectory() || SKIP_DIR_NAMES.has(t.name)) continue;
     if (HANDLED_SEGMENTS.has(t.name)) continue;
+    if (holdsRoot(path.join(root, t.name))) continue;
     const specs = EXTRA_BY_SEGMENT.get(t.name);
     const nested = !specs || specs.some((s) => s.nested);
     const stack: Array<{ dir: string; rel: string; depth: number }> = [
@@ -614,6 +618,7 @@ function* walkMetaFolders(root: string): Iterable<IndexedMember> {
         if (e.isDirectory()) {
           // A flat listed folder (staticresources/Foo/ unzipped resources) is data.
           if (!nested || SKIP_DIR_NAMES.has(e.name) || cur.depth + 1 >= MAX_WALK_DEPTH) continue;
+          if (holdsRoot(path.join(cur.dir, e.name))) continue;
           stack.push({
             dir: path.join(cur.dir, e.name),
             rel: `${cur.rel}${e.name}/`,
@@ -637,7 +642,17 @@ function* walkMetaFolders(root: string): Iterable<IndexedMember> {
   }
 }
 
+/** Every member once: a source path another walker already yielded is dropped. */
 function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<IndexedMember> {
+  const seen = new Set<string>();
+  for (const m of walkPackageRoots(pkgRoot, objectNames)) {
+    if (seen.has(m.key)) continue;
+    seen.add(m.key);
+    yield m;
+  }
+}
+
+function* walkPackageRoots(pkgRoot: string, objectNames?: Set<string>): Iterable<IndexedMember> {
   // sfdx source-format usually has `main/default` (and sometimes other subroots).
   // We walk every subdirectory of pkgRoot (besides skip-list) looking for
   // canonical metadata folders.
@@ -795,7 +810,7 @@ function* walkPackage(pkgRoot: string, objectNames?: Set<string>): Iterable<Inde
 
     // Everyday folders with no dedicated parser, and the suffix fallback for
     // any other `<folder>/**/*.<type>-meta.xml` (opaque members, S-1.8.1-001).
-    yield* walkMetaFolders(root);
+    yield* walkMetaFolders(root, mdRoots);
 
     // Component bundles (folder per bundle): LWC, and Aura (corecorr-08: Aura
     // bundles were recognised as a metadata folder but never yielded).

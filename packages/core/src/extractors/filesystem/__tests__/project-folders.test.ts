@@ -116,6 +116,18 @@ describe("S-1.8.1-001: everyday metadata folders", () => {
     expect(new Set(got).size).toBe(got.length);
   });
 
+  it("yields a file once when metadata sits at the package root and under main/default", async () => {
+    w("force-app/classes/Top.cls", "public class Top {}");
+    w(`${MD}/flows/Run.flow-meta.xml`, "<Flow/>");
+    w(`${MD}/gadgets/G.gadget-meta.xml`);
+    w("force-app/gizmos/Z.gizmo-meta.xml");
+    const src = FilesystemMetadataSource.fromProjectRoot(workDir);
+    const uris: string[] = [];
+    for await (const e of src.iterIndexed()) uris.push(e.key);
+    expect(new Set(uris).size).toBe(uris.length);
+    expect(keys(await collect())).toEqual(["ApexClass:Top", "Flow:Run", "Gadget:G", "Gizmo:Z"]);
+  });
+
   it("reads folders under another subroot of the package directory", async () => {
     w(`${MD}/classes/Svc.cls`, "public class Svc {}");
     w("force-app/extras/default/gadgets/Extra.gadget-meta.xml");
