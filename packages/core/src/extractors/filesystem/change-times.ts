@@ -54,6 +54,45 @@ export function mtimeMs(p: string): number | null {
   }
 }
 
+export const WALK_MAX_ENTRIES = 5000;
+
+/** mtime of a file, or the newest file mtime under a directory (bounded walk; the directory's own mtime if empty or unreadable). */
+export function newestMtime(p: string): number | null {
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(p);
+  } catch {
+    return null;
+  }
+  if (!st.isDirectory()) return st.mtimeMs;
+  let newest = 0;
+  let seen = 0;
+  const queue = [p];
+  while (queue.length > 0 && seen < WALK_MAX_ENTRIES) {
+    const dir = queue.pop() as string;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (++seen > WALK_MAX_ENTRIES) break;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name !== ".git" && e.name !== "node_modules") queue.push(full);
+      } else if (e.isFile()) {
+        try {
+          newest = Math.max(newest, fs.statSync(full).mtimeMs);
+        } catch {
+          /* vanished mid-walk */
+        }
+      }
+    }
+  }
+  return newest > 0 ? newest : st.mtimeMs;
+}
+
 const splitZ = (s: string): string[] => s.split("\0").filter((p) => p.length > 0);
 
 /** Parse `git log --format=%x01%ct --name-only -z` (newest commit first): file -> newest commit time (ms). */
@@ -172,10 +211,25 @@ export class ChangeTimes {
     }
   }
 
-  /** Last change of a file, or the newest file under a directory; mtime when git has no answer. ISO string or null. */
+  /**
+   * Last change of a file, or of the newest file under a directory. Git's
+   * answer when it has one; otherwise the file's mtime, and for a directory the
+   * newest descendant file's mtime (editing a file does not bump its parent
+   * directory's mtime). ISO string or null.
+   */
   lookup(abs: string): string | null {
     const p = path.resolve(abs);
-    const ms = this.files.get(p) ?? this.dirs.get(p) ?? mtimeMs(p);
+    let ms: number | null | undefined = this.files.get(p) ?? this.dirs.get(p);
+    if (ms === undefined) {
+      const cached = this.walked.get(p);
+      if (cached !== undefined) ms = cached;
+      else {
+        ms = newestMtime(p);
+        this.walked.set(p, ms);
+      }
+    }
     return ms === null || ms === undefined ? null : new Date(ms).toISOString();
   }
+
+  private readonly walked = new Map<string, number | null>();
 }

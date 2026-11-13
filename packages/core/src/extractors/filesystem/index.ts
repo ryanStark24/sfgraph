@@ -104,7 +104,8 @@ export class FilesystemMetadataSource implements MetadataSource {
           load: async () => {
             const m = await e.load();
             if (!m) return null;
-            const at = times.lookup(e.key.replace(/^file:\/\//, ""));
+            // The whole pack folder: child element files are inlined by loadPack.
+            const at = times.lookup(path.dirname(e.key.replace(/^file:\/\//, "")));
             return {
               ...m,
               ref: at ? { ...m.ref, lastModifiedAt: at } : m.ref,

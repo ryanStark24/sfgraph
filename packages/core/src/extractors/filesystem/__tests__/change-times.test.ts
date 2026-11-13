@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { freshnessBucket, freshnessScore } from "../../../analyze/freshness.js";
 import { liveIngest } from "../../../ingest/live-ingest.js";
 import { offlineResolvedOrg } from "../../../ingest/offline-org.js";
+import { nodeTableName } from "../../../storage/identifier.js";
 import { SqliteGraphStore } from "../../../storage/sqlite/graph-store.js";
 import { type GitRunner, execGit } from "../change-times.js";
 import { FilesystemMetadataSource } from "../index.js";
@@ -64,18 +65,25 @@ function commitAt(daysAgo: number, msg: string): void {
 
 async function ingestAndRead(
   git?: GitRunner,
+  reuse?: { dbPath: string; rebuild: boolean; seedNow?: boolean },
 ): Promise<Map<string, { bucket: string; ageDays: number }>> {
   const store = new SqliteGraphStore({
-    dbPath: path.join(dir, `g-${Math.random().toString(36).slice(2)}.sqlite`),
+    dbPath: reuse?.dbPath ?? path.join(dir, `g-${Math.random().toString(36).slice(2)}.sqlite`),
     backupDir: path.join(dir, "bk"),
   });
   await store.init();
   try {
+    if (reuse?.seedNow) {
+      // What a 1.8.0 graph looks like: every class stamped with ingest time.
+      store.db
+        .prepare(`UPDATE ${nodeTableName("ApexClass")} SET last_modified_at = ?`)
+        .run(Date.now());
+    }
     await liveIngest({
       alias: "fixture",
       graphStore: store,
       mode: "full",
-      rebuild: true,
+      rebuild: reuse ? reuse.rebuild : true,
       preResolved: offlineResolvedOrg(proj, "fixture"),
       metadataSource: new FilesystemMetadataSource(proj, ["force-app"], git ? { git } : {}),
       logger,
@@ -120,6 +128,23 @@ describe("project ingest: lastModifiedAt from git", () => {
     expect(got.get("NewService")?.ageDays).toBeGreaterThan(1.9);
     expect(got.get("NewService")?.ageDays).toBeLessThan(2.1);
     expect(got.get("OldService")?.ageDays).toBeGreaterThan(399);
+  });
+
+  it("an existing graph with ingest-time stamps heals on a non-rebuild re-ingest of unchanged files", async () => {
+    sh("git", ["init", "-q"]);
+    cls("OldService");
+    commitAt(400, "old");
+    cls("NewService");
+    commitAt(2, "new");
+    const dbPath = path.join(dir, "upgrade.sqlite");
+    await ingestAndRead(undefined, { dbPath, rebuild: true });
+    // Old behaviour: everything "now"; then the same unchanged files re-ingested.
+    const healed = await ingestAndRead(undefined, { dbPath, rebuild: false, seedNow: true });
+    expect(healed.get("OldService")?.bucket).toBe("dead");
+    expect(healed.get("NewService")?.bucket).toBe("hot");
+    // Another run changes nothing: later fallback stamps never win.
+    const again = await ingestAndRead(undefined, { dbPath, rebuild: false });
+    expect(again.get("OldService")?.ageDays).toBeGreaterThan(399);
   });
 
   it("a file edited since HEAD counts as its mtime (newest)", async () => {
@@ -171,6 +196,62 @@ describe("project ingest: lastModifiedAt from git", () => {
     expect(got.get("PlainService")?.bucket).toBe("hot");
     expect(got.get("AgedService")?.ageDays).toBeGreaterThan(199);
     expect(got.get("AgedService")?.bucket).toBe("stale");
+  });
+
+  it("outside git, a folder member takes its newest file, not the folder mtime", async () => {
+    const objDir = path.join(proj, MD, "objects", "Acme_Order__c");
+    mkdirSync(path.join(objDir, "fields"), { recursive: true });
+    const objFile = path.join(objDir, "Acme_Order__c.object-meta.xml");
+    writeFileSync(
+      objFile,
+      `<?xml version="1.0" encoding="UTF-8"?><CustomObject xmlns="http://soap.sforce.com/2006/04/metadata"><label>Acme Order</label></CustomObject>`,
+    );
+    const fld = path.join(objDir, "fields", "Total__c.field-meta.xml");
+    writeFileSync(fld, "<CustomField/>");
+    const old = new Date(Date.now() - 300 * DAY);
+    const recent = new Date(Date.now() - 3 * DAY);
+    utimesSync(objFile, old, old);
+    utimesSync(fld, recent, recent);
+    utimesSync(path.join(objDir, "fields"), old, old);
+    utimesSync(objDir, old, old);
+    const items: Array<{ memberType: string; at: string | null }> = [];
+    for await (const m of new FilesystemMetadataSource(proj, ["force-app"]).iter()) {
+      items.push({ memberType: m.ref.memberType, at: m.ref.lastModifiedAt });
+    }
+    const obj = items.find((i) => i.memberType === "CustomObject");
+    const ageDays = (Date.now() - Date.parse(obj?.at ?? "0")) / DAY;
+    expect(ageDays).toBeGreaterThan(2.9);
+    expect(ageDays).toBeLessThan(3.1);
+  });
+
+  it("a DataPack takes the newest file of its folder, not just _DataPack.json", async () => {
+    const pack = path.join(proj, "vlocity", "datapacks", "OmniScript", "Acme_Flow_English");
+    mkdirSync(pack, { recursive: true });
+    const main = path.join(pack, "Acme_Flow_English_DataPack.json");
+    writeFileSync(
+      main,
+      JSON.stringify({
+        VlocityDataPackType: "OmniScript",
+        Type: "Acme",
+        SubType: "Flow",
+        Language: "English",
+      }),
+    );
+    const child = path.join(pack, "Acme_Flow_Step1.json");
+    writeFileSync(child, "{}");
+    const old = new Date(Date.now() - 300 * DAY);
+    const recent = new Date(Date.now() - 1 * DAY);
+    utimesSync(main, old, old);
+    utimesSync(child, recent, recent);
+    utimesSync(pack, old, old);
+    const items: Array<{ memberType: string; at: string | null }> = [];
+    for await (const m of new FilesystemMetadataSource(proj, ["force-app"]).iter()) {
+      items.push({ memberType: m.ref.memberType, at: m.ref.lastModifiedAt });
+    }
+    const dp = items.find((i) => i.memberType === "OmniScript");
+    const ageDays = (Date.now() - Date.parse(dp?.at ?? "0")) / DAY;
+    expect(ageDays).toBeGreaterThan(0.9);
+    expect(ageDays).toBeLessThan(1.1);
   });
 
   it("history is read in a few batched calls, not one process per file", async () => {
