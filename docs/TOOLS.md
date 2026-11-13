@@ -432,10 +432,16 @@ falls back to sfgraph's own data with a note.
 ```jsonc
 { "org": "alias" }
 // output.data
-{ "lastSyncedAt": 1715000000000, "ageDays": 3, "stale": false, "recommendation": "..." }
+{
+  "lastSyncedAt": 1715000000000, "ageDays": 3, "stale": false, "recommendation": "...",
+  "sourceRevision": { "gitBranch": "main", "gitCommit": "<40-hex commit>", "capturedAt": "2026-11-13T00:00:00.000Z" }
+}
 ```
 
-Stale threshold is 7 days.
+Stale threshold is 7 days. `sourceRevision` is the checkout the last project ingest
+recorded (a delta ingest that changed nothing indexable still moves it to the new
+commit); it is `null` for a live-org graph or one built before revisions were stored.
+The markdown adds one `Source revision:` line when a revision is stored.
 
 ### `explain_code`
 

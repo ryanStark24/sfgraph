@@ -117,4 +117,17 @@ describe("put helper one-hop propagation", () => {
       "CustomField:Acme_Order__c.Region__c",
     ]);
   });
+
+  it("S-1.8.1-014: a helper with two dynamic puts writes both literal fields", async () => {
+    const edges = await parse(`public class OrderService {
+      static void twoPuts(SObject r, String f1, String f2) { r.put(f1, 'a'); r.put(f2, 'b'); }
+      public void run(Acme_Order__c order) {
+        twoPuts(order, 'Status__c', 'Region__c');
+      }
+    }`);
+    expect(writes(edges, "ApexMethod:OrderService.run(1)")).toEqual([
+      "CustomField:Acme_Order__c.Region__c",
+      "CustomField:Acme_Order__c.Status__c",
+    ]);
+  });
 });
