@@ -174,6 +174,9 @@ export class ChangeTimes {
         "log",
         "--format=%x01%ct",
         "--name-only",
+        // Combined diff for merges: a file changed while resolving a conflict
+        // is attributed to the merge commit, not an older parent.
+        "-c",
         "--no-renames",
         "--no-ext-diff",
         "--no-textconv",

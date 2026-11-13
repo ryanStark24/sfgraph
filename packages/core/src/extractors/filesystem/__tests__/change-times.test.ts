@@ -249,6 +249,40 @@ describe("project ingest: lastModifiedAt from git", () => {
     expect(ageDays).toBeLessThan(0.1);
   });
 
+  it("a file changed while resolving a merge conflict takes the merge commit's time", async () => {
+    const path1 = path.join(proj, MD, "classes", "Conflicted.cls");
+    const body = (x: string) =>
+      `public class Conflicted { public String v() { return '${x}'; } }\n`;
+    mkdirSync(path.dirname(path1), { recursive: true });
+    sh("git", ["init", "-q"]);
+    sh("git", ["checkout", "-q", "-b", "main"]);
+    writeFileSync(path1, body("base"));
+    cls("Other");
+    commitAt(500, "base");
+    sh("git", ["checkout", "-q", "-b", "side"]);
+    writeFileSync(path1, body("side"));
+    commitAt(400, "side");
+    sh("git", ["checkout", "-q", "main"]);
+    writeFileSync(path1, body("main"));
+    commitAt(300, "main");
+    try {
+      sh("git", ["merge", "-q", "--no-commit", "--no-ff", "side"]);
+    } catch {
+      /* conflict expected */
+    }
+    writeFileSync(path1, body("resolved"));
+    commitAt(5, "merge");
+    const items = new Map<string, string | null>();
+    for await (const m of new FilesystemMetadataSource(proj, ["force-app"]).iter()) {
+      items.set(m.ref.memberName, m.ref.lastModifiedAt);
+    }
+    const age = (n: string): number => (Date.now() - Date.parse(items.get(n) ?? "0")) / DAY;
+    expect(age("Conflicted")).toBeGreaterThan(4.9);
+    expect(age("Conflicted")).toBeLessThan(5.1);
+    // A file the merge did not touch keeps its own commit time.
+    expect(age("Other")).toBeGreaterThan(499);
+  });
+
   it("a file edited since HEAD counts as its mtime (newest)", async () => {
     sh("git", ["init", "-q"]);
     cls("OldService");
