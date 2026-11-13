@@ -191,6 +191,41 @@ function evalAtom(token: string, ctx: EvalCtx): unknown {
         if (typeof v === "string" || typeof v === "number") out.push(String(v));
       }
       result = out;
+    } else if (name === "flatChildren") {
+      // flatChildren(array, 'key') -> [{parent, child}] for every `key` child of
+      // every element, so an edge can name the owning element (workflow rule ->
+      // its criteriaItems / actions).
+      const key = String(args[1] ?? "");
+      const out: unknown[] = [];
+      const parents = Array.isArray(args[0]) ? (args[0] as unknown[]) : [args[0]];
+      for (const parent of parents) {
+        if (!parent || typeof parent !== "object") continue;
+        const v = (parent as Record<string, unknown>)[key];
+        for (const child of Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]) {
+          out.push({ parent, child });
+        }
+      }
+      result = out;
+    } else if (name === "flatMatches") {
+      // flatMatches(array, 'key', 'regex') -> [{parent, child}] where child is
+      // each distinct first-capture match of `regex` in the string `parent[key]`.
+      const key = String(args[1] ?? "");
+      const re = new RegExp(String(args[2] ?? ""), "g");
+      const parents = Array.isArray(args[0]) ? (args[0] as unknown[]) : [args[0]];
+      const out: unknown[] = [];
+      for (const parent of parents) {
+        if (!parent || typeof parent !== "object") continue;
+        const text = (parent as Record<string, unknown>)[key];
+        if (typeof text !== "string") continue;
+        const seen = new Set<string>();
+        for (const m of text.matchAll(re)) {
+          const hit = m[1] ?? m[0];
+          if (seen.has(hit)) continue;
+          seen.add(hit);
+          out.push({ parent, child: hit });
+        }
+      }
+      result = out;
     } else if (name === "take") {
       // take(array, n) -> first n elements (bounded attributes)
       const n = Number(args[1] ?? 0);

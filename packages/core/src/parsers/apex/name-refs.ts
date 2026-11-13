@@ -332,11 +332,101 @@ function isDeclarationAt(code: string, at: number): boolean {
 // ---------------------------------------------------------------------------
 // Labels, Type.forName, get/put, field tokens, EventBus.publish
 
+/**
+ * A same-class helper whose parameter `fieldIdx` flows into
+ * `<param recIdx>.put(<param fieldIdx>, …)` (S-1.8.1-010).
+ */
+export interface PutHelper {
+  recIdx: number;
+  fieldIdx: number;
+}
+
+/** Lower-cased `name/arity` -> helper. */
+export type PutHelpers = ReadonlyMap<string, PutHelper>;
+
 export interface NameRefOpts {
   /** Types of variables in `code` (offsets in `code`). */
   lookup?: TypeLookup | undefined;
   scope: ClassRefScope;
   triggerObject?: string | undefined;
+  /** Same-class `put` helpers (see `collectPutHelpers`). */
+  putHelpers?: PutHelpers | undefined;
+}
+
+/** `Type name` parameter list -> [{name, type}], split on top-level commas. */
+function splitParams(params: string[]): Array<{ name: string; type: string }> {
+  const parts: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of params.join(",")) {
+    if (ch === "<") depth++;
+    else if (ch === ">") depth--;
+    if (ch === "," && depth === 0) {
+      parts.push(cur);
+      cur = "";
+    } else cur += ch;
+  }
+  parts.push(cur);
+  return parts
+    .map((p) => p.replace(/\bfinal\b/gi, "").trim())
+    .filter((p) => p.length > 0)
+    .map((p) => {
+      const m = p.match(new RegExp(`^(.*?)\\s*(${IDENT})$`, "s"));
+      return { name: m?.[2] ?? "", type: (m?.[1] ?? "").trim() };
+    });
+}
+
+/**
+ * Same-class helpers of the shape
+ * `static void setField(SObject rec, String f, Object v) { rec.put(f, v); }`:
+ * `put`'s receiver and field-name argument are both parameters of the method
+ * (the field name a String). Keyed by `name/arity`; a name and arity declared
+ * more than once (overloads we cannot tell apart) is dropped. One hop only: a
+ * helper that forwards its parameter to another helper is not followed.
+ * `methods[].body` is masked Apex (string contents blanked).
+ */
+export function collectPutHelpers(
+  methods: ReadonlyArray<{ name: string; params: string[]; body: string }>,
+): PutHelpers {
+  const out = new Map<string, PutHelper>();
+  // Every declared name/arity counts toward ambiguity, whether or not its body
+  // has a `put`.
+  const counts = new Map<string, number>();
+  for (const m of methods) {
+    const k = `${m.name.toLowerCase()}/${splitParams(m.params).length}`;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  for (const m of methods) {
+    const params = splitParams(m.params);
+    const key = `${m.name.toLowerCase()}/${params.length}`;
+    if ((counts.get(key) ?? 0) > 1) continue;
+    let found: PutHelper | null = null;
+    for (const hit of m.body.matchAll(GET_PUT_RE)) {
+      if ((hit[2] ?? "").toLowerCase() !== "put") continue;
+      const spans = argSpans(m.body, (hit.index ?? 0) + hit[0].length - 1);
+      if (!spans || spans.length !== 2 || !spans[0]) continue;
+      const recIdx = params.findIndex((p) => p.name === (hit[1] ?? ""));
+      const arg = m.body.slice(spans[0].start, spans[0].end).trim();
+      const fieldIdx = params.findIndex((p) => p.name === arg);
+      if (recIdx < 0 || fieldIdx < 0 || recIdx === fieldIdx) continue;
+      if (params[fieldIdx]?.type.toLowerCase() !== "string") continue;
+      // The receiver must be an sObject (`SObject` or a concrete type), never a
+      // List/Set/Map or another class that happens to have `put`.
+      const recType = params[recIdx]?.type ?? "";
+      if (
+        recType.toLowerCase() !== "sobject" &&
+        !(
+          /^[A-Za-z]\w*$/.test(recType) &&
+          (OBJECT_SUFFIX_RE.test(recType) || isStandardSObject(recType.toLowerCase()))
+        )
+      )
+        continue;
+      found = { recIdx, fieldIdx };
+      break;
+    }
+    if (found) out.set(key, found);
+  }
+  return out;
 }
 
 const LABEL_RE = new RegExp(`(?<![\\w.$])(?:(System)\\s*\\.\\s*)?Label\\s*\\.\\s*(${IDENT})`, "gi");
@@ -451,6 +541,36 @@ export function emitNameRefEdges(
           { via: isPut ? "sobject-put" : "sobject-get" },
         );
       }
+    }
+  }
+
+  // Call sites of a same-class put helper: `setField(order, 'Status__c', v)`
+  // writes `Status__c` on the record type of the argument at the call site.
+  if (raw !== null && opts.putHelpers && opts.putHelpers.size > 0 && opts.lookup) {
+    const self = opts.scope.selfName?.toLowerCase();
+    const callRe = new RegExp(`(?<![\\w.$])(?:(${IDENT})\\s*\\.\\s*)?(${IDENT})\\s*\\(`, "g");
+    for (const m of code.matchAll(callRe)) {
+      const qual = m[1]?.toLowerCase();
+      if (qual !== undefined && qual !== "this" && qual !== self) continue;
+      if (/\bnew\s*$/i.test(code.slice(0, m.index ?? 0))) continue;
+      const spans = argSpans(code, (m.index ?? 0) + m[0].length - 1);
+      if (!spans) continue;
+      const helper = opts.putHelpers.get(`${(m[2] ?? "").toLowerCase()}/${spans.length}`);
+      const recSpan = helper ? spans[helper.recIdx] : undefined;
+      const fieldSpan = helper ? spans[helper.fieldIdx] : undefined;
+      if (!helper || !recSpan || !fieldSpan) continue;
+      const field = literalArg(code, raw, fieldSpan)?.trim();
+      if (!field || !/^[A-Za-z_]\w*$/.test(field) || field.toLowerCase() === "id") continue;
+      let at = recSpan.start;
+      while (at < recSpan.end && /\s/.test(code[at] ?? "")) at++;
+      const obj = recordTypeAt(code, at, {
+        lookup: opts.lookup,
+        excludedTypes: opts.scope.localTypes,
+      });
+      if (!obj || !isSObjectName(obj, opts.scope)) continue;
+      push(REL_TYPES.WRITES_FIELD, `CustomField:${stripNs(obj, ctx.namespace)}.${field}`, {
+        via: "sobject-put-helper",
+      });
     }
   }
 
