@@ -29,7 +29,7 @@ const inputSchema = z.object({
 defineTool({
   name: "trace_downstream",
   description:
-    "Use for 'what does X depend on / call'. Lists what `qname` reaches, `depth` hops out, with each link. Unknown qname: 'node not found'.",
+    "Use for 'what does X depend on / call'. Lists what `qname` reaches, `depth` hops out. Unknown: not found.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
