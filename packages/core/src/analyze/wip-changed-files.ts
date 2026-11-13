@@ -25,7 +25,7 @@ const SKIP_DIR_NAMES = new Set(["node_modules", ".git", "dist", "coverage", ".sf
  * defined in any config scope is blanked by name (git skips an empty
  * command). Null when a driver name cannot be passed safely via `-c`.
  */
-function safeGitConfig(root: string): string[] | null {
+export function safeGitConfig(root: string): string[] | null {
   const base = [
     "-c",
     "core.fsmonitor=false",

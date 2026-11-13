@@ -112,9 +112,14 @@ interface Ctx {
 
 function delta(
   ctx: Ctx,
-  extra: { onFullRebuild?: () => void; parsePool?: LiveIngestOpts["parsePool"] } = {},
+  extra: {
+    onFullRebuild?: () => void;
+    parsePool?: LiveIngestOpts["parsePool"];
+    sourceRevision?: LiveIngestOpts["sourceRevision"];
+  } = {},
 ): Promise<RunDeltaResult> {
   return runDeltaIngest({
+    ...(extra.sourceRevision ? { sourceRevision: extra.sourceRevision } : {}),
     ...(extra.parsePool ? { parsePool: extra.parsePool } : {}),
     alias: "fixture",
     graphStore: ctx.store,
@@ -354,6 +359,23 @@ describe("project delta ingestion: same graph as a full rebuild", () => {
         /^delta: \+0 ~0 -0 \(=\d+ unchanged\) in \d+(\.\d)?s$/.test(String(c[0])),
       ),
     ).toBe(true);
+  });
+
+  it("S-1.8.1-008: a no-op delta (only a README changed) still records the new source commit", async () => {
+    const ctx = await baseline();
+    const oid = offlineResolvedOrg(proj, "fixture").orgId;
+    const rev = (c: string) => ({
+      gitBranch: "main",
+      gitCommit: c.repeat(40),
+      capturedAt: "2026-11-13T00:00:00.000Z",
+    });
+    ctx.store.setSourceRevision(oid, rev("a"));
+    w("README.md", "# Example project\n\nA docs-only change.\n");
+    const r = await delta(ctx, { sourceRevision: rev("b") });
+    expect(r).toMatchObject({ kind: "delta", added: 0, changed: 0, deleted: 0 });
+    expect(r.result).toBeUndefined(); // the no-op path
+    expect(ctx.store.getSourceRevision(oid)?.gitCommit).toBe("b".repeat(40));
+    await ctx.store.close();
   });
 
   it("11. legacy-graph: no member hashes -> message and full rebuild", async () => {
