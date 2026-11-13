@@ -389,15 +389,17 @@ export function collectPutHelpers(
   methods: ReadonlyArray<{ name: string; params: string[]; body: string }>,
 ): PutHelpers {
   const out = new Map<string, PutHelper>();
-  const dropped = new Set<string>();
+  // Every declared name/arity counts toward ambiguity, whether or not its body
+  // has a `put`.
+  const counts = new Map<string, number>();
+  for (const m of methods) {
+    const k = `${m.name.toLowerCase()}/${splitParams(m.params).length}`;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
   for (const m of methods) {
     const params = splitParams(m.params);
     const key = `${m.name.toLowerCase()}/${params.length}`;
-    if (out.has(key) || dropped.has(key)) {
-      out.delete(key);
-      dropped.add(key);
-      continue;
-    }
+    if ((counts.get(key) ?? 0) > 1) continue;
     let found: PutHelper | null = null;
     for (const hit of m.body.matchAll(GET_PUT_RE)) {
       if ((hit[2] ?? "").toLowerCase() !== "put") continue;
@@ -408,6 +410,17 @@ export function collectPutHelpers(
       const fieldIdx = params.findIndex((p) => p.name === arg);
       if (recIdx < 0 || fieldIdx < 0 || recIdx === fieldIdx) continue;
       if (params[fieldIdx]?.type.toLowerCase() !== "string") continue;
+      // The receiver must be an sObject (`SObject` or a concrete type), never a
+      // List/Set/Map or another class that happens to have `put`.
+      const recType = params[recIdx]?.type ?? "";
+      if (
+        recType.toLowerCase() !== "sobject" &&
+        !(
+          /^[A-Za-z]\w*$/.test(recType) &&
+          (OBJECT_SUFFIX_RE.test(recType) || isStandardSObject(recType.toLowerCase()))
+        )
+      )
+        continue;
       found = { recIdx, fieldIdx };
       break;
     }
@@ -535,7 +548,7 @@ export function emitNameRefEdges(
   // writes `Status__c` on the record type of the argument at the call site.
   if (raw !== null && opts.putHelpers && opts.putHelpers.size > 0 && opts.lookup) {
     const self = opts.scope.selfName?.toLowerCase();
-    const callRe = new RegExp(`(?<![\\w$])(?:(${IDENT})\\s*\\.\\s*)?(${IDENT})\\s*\\(`, "g");
+    const callRe = new RegExp(`(?<![\\w.$])(?:(${IDENT})\\s*\\.\\s*)?(${IDENT})\\s*\\(`, "g");
     for (const m of code.matchAll(callRe)) {
       const qual = m[1]?.toLowerCase();
       if (qual !== undefined && qual !== "this" && qual !== self) continue;

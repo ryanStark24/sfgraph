@@ -82,4 +82,39 @@ describe("put helper one-hop propagation", () => {
     }`);
     expect(writes(edges, "ApexMethod:OrderService.run(2)")).toEqual([]);
   });
+
+  it("ignores a Map receiver (cache helper)", async () => {
+    const edges = await parse(`public class OrderService {
+      static void cache(Map<String, Account> records, String key, Account value) { records.put(key, value); }
+      public void run(Map<String, Account> records, Account acc) {
+        cache(records, 'Status__c', acc);
+      }
+    }`);
+    expect(writes(edges, "ApexMethod:OrderService.run(2)")).toEqual([]);
+  });
+
+  it("an earlier non-writing overload of the same name and arity makes the helper ambiguous", async () => {
+    const edges = await parse(`public class OrderService {
+      static void setField(SObject rec, String f, Integer v) { }
+      ${HELPER}
+      public void run(Acme_Order__c order, Object x) {
+        setField(order, 'Status__c', x);
+      }
+    }`);
+    expect(writes(edges, "ApexMethod:OrderService.run(2)")).toEqual([]);
+  });
+
+  it("does not treat a call on another receiver as a bare call", async () => {
+    const edges = await parse(`public class OrderService {
+      ${HELPER}
+      static OrderService getOther() { return null; }
+      public void run(Acme_Order__c order, Object x) {
+        getOther().setField(order, 'Status__c', x);
+        this.setField(order, 'Region__c', x);
+      }
+    }`);
+    expect(writes(edges, "ApexMethod:OrderService.run(2)")).toEqual([
+      "CustomField:Acme_Order__c.Region__c",
+    ]);
+  });
 });
