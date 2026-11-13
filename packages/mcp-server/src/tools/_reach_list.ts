@@ -231,10 +231,19 @@ function eventMatches(stored: string, want: string): boolean {
   return s === w || s.split(/\s+/).includes(w);
 }
 
+/** Non-flow `status` values that mean "not running" (Network "Live" and registration "Complete" are kept). */
+const INACTIVE_STATUSES: ReadonlySet<string> = new Set([
+  "draft",
+  "obsolete",
+  "invaliddraft",
+  "inactive",
+  "deleted",
+]);
+
 /**
  * trace_upstream `active_only` / `events` filters, applied to the listed rows.
- * `active_only` drops flows whose status is not Active and members whose
- * stored active flag is false (no status info: kept). `events` keeps triggers
+ * `active_only` drops flows whose status is not Active, other rows whose status is
+ * Draft/Obsolete/InvalidDraft/Inactive/Deleted, and members whose stored active flag is false (no status info: kept). `events` keeps triggers
  * whose events include any wanted event (`update` matches before and after
  * update); rows that are not triggers are unaffected.
  */
@@ -243,7 +252,11 @@ export function keepByStatus(
   f: { activeOnly?: boolean; events?: string[] },
 ): boolean {
   if (f.activeOnly) {
-    if (e.status !== undefined && e.status !== "Active") return false;
+    if (e.status !== undefined) {
+      if (e.label === "Flow" || e.label === "FlowVersion") {
+        if (e.status !== "Active") return false;
+      } else if (INACTIVE_STATUSES.has(e.status.toLowerCase())) return false;
+    }
     if (e.active === false) return false;
   }
   if (f.events && f.events.length > 0 && e.label === "ApexTrigger" && e.events) {
