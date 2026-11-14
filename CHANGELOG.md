@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.8.2 — 2026-11-14
+
+Fixes from an independent audit of 1.8.1. Nothing here was run against a real Salesforce org; the tests use mock responses, recorded transports and temporary stores.
+
+### Fixed
+
+- **The read-only guarantee is enforced on the real connection.** Live extraction now gets a small read-only object with only the calls sfgraph uses, and the real jsforce connection refuses every write request (POST, PATCH, PUT, DELETE), apart from Metadata API read operations such as `listMetadata`, `readMetadata` and `describeMetadata`. Before, a bypass through the wrapper was possible. The README and `docs/PRIVACY.md` now describe what is enforced and what is not (OAuth token refresh happens outside the guard). The OmniStudio API-usage guard, which never fired before, now works: at 90% or more of the API limit it skips the OmniStudio retrieve and says so.
+- **Case-only name differences no longer produce a destructive manifest.** `cross_org_diff` and `deployment_manifest_gen` compare names without case, as the store does, so `BillingService` and `billingservice` with the same content are unchanged, and with different content are one change. A component is never listed in both the package and `destructiveChanges.xml`; if it would be, it is left out of the delete file and reported in `droppedFromDestructive`.
+- **`security_audit` treats field names without case.** A grant to `account.secret__c` and a field `Account.Secret__c` are one entry and no false field-security gap. Object and field filters match in any case.
+- **Auto sync gives an up-to-date graph.** After the first sync, `sfgraph ingest` in auto mode used to apply only deletions, so a changed Apex class kept its old body. Auto now falls back to a full refresh when source tracking reports added or modified members. Changes to metadata types sfgraph cannot map (for example Workflow) are reported by name and count, and the sync watermark is no longer moved past them silently.
+- **Capped scans no longer say "no findings" when they did not look at everything.** `dead_code_audit`, `governor_risk_check` and `export_sarif` read every node (the 10,000 and 20,000 per-label limits are gone), apply your `pattern` and label filters before any limit, and report scanned and total counts. "No findings" is said only for a complete scan; otherwise the answer says how much was looked at.
+- **`unbounded_query` and `no_bulk` governor checks work on normally parsed Apex.** `return [SELECT Id FROM Account];` is now flagged as unbounded. Live answers and cached answers share one detector.
+- **Web explorer.** "Render entire org" includes every stored label (OmniScript, DataRaptor, IntegrationProcedure and others were left out), and the button now works: it had no click handler. It shows how many nodes are displayed out of how many exist and how many the node limit left out. Capped schema views no longer contain edges to nodes that are not in the response, and say how many neighbours were omitted. Search finds names past the first 25,000 and says when it stopped.
+
+### Changed
+
+- **Auto sync can now fall back to a full refresh.** A first sync is full; later syncs that find added or modified members run a full refresh in the same command (the result's `mode` is `full` and the warnings include `incremental:fellBackToFull`). Syncs with no changes, or only deletions, stay incremental. `--mode incremental` still applies deletions only, and now says so; filesystem `--delta` is unchanged.
+- **Scans report scanned/total and incomplete.** Dead-code, governor and SARIF results carry `scanned`, `total` and `complete`. A scan that hits the safety limit (5,000,000 nodes per label) is marked incomplete.
+- **Dead-code wording.** The tool now says "no captured incoming references" instead of "nothing uses", and says that callers outside the graph (integrations, the UI, schedules) are not captured. Known external entry points (`@RestResource`, `global`, `webservice`, `@InvocableMethod`, `@AuraEnabled`, Schedulable, Batchable and Queueable classes) are listed separately and never get more than low confidence. Age is a separate signal. The follow-up no longer says `trace_upstream` can confirm that nothing uses a piece of code.
+- **Sharing rules are described as record sharing.** The SARIF rule `security.sharing-full-access` is renamed `security.sharing-edit-access` and is now level `note` (was `warning`); its text no longer calls sharing a CRUD/FLS bypass. The old rule id is not kept in SARIF output, so a suppression of the old id must be changed. `security_audit` now returns `sharingEditAccess` with Edit and All kept apart and the audience where the project stores one; `sharingFullAccess` stays as a deprecated alias with the same content.
+- **`no_bulk` has a narrower definition.** It flags a trigger that reads `Trigger.new[0]` or `Trigger.old[0]` (or `.get(0)`) with no loop over the trigger collections and no other use of them. Any `WHERE` clause counts as bounded for `unbounded_query`; selectivity is not judged.
+- **`/api/search` in the web explorer returns `{ hits, truncated }`** instead of a bare array, and `/api/full` returns `totalNodes`, `omittedNodes` and `excludedLabels`. A client outside this repository that reads the old shape needs a change.
+
+### Known limits
+
+- **Not yet fixed (backlog):** the web explorer still loads its graph libraries and fonts from `esm.sh` and Google, so it needs a network connection on first load and the "nothing leaves your machine" line does not cover those requests; `pnpm audit` still lists open dependency advisories, including Zod 3.25.76 (GHSA-mrhx-c7xc-m3w5, fixed only in Zod 4, which needs a code change in how tool schemas are generated); `sfgraph telemetry enable` does not yet record any runtime events; the postinstall native-module check can print a spurious "Cannot find module" under pnpm; some unused files remain; a few documents are out of date.
+- Live sync: Salesforce changes sfgraph cannot map are reported but not fetched. A full refresh is the only way to pick them up.
+- Dead code: `webservice` methods are recognised only where the parser keeps method modifiers; Flow, LWC and other labels have no entry-point detection.
+- Governor checks: no calibration against real org code, and string-built dynamic SOQL is not examined.
+- The first ingest after upgrading re-parses every member once, as after any release.
+
 ## 1.8.1 — 2026-11-13
 
 ### Added
