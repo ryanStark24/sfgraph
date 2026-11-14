@@ -282,7 +282,11 @@ describe("audit notes: edge case match, fair node limit, neighbourhood count", (
     await start();
     const full = await get<GraphPayload>(`/api/full?org=${ORG}&limit=100`);
     expect(full.edges).toEqual([
-      { source: "ApexClass:Svc", target: "CustomObject:Acme_Order__c", relType: "REFERENCES_OBJECT" },
+      {
+        source: "ApexClass:Svc",
+        target: "CustomObject:Acme_Order__c",
+        relType: "REFERENCES_OBJECT",
+      },
     ]);
     assertGraphIntegrity(full, "/api/full case");
     const ov = await get<GraphPayload>(

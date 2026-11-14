@@ -196,7 +196,9 @@ defineTool({
         name: q,
         kind: "SharingRule",
         role: `${
-          accessOf(q) === "All" ? "gives its audience full record access (All)" : "gives its audience edit access"
+          accessOf(q) === "All"
+            ? "gives its audience full record access (All)"
+            : "gives its audience edit access"
         } to the records (record sharing, not an object or field permission).`,
       })),
       ...audit.flsGaps.slice(0, input.limit).map((q) => {

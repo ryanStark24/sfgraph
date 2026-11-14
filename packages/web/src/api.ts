@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { type GraphStore, nameKey, REL_TYPES, SqliteGraphStore } from "@ryanstark24/sfgraph-core";
+import { type GraphStore, REL_TYPES, SqliteGraphStore, nameKey } from "@ryanstark24/sfgraph-core";
 import { asOrgId, asQualifiedName, getSfgraphPaths } from "@ryanstark24/sfgraph-shared";
 
 /** Per-orgId open-store cache. Web server reuses stores across requests. */
