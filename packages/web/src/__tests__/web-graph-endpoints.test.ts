@@ -151,6 +151,42 @@ describe("F12: capped /api/schema has no edges to absent nodes", () => {
     assertGraphIntegrity(whole, "/api/schema limit 10");
   });
 
+  it("counts an omitted seed once: object + 3 fields, limit 2", async () => {
+    await seed((s) => {
+      s.mergeNodes([
+        fact("CustomObject", "Account"),
+        fact("CustomField", "Account.F1__c"),
+        fact("CustomField", "Account.F2__c"),
+        fact("CustomField", "Account.F3__c"),
+      ]);
+    });
+    await start();
+    const g = await get<GraphPayload>(`/api/schema?org=${ORG}&limit=2`);
+    expect(g.nodes).toHaveLength(2);
+    expect(g.omittedNodes).toBe(2);
+    expect(g.truncated).toBe(true);
+    assertGraphIntegrity(g, "/api/schema seeds");
+  });
+
+  it("counts a refused seed once when it is met again through an edge", async () => {
+    await seed((s) => {
+      s.mergeNodes([
+        fact("CustomObject", "Account"),
+        fact("CustomField", "Account.F1__c"),
+        fact("CustomField", "Account.F2__c"),
+      ]);
+      s.mergeEdges([
+        edge("CustomField:Account.F1__c", "CustomObject:Account", "DEFINES_FIELD"),
+        edge("CustomField:Account.F2__c", "CustomObject:Account", "DEFINES_FIELD"),
+      ]);
+    });
+    await start();
+    const g = await get<GraphPayload>(`/api/schema?org=${ORG}&limit=2`);
+    expect(g.nodes).toHaveLength(2);
+    expect(g.omittedNodes).toBe(1);
+    assertGraphIntegrity(g, "/api/schema seed+edge");
+  });
+
   it("every other graph endpoint satisfies endpoint integrity", async () => {
     await seed((s) => {
       s.mergeNodes([

@@ -336,14 +336,14 @@ export async function schema(orgId: string, limit = 1500): Promise<GraphPayload>
 
   // Seed with every CustomObject in the org. Also CustomField if the org has
   // them (some extraction profiles produce field-level nodes, others don't).
+  // Names only (no attributes), every seed: each one is either added or
+  // recorded once in `omitted` under its canonical id, so a refused seed met
+  // again through an edge is not counted twice.
   for (const lbl of ["CustomObject", "CustomField"]) {
-    for (const n of store.listNodesByLabel(oid, lbl, limit)) {
-      addNode(String(n.qualifiedName), () => n.label);
-    }
-    // Seeds past the limit were never fetched; count them.
-    const seedTotal = store.countNodesByLabel(oid, lbl);
-    const seeded = [...nodes.values()].filter((x) => x.label === lbl).length;
-    for (let i = seeded; i < seedTotal; i++) omitted.add(`${lbl}#${i}`);
+    const names = store.listQnamesByLabel
+      ? store.listQnamesByLabel(oid, lbl)
+      : store.listNodesByLabel(oid, lbl).map((n) => n.qualifiedName);
+    for (const qn of names) addNode(String(qn), () => lbl);
   }
 
   const wantedRels = new Set([
