@@ -349,12 +349,55 @@ describe("live sync: auto falls back to a full refresh when content changed", ()
     await store.close();
   });
 
-  it("a deleted unsupported member does not hold the watermark once its node is absent", async () => {
+  it("a deleted unsupported member's node is removed and the watermark advances (auto)", async () => {
     const { store, state, conn } = await seeded();
+    store.mergeNodes([
+      {
+        orgId: ORG_ID,
+        label: "Workflow",
+        qualifiedName: asQualifiedName("Workflow:Account"),
+        attributes: { name: "Account" },
+        sourceHash: "wf" as never,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+        lastModifiedAt: 1,
+      },
+    ]);
     const before = store.getOrg(ORG_ID)!.lastSyncedAt;
-    state.sourceMembers = [{ MemberType: "Workflow", MemberName: "Account", IsNameObsolete: true }];
+    state.sourceMembers = [{ MemberType: "Workflow", MemberName: "account", IsNameObsolete: true }];
+    const r = await run(store, conn, "auto");
+    // pure deletion: stays incremental, applies it, nothing held
+    expect(r.mode).toBe("incremental");
+    expect(r.deletions).toBe(1);
+    expect(store.getNode(ORG_ID, asQualifiedName("Workflow:Account"))).toBeFalsy();
+    expect(r.warnings).toEqual([]);
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
+    await store.close();
+  });
+
+  it("a deleted unsupported member next to a modification is removed by the fallback full run", async () => {
+    const { store, state, conn } = await seeded();
+    store.mergeNodes([
+      {
+        orgId: ORG_ID,
+        label: "Workflow",
+        qualifiedName: asQualifiedName("Workflow:Account"),
+        attributes: { name: "Account" },
+        sourceHash: "wf" as never,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+        lastModifiedAt: 1,
+      },
+    ]);
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.body = "public class Billing { public void q() {} }";
+    state.sourceMembers = [
+      { MemberType: "ApexClass", MemberName: "Billing" },
+      { MemberType: "Workflow", MemberName: "Account", IsNameObsolete: true },
+    ];
     const r = await run(store, conn, "auto");
     expect(r.mode).toBe("full");
+    expect(store.getNode(ORG_ID, asQualifiedName("Workflow:Account"))).toBeFalsy();
     expect(r.warnings.filter((x) => x.startsWith("incremental:fallbackIncomplete:"))).toEqual([]);
     expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
     await store.close();
@@ -428,6 +471,30 @@ describe("live sync: explicit incremental says what it did not do", () => {
     expect(result.warnings).toContain("incremental:contentNotFetched:count=1");
     expect(hash()).toBe(oldHash);
     expect(store.getOrg(ORG_ID)!.lastSyncedAt).toBe(before);
+    await store.close();
+  });
+
+  it("a deleted unsupported member is removed too, and does not hold the watermark", async () => {
+    const { store, state, conn } = await seeded();
+    store.mergeNodes([
+      {
+        orgId: ORG_ID,
+        label: "Workflow",
+        qualifiedName: asQualifiedName("Workflow:Account"),
+        attributes: { name: "Account" },
+        sourceHash: "wf" as never,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+        lastModifiedAt: 1,
+      },
+    ]);
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.sourceMembers = [{ MemberType: "Workflow", MemberName: "Account", IsNameObsolete: true }];
+    const r = await run(store, conn, "incremental");
+    expect(r.mode).toBe("incremental");
+    expect(store.getNode(ORG_ID, asQualifiedName("Workflow:Account"))).toBeFalsy();
+    expect(r.warnings).toEqual([]);
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
     await store.close();
   });
 });

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { type OrgId, type QualifiedName, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { Logger } from "@ryanstark24/sfgraph-shared";
+import { METADATA_CATEGORY } from "../domain/index.js";
 import { type ArityResolveOpts, resolveApexMethodArity } from "../parsers/apex/arity-resolver.js";
 import { retargetApexInterfaceRefs } from "../parsers/apex/interface-ref-resolver.js";
 import { resolveAuraEmbeds } from "../parsers/aura/embed-resolver.js";
@@ -86,6 +87,18 @@ import {
   recoverObjectsEnabled,
   recoverReferencedObjects,
 } from "./recover-objects.js";
+
+/** A deletion ref for a member type sfgraph has no category for. */
+function syntheticDeletion(type: string, name: string): MemberRef {
+  return {
+    category: METADATA_CATEGORY.OPAQUE,
+    memberType: type,
+    memberName: name,
+    lastModifiedAt: null,
+    sourceUri: `sf://tooling/${type}/${name}`,
+    obsolete: true,
+  };
+}
 
 function unsupportedTypesWarning(counts: Map<string, number>): string {
   const parts = [...counts.entries()]
@@ -742,7 +755,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           resolved.orgId,
           scanSince,
           (t, n, obsolete) => {
-            unsupported.set(t, (unsupported.get(t) ?? 0) + 1);
+            if (!obsolete) unsupported.set(t, (unsupported.get(t) ?? 0) + 1);
             unsupportedRefs.push({ type: t, name: n, obsolete });
           },
         )) {
@@ -1253,10 +1266,14 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       // refresh them. (Deletions are still valuable and safe.)
       let changedNotApplied = 0;
       const unsupportedSeen = autoScan?.unsupported ?? new Map<string, number>();
+      const unsupportedDeleted: Array<{ type: string; name: string }> = autoScan
+        ? autoScan.unsupportedRefs.filter((u) => u.obsolete)
+        : [];
       const changes: AsyncIterable<MemberRef> | MemberRef[] =
         autoScan?.refs ??
-        iterChanges(resolved.conn, resolved.orgId, sinceIso, (t) => {
-          unsupportedSeen.set(t, (unsupportedSeen.get(t) ?? 0) + 1);
+        iterChanges(resolved.conn, resolved.orgId, sinceIso, (t, n, obsolete) => {
+          if (obsolete) unsupportedDeleted.push({ type: t, name: n });
+          else unsupportedSeen.set(t, (unsupportedSeen.get(t) ?? 0) + 1);
         });
       for await (const ref of changes) {
         if (ref.obsolete) {
@@ -1265,6 +1282,9 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           changedNotApplied += 1;
         }
       }
+      // Deletions of types sfgraph cannot map need no content either: remove
+      // their node by `Label:Name`, like a mapped deletion.
+      for (const u of unsupportedDeleted) await processOne(syntheticDeletion(u.type, u.name), "");
       const unsupportedTotal = [...unsupportedSeen.values()].reduce((a, b) => a + b, 0);
       incrementalUnfetched = changedNotApplied + unsupportedTotal;
       if (changedNotApplied > 0) {
@@ -1312,6 +1332,9 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       // the watermark moves past them. Apply them here, as incremental does.
       for (const ref of autoScan?.refs ?? []) {
         if (ref.obsolete) await processOne(ref, "");
+      }
+      for (const u of autoScan?.unsupportedRefs ?? []) {
+        if (u.obsolete) await processOne(syntheticDeletion(u.type, u.name), "");
       }
       openBulk();
       if (!opts.disableMcdBaseline && !opts.metadataSource) {
