@@ -38,7 +38,7 @@ follows the same rule.
 | `test_gap_intelligence_from_git_diff` | Suggest tests for changed code.                       |
 | `what_broke`                      | Recent changes correlated to a regression.               |
 | `governor_risk_check`             | SOQL/DML-in-loop, unbounded query.                       |
-| `dead_code_audit`                 | Zero-inbound candidates; freshness grades confidence (high = stale). |
+| `dead_code_audit`                 | Components with no captured incoming references; age grades confidence; external entry points listed apart. |
 | `security_audit`                  | Sharing, FLS, security findings.                         |
 | `export_sarif`                    | All audit findings as one SARIF 2.1.0 report.            |
 | `deployment_manifest_gen`         | package.xml + destructiveChanges.xml from cross-org diff.|
@@ -313,7 +313,14 @@ helper (`changeUnitOf`), so an LWC bundle is its LWC on both sides.
 }
 ```
 
-Every call scans the graph live. The `_sfgraph_governor_risks` cache is read
+Every call scans the graph live, every method and trigger, a page at a time
+(no node-count cut-off). `data.scan` is `{ scanned, total, complete }`; the text
+says "no spots found" only when `complete` is true, otherwise "none in the N of M
+inspected". `unbounded_query` (an inline query with no `LIMIT` and no `WHERE` in
+its own clause; `COUNT()` and `__mdt` queries are not flagged) and `no_bulk` (a
+trigger that reads `Trigger.new[0]` / `Trigger.old[0]`, never loops over the
+records and does not pass them on) are detected from the stored source snippets
+by one detector shared with the cache. The `_sfgraph_governor_risks` cache is read
 only when it is fresh (computed after the last sync), and then only adds risks
 the live scan missed. A stale or unverifiable cache is ignored, and the
 markdown says so. Test code (TestMethod / `@isTest`) is excluded unless
@@ -323,10 +330,16 @@ markdown says so. Test code (TestMethod / `@isTest`) is excluded unless
 
 ```jsonc
 { "org": "alias", "audits": ["governor", "security", "dead-code", "dangling"], "includeTests": false }
-// output.data: { report, findings, lintErrors, sources: { governor: "live", ... } }
+// output.data: { report, findings, lintErrors, sources: { governor: "live", ... },
+//                scanCoverage: { governor: { scanned, total, complete }, "dead-code": {...} } }
 ```
 
-One SARIF 2.1.0 report for the selected audits. As in
+One SARIF 2.1.0 report for the selected audits. The run carries
+`properties.sfgraphScanCoverage` (per audit: scanned, total, complete) and
+`sfgraphScanComplete`; an incomplete scan also adds a warning tool-execution
+notification. Dead-code results say "no captured incoming references" and carry
+the caveat that callers outside the graph are not captured; known external entry
+points are marked (`externalEntryPoint`). As in
 `governor_risk_check`, test code is excluded from governor findings by
 default; pass `includeTests: true` to keep it. `sources` records, per audit,
 whether it was computed live or with a fresh cache. The governor and dead-code
@@ -335,7 +348,17 @@ unverifiable cache is ignored and the audit is recomputed live.
 
 ### `dead_code_audit`
 
-Candidates come from core's `deadCodeCandidates`. References from test code
+Candidates come from core's `scanDeadCode`, which examines every node of the
+scored labels, a page at a time, with `label` and `pattern` applied in the store
+query (so a match is never lost behind a cap). `data.scan` is
+`{ scanned, total, complete }`; the text says nothing was found only when
+`complete` is true. A row is "no captured incoming references": callers outside
+the graph (integrations, the UI, schedules) are not captured. Known external entry
+points (`@RestResource` / `@Http*`, `global`, `webservice`, `@InvocableMethod`,
+`@AuraEnabled`, `@RemoteAction`, Schedulable / Batchable / Queueable /
+`Messaging.InboundEmailHandler` classes) get the reasons `external_entry_point` and
+`entry_point:<kind>`, are listed apart (`externalEntryPoints`) and never get more
+than `low` confidence; `score` stays the age signal. References from test code
 count as references. `dead` lists nodes nothing references; an `@isTest` class
 nothing references is dead too, with `isTest: true` and the reason
 `test_class`. Production code referenced only by tests is not dead: it is
@@ -380,7 +403,9 @@ unscored-label paths. Unscored labels have `score: null` and `confidence: null`.
   "include_non_fls_fields": false, "limit": 30 }
 // output.data (every list is capped at `limit`; *Total fields hold the full counts)
 {
-  "sharingFullAccess": ["SharingRule:Account.r1"], "sharingFullAccessTotal": 1,
+  "sharingEditAccess": ["SharingRule:Account.r1"], "sharingEditAccessTotal": 1,  // record sharing rules with Edit or All access; not Modify All / View All
+  "sharingRuleAccess": [{ "qualifiedName": "SharingRule:Account.r1", "access": "Edit", "audience": "group: Support" }],
+  "sharingFullAccess": ["SharingRule:Account.r1"], "sharingFullAccessTotal": 1,  // deprecated aliases of sharingEditAccess / sharingEditAccessTotal
   "flsGaps": ["CustomField:Account.SSN__c"],       "flsGapsTotal": 1,
   "fieldAccessMatrix": [...],                      "fieldAccessMatrixTotal": 0,
   "cachedFindings": [{ "qname": "...", "rule": "sharing.full_access", "message": "..." }],

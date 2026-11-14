@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { type GraphStore, REL_TYPES, SqliteGraphStore } from "@ryanstark24/sfgraph-core";
+import { type GraphStore, REL_TYPES, SqliteGraphStore, nameKey } from "@ryanstark24/sfgraph-core";
 import { asOrgId, asQualifiedName, getSfgraphPaths } from "@ryanstark24/sfgraph-shared";
 
 /** Per-orgId open-store cache. Web server reuses stores across requests. */
@@ -109,32 +109,24 @@ export interface SearchHit {
  */
 const SEARCH_MIN_QUERY_LEN = 2;
 
-/**
- * Cap on qnames scanned per request. `listAllQnames` is O(N) across every
- * label table; on a 50k-node org this is multi-second per call. The cap
- * lets us short-circuit instead of locking the event loop.
- */
-const SEARCH_MAX_SCAN = 25000;
-
-/** Substring-match autocomplete over qnames. Returns at most `limit` hits. */
-export async function search(orgId: string, q: string, limit = 25): Promise<SearchHit[]> {
-  if (!q || q.length < SEARCH_MIN_QUERY_LEN) return [];
+/** Substring-match autocomplete over qnames, case-insensitive. The match and
+ *  the limit run in storage (`searchQnames`); no name list is loaded. `truncated`
+ *  is true when more matches exist than `limit`. */
+export async function search(
+  orgId: string,
+  q: string,
+  limit = 25,
+): Promise<{ hits: SearchHit[]; truncated: boolean }> {
+  if (!q || q.length < SEARCH_MIN_QUERY_LEN) return { hits: [], truncated: false };
   const store = await getStore(orgId);
-  const oid = asOrgId(orgId);
-  const needle = q.toLowerCase();
-  const all = store.listAllQnames(oid);
-  const hits: SearchHit[] = [];
-  let scanned = 0;
-  for (const qn of all) {
-    scanned++;
-    if (scanned > SEARCH_MAX_SCAN) break;
-    if (String(qn).toLowerCase().includes(needle)) {
-      const node = store.getNode(oid, qn);
-      hits.push({ qname: String(qn), label: node?.label ?? "Unknown" });
-      if (hits.length >= limit) break;
-    }
-  }
-  return hits;
+  return store.searchQnames(asOrgId(orgId), q, limit);
+}
+
+/** Node labels stored for the org, with counts: the one source for the UI's
+ *  label choices and for `fullGraph`. */
+export async function labels(orgId: string): Promise<Array<{ label: string; count: number }>> {
+  const store = await getStore(orgId);
+  return store.listLabelCounts(asOrgId(orgId));
 }
 
 export interface GraphNode {
@@ -151,6 +143,16 @@ export interface GraphPayload {
   nodes: GraphNode[];
   edges: GraphEdge[];
   truncated?: boolean;
+  /** Nodes that exist but are not in `nodes` because of the node limit. */
+  omittedNodes?: number;
+  /** Per label, how many nodes the node limit left out (fullGraph only;
+   *  labels with nothing left out are not listed). */
+  omittedByLabel?: Array<{ label: string; omitted: number }>;
+  /** Total nodes of the labels this view covers (fullGraph only). */
+  totalNodes?: number;
+  /** Labels left out on purpose, with the reason. Empty: nothing is excluded
+   *  except by the node limit (fullGraph only). */
+  excludedLabels?: Array<{ label: string; count: number; reason: string }>;
 }
 
 /** Bidirectional BFS around a center node up to `depth` hops. */
@@ -169,6 +171,8 @@ export async function neighborhood(
   const allowedRels = relTypes && relTypes.length > 0 ? new Set(relTypes) : null;
   const NODE_CAP = 250;
   let truncated = false;
+  // Neighbours the cap refused, counted once each by the store's name key.
+  const omitted = new Set<string>();
 
   const addNode = (qn: string): void => {
     if (nodes.has(qn)) return;
@@ -183,18 +187,19 @@ export async function neighborhood(
   // has 1000+ field/permission edges) can blow past the limit inside one
   // frontier iteration if we only check at the top. Check after every
   // node add and break early.
-  outer: for (let d = 0; d < depth; d++) {
+  for (let d = 0; d < depth; d++) {
     const next: string[] = [];
     for (const cur of frontier) {
       const outE = store.listEdgesFrom(oid, asQualifiedName(cur));
       const inE = store.listEdgesTo(oid, asQualifiedName(cur));
       for (const e of outE) {
         if (allowedRels && !allowedRels.has(String(e.relType))) continue;
-        if (nodes.size >= NODE_CAP) {
-          truncated = true;
-          break outer;
-        }
         const dst = String(e.dstQualifiedName);
+        if (nodes.size >= NODE_CAP && !nodes.has(dst)) {
+          truncated = true;
+          omitted.add(nameKey(dst));
+          continue;
+        }
         addNode(dst);
         edges.push({ source: cur, target: dst, relType: String(e.relType) });
         if (!seen.has(dst)) {
@@ -204,11 +209,12 @@ export async function neighborhood(
       }
       for (const e of inE) {
         if (allowedRels && !allowedRels.has(String(e.relType))) continue;
-        if (nodes.size >= NODE_CAP) {
-          truncated = true;
-          break outer;
-        }
         const src = String(e.srcQualifiedName);
+        if (nodes.size >= NODE_CAP && !nodes.has(src)) {
+          truncated = true;
+          omitted.add(nameKey(src));
+          continue;
+        }
         addNode(src);
         edges.push({ source: src, target: cur, relType: String(e.relType) });
         if (!seen.has(src)) {
@@ -219,7 +225,52 @@ export async function neighborhood(
     }
     frontier = next;
   }
-  return { nodes: [...nodes.values()], edges, truncated };
+  return {
+    nodes: [...nodes.values()],
+    edges,
+    truncated,
+    omittedNodes: omitted.size,
+  };
+}
+
+/** How many nodes each label may contribute under a node limit: labels are
+ *  served smallest first, each getting at most an equal share of what is left
+ *  (rounded up), so a small label is never dropped just because a huge one
+ *  would fill the limit. Deterministic (ties by label name). */
+function fairQuotas(
+  counts: Array<{ label: string; count: number }>,
+  limit: number,
+): Map<string, number> {
+  const quotas = new Map<string, number>();
+  const asc = [...counts].sort((a, b) => a.count - b.count || a.label.localeCompare(b.label));
+  let remaining = Math.max(0, limit);
+  asc.forEach((c, i) => {
+    const q = Math.min(c.count, Math.ceil(remaining / (asc.length - i)));
+    quotas.set(c.label, q);
+    remaining -= q;
+  });
+  return quotas;
+}
+
+/** Edges whose two endpoints are both in `nodes`. The store compares names
+ *  without ASCII case, so an edge stored as `customobject:ACME_ORDER__C` still
+ *  reaches the node `CustomObject:Acme_Order__c`; the edge is emitted with the
+ *  nodes' own spelling so every endpoint is an id in `nodes`. */
+function edgesAmong(
+  store: GraphStore,
+  oid: ReturnType<typeof asOrgId>,
+  nodes: Map<string, GraphNode>,
+): GraphEdge[] {
+  const byKey = new Map<string, string>();
+  for (const id of nodes.keys()) byKey.set(nameKey(id), id);
+  const edges: GraphEdge[] = [];
+  for (const qn of nodes.keys()) {
+    for (const e of store.listEdgesFrom(oid, asQualifiedName(qn))) {
+      const dst = byKey.get(nameKey(String(e.dstQualifiedName)));
+      if (dst !== undefined) edges.push({ source: qn, target: dst, relType: String(e.relType) });
+    }
+  }
+  return edges;
 }
 
 /** Pull every node matching one of `labels`, plus the edges among them.
@@ -240,77 +291,52 @@ export async function overview(
     }
     if (nodes.size >= limit) break;
   }
-  const edges: GraphEdge[] = [];
   // For overview, only emit edges where BOTH endpoints are in the node set.
-  for (const qn of nodes.keys()) {
-    const outE = store.listEdgesFrom(oid, asQualifiedName(qn));
-    for (const e of outE) {
-      const dst = String(e.dstQualifiedName);
-      if (nodes.has(dst)) edges.push({ source: qn, target: dst, relType: String(e.relType) });
-    }
-  }
+  const edges = edgesAmong(store, oid, nodes);
   return { nodes: [...nodes.values()], edges, truncated: nodes.size >= limit };
 }
 
 /**
  * Full-graph view: every node in the org (capped at `limit`) plus every
  * edge between visible nodes. Used by the "Render entire org" button in
- * the web UI — gives the Obsidian-style global view instead of the
- * per-label or per-trace subsets.
+ * the web UI.
  *
- * We enumerate node-bearing labels rather than calling `listAllQnames`
- * because we want a stable label assignment for colouring without doing
- * one `getNode` per id.
+ * Labels come from the label tables actually stored for the org
+ * (`listLabelCounts`), so OmniStudio and any other family is included.
+ * No label is excluded on purpose (`excludedLabels` is empty); what the node
+ * limit cuts off is reported as `omittedNodes` and `truncated`.
  */
-const ALL_KNOWN_LABELS: string[] = [
-  "ApexClass",
-  "ApexTrigger",
-  "ApexMethod",
-  "TestMethod",
-  "ApexPage",
-  "LightningComponentBundle",
-  "LWC",
-  "LWCBundle",
-  "AuraDefinitionBundle",
-  "Flow",
-  "FlowVersion",
-  "CustomObject",
-  "CustomField",
-  "Profile",
-  "PermissionSet",
-  "PermissionSetGroup",
-  "SharingRule",
-  "NamedCredential",
-  "ExternalServiceRegistration",
-  "StaticResource",
-  "CustomLabel",
-  "Workflow",
-];
-
 export async function fullGraph(orgId: string, limit = 5000): Promise<GraphPayload> {
   const store = await getStore(orgId);
   const oid = asOrgId(orgId);
   const nodes = new Map<string, GraphNode>();
-  for (const lbl of ALL_KNOWN_LABELS) {
-    if (nodes.size >= limit) break;
-    const ns = store.listNodesByLabel(oid, lbl, limit);
-    for (const n of ns) {
-      if (nodes.size >= limit) break;
-      nodes.set(String(n.qualifiedName), { id: String(n.qualifiedName), label: n.label });
-    }
-  }
-  // All edges where both endpoints are in our node set.
-  const edges: GraphEdge[] = [];
-  for (const qn of nodes.keys()) {
-    const outE = store.listEdgesFrom(oid, asQualifiedName(qn));
-    for (const e of outE) {
-      const dst = String(e.dstQualifiedName);
-      if (nodes.has(dst)) {
-        edges.push({ source: qn, target: dst, relType: String(e.relType) });
+  const counts = store.listLabelCounts(oid);
+  let totalNodes = 0;
+  for (const c of counts) totalNodes += c.count;
+  const quotas = fairQuotas(counts, limit);
+  const omittedByLabel: Array<{ label: string; omitted: number }> = [];
+  for (const { label, count } of counts) {
+    const quota = quotas.get(label) ?? 0;
+    if (quota > 0) {
+      for (const n of store.listNodesByLabel(oid, label, quota)) {
+        nodes.set(String(n.qualifiedName), { id: String(n.qualifiedName), label: n.label });
       }
     }
+    if (count > quota) omittedByLabel.push({ label, omitted: count - quota });
   }
-  return { nodes: [...nodes.values()], edges, truncated: nodes.size >= limit };
+  omittedByLabel.sort((a, b) => b.omitted - a.omitted || a.label.localeCompare(b.label));
+  // All edges where both endpoints are in our node set.
+  const edges = edgesAmong(store, oid, nodes);
+  const omittedNodes = Math.max(0, totalNodes - nodes.size);
+  return {
+    nodes: [...nodes.values()],
+    edges,
+    truncated: omittedNodes > 0,
+    omittedNodes,
+    omittedByLabel,
+    totalNodes,
+    excludedLabels: [],
+  };
 }
 
 /**
@@ -335,19 +361,32 @@ export async function schema(orgId: string, limit = 1500): Promise<GraphPayload>
   const oid = asOrgId(orgId);
   const nodes = new Map<string, GraphNode>();
   const edges: GraphEdge[] = [];
-  const addNode = (qn: string, label: string): void => {
-    if (nodes.size >= limit) return;
-    if (!nodes.has(qn)) nodes.set(qn, { id: qn, label });
+  // Neighbours the cap refused. An edge is only emitted when both endpoints
+  // are in `nodes`, so a refused node never leaves a dangling edge.
+  const omitted = new Set<string>();
+  const addNode = (qn: string, label: () => string): boolean => {
+    if (nodes.has(qn)) return true;
+    if (nodes.size >= limit) {
+      omitted.add(qn.toLowerCase());
+      return false;
+    }
+    nodes.set(qn, { id: qn, label: label() });
+    return true;
+  };
+  const addEdge = (source: string, target: string, relType: string): void => {
+    if (nodes.has(source) && nodes.has(target)) edges.push({ source, target, relType });
   };
 
-  // Seed with every CustomObject in the org.
-  for (const n of store.listNodesByLabel(oid, "CustomObject", limit)) {
-    addNode(String(n.qualifiedName), n.label);
-  }
-  // Also include CustomField if the org has them (some extraction profiles
-  // produce field-level nodes, others don't).
-  for (const n of store.listNodesByLabel(oid, "CustomField", limit)) {
-    addNode(String(n.qualifiedName), n.label);
+  // Seed with every CustomObject in the org. Also CustomField if the org has
+  // them (some extraction profiles produce field-level nodes, others don't).
+  // Names only (no attributes), every seed: each one is either added or
+  // recorded once in `omitted` under its canonical id, so a refused seed met
+  // again through an edge is not counted twice.
+  for (const lbl of ["CustomObject", "CustomField"]) {
+    const names = store.listQnamesByLabel
+      ? store.listQnamesByLabel(oid, lbl)
+      : store.listNodesByLabel(oid, lbl).map((n) => n.qualifiedName);
+    for (const qn of names) addNode(String(qn), () => lbl);
   }
 
   const wantedRels = new Set([
@@ -370,26 +409,28 @@ export async function schema(orgId: string, limit = 1500): Promise<GraphPayload>
   // (consumer → CustomObject), so we have to listEdgesTo, not From.
   const schemaSeeds = [...nodes.keys()];
   for (const qn of schemaSeeds) {
-    if (nodes.size >= limit) break;
     const inE = store.listEdgesTo(oid, asQualifiedName(qn));
     for (const e of inE) {
       if (!wantedRels.has(String(e.relType))) continue;
       const src = String(e.srcQualifiedName);
-      const srcNode = store.getNode(oid, asQualifiedName(src));
-      addNode(src, srcNode?.label ?? "Unknown");
-      edges.push({ source: src, target: qn, relType: String(e.relType) });
+      addNode(src, () => store.getNode(oid, asQualifiedName(src))?.label ?? "Unknown");
+      addEdge(src, qn, String(e.relType));
     }
     // Outgoing too (CustomField → CustomObject lookups, when present).
     const outE = store.listEdgesFrom(oid, asQualifiedName(qn));
     for (const e of outE) {
       if (!wantedRels.has(String(e.relType))) continue;
       const dst = String(e.dstQualifiedName);
-      const dstNode = store.getNode(oid, asQualifiedName(dst));
-      addNode(dst, dstNode?.label ?? "Unknown");
-      edges.push({ source: qn, target: dst, relType: String(e.relType) });
+      addNode(dst, () => store.getNode(oid, asQualifiedName(dst))?.label ?? "Unknown");
+      addEdge(qn, dst, String(e.relType));
     }
   }
-  return { nodes: [...nodes.values()], edges, truncated: nodes.size >= limit };
+  return {
+    nodes: [...nodes.values()],
+    edges,
+    truncated: omitted.size > 0,
+    omittedNodes: omitted.size,
+  };
 }
 
 /** List the rel-types available in the current graph for filter UI. */

@@ -371,6 +371,10 @@ export function graphFileReadiness(dbPath: string, orgId?: string): GraphFileRea
   }
 }
 
+/** `nameLike` filter of listNodesPage / countNodesLike: the whole qname or the part after `Label:`. */
+const NAME_LIKE_SQL =
+  " AND (qualified_name LIKE ? ESCAPE '\\' OR substr(qualified_name, instr(qualified_name, ':') + 1) LIKE ? ESCAPE '\\')";
+
 export class SqliteGraphStore implements GraphStore {
   private conn: BetterSqlite3Database;
   /** Connections replaced after a file swap; closed with the store (review I2). */
@@ -1374,6 +1378,41 @@ export class SqliteGraphStore implements GraphStore {
     return rows.map((r) => rowToNode(r, label));
   }
 
+  listNodesPage(
+    orgId: OrgId,
+    label: string,
+    opts: { afterRowid?: number; limit: number; nameLike?: string },
+  ): { nodes: NodeFact[]; lastRowid: number | null } {
+    validateLabel(label);
+    this.syncCaches();
+    const tbl = this.nodeLabelCache.get(label);
+    if (!tbl) return { nodes: [], lastRowid: null };
+    const like = opts.nameLike !== undefined;
+    const sql = `SELECT rowid AS rid, org_id, qualified_name, attributes, source_hash, first_seen_at, last_seen_at, last_modified_at FROM ${tbl} WHERE org_id = ? AND rowid > ?${like ? NAME_LIKE_SQL : ""} ORDER BY rowid LIMIT ?`;
+    const params: unknown[] = [orgId, opts.afterRowid ?? 0];
+    if (like) params.push(opts.nameLike, opts.nameLike);
+    params.push(Math.max(1, Math.floor(opts.limit)));
+    const rows = this.stmt(sql).all(...params) as Array<RawNodeRow & { rid: number }>;
+    return {
+      nodes: rows.map((r) => rowToNode(r, label)),
+      lastRowid: rows.length ? (rows[rows.length - 1] as { rid: number }).rid : null,
+    };
+  }
+
+  countNodesLike(orgId: OrgId, label: string, nameLike?: string): number {
+    validateLabel(label);
+    this.syncCaches();
+    const tbl = this.nodeLabelCache.get(label);
+    if (!tbl) return 0;
+    const like = nameLike !== undefined;
+    const params: unknown[] = [orgId];
+    if (like) params.push(nameLike, nameLike);
+    const r = this.stmt(
+      `SELECT COUNT(*) AS c FROM ${tbl} WHERE org_id = ?${like ? NAME_LIKE_SQL : ""}`,
+    ).get(...params) as { c: number };
+    return r.c;
+  }
+
   /**
    * listNodesByLabel's qualified names, without the attributes JSON (~6x
    * cheaper on attribute-heavy labels). `ORDER BY rowid` pins the order
@@ -1596,6 +1635,43 @@ export class SqliteGraphStore implements GraphStore {
       total += row?.c ?? 0;
     }
     return total;
+  }
+
+  listLabelCounts(orgId: OrgId): Array<{ label: string; count: number }> {
+    this.syncCaches();
+    const out: Array<{ label: string; count: number }> = [];
+    for (const [label, tbl] of this.nodeLabelCache) {
+      const row = this.db.prepare(`SELECT COUNT(*) AS c FROM ${tbl} WHERE org_id = ?`).get(orgId) as
+        | { c: number }
+        | undefined;
+      const count = row?.c ?? 0;
+      if (count > 0) out.push({ label, count });
+    }
+    return out;
+  }
+
+  searchQnames(
+    orgId: OrgId,
+    needle: string,
+    limit: number,
+  ): { hits: Array<{ qname: string; label: string }>; truncated: boolean } {
+    this.syncCaches();
+    const hits: Array<{ qname: string; label: string }> = [];
+    if (limit <= 0 || needle.length === 0) return { hits, truncated: false };
+    // LIKE folds ASCII case, the same fold as the NOCASE qualified_name column.
+    const pattern = `%${needle.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    // Ask for one more than `limit` so "more exist" is known without a count.
+    for (const [label, tbl] of this.nodeLabelCache) {
+      const want = limit + 1 - hits.length;
+      const rows = this.stmt(
+        `SELECT qualified_name FROM ${tbl} WHERE org_id = ? AND qualified_name LIKE ? ESCAPE '\\' LIMIT ?`,
+      ).all(orgId, pattern, want) as Array<{ qualified_name: string }>;
+      for (const r of rows) hits.push({ qname: r.qualified_name, label });
+      if (hits.length > limit) break;
+    }
+    const truncated = hits.length > limit;
+    if (truncated) hits.length = limit;
+    return { hits, truncated };
   }
 
   /**

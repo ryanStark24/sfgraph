@@ -164,6 +164,22 @@ export interface GraphStore {
   /** The qualified names `listNodesByLabel` would return, in the same order,
    *  without reading the rest of each row. Optional. */
   listQnamesByLabel?(orgId: OrgId, label: string, limit?: number): QualifiedName[];
+  /**
+   * One keyset page of a label's nodes, in insertion (rowid) order: the nodes
+   * after `afterRowid` (exclusive; omit for the first page), at most `limit`.
+   * `nameLike` is a SQL LIKE pattern (`\` escapes) matched, ASCII
+   * case-insensitively, against the whole qualified name or the part after
+   * `Label:`, applied before `limit`. `lastRowid` is the cursor for the next
+   * page, null when the page is empty. Optional: callers fall back to
+   * `listNodesByLabel`.
+   */
+  listNodesPage?(
+    orgId: OrgId,
+    label: string,
+    opts: { afterRowid?: number; limit: number; nameLike?: string },
+  ): { nodes: NodeFact[]; lastRowid: number | null };
+  /** Count of a label's nodes matching `nameLike` (as `listNodesPage`); all when omitted. Optional. */
+  countNodesLike?(orgId: OrgId, label: string, nameLike?: string): number;
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[];
   listEdgesTo(orgId: OrgId, dst: QualifiedName, relType?: RelType): EdgeFact[];
   /** Edges (any rel type) whose dst is one of `dsts` (NOCASE, like listEdgesTo).
@@ -194,6 +210,19 @@ export interface GraphStore {
    *  find-nodes glob matching to enumerate label tables. */
   listAllLabels(): string[];
   countNodes(orgId: OrgId): number;
+  /** Every node label that has at least one node for `orgId`, with its node
+   *  count. Read from the label tables actually stored, so a family added by
+   *  any extractor appears without a code change. */
+  listLabelCounts(orgId: OrgId): Array<{ label: string; count: number }>;
+  /** Case-insensitive substring search over qualified names, done in SQL with
+   *  the limit pushed down (never materialises every name). `needle` is
+   *  literal text: `%`, `_` and `\` in it match themselves. Returns at most
+   *  `limit` hits; `truncated` is true when more matches exist. */
+  searchQnames(
+    orgId: OrgId,
+    needle: string,
+    limit: number,
+  ): { hits: Array<{ qname: string; label: string }>; truncated: boolean };
   /** Count nodes of a given label for `orgId`. Returns 0 if the label table
    *  has not yet been created. Used by the W1.5-07 detect-deletions guard
    *  to compute per-label drop ratios before mass-wiping nodes. */

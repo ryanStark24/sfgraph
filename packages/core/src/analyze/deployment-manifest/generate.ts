@@ -1,5 +1,6 @@
 import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import type { NodeFact } from "../../domain/index.js";
+import { nameKey } from "../../domain/name-key.js";
 import type { GraphStore } from "../../storage/interfaces.js";
 import { ownerOf } from "../containment.js";
 import { type HiddenCounts, diffOrgs, hideOneSided } from "../cross-org.js";
@@ -34,6 +35,12 @@ export interface DeploymentManifest {
    * Salesforce's own component from the target.
    */
   hidden: HiddenCounts;
+  /**
+   * Members left out of destructiveChanges.xml because the same component (same type, same
+   * name without case) is in package.xml. A component is never both deployed and deleted.
+   * Normally empty; a non-empty list is reported so the caller can see what was dropped.
+   */
+  droppedFromDestructive: Array<{ type: string; member: string }>;
 }
 
 function escapeXml(s: string): string {
@@ -172,13 +179,29 @@ export function generateManifest(
       add(destMembers, n.label, n.qualifiedName, n.attributes);
   }
 
+  // Final invariant: one logical component (metadata type + member name, compared the way the
+  // store compares names) is never in both package.xml and destructiveChanges.xml. The diff
+  // already matches case-only differences, so this is the backstop for any other way two entries
+  // can name one member (for example several sharing rules of one object share the member).
+  const droppedFromDestructive: Array<{ type: string; member: string }> = [];
+  const pkgKeys = new Set<string>();
+  for (const [type, set] of pkgMembers) for (const m of set) pkgKeys.add(`${type}\0${nameKey(m)}`);
+  for (const [type, set] of destMembers) {
+    for (const m of [...set]) {
+      if (!pkgKeys.has(`${type}\0${nameKey(m)}`)) continue;
+      set.delete(m);
+      droppedFromDestructive.push({ type, member: m });
+      byType[type] = Math.max(0, (byType[type] ?? 0) - 1);
+    }
+  }
+
   return {
     packageXml: buildPackage(pkgMembers, apiVersion),
     destructiveXml: buildPackage(destMembers, apiVersion),
     summary: {
       apiVersion,
       addedOrChanged: diff.onlyInA.length + diff.changed.length,
-      removed: diff.onlyInB.length,
+      removed: Math.max(0, diff.onlyInB.length - droppedFromDestructive.length),
       byType,
     },
     incomplete: {
@@ -186,5 +209,6 @@ export function generateManifest(
       unmappedLabels,
     },
     hidden: diff.hidden,
+    droppedFromDestructive,
   };
 }

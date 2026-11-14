@@ -15,7 +15,7 @@ A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-s
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-**Privacy in one line.** Nothing leaves your machine — graph, vectors, logs all live under the platform's user-data directory (`~/Library/Application Support/sfgraph/` on macOS, `~/.local/share/sfgraph/` on Linux, `%APPDATA%\sfgraph\` on Windows; see [`docs/DATA_LOCATIONS.md`](docs/DATA_LOCATIONS.md)). Salesforce auth is delegated to the `sf` CLI (token stays in `~/.sfdx/`). Every connection is wrapped in a read-only Proxy. Full threat model: [`docs/PRIVACY.md`](docs/PRIVACY.md).
+**Privacy in one line.** Nothing leaves your machine — graph, vectors, logs all live under the platform's user-data directory (`~/Library/Application Support/sfgraph/` on macOS, `~/.local/share/sfgraph/` on Linux, `%APPDATA%\sfgraph\` on Windows; see [`docs/DATA_LOCATIONS.md`](docs/DATA_LOCATIONS.md)). Salesforce auth is delegated to the `sf` CLI (token stays in `~/.sfdx/`). Extractors get a read-only facade (only the read calls sfgraph makes), and the Salesforce connection that sfgraph creates refuses any HTTP request that is not a GET/HEAD or a Metadata API read call (and Tooling GETs that run Apex); this covers requests made through the connection's request path. jsforce's OAuth calls (token refresh, logout/revoke), its streaming (CometD) client and code calling jsforce internals directly are outside it; sfgraph uses none of them; details and limits in the read-only section of the privacy doc. Full threat model: [`docs/PRIVACY.md`](docs/PRIVACY.md).
 
 ---
 
@@ -121,7 +121,7 @@ sfgraph rebuild-bindings
 
 ## First ingest
 
-The first sync of an org takes **2–6 minutes** on a typical 50K-node sandbox. Subsequent syncs on Source-Tracking-enabled orgs are incremental (<30 s).
+The first sync of an org takes **2–6 minutes** on a typical 50K-node sandbox. On Source-Tracking-enabled orgs, later syncs check what changed. If nothing changed, or only components were deleted, the sync applies the deletions and finishes quickly. Incremental sync applies deletions only: it does not fetch or re-parse added or modified components. So in the default `auto` mode, when anything was added or modified (or changed in a metadata type sfgraph cannot map, which is named in the result), the run falls back to a full refresh and says so. `--mode incremental` keeps the deletions-only behaviour and tells you what it did not refresh; `--mode full` always refreshes everything. (Filesystem `--delta` for project folders is a separate feature and is unchanged.)
 
 ```bash
 # Default org from `sf config target-org`

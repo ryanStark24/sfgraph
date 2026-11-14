@@ -1,6 +1,6 @@
 # Privacy
 
-sfgraph is local-only and read-only by design.
+sfgraph keeps its graph and vector store on your machine and is designed to only read from Salesforce. The sections below say exactly what is enforced and where the limits are.
 
 ## Three pillars
 
@@ -10,11 +10,38 @@ sfgraph is local-only and read-only by design.
    on Linux, `%APPDATA%\sfgraph\` on Windows — see
    [`DATA_LOCATIONS.md`](DATA_LOCATIONS.md)). The MCP server listens on stdio
    only.
-2. **Read-only Salesforce access.** Every `jsforce`/`@salesforce/core` call is
-   wrapped in a `ReadOnlyProxy` that throws on any mutating method
-   (`create`, `update`, `delete`, `upsert`, `destroy`, `*sobject().create`,
-   etc.). The proxy is verified by a unit test that enumerates every method
-   on a connection mock.
+2. **Read-only Salesforce access.** Two layers, both in
+   `packages/core/src/extractors/live-org/`:
+   - *Read facade* (`read-facade.ts`). Extractors never see a `jsforce`
+     object. They get a typed facade with only the read calls sfgraph makes
+     (SOQL query/queryMore on REST and Tooling, describe, identity, Metadata
+     `list`/`read`/`describe`/`retrieve`). It has no write methods, no generic
+     `request`, and no back-reference to the connection.
+   - *Transport guard* (`transport-guard.ts`), installed on the real
+     connection sfgraph creates. It refuses any request made through that
+     connection that is not GET or HEAD, except
+     Metadata API SOAP calls whose envelope operation is `listMetadata`,
+     `readMetadata`, `describeMetadata`, `retrieve`, `checkStatus` or
+     `checkRetrieveStatus`. It also refuses the Tooling GET endpoints that
+     execute Apex (`executeAnonymous`, `runTests*`), matched on the decoded,
+     slash-collapsed path. The request method and URL must be plain strings
+     and the SOAP body is read as markup, so comments and CDATA cannot hide an
+     operation. A refused call throws
+     `ReadOnlyViolationError` naming the method and URL before anything is
+     sent.
+
+   Limits: this covers requests made through the connection's request path
+   (`resolveOrg`). jsforce's OAuth calls (token refresh, and `logout`, which
+   POSTs to `/services/oauth2/revoke` and revokes the session token, not org
+   data), its streaming (CometD) client (`conn.streaming`, which opens its own
+   sockets) and code that calls jsforce internals directly, such as its
+   transport prototype, are outside the guard. sfgraph uses none of them and
+   extractors only receive the read facade. The OAuth token refresh that
+   `@salesforce/core` does with its own client does not read or write org
+   data. A new read that needs POST must be added to the allow-list
+   deliberately. sfgraph still sends queries to your org and receives
+   metadata and source from it; "read-only" describes what it asks the org to
+   do, not network silence.
 3. **Failure-only, sanitized telemetry.** Default is `NullSink`. Opt-in users
    get `LocalFileSink` writing JSONL under `<log-dir>/telemetry/` (resolved
    via env-paths; macOS: `~/Library/Logs/sfgraph/telemetry/`). Every event
@@ -84,6 +111,9 @@ developer machines, you can:
 
 - `network-egress.test.ts` asserts that importing `@ryanstark24/sfgraph-core` and
   constructing the MCP server resolves no external DNS.
-- `read-only-proxy.test.ts` asserts every mutating method on a mock
-  Connection throws.
+- `read-only-proxy.test.ts` uses the real `jsforce` 3.x `Connection` with its
+  transport replaced by a recorder: writes (Apex, SObject, Metadata, raw
+  `request`, back-references) fail without reaching the transport, and every
+  read the extractors use still does. `live-ingest-real-connection.test.ts`
+  runs a full `liveIngest` through the same guarded connection.
 - `sanitizer.test.ts` runs 50+ adversarial inputs.

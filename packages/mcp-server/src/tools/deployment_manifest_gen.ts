@@ -49,6 +49,7 @@ defineTool({
     const hiddenNote = hiddenParts.length
       ? `Left out of both files: ${andList(hiddenParts)} found in only one org (what each org installed or retrieved, not a change). Set ${hiddenFlags.join(" or ")} to include ${hiddenOne ? "it" : "them"}.`
       : null;
+    const dropped = manifest.droppedFromDestructive;
     const unmapped = Object.entries(manifest.incomplete.unmappedLabels);
     const incompleteNote =
       manifest.incomplete.diffTruncated || unmapped.length > 0
@@ -89,6 +90,11 @@ defineTool({
         ...(droppedN > 0
           ? [
               `${countNoun(droppedN, "changed component")} ${droppedN === 1 ? "has" : "have"} no deployment type and ${droppedN === 1 ? "was" : "were"} left out of the files.`,
+            ]
+          : []),
+        ...(dropped.length > 0
+          ? [
+              `${countNoun(dropped.length, "component")} left out of the delete file because the package file deploys the same ${dropped.length === 1 ? "component" : "components"} (names compared without case): ${andList(dropped.map((d) => code(`${d.type}:${d.member}`)))}.`,
             ]
           : []),
         ...(hiddenNote ? [hiddenNote] : []),

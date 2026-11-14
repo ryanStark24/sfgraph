@@ -2,9 +2,11 @@ import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import { REL_TYPES } from "../domain/rel-types.js";
 import { maskApex } from "../parsers/apex/dynamic-soql.js";
-import { blankBracketGroups, findInlineQueries } from "../parsers/apex/soql-fields.js";
+import { findInlineQueries } from "../parsers/apex/soql-fields.js";
 import type { BetterSqlite3Database, GraphStore } from "../storage/interfaces.js";
-import { deadCodeCandidates, scoreDeadCode } from "./dead-code.js";
+import { scanDeadCode, scoreDeadCode } from "./dead-code.js";
+import { detectSourceRisks, unitSourceRisks } from "./governor-source.js";
+import { type ScanCoverage, scanLabel } from "./scan.js";
 
 export interface PopulateCounts {
   findings: number;
@@ -13,7 +15,63 @@ export interface PopulateCounts {
   testCov: number;
 }
 
-/** Detect governor risks by scanning Apex source attribute (if available) plus parser-emitted flags. */
+const COVERAGE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS _sfgraph_analysis_coverage (
+       org_id TEXT NOT NULL,
+       analysis TEXT NOT NULL,
+       scanned INTEGER NOT NULL,
+       total INTEGER NOT NULL,
+       complete INTEGER NOT NULL,
+       computed_at INTEGER NOT NULL,
+       PRIMARY KEY (org_id, analysis)
+     )`;
+
+/**
+ * How much of the graph a cache population looked at (`scanned` of `total`
+ * nodes in scope; `complete` unless the scan's safety limit stopped it).
+ * Stored beside the cache so readers (MCP tools, SARIF) can say "no findings
+ * in the N of M inspected" for an incomplete cache.
+ */
+export function writeScanCoverage(
+  db: BetterSqlite3Database,
+  orgId: OrgId,
+  analysis: string,
+  coverage: ScanCoverage,
+  now = Date.now(),
+): void {
+  db.exec(COVERAGE_TABLE_SQL);
+  db.prepare(
+    `INSERT OR REPLACE INTO _sfgraph_analysis_coverage
+     (org_id, analysis, scanned, total, complete, computed_at) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(orgId, analysis, coverage.scanned, coverage.total, coverage.complete ? 1 : 0, now);
+}
+
+/** The stored scan coverage of `analysis`, or null when none was recorded (older cache, no table). */
+export function readScanCoverage(
+  db: BetterSqlite3Database,
+  orgId: OrgId,
+  analysis: string,
+): ScanCoverage | null {
+  try {
+    const r = db
+      .prepare(
+        "SELECT scanned, total, complete FROM _sfgraph_analysis_coverage WHERE org_id = ? AND analysis = ?",
+      )
+      .get(orgId, analysis) as { scanned: number; total: number; complete: number } | undefined;
+    return r ? { scanned: r.scanned, total: r.total, complete: r.complete === 1 } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Analysis names under which `writeScanCoverage` records each cache. */
+export const COVERAGE_ANALYSIS = {
+  governor: "governor",
+  deadCode: "dead_code",
+  testCoverage: "test_coverage",
+  findings: "findings",
+} as const;
+
+/** Detect governor risks by scanning Apex source (stored snippets, or a `source`/`body` attribute) plus parser-emitted flags. */
 export function populateGovernorRisks(
   store: GraphStore,
   orgId: OrgId,
@@ -90,18 +148,12 @@ export function populateGovernorRisks(
         }
       }
     }
-    // unbounded query: search globally for SELECT without WHERE/LIMIT
-    // (each query on its own: a query held in a bind is blanked out of its
-    // outer query and checked separately)
-    for (const q of queries) {
-      const own = blankBracketGroups(q.inner);
-      if (!/\bLIMIT\b/i.test(own) && !/\bWHERE\b/i.test(own)) {
-        emit(q.index, "unbounded_query", body.slice(q.index, q.index + q.text.length));
-      }
-    }
-    // simple no-bulkify: trigger with single-record DML pattern
-    if (/trigger\s+\w+\s+on\s+\w+/i.test(body) && !/Trigger\.new/i.test(body)) {
-      out.push({ type: "no_bulk", evidence: "trigger without Trigger.new iteration", line: -1 });
+    // unbounded_query / no_bulk: the shared detector (governor-source.ts),
+    // the same one the live scan uses on stored snippets.
+    for (const r of detectSourceRisks(body, {
+      isTrigger: /\btrigger\s+\w+\s+on\s+\w+/i.test(body),
+    })) {
+      out.push({ type: r.risk, evidence: r.evidence, line: r.line });
     }
     return out;
   };
@@ -124,13 +176,10 @@ export function populateGovernorRisks(
       if (ea.inLoop === true) {
         out.push({ type: "soql_in_loop", evidence: query || "SOQL in loop", line: -1 });
       }
-      // NB: we deliberately do NOT flag "unbounded_query" (no WHERE/LIMIT)
-      // from edges. Calibrated against a real org: ~100% of SOQL has no
-      // WHERE/LIMIT in the captured query head (legit full reads of small
-      // config objects like RecordType / CallCenter), so the heuristic
-      // fires on every query and is pure noise. The body-scan path keeps it
-      // for filesystem ingests where the full query text is available, but
-      // SOQL/DML-in-loop is the high-signal governor risk we surface here.
+      // NB: "unbounded_query" is not read from edges: one edge stands for every
+      // query on the same object in a method, and the captured query text is
+      // cut at 500 characters. It comes from the stored snippet instead
+      // (`detectSourceRisks`), which has every query in full.
     }
     for (const e of store.listEdgesFrom(orgId, qname, REL_TYPES.EXECUTES_DML)) {
       const ea = (e.attributes ?? {}) as { inLoop?: unknown };
@@ -155,30 +204,60 @@ export function populateGovernorRisks(
     }
   };
 
-  // Class / trigger: body char-scan (filesystem ingest) + attribute hints.
+  const parts: ScanCoverage[] = [];
+  // Class / trigger: body char-scan (a `source` / `body` attribute, older
+  // graphs) + attribute hints + the trigger's stored snippet.
   for (const lbl of [METADATA_CATEGORY.APEX_CLASS, METADATA_CATEGORY.APEX_TRIGGER]) {
-    for (const node of store.listNodesByLabel(orgId, lbl, 10000)) {
-      const a = node.attributes as Record<string, unknown>;
-      const body = String(a.source ?? a.body ?? "");
-      const risks = detect(body);
-      if (a.hasSoqlInLoop === true) {
-        risks.push({ type: "soql_in_loop", evidence: "attribute hint", line: -1 });
+    const scan = scanLabel(store, orgId, lbl);
+    for (const page of scan.pages) {
+      for (const node of page) {
+        const a = node.attributes as Record<string, unknown>;
+        const body = String(a.source ?? a.body ?? "");
+        const risks = detect(body);
+        if (lbl === METADATA_CATEGORY.APEX_TRIGGER && !body) {
+          risks.push(
+            ...unitSourceRisks(store, orgId, node.qualifiedName, { isTrigger: true }).map((r) => ({
+              type: r.risk,
+              evidence: r.evidence,
+              line: r.line,
+            })),
+          );
+        }
+        if (a.hasSoqlInLoop === true) {
+          risks.push({ type: "soql_in_loop", evidence: "attribute hint", line: -1 });
+        }
+        if (a.hasDmlInLoop === true) {
+          risks.push({ type: "dml_in_loop", evidence: "attribute hint", line: -1 });
+        }
+        // Edge-based detection on the class/trigger node itself (regex-mode
+        // parser emits SOQL/DML edges at the trigger/class qname).
+        risks.push(...detectFromEdges(node.qualifiedName));
+        writeRisks(node.qualifiedName, risks);
       }
-      if (a.hasDmlInLoop === true) {
-        risks.push({ type: "dml_in_loop", evidence: "attribute hint", line: -1 });
-      }
-      // Edge-based detection on the class/trigger node itself (regex-mode
-      // parser emits SOQL/DML edges at the trigger/class qname).
-      risks.push(...detectFromEdges(node.qualifiedName));
-      writeRisks(node.qualifiedName, risks);
     }
+    parts.push(scan.coverage());
   }
-  // Method-level edge detection — the live-ingest path (AST parser emits
-  // EXECUTES_SOQL/DML edges per method). "ApexMethod" is a raw node label,
-  // not a METADATA_CATEGORY member.
-  for (const node of store.listNodesByLabel(orgId, "ApexMethod", 50000)) {
-    writeRisks(node.qualifiedName, detectFromEdges(node.qualifiedName));
+  // Method-level detection: EXECUTES_SOQL/DML edges per method (the live-ingest
+  // AST parser) and `unbounded_query` from the method's stored snippet.
+  // "ApexMethod" / "TestMethod" are raw node labels, not METADATA_CATEGORY members.
+  for (const lbl of ["ApexMethod", "TestMethod"]) {
+    const scan = scanLabel(store, orgId, lbl);
+    for (const page of scan.pages) {
+      for (const node of page) {
+        const risks = detectFromEdges(node.qualifiedName);
+        for (const r of unitSourceRisks(store, orgId, node.qualifiedName, { isTrigger: false })) {
+          risks.push({ type: r.risk, evidence: r.evidence, line: r.line });
+        }
+        writeRisks(node.qualifiedName, risks);
+      }
+    }
+    parts.push(scan.coverage());
   }
+  writeScanCoverage(db, orgId, COVERAGE_ANALYSIS.governor, {
+    scanned: parts.reduce((x, p) => x + p.scanned, 0),
+    total: parts.reduce((x, p) => x + p.total, 0),
+    complete: parts.every((p) => p.complete),
+  });
   return n;
 }
 
@@ -197,8 +276,12 @@ export function populateGovernorRisks(
  *   5: test references count as references: dead = no inbound of any kind,
  *      unreferenced @isTest classes included (`test_class`); production code
  *      used only by tests is kept apart (`referenced_only_by_tests`).
+ *   6: every node is scanned (no 10,000-node cut-off, scan coverage stored
+ *      beside the scores); known external entry points (REST, global,
+ *      schedulable, ...) carry `external_entry_point` / `entry_point:<kind>`
+ *      reasons and never get more than low confidence.
  */
-export const DEAD_CODE_ALGORITHM_VERSION = 5;
+export const DEAD_CODE_ALGORITHM_VERSION = 6;
 
 const DEAD_CODE_ANALYSIS = "dead_code";
 
@@ -246,11 +329,19 @@ export function populateDeadCodeScores(
   // use, whatever its freshness.
   const write = db.transaction(() => {
     db.prepare("DELETE FROM _sfgraph_dead_code_scores WHERE org_id = ?").run(orgId);
-    for (const { node, testOnlyRefs, isTest } of deadCodeCandidates(store, orgId)) {
-      const { score, confidence, reasons } = scoreDeadCode(node, now, testOnlyRefs, isTest);
+    const { candidates, coverage } = scanDeadCode(store, orgId);
+    for (const { node, testOnlyRefs, isTest, externalEntryPoints } of candidates) {
+      const { score, confidence, reasons } = scoreDeadCode(
+        node,
+        now,
+        testOnlyRefs,
+        isTest,
+        externalEntryPoints,
+      );
       stmt.run(orgId, node.qualifiedName, score, confidence, JSON.stringify(reasons), now);
       n += 1;
     }
+    writeScanCoverage(db, orgId, COVERAGE_ANALYSIS.deadCode, coverage, now);
     db.prepare(
       `INSERT OR REPLACE INTO _sfgraph_analysis_versions (org_id, analysis, version, computed_at)
        VALUES (?, ?, ?, ?)`,
@@ -316,23 +407,28 @@ export function readDeadCodeScores(
 /**
  * Dead-code scores from the cache when it is current for this algorithm,
  * otherwise computed live (same candidates and scores the cache would hold).
+ * `coverage` is how much of the graph the rows' scan examined (null for a
+ * cache written before coverage was recorded).
  */
 export function loadDeadCodeScores(
   store: GraphStore,
   orgId: OrgId,
   db: BetterSqlite3Database | null | undefined,
   now = Date.now(),
-): { rows: DeadCodeScoreRow[]; source: "cache" | "live" } {
+): { rows: DeadCodeScoreRow[]; source: "cache" | "live"; coverage: ScanCoverage | null } {
   const cached = db ? readDeadCodeScores(db, orgId) : null;
-  if (cached) return { rows: cached, source: "cache" };
-  const rows = deadCodeCandidates(store, orgId)
-    .map(({ node, testOnlyRefs, isTest }) => ({
+  if (cached && db) {
+    return { rows: cached, source: "cache", coverage: readScanCoverage(db, orgId, "dead_code") };
+  }
+  const { candidates, coverage } = scanDeadCode(store, orgId);
+  const rows = candidates
+    .map(({ node, testOnlyRefs, isTest, externalEntryPoints }) => ({
       qualifiedName: String(node.qualifiedName),
-      ...scoreDeadCode(node, now, testOnlyRefs, isTest),
+      ...scoreDeadCode(node, now, testOnlyRefs, isTest, externalEntryPoints),
       computedAt: now,
     }))
     .sort((x, y) => x.score - y.score || x.qualifiedName.localeCompare(y.qualifiedName));
-  return { rows, source: "live" };
+  return { rows, source: "live", coverage };
 }
 
 export function populateTestCoverage(
@@ -347,11 +443,15 @@ export function populateTestCoverage(
      VALUES (?, ?, ?, ?)`,
   );
   let n = 0;
-  for (const node of store.listNodesByLabel(orgId, METADATA_CATEGORY.APEX_CLASS, 10000)) {
-    const tests = store.listEdgesTo(orgId, node.qualifiedName, REL_TYPES.IS_TEST_FOR).length;
-    stmt.run(orgId, node.qualifiedName, tests, now);
-    n += 1;
+  const scan = scanLabel(store, orgId, METADATA_CATEGORY.APEX_CLASS);
+  for (const page of scan.pages) {
+    for (const node of page) {
+      const tests = store.listEdgesTo(orgId, node.qualifiedName, REL_TYPES.IS_TEST_FOR).length;
+      stmt.run(orgId, node.qualifiedName, tests, now);
+      n += 1;
+    }
   }
+  writeScanCoverage(db, orgId, COVERAGE_ANALYSIS.testCoverage, scan.coverage(), now);
   return n;
 }
 
@@ -367,22 +467,26 @@ export function populateSecurityFindings(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   let n = 0;
-  for (const node of store.listNodesByLabel(orgId, METADATA_CATEGORY.SHARING_RULE, 10000)) {
-    const a = node.attributes as Record<string, unknown>;
-    if (a.accessLevel === "All" || a.access === "Edit" || a.accessLevel === "Edit") {
-      stmt.run(
-        orgId,
-        node.qualifiedName,
-        "sharing.full_access",
-        -1,
-        "high",
-        "sharing rule grants full access (All/Edit)",
-        JSON.stringify({ accessLevel: a.accessLevel ?? a.access ?? null }),
-        now,
-      );
-      n += 1;
+  const scan = scanLabel(store, orgId, METADATA_CATEGORY.SHARING_RULE);
+  for (const page of scan.pages) {
+    for (const node of page) {
+      const a = node.attributes as Record<string, unknown>;
+      if (a.accessLevel === "All" || a.access === "Edit" || a.accessLevel === "Edit") {
+        stmt.run(
+          orgId,
+          node.qualifiedName,
+          "sharing.full_access",
+          -1,
+          "high",
+          "sharing rule gives record Edit or All access (record sharing only, not an object or field permission)",
+          JSON.stringify({ accessLevel: a.accessLevel ?? a.access ?? null }),
+          now,
+        );
+        n += 1;
+      }
     }
   }
+  writeScanCoverage(db, orgId, COVERAGE_ANALYSIS.findings, scan.coverage(), now);
   return n;
 }
 

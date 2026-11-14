@@ -517,10 +517,10 @@ export function registerT4Reports(part: { from: number; to?: number; rest: boole
 
         it("dead_code_audit counts by kind and confidence, and says nothing matched with a filter", async () => {
           const all = await inShortOf("dead_code_audit.all");
-          expect(all).toMatch(/\d+ pieces? (looks?|seem) unused/);
+          expect(all).toMatch(/\d+ pieces? (has|have) no captured incoming references/);
           expect(all).toContain("high confidence");
           const none = await inShortOf("dead_code_audit.none");
-          expect(none).toContain("No unused code found");
+          expect(none).toContain("No code with no captured incoming references found");
           expect(none).toContain("`Nothing*`");
         });
 
@@ -559,12 +559,16 @@ export function registerT4Reports(part: { from: number; to?: number; rest: boole
           );
         });
 
-        it("security_audit names edit-or-full access plainly", async () => {
+        it("security_audit describes sharing as record access, not as a permission bypass", async () => {
           const t = await md("security_audit.all");
-          expect(section(t, "In short")).toContain("others edit the records (edit or full access)");
-          expect(pieceLine(t, "Case.OpenAll")).toContain(
-            "lets others edit the records (edit or full access)",
+          expect(section(t, "In short")).toContain("gives full record access (All) to records");
+          expect(section(t, "In short")).toContain(
+            "says nothing about object or field permissions",
           );
+          expect(pieceLine(t, "Case.OpenAll")).toContain(
+            "gives its audience full record access (All) to the records",
+          );
+          expect(t).not.toMatch(/bypass|Modify All|View All|full[- ]access/i);
         });
 
         it("list_orgs with no orgs says the command-line logins were not read", async () => {

@@ -26,13 +26,18 @@
       "truncated": false,
       "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
       "cached": false,
+      "scan": {
+        "scanned": 3,
+        "total": 3,
+        "complete": true
+      },
       "source": "live",
       "cache": "absent",
       "excludedTests": 0,
       "minSeverity": "medium",
       "hiddenBelowSeverity": 0
     },
-    "markdown": "#### `ApexClass:CaseService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:CaseService.run(0)` | soql_in_loop | [SELECT Id FROM Case] |\n| `ApexMethod:CaseService.save(1)` | dml_in_loop | cases |\n\n#### `ApexClass:OrderService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:OrderService.load(0)` | soql_in_loop | [SELECT Id FROM Order] |\n\n_source: live_"
+    "markdown": "_unbounded_query: an inline query with no LIMIT and no WHERE in its own clause (COUNT() and Custom Metadata Type queries are not flagged). no_bulk: a trigger that reads Trigger.new[0] / Trigger.old[0] (or .get(0)), never loops over the trigger's records and does not pass them on._\n\nGrouped by class or trigger, A to Z.\n\n#### `ApexClass:CaseService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:CaseService.run(0)` | soql_in_loop | [SELECT Id FROM Case] |\n| `ApexMethod:CaseService.save(1)` | dml_in_loop | cases |\n\n#### `ApexClass:OrderService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:OrderService.load(0)` | soql_in_loop | [SELECT Id FROM Order] |\n\n_source: live_"
   },
   "governor_risk_check.limited": {
     "data": {
@@ -47,13 +52,18 @@
       "truncated": true,
       "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
       "cached": false,
+      "scan": {
+        "scanned": 3,
+        "total": 3,
+        "complete": true
+      },
       "source": "live",
       "cache": "absent",
       "excludedTests": 0,
       "minSeverity": "medium",
       "hiddenBelowSeverity": 0
     },
-    "markdown": "#### `ApexClass:CaseService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:CaseService.run(0)` | soql_in_loop | [SELECT Id FROM Case] |\n\n_showing the 1 highest-priority of 3 risks (+2 more) — raise `limit` or use export_sarif._\n\n_source: live_"
+    "markdown": "Not listed below (their spots rank lower), A to Z: `ApexClass:OrderService` (1 spot).\n\n_unbounded_query: an inline query with no LIMIT and no WHERE in its own clause (COUNT() and Custom Metadata Type queries are not flagged). no_bulk: a trigger that reads Trigger.new[0] / Trigger.old[0] (or .get(0)), never loops over the trigger's records and does not pass them on._\n\nGrouped by class or trigger, A to Z.\n\n#### `ApexClass:CaseService`\n\n| qname | risk | evidence |\n|---|---|---|\n| `ApexMethod:CaseService.run(0)` | soql_in_loop | [SELECT Id FROM Case] |\n\n_showing the 1 highest-priority of 3 risks (+2 more) — raise `limit` or use export_sarif._\n\n_source: live_"
   },
   "governor_risk_check.none": {
     "data": {
@@ -62,13 +72,18 @@
       "truncated": false,
       "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
       "cached": false,
+      "scan": {
+        "scanned": 0,
+        "total": 0,
+        "complete": true
+      },
       "source": "live",
       "cache": "absent",
       "excludedTests": 0,
       "minSeverity": "medium",
       "hiddenBelowSeverity": 0
     },
-    "markdown": "_no governor risks surfaced_"
+    "markdown": "_unbounded_query: an inline query with no LIMIT and no WHERE in its own clause (COUNT() and Custom Metadata Type queries are not flagged). no_bulk: a trigger that reads Trigger.new[0] / Trigger.old[0] (or .get(0)), never loops over the trigger's records and does not pass them on._\n\n_no governor risks surfaced_"
   },
   "dead_code_audit.all": {
     "data": {
@@ -103,6 +118,8 @@
         }
       ],
       "total": 4,
+      "externalEntryPoints": [],
+      "externalEntryPointsTotal": 0,
       "referencedOnlyByTests": [],
       "referencedOnlyByTestsTotal": 0,
       "byConfidence": {
@@ -113,9 +130,14 @@
         "Flow": 1,
         "LWC": 1
       },
-      "cached": false
+      "cached": false,
+      "scan": {
+        "scanned": 5,
+        "total": 5,
+        "complete": true
+      }
     },
-    "markdown": "**4 dead-code candidates** — showing 4.\n\nConfidence: high=4\nType: ApexClass=2, Flow=1, LWC=1\n\n- ApexClass:OldHelper — high 0.03 (no_incoming_edges, stale_freshness)\n- ApexClass:OrderService — high 0.03 (no_incoming_edges, stale_freshness)\n- Flow:Old_Flow — high 0.03 (no_incoming_edges, stale_freshness)\n- LWC:caseCard — high 0.03 (no_incoming_edges, stale_freshness)"
+    "markdown": "**4 dead-code candidates (no captured incoming references)** — showing 4.\n\nConfidence: high=4\nType: ApexClass=2, Flow=1, LWC=1\nScanned: 5 of 5\n\n- ApexClass:OldHelper — high 0.03 (no_incoming_edges, stale_freshness)\n- ApexClass:OrderService — high 0.03 (no_incoming_edges, stale_freshness)\n- Flow:Old_Flow — high 0.03 (no_incoming_edges, stale_freshness)\n- LWC:caseCard — high 0.03 (no_incoming_edges, stale_freshness)\n\n_Callers outside the graph (integrations, the UI, schedules) are not captured, so no captured references is not proof that nothing uses a piece._"
   },
   "dead_code_audit.flow": {
     "data": {
@@ -129,6 +151,8 @@
         }
       ],
       "total": 1,
+      "externalEntryPoints": [],
+      "externalEntryPointsTotal": 0,
       "referencedOnlyByTests": [],
       "referencedOnlyByTestsTotal": 0,
       "byConfidence": {
@@ -137,17 +161,29 @@
       "byLabel": {
         "Flow": 1
       },
-      "cached": false
+      "cached": false,
+      "scan": {
+        "scanned": 1,
+        "total": 1,
+        "complete": true
+      }
     },
-    "markdown": "**1 dead-code candidate** (label=Flow) — showing 1.\n\nConfidence: high=1\nType: Flow=1\n\n- Flow:Old_Flow — high 0.03 (no_incoming_edges, stale_freshness)"
+    "markdown": "**1 dead-code candidate (no captured incoming references)** (label=Flow) — showing 1.\n\nConfidence: high=1\nType: Flow=1\nScanned: 1 of 1\n\n- Flow:Old_Flow — high 0.03 (no_incoming_edges, stale_freshness)\n\n_Callers outside the graph (integrations, the UI, schedules) are not captured, so no captured references is not proof that nothing uses a piece._"
   },
   "dead_code_audit.none": {
     "data": {
       "dead": [],
       "cached": false,
       "total": 0,
+      "externalEntryPoints": [],
+      "externalEntryPointsTotal": 0,
       "referencedOnlyByTests": [],
-      "referencedOnlyByTestsTotal": 0
+      "referencedOnlyByTestsTotal": 0,
+      "scan": {
+        "scanned": 0,
+        "total": 0,
+        "complete": true
+      }
     },
     "markdown": "_no dead code detected_"
   },
@@ -159,9 +195,14 @@
       "referencedOnlyByTestsTotal": 0,
       "cached": false,
       "scored": false,
-      "live": true
+      "live": true,
+      "scan": {
+        "scanned": 1,
+        "total": 1,
+        "complete": true
+      }
     },
-    "markdown": "**0 zero-inbound CustomObject candidates** (computed live; CustomObject has no freshness score, so every CustomObject with no incoming reference (test references count) is listed) — showing 0.\n\n_Note: confidence/freshness filters do not apply to unscored labels._\n\n_no CustomObject with zero inbound references_"
+    "markdown": "**0 CustomObject candidates with no captured incoming references** (computed live; CustomObject has no freshness score, so every CustomObject with no incoming reference (test references count) is listed) — showing 0.\n\n_Note: confidence/freshness filters do not apply to unscored labels. Scanned 1 of 1._\n\n_no CustomObject with no captured incoming references_"
   },
   "dead_code_audit.unknown": {
     "data": {
@@ -170,12 +211,24 @@
       "total": 0,
       "referencedOnlyByTests": [],
       "referencedOnlyByTestsTotal": 0,
-      "scored": false
+      "scored": false,
+      "scan": {
+        "scanned": 0,
+        "total": 0,
+        "complete": true
+      }
     },
     "markdown": "label Nope is not scored by dead_code_audit (no Nope nodes found; check the label spelling)"
   },
   "security_audit.all": {
     "data": {
+      "sharingEditAccess": ["SharingRule:Case.OpenAll"],
+      "sharingRuleAccess": [
+        {
+          "qualifiedName": "SharingRule:Case.OpenAll",
+          "access": "All"
+        }
+      ],
       "sharingFullAccess": ["SharingRule:Case.OpenAll"],
       "fieldAccessMatrix": [
         {
@@ -186,6 +239,7 @@
       "flsGaps": ["CustomField:Account.SSN__c"],
       "flsGapsExcluded": 0,
       "truncated": false,
+      "sharingEditAccessTotal": 1,
       "sharingFullAccessTotal": 1,
       "flsGapsTotal": 1,
       "fieldAccessMatrixTotal": 1,
@@ -193,15 +247,18 @@
       "cachedFindingsTotal": 0,
       "limited": false
     },
-    "markdown": "**Full-access sharing rules:** 1\n- `SharingRule:Case.OpenAll`\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 1\n- `CustomField:Account.SSN__c`"
+    "markdown": "**Sharing rules giving record Edit or All access (record sharing only, not object or field permissions):** 1\n- `SharingRule:Case.OpenAll` (All)\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 1\n- `CustomField:Account.SSN__c`"
   },
   "security_audit.none": {
     "data": {
+      "sharingEditAccess": [],
+      "sharingRuleAccess": [],
       "sharingFullAccess": [],
       "fieldAccessMatrix": [],
       "flsGaps": [],
       "flsGapsExcluded": 0,
       "truncated": false,
+      "sharingEditAccessTotal": 0,
       "sharingFullAccessTotal": 0,
       "flsGapsTotal": 0,
       "fieldAccessMatrixTotal": 0,
@@ -209,10 +266,17 @@
       "cachedFindingsTotal": 0,
       "limited": false
     },
-    "markdown": "**Full-access sharing rules:** 0\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
+    "markdown": "**Sharing rules giving record Edit or All access (record sharing only, not object or field permissions):** 0\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
   },
   "security_audit.field": {
     "data": {
+      "sharingEditAccess": ["SharingRule:Case.OpenAll"],
+      "sharingRuleAccess": [
+        {
+          "qualifiedName": "SharingRule:Case.OpenAll",
+          "access": "All"
+        }
+      ],
       "sharingFullAccess": ["SharingRule:Case.OpenAll"],
       "fieldAccessMatrix": [
         {
@@ -223,6 +287,7 @@
       "flsGaps": [],
       "flsGapsExcluded": 0,
       "truncated": false,
+      "sharingEditAccessTotal": 1,
       "sharingFullAccessTotal": 1,
       "flsGapsTotal": 0,
       "fieldAccessMatrixTotal": 1,
@@ -230,15 +295,23 @@
       "cachedFindingsTotal": 0,
       "limited": false
     },
-    "markdown": "**Full-access sharing rules:** 1\n- `SharingRule:Case.OpenAll`\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
+    "markdown": "**Sharing rules giving record Edit or All access (record sharing only, not object or field permissions):** 1\n- `SharingRule:Case.OpenAll` (All)\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0\n\n**Granted by (read or edit):** 1\n- `PermissionSet:Support`"
   },
   "security_audit.ghostfield": {
     "data": {
+      "sharingEditAccess": ["SharingRule:Case.OpenAll"],
+      "sharingRuleAccess": [
+        {
+          "qualifiedName": "SharingRule:Case.OpenAll",
+          "access": "All"
+        }
+      ],
       "sharingFullAccess": ["SharingRule:Case.OpenAll"],
       "fieldAccessMatrix": [],
       "flsGaps": [],
       "flsGapsExcluded": 0,
       "truncated": false,
+      "sharingEditAccessTotal": 1,
       "sharingFullAccessTotal": 1,
       "flsGapsTotal": 0,
       "fieldAccessMatrixTotal": 0,
@@ -246,7 +319,7 @@
       "cachedFindingsTotal": 0,
       "limited": false
     },
-    "markdown": "**Full-access sharing rules:** 1\n- `SharingRule:Case.OpenAll`\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
+    "markdown": "**Sharing rules giving record Edit or All access (record sharing only, not object or field permissions):** 1\n- `SharingRule:Case.OpenAll` (All)\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
   },
   "find_similar.qname": {
     "data": {
@@ -266,7 +339,7 @@
         }
       ]
     },
-    "markdown": "**Top 1 nearest neighbour to ApexClass:CaseService:**\n\n| # | qname | label | similarity | via |\n| - | ----- | ----- | ---------- | --- |\n| 1 | `ApexClass:OrderService` | `ApexClass` | 0.875 | vector |\n\n_2 weaker vector match(es) hidden below the 0.4 similarity floor — lower `min_similarity` to include them._\n\n_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_"
+    "markdown": "**Top 1 nearest neighbour to ApexClass:CaseService:**\n\n| # | qname | label | similarity | via |\n| - | ----- | ----- | ---------- | --- |\n| 1 | `ApexClass:OrderService` | `ApexClass` | 0.875 | vector |\n\n_2 weaker vector match(es) hidden below the 0.4 similarity floor \u2014 lower `min_similarity` to include them._\n\n_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_"
   },
   "find_similar.ghost": {
     "data": {
@@ -446,7 +519,7 @@
       "truncated": false,
       "baselineEmpty": false
     },
-    "markdown": "**Components** — +1 / -0 / ~1\n**Records and configuration** (not components) — +0 / -0 / ~0\n**Nodes** — +1 / -0 / ~1\n**Edges** — +0 / -0\n\n```mermaid\nflowchart LR\n  n0[\"ApexClass:Brand_New\"]:::added\n  n1[\"ApexClass:CaseService\"]:::changed\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+    "markdown": "**Components** \u2014 +1 / -0 / ~1\n**Records and configuration** (not components) \u2014 +0 / -0 / ~0\n**Nodes** \u2014 +1 / -0 / ~1\n**Edges** \u2014 +0 / -0\n\n```mermaid\nflowchart LR\n  n0[\"ApexClass:Brand_New\"]:::added\n  n1[\"ApexClass:CaseService\"]:::changed\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
   },
   "point_in_time_diff.nochange": {
     "data": {
@@ -498,7 +571,7 @@
       "truncated": false,
       "baselineEmpty": false
     },
-    "markdown": "**Components** — +0 / -0 / ~0\n**Records and configuration** (not components) — +0 / -0 / ~0\n**Nodes** — +0 / -0 / ~0\n**Edges** — +0 / -0\n\n```mermaid\nflowchart LR\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+    "markdown": "**Components** \u2014 +0 / -0 / ~0\n**Records and configuration** (not components) \u2014 +0 / -0 / ~0\n**Nodes** \u2014 +0 / -0 / ~0\n**Edges** \u2014 +0 / -0\n\n```mermaid\nflowchart LR\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
   },
   "export_sarif.all": {
     "data": {
@@ -517,10 +590,10 @@
                     "id": "dead-code.unreferenced",
                     "name": "Unreferenced metadata",
                     "shortDescription": {
-                      "text": "Node has no incoming edges and is not an obvious entry point."
+                      "text": "Node has no captured incoming references in the graph."
                     },
                     "fullDescription": {
-                      "text": "Apex/LWC/Flow components with no incoming references are candidates for deletion. Note that some entry points (AuraEnabled, REST endpoints, scheduled jobs) are only reachable from outside the org and will show up here legitimately — verify before deleting."
+                      "text": "Apex/LWC/Flow components with no captured incoming references in the graph. This does not show that nothing uses them: callers outside the graph (integrations calling a REST endpoint or global method, the UI, schedules, batch jobs, managed packages) are not captured. Results marked `externalEntryPoint` are known entry points of that kind and are not deletion candidates on this evidence alone. Verify against logs, API clients and schedules before deleting anything."
                     },
                     "defaultConfiguration": {
                       "level": "note"
@@ -536,7 +609,7 @@
                       "text": "Apex method executes DML inside a loop."
                     },
                     "fullDescription": {
-                      "text": "Detected via the `hasDmlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 150 DML statements the platform allows per transaction — bulkify by collecting records into a list and committing once after the loop."
+                      "text": "Detected via the `hasDmlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 150 DML statements the platform allows per transaction \u2014 bulkify by collecting records into a list and committing once after the loop."
                     },
                     "defaultConfiguration": {
                       "level": "error"
@@ -552,7 +625,7 @@
                       "text": "Apex method executes SOQL inside a loop."
                     },
                     "fullDescription": {
-                      "text": "Detected via the `hasSoqlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 100 SOQL queries the platform allows per transaction — bulkify by moving the query outside the loop and consuming the results inline."
+                      "text": "Detected via the `hasSoqlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 100 SOQL queries the platform allows per transaction \u2014 bulkify by moving the query outside the loop and consuming the results inline."
                     },
                     "defaultConfiguration": {
                       "level": "error"
@@ -594,16 +667,16 @@
                     }
                   },
                   {
-                    "id": "security.sharing-full-access",
-                    "name": "Object granted full access via sharing",
+                    "id": "security.sharing-edit-access",
+                    "name": "Sharing rule gives record Edit access",
                     "shortDescription": {
-                      "text": "OWD or sharing rule grants Modify All / View All to a broad audience."
+                      "text": "A sharing rule gives its audience Edit (or All) access to records of the object."
                     },
                     "fullDescription": {
-                      "text": "Granting full access via OWD or sharing rules bypasses field-level security and CRUD checks. Review whether the audience genuinely needs unrestricted access; prefer scoped permission sets."
+                      "text": "Record-level access granted by a sharing rule, with the audience the rule stores (a group, role or guest user, for example). This is record sharing only. It does not show that the audience has object (CRUD) or field-level permissions, and it is not Modify All or View All, which are permission set and profile settings. Check that the audience should be able to edit these records. The analysis does not read org-wide defaults or work out any one user's effective access."
                     },
                     "defaultConfiguration": {
-                      "level": "warning"
+                      "level": "note"
                     },
                     "properties": {
                       "tags": ["security"]
@@ -691,10 +764,10 @@
                 ]
               },
               {
-                "ruleId": "security.sharing-full-access",
-                "level": "warning",
+                "ruleId": "security.sharing-edit-access",
+                "level": "note",
                 "message": {
-                  "text": "SharingRule:Case.OpenAll: granted full access via sharing rule or OWD"
+                  "text": "SharingRule:Case.OpenAll: sharing rule gives All access to records (record sharing only; says nothing about object or field permissions)"
                 },
                 "locations": [
                   {
@@ -705,13 +778,16 @@
                       }
                     ]
                   }
-                ]
+                ],
+                "properties": {
+                  "access": "All"
+                }
               },
               {
                 "ruleId": "dead-code.unreferenced",
                 "level": "note",
                 "message": {
-                  "text": "ApexClass:OrderService: no incoming references"
+                  "text": "ApexClass:OrderService: no captured incoming references. Callers outside the graph (integrations, the UI, schedules) are not captured."
                 },
                 "locations": [
                   {
@@ -724,14 +800,15 @@
                   }
                 ],
                 "properties": {
-                  "label": "ApexClass"
+                  "label": "ApexClass",
+                  "externalEntryPoint": false
                 }
               },
               {
                 "ruleId": "dead-code.unreferenced",
                 "level": "note",
                 "message": {
-                  "text": "ApexClass:OldHelper: no incoming references"
+                  "text": "ApexClass:OldHelper: no captured incoming references. Callers outside the graph (integrations, the UI, schedules) are not captured."
                 },
                 "locations": [
                   {
@@ -744,14 +821,15 @@
                   }
                 ],
                 "properties": {
-                  "label": "ApexClass"
+                  "label": "ApexClass",
+                  "externalEntryPoint": false
                 }
               },
               {
                 "ruleId": "dead-code.unreferenced",
                 "level": "note",
                 "message": {
-                  "text": "LWC:caseCard: no incoming references"
+                  "text": "LWC:caseCard: no captured incoming references. Callers outside the graph (integrations, the UI, schedules) are not captured."
                 },
                 "locations": [
                   {
@@ -764,14 +842,15 @@
                   }
                 ],
                 "properties": {
-                  "label": "LWC"
+                  "label": "LWC",
+                  "externalEntryPoint": false
                 }
               },
               {
                 "ruleId": "dead-code.unreferenced",
                 "level": "note",
                 "message": {
-                  "text": "Flow:Old_Flow: no incoming references"
+                  "text": "Flow:Old_Flow: no captured incoming references. Callers outside the graph (integrations, the UI, schedules) are not captured."
                 },
                 "locations": [
                   {
@@ -784,7 +863,8 @@
                   }
                 ],
                 "properties": {
-                  "label": "Flow"
+                  "label": "Flow",
+                  "externalEntryPoint": false
                 }
               },
               {
@@ -829,7 +909,22 @@
                   "danglingDst": "CustomObject:Order"
                 }
               }
-            ]
+            ],
+            "properties": {
+              "sfgraphScanCoverage": {
+                "governor": {
+                  "scanned": 3,
+                  "total": 3,
+                  "complete": true
+                },
+                "dead-code": {
+                  "scanned": 5,
+                  "total": 5,
+                  "complete": true
+                }
+              },
+              "sfgraphScanComplete": true
+            }
           }
         ]
       },
@@ -876,55 +971,62 @@
           }
         },
         {
-          "ruleId": "security.sharing-full-access",
-          "message": "SharingRule:Case.OpenAll: granted full access via sharing rule or OWD",
-          "level": "warning",
+          "ruleId": "security.sharing-edit-access",
+          "message": "SharingRule:Case.OpenAll: sharing rule gives All access to records (record sharing only; says nothing about object or field permissions)",
+          "level": "note",
           "location": {
             "qualifiedName": "SharingRule:Case.OpenAll"
+          },
+          "properties": {
+            "access": "All"
           }
         },
         {
           "ruleId": "dead-code.unreferenced",
-          "message": "ApexClass:OrderService: no incoming references",
+          "message": "ApexClass:OrderService: no captured incoming references. Callers outside the graph (integrations, the UI, schedules) are not captured.",
           "level": "note",
           "location": {
             "qualifiedName": "ApexClass:OrderService"
           },
           "properties": {
-            "label": "ApexClass"
+            "label": "ApexClass",
+            "externalEntryPoint": false
           }
         },
         {
           "ruleId": "dead-code.unreferenced",
-          "message": "ApexClass:OldHelper: no incoming references",
+          "message": "ApexClass:OldHelper: no captured incoming references. Callers outside the graph (integrations, the UI, schedules) are not captured.",
           "level": "note",
           "location": {
             "qualifiedName": "ApexClass:OldHelper"
           },
           "properties": {
-            "label": "ApexClass"
+            "label": "ApexClass",
+            "externalEntryPoint": false
           }
         },
         {
           "ruleId": "dead-code.unreferenced",
-          "message": "LWC:caseCard: no incoming references",
+          "message": "LWC:caseCard: no captured incoming references. Callers outside the graph (integrations, the UI, schedules) are not captured.",
           "level": "note",
           "location": {
             "qualifiedName": "LWC:caseCard"
           },
           "properties": {
-            "label": "LWC"
+            "label": "LWC",
+            "externalEntryPoint": false
           }
         },
         {
           "ruleId": "dead-code.unreferenced",
-          "message": "Flow:Old_Flow: no incoming references",
+          "message": "Flow:Old_Flow: no captured incoming references. Callers outside the graph (integrations, the UI, schedules) are not captured.",
           "level": "note",
           "location": {
             "qualifiedName": "Flow:Old_Flow"
           },
           "properties": {
-            "label": "Flow"
+            "label": "Flow",
+            "externalEntryPoint": false
           }
         },
         {
@@ -958,9 +1060,21 @@
         "security": "live",
         "dead-code": "live",
         "dangling": "live"
+      },
+      "scanCoverage": {
+        "governor": {
+          "scanned": 3,
+          "total": 3,
+          "complete": true
+        },
+        "dead-code": {
+          "scanned": 5,
+          "total": 5,
+          "complete": true
+        }
       }
     },
-    "markdown": "**SARIF 2.1.0** — 11 findings\n\n_sources: governor=live, security=live, dead-code=live, dangling=live_\n\nSaved to `<exports>/org1.sarif`. Upload it to GitHub Code Scanning with the `github/codeql-action/upload-sarif` action."
+    "markdown": "**SARIF 2.1.0** — 11 findings\n\n_sources: governor=live, security=live, dead-code=live, dangling=live_\n_scanned: governor=3/3, dead-code=5/5_\n\nSaved to `<exports>/org1.sarif`. Upload it to GitHub Code Scanning with the `github/codeql-action/upload-sarif` action."
   },
   "export_sarif.none": {
     "data": {
@@ -977,7 +1091,22 @@
                 "rules": []
               }
             },
-            "results": []
+            "results": [],
+            "properties": {
+              "sfgraphScanCoverage": {
+                "governor": {
+                  "scanned": 0,
+                  "total": 0,
+                  "complete": true
+                },
+                "dead-code": {
+                  "scanned": 0,
+                  "total": 0,
+                  "complete": true
+                }
+              },
+              "sfgraphScanComplete": true
+            }
           }
         ]
       },
@@ -988,9 +1117,21 @@
         "security": "live",
         "dead-code": "live",
         "dangling": "live"
+      },
+      "scanCoverage": {
+        "governor": {
+          "scanned": 0,
+          "total": 0,
+          "complete": true
+        },
+        "dead-code": {
+          "scanned": 0,
+          "total": 0,
+          "complete": true
+        }
       }
     },
-    "markdown": "**SARIF 2.1.0** — 0 findings\n\n_sources: governor=live, security=live, dead-code=live, dangling=live_\n\nSaved to `<exports>/org1.sarif`. Upload it to GitHub Code Scanning with the `github/codeql-action/upload-sarif` action."
+    "markdown": "**SARIF 2.1.0** — 0 findings\n\n_sources: governor=live, security=live, dead-code=live, dangling=live_\n_scanned: governor=0/0, dead-code=0/0_\n\nSaved to `<exports>/org1.sarif`. Upload it to GitHub Code Scanning with the `github/codeql-action/upload-sarif` action."
   },
   "deployment_manifest_gen.ab": {
     "data": {
@@ -1016,7 +1157,8 @@
       "hidden": {
         "managed": 0,
         "standard": 1
-      }
+      },
+      "droppedFromDestructive": []
     },
     "markdown": "### package.xml\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>CaseService</members>\n    <members>OldHelper</members>\n    <name>ApexClass</name>\n  </types>\n  <types>\n    <members>Account.SSN__c</members>\n    <members>Case.Priority__c</members>\n    <name>CustomField</name>\n  </types>\n  <types>\n    <members>Old_Flow</members>\n    <name>Flow</name>\n  </types>\n  <types>\n    <members>caseCard</members>\n    <name>LightningComponentBundle</name>\n  </types>\n  <types>\n    <members>Support</members>\n    <name>PermissionSet</name>\n  </types>\n  <types>\n    <members>Case</members>\n    <name>SharingRules</name>\n  </types>\n  <version>59.0</version>\n</Package>\n```\n\n### destructiveChanges.xml\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>NewThing</members>\n    <name>ApexClass</name>\n  </types>\n  <version>59.0</version>\n</Package>\n```"
   },
@@ -1072,10 +1214,10 @@
       "lastSyncedAt": null,
       "ageDays": null,
       "stale": true,
-      "recommendation": "ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis",
+      "recommendation": "ingest is missing \u2014 run `sfgraph ingest --org org1` to refresh before relying on this analysis",
       "sourceRevision": null
     },
-    "markdown": "| org | last synced | age (days) | stale | recommendation |\n|---|---|---|---|---|\n| `org1` | _never_ | - | yes | ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis |"
+    "markdown": "| org | last synced | age (days) | stale | recommendation |\n|---|---|---|---|---|\n| `org1` | _never_ | - | yes | ingest is missing \u2014 run `sfgraph ingest --org org1` to refresh before relying on this analysis |"
   },
   "freshness_report.all": {
     "data": {

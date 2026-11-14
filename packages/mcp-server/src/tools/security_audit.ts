@@ -33,17 +33,8 @@ function fieldSecurityAudit(
   field: string,
   includeNonFlsFields: boolean,
 ): analyze.SecurityAudit {
-  const cap = analyze.SECURITY_PER_LABEL_CAP;
-  let truncated = false;
-  const sharingFullAccess: string[] = [];
-  const rules = ctx.graphStore.listNodesByLabel(ctx.orgId, "SharingRule", cap);
-  if (rules.length >= cap) truncated = true;
-  for (const n of rules) {
-    const a = n.attributes as Record<string, unknown>;
-    if (a.access === "Edit" || a.accessLevel === "Edit" || a.accessLevel === "All") {
-      sharingFullAccess.push(n.qualifiedName);
-    }
-  }
+  const sharing = analyze.sharingEditRules(ctx.graphStore, ctx.orgId);
+  const truncated = sharing.truncated;
   const grantedBy = [
     ...new Set(
       ctx.graphStore
@@ -57,21 +48,31 @@ function fieldSecurityAudit(
         }),
     ),
   ];
-  const fieldAccessMatrix = grantedBy.length > 0 ? [{ field, grantedBy }] : [];
   const flsGaps: string[] = [];
   let flsGapsExcluded = 0;
   const node = ctx.graphStore.getNode(ctx.orgId, field as never);
+  // One display name: the field node's own spelling when it exists, else the name as given.
+  const display = node ? String(node.qualifiedName) : field;
+  const fieldAccessMatrix = grantedBy.length > 0 ? [{ field: display, grantedBy }] : [];
   if (node && node.label === "CustomField" && grantedBy.length === 0) {
-    if (!includeNonFlsFields && !analyze.isFlsRelevantField(field)) flsGapsExcluded += 1;
-    else flsGaps.push(field);
+    if (!includeNonFlsFields && !analyze.isFlsRelevantField(display)) flsGapsExcluded += 1;
+    else flsGaps.push(display);
   }
-  return { sharingFullAccess, fieldAccessMatrix, flsGaps, flsGapsExcluded, truncated };
+  return {
+    sharingEditAccess: sharing.rules.map((r) => r.qualifiedName),
+    sharingRuleAccess: sharing.rules,
+    sharingFullAccess: sharing.rules.map((r) => r.qualifiedName),
+    fieldAccessMatrix,
+    flsGaps,
+    flsGapsExcluded,
+    truncated,
+  };
 }
 
 defineTool({
   name: "security_audit",
   description:
-    "Use for FLS, access and sharing: full-access sharing rules, FLS gaps on PII-like fields, and the profile/permission set access matrix.",
+    "Use for FLS, access and sharing: Edit-access sharing rules, FLS gaps on PII-like fields, and the profile/permission set access matrix.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
@@ -110,8 +111,11 @@ defineTool({
         ? ` _(+${audit.flsGapsExcluded} CMDT/system fields hidden — pass \`include_non_fls_fields: true\`)_`
         : "";
     const md = [
-      `**Full-access sharing rules:** ${audit.sharingFullAccess.length}`,
-      ...audit.sharingFullAccess.slice(0, 20).map((q) => `- \`${q}\``),
+      `**Sharing rules giving record Edit or All access (record sharing only, not object or field permissions):** ${audit.sharingEditAccess.length}`,
+      ...audit.sharingEditAccess.slice(0, 20).map((q) => {
+        const d = audit.sharingRuleAccess?.find((r) => r.qualifiedName === q);
+        return `- \`${q}\`${d ? ` (${d.access}${d.audience ? `, to ${d.audience}` : ""})` : ""}`;
+      }),
       "",
       `**FLS gaps (custom/standard fields with no permission-set grant):** ${audit.flsGaps.length}${excludedNote}`,
       ...audit.flsGaps.slice(0, input.limit).map((q) => `- \`${q}\``),
@@ -144,7 +148,7 @@ defineTool({
     const notAField = !!fieldNode && fieldNode.label !== METADATA_CATEGORY.FIELD;
     const objectName = input.object !== undefined ? nameOf(input.object) : undefined;
     const gaps = audit.flsGaps.length;
-    const rules = audit.sharingFullAccess.length;
+    const rules = audit.sharingEditAccess.length;
     const grants = audit.fieldAccessMatrix[0]?.grantedBy.length ?? 0;
     // Fields in scope: granted ones, gaps and the system/settings ones left out. None means no
     // field access was checked at all.
@@ -175,11 +179,27 @@ defineTool({
               ? `No field access gaps: the field ${code(fieldName)} has access granted by ${countNoun(grants, "permission set or profile", "permission sets or profiles")}.`
               : "No field access gaps found.";
     const excluded = audit.flsGapsExcluded ?? 0;
+    const accessOf = (q: string): string | undefined =>
+      audit.sharingRuleAccess?.find((r) => r.qualifiedName === q)?.access;
+    const accessKinds = new Set(audit.sharingEditAccess.map(accessOf));
+    const hasAll = accessKinds.has("All");
+    const hasEdit = accessKinds.size > (hasAll ? 1 : 0);
+    // Edit and All are different grants; the sentence names the ones present.
+    const grantPhrase =
+      hasAll && hasEdit
+        ? "edit access (Edit) or full record access (All) to records"
+        : hasAll
+          ? "full record access (All) to records"
+          : "edit access to records";
     const pieces: Piece[] = [
-      ...audit.sharingFullAccess.slice(0, 20).map((q) => ({
+      ...audit.sharingEditAccess.slice(0, 20).map((q) => ({
         name: q,
         kind: "SharingRule",
-        role: "lets others edit the records (edit or full access).",
+        role: `${
+          accessOf(q) === "All"
+            ? "gives its audience full record access (All)"
+            : "gives its audience edit access"
+        } to the records (record sharing, not an object or field permission).`,
       })),
       ...audit.flsGaps.slice(0, input.limit).map((q) => {
         const n = nameOf(q);
@@ -197,8 +217,8 @@ defineTool({
         inShort: [
           gapSentence,
           rules
-            ? `${countNoun(rules, "sharing rule")} (who else can see records) ${rules === 1 ? "lets" : "let"} others edit the records (edit or full access).`
-            : "No sharing rule lets others edit the records (edit or full access).",
+            ? `${countNoun(rules, "sharing rule")} (who else can see records) ${rules === 1 ? "gives" : "give"} ${grantPhrase} (record sharing only; it says nothing about object or field permissions).`
+            : "No sharing rule gives edit access to records.",
           `Checked: ${scope}${excluded ? `; ${countNoun(excluded, "system or settings field")} ${excluded === 1 ? "was" : "were"} left out` : ""}.`,
           ...(audit.truncated
             ? [
@@ -222,7 +242,7 @@ defineTool({
       ? ` — results capped at ${analyze.SECURITY_PER_LABEL_CAP}/label; narrow with object/field`
       : "";
     return {
-      summary: `${audit.flsGaps.length} FLS gaps, ${audit.sharingFullAccess.length} full-access rules${truncationNote}`,
+      summary: `${audit.flsGaps.length} FLS gaps, ${audit.sharingEditAccess.length} sharing rules with record Edit or All access${truncationNote}`,
       markdown: report(
         audit.truncated
           ? `${md}\n\n> _Note: at least one label hit the ${analyze.SECURITY_PER_LABEL_CAP}-row cap. Results are incomplete — pass \`object\` or \`field\` to narrow._`
@@ -232,8 +252,13 @@ defineTool({
         ...audit,
         // `limit` bounds every list in the payload, not just the markdown
         // (audit perf-06, review M6); the *Total fields keep the full counts.
-        sharingFullAccess: audit.sharingFullAccess.slice(0, input.limit),
-        sharingFullAccessTotal: audit.sharingFullAccess.length,
+        sharingEditAccess: audit.sharingEditAccess.slice(0, input.limit),
+        sharingEditAccessTotal: audit.sharingEditAccess.length,
+        sharingRuleAccess: (audit.sharingRuleAccess ?? []).slice(0, input.limit),
+        // Deprecated aliases of sharingEditAccess / sharingEditAccessTotal, kept so existing
+        // readers of the old names keep working. They do not mean full access.
+        sharingFullAccess: audit.sharingEditAccess.slice(0, input.limit),
+        sharingFullAccessTotal: audit.sharingEditAccess.length,
         flsGaps: audit.flsGaps.slice(0, input.limit),
         flsGapsTotal: audit.flsGaps.length,
         fieldAccessMatrix: audit.fieldAccessMatrix.slice(0, input.limit),
@@ -241,7 +266,7 @@ defineTool({
         cachedFindings: cachedFindings.slice(0, input.limit),
         cachedFindingsTotal: cachedFindings.length,
         limited:
-          audit.sharingFullAccess.length > input.limit ||
+          audit.sharingEditAccess.length > input.limit ||
           audit.flsGaps.length > input.limit ||
           audit.fieldAccessMatrix.length > input.limit ||
           cachedFindings.length > input.limit,
