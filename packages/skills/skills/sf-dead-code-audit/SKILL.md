@@ -17,7 +17,7 @@ tools_used:
 
 # sf-dead-code-audit
 
-Use when the user wants to inventory metadata that appears unreferenced. Output must be bucketed by confidence — deletion in Salesforce is reversible only via backup, so we communicate uncertainty.
+Use when the user wants to inventory metadata with no captured incoming references in the graph. That is not proof that nothing uses it: integrations, the UI, schedules and other packages that call into the org are not in the graph. Output must be bucketed by confidence — deletion in Salesforce is reversible only via backup, so we communicate uncertainty.
 
 ## Evidence rule — say it only if something backs it
 
@@ -25,12 +25,12 @@ State a fact about this org or the Salesforce platform **only when evidence back
 
 ## Playbook
 
-1. Call `dead_code_audit` for the org. The tool **summarizes by confidence (`high`/`medium`/`low`) and by metadata type**, then renders a capped list (`limit`, default 50). On a large org there can be thousands of candidates — do NOT try to retrieve them all inline; work from the summary counts and drill in with `confidence: "high"` (most-likely-dead first) or raise `limit`. For the complete machine-readable set, use `export_sarif`. Each row carries a score + reasons (`no_incoming_edges`, `test_class` — an `@isTest` class nothing references, flagged `isTest: true`, `stale_freshness`). Test references count as references: production code that only tests reference is not dead and is listed apart in `referencedOnlyByTests` (reason `referenced_only_by_tests`); deleting it means deleting those tests too.
+1. Call `dead_code_audit` for the org. The tool **summarizes by confidence (`high`/`medium`/`low`) and by metadata type**, then renders a capped list (`limit`, default 50). On a large org there can be thousands of candidates — do NOT try to retrieve them all inline; work from the summary counts and drill in with `confidence: "high"` (most-likely-dead first) or raise `limit`. For the complete machine-readable set, use `export_sarif`. Known external entry points (`@RestResource` / `@Http*` methods, `global` and `webservice` code, `@InvocableMethod`, `@AuraEnabled`, `@RemoteAction`, Schedulable / Batchable / Queueable / inbound email handler classes) are listed apart in `externalEntryPoints` and never get more than `low` confidence: their callers are outside the graph, so age is no evidence they are unused. `scan` says how many nodes were inspected of how many; if `complete` is false, say the scan was partial and do not call the rest clean. Each row carries a score + reasons (`no_incoming_edges`, `test_class` — an `@isTest` class nothing references, flagged `isTest: true`, `stale_freshness`). Test references count as references: production code that only tests reference is not dead and is listed apart in `referencedOnlyByTests` (reason `referenced_only_by_tests`); deleting it means deleting those tests too.
    - **Unused fields:** call `dead_code_audit(label="CustomField")` (optionally `pattern="CustomField:Account.*"`). It lists fields that nothing reads or writes. A field on a page layout or in a report still counts as used; profile and permission-set access does not. Fields have no freshness score, so there is no confidence grade: treat each one as **likely-dead** until checked.
 2. Confidence already reflects last-modified dates (`stale_freshness`). `freshness_report` is an org-wide view of what changed recently (20 rows per bucket); it cannot be filtered to the candidates, so use it only for context, not per candidate.
-3. For any candidate the user names interactively, call `trace_upstream` to confirm absence of indirect callers (dynamic Apex, Flow lookups, callable interfaces). Optionally call `find_similar(qname=<candidate>, k=5)` — if the candidate has near-neighbours (similarity > 0.6) that ARE referenced, the candidate may be a copy-paste duplicate of live code and worth deleting; if every neighbour is also in the dead list, you've found a whole disused subsystem worth flagging as a group.
+3. For any candidate the user names interactively, call `trace_upstream` to see the references the graph does have (indirect callers such as Flow lookups and callable interfaces). It cannot show external callers (integrations, the UI, schedules, other packages); ask the user to check API clients, schedules and logs before deleting, and say so. Optionally call `find_similar(qname=<candidate>, k=5)` — if the candidate has near-neighbours (similarity > 0.6) that ARE referenced, the candidate may be a copy-paste duplicate of live code and worth deleting; if every neighbour is also in the dead list, you've found a whole disused subsystem worth flagging as a group.
 4. Sort candidates into three buckets:
-   - **confident-dead** — no incoming edges, no dynamic-invocation signature match, freshness > 12 months, no inclusion in active permission sets / page layouts.
+   - **confident-dead** — no captured incoming edges, not a known external entry point, no dynamic-invocation signature match, freshness > 12 months, no inclusion in active permission sets / page layouts.
    - **likely-dead** — no incoming edges, but at least one weak signal (recently modified, referenced from a managed package boundary, or named in a metadata file we don't parse fully).
    - **suspicious-uncertain** — looks dead but the graph has known blind spots (dynamic SOQL string-interpolated field name, reflection-style `Type.forName`, external system reference).
 5. Render a bar-chart / treemap as Mermaid yourself, grouped by category, by counting the candidates the report lists (each line names its kind and confidence). The tool does not draw a diagram.
@@ -77,4 +77,5 @@ Then continue with the playbook.
 - Do not collapse buckets. Confidence is the product here.
 - Do not delete or stage anything. Output only.
 - Do not include managed-package items as deletable.
-- Do not skip the `trace_upstream` confirmation step for any item the user actually plans to remove.
+- Do not skip the `trace_upstream` step for any item the user actually plans to remove, and do not present its result as proof that nothing calls the item.
+- Do not put a known external entry point in the confident-dead bucket on age alone.

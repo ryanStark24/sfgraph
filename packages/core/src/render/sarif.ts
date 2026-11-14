@@ -30,6 +30,11 @@ export interface SarifReport {
 interface SarifRun {
   tool: { driver: SarifToolDriver };
   results: SarifResult[];
+  invocations?: Array<{
+    executionSuccessful: boolean;
+    toolExecutionNotifications: Array<{ level: "warning"; message: { text: string } }>;
+  }>;
+  properties?: Record<string, unknown>;
 }
 
 interface SarifToolDriver {
@@ -122,6 +127,13 @@ export interface EmitSarifOpts {
   /** sfgraph version string. Filled into the tool driver block. */
   version: string;
   findings: Finding[];
+  /**
+   * How much of the graph each audit examined (audit name -> scanned / total /
+   * complete). Written to the run's `properties.sfgraphScanCoverage`; an
+   * incomplete scan also adds a warning tool-execution notification, so a
+   * consumer never reads an empty result as "all clear".
+   */
+  scanCoverage?: Record<string, { scanned: number; total: number; complete: boolean }>;
 }
 
 export function emitSarif(opts: EmitSarifOpts): SarifReport {
@@ -166,6 +178,28 @@ export function emitSarif(opts: EmitSarifOpts): SarifReport {
       },
     ],
   };
+  if (opts.scanCoverage && Object.keys(opts.scanCoverage).length > 0) {
+    const run = report.runs[0] as SarifRun;
+    const entries = Object.entries(opts.scanCoverage);
+    run.properties = {
+      sfgraphScanCoverage: opts.scanCoverage,
+      sfgraphScanComplete: entries.every(([, c]) => c.complete),
+    };
+    const partial = entries.filter(([, c]) => !c.complete);
+    if (partial.length > 0) {
+      run.invocations = [
+        {
+          executionSuccessful: true,
+          toolExecutionNotifications: partial.map(([audit, c]) => ({
+            level: "warning" as const,
+            message: {
+              text: `The ${audit} scan is incomplete: it inspected ${c.scanned} of ${c.total}. Missing results do not mean there are no findings in the rest.`,
+            },
+          })),
+        },
+      ];
+    }
+  }
   return report;
 }
 

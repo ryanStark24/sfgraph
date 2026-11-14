@@ -164,6 +164,22 @@ export interface GraphStore {
   /** The qualified names `listNodesByLabel` would return, in the same order,
    *  without reading the rest of each row. Optional. */
   listQnamesByLabel?(orgId: OrgId, label: string, limit?: number): QualifiedName[];
+  /**
+   * One keyset page of a label's nodes, in insertion (rowid) order: the nodes
+   * after `afterRowid` (exclusive; omit for the first page), at most `limit`.
+   * `nameLike` is a SQL LIKE pattern (`\` escapes) matched, ASCII
+   * case-insensitively, against the whole qualified name or the part after
+   * `Label:`, applied before `limit`. `lastRowid` is the cursor for the next
+   * page, null when the page is empty. Optional: callers fall back to
+   * `listNodesByLabel`.
+   */
+  listNodesPage?(
+    orgId: OrgId,
+    label: string,
+    opts: { afterRowid?: number; limit: number; nameLike?: string },
+  ): { nodes: NodeFact[]; lastRowid: number | null };
+  /** Count of a label's nodes matching `nameLike` (as `listNodesPage`); all when omitted. Optional. */
+  countNodesLike?(orgId: OrgId, label: string, nameLike?: string): number;
   listEdgesFrom(orgId: OrgId, src: QualifiedName, relType?: RelType): EdgeFact[];
   listEdgesTo(orgId: OrgId, dst: QualifiedName, relType?: RelType): EdgeFact[];
   /** Edges (any rel type) whose dst is one of `dsts` (NOCASE, like listEdgesTo).

@@ -75,20 +75,43 @@ describe("governor risk detection heuristics", () => {
     expect(r.c).toBeGreaterThan(0);
   });
 
-  it("flags trigger without Trigger.new (no bulkify)", () => {
-    const t: NodeFact = {
-      ...n(
-        "ApexTrigger:T1",
-        "trigger T1 on Account (before insert) { Account a = [SELECT Id FROM Account LIMIT 1]; }",
+  // S-1.8.2-006: no_bulk is a trigger that reads one record of Trigger.new / Trigger.old by a
+  // literal position and never loops over the collection. The old rule (no `Trigger.new` anywhere)
+  // flagged every trigger that hands work to a handler, so it is replaced; see governor-source.ts.
+  const trigger = (name: string, text: string): NodeFact => ({
+    ...n(`ApexTrigger:${name}`, text),
+    label: "ApexTrigger",
+  });
+  const noBulkRows = () =>
+    db
+      .prepare("SELECT qualified_name AS q FROM _sfgraph_governor_risks WHERE risk_type='no_bulk'")
+      .all() as Array<{ q: string }>;
+
+  it("flags a trigger that handles only Trigger.new[0] (no bulkify)", () => {
+    store.mergeNodes([
+      trigger(
+        "T1",
+        "trigger T1 on Account (before insert) { Account a = Trigger.new[0]; a.Name = 'x'; }",
       ),
-      label: "ApexTrigger",
-    };
-    store.mergeNodes([t]);
+    ]);
     populateGovernorRisks(store, ORG, db);
-    const r = db
-      .prepare("SELECT count(*) AS c FROM _sfgraph_governor_risks WHERE risk_type='no_bulk'")
-      .get() as { c: number };
-    expect(r.c).toBeGreaterThan(0);
+    expect(noBulkRows()).toEqual([{ q: "ApexTrigger:T1" }]);
+  });
+
+  it("does not flag triggers that loop, delegate or never touch Trigger.new", () => {
+    store.mergeNodes([
+      trigger(
+        "Loop",
+        "trigger Loop on Account (before insert) { for (Account a : Trigger.new) { a.Name = 'x'; } }",
+      ),
+      trigger(
+        "Hand",
+        "trigger Hand on Account (before insert) { Account first = Trigger.new[0]; Handler.run(Trigger.new); }",
+      ),
+      trigger("None", "trigger None on Account (before insert) { Handler.run(); }"),
+    ]);
+    populateGovernorRisks(store, ORG, db);
+    expect(noBulkRows()).toEqual([]);
   });
 });
 

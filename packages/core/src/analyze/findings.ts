@@ -102,7 +102,7 @@ export const RULE_CATALOG: Record<string, RuleDescriptor> = {
     name: "Unbounded query",
     shortDescription: "Apex method runs SOQL with no LIMIT or WHERE.",
     fullDescription:
-      "Queries without a LIMIT or selective WHERE clause hit the 50,000-row query-row governor on large objects. Add a LIMIT or filter even if the developer believes the underlying data set is small.",
+      "Detected from the stored source of an Apex method or trigger: an inline query with no LIMIT and no WHERE in its own clause (a WHERE on any field counts as a filter; selectivity is not judged; COUNT() queries and Custom Metadata Type queries are not flagged). Queries without a LIMIT or selective WHERE clause hit the 50,000-row query-row governor on large objects. Add a LIMIT or filter even if the developer believes the underlying data set is small.",
     defaultLevel: "warning",
   },
   "governor.no-bulk": {
@@ -110,7 +110,7 @@ export const RULE_CATALOG: Record<string, RuleDescriptor> = {
     name: "Trigger not bulk-safe",
     shortDescription: "Trigger touches a single record per fire — fails on bulk DML.",
     fullDescription:
-      "Bulk DML produces triggers with up to 200 records in `Trigger.new`. Triggers that assume a single record will silently mis-process the other 199 — refactor to iterate over the collection.",
+      "Detected from the stored trigger source: it reads one record of `Trigger.new` / `Trigger.old` by a literal position (`Trigger.new[0]`, `Trigger.new.get(0)`), has no loop over the trigger's records, and does not pass the collections anywhere else. A trigger that delegates to a handler is not judged. Bulk DML produces triggers with up to 200 records in `Trigger.new`; a trigger that assumes a single record will silently mis-process the other 199 — refactor to iterate over the collection.",
     defaultLevel: "error",
   },
   "security.fls-gap": {
@@ -132,9 +132,9 @@ export const RULE_CATALOG: Record<string, RuleDescriptor> = {
   "dead-code.unreferenced": {
     id: "dead-code.unreferenced",
     name: "Unreferenced metadata",
-    shortDescription: "Node has no incoming edges and is not an obvious entry point.",
+    shortDescription: "Node has no captured incoming references in the graph.",
     fullDescription:
-      "Apex/LWC/Flow components with no incoming references are candidates for deletion. Note that some entry points (AuraEnabled, REST endpoints, scheduled jobs) are only reachable from outside the org and will show up here legitimately — verify before deleting.",
+      "Apex/LWC/Flow components with no captured incoming references in the graph. This does not show that nothing uses them: callers outside the graph (integrations calling a REST endpoint or global method, the UI, schedules, batch jobs, managed packages) are not captured. Results marked `externalEntryPoint` are known entry points of that kind and are not deletion candidates on this evidence alone. Verify against logs, API clients and schedules before deleting anything.",
     defaultLevel: "note",
   },
   "graph.dangling-edge": {
@@ -189,17 +189,36 @@ export function securityAuditToFindings(audit: SecurityAudit): Finding[] {
   return out;
 }
 
-export function deadCodeToFindings(nodes: NodeFact[]): Finding[] {
-  return nodes.map((n) => ({
-    ruleId: "dead-code.unreferenced",
-    message: `${n.qualifiedName}: no incoming references`,
-    level: "note",
-    location: {
-      qualifiedName: String(n.qualifiedName),
-      ...(typeof n.attributes.sourceUri === "string" ? { sourceUri: n.attributes.sourceUri } : {}),
-    },
-    properties: { label: n.label },
-  }));
+/** The caveat every dead-code finding carries. */
+export const DEAD_CODE_CAVEAT =
+  "Callers outside the graph (integrations, the UI, schedules) are not captured.";
+
+export function deadCodeToFindings(
+  nodes: NodeFact[],
+  entryPoints: ReadonlyMap<string, readonly string[]> = new Map(),
+): Finding[] {
+  return nodes.map((n) => {
+    const eps = entryPoints.get(String(n.qualifiedName)) ?? [];
+    return {
+      ruleId: "dead-code.unreferenced",
+      message:
+        eps.length > 0
+          ? `${n.qualifiedName}: no captured incoming references, but it is a known external entry point (${eps.join(", ")}). ${DEAD_CODE_CAVEAT}`
+          : `${n.qualifiedName}: no captured incoming references. ${DEAD_CODE_CAVEAT}`,
+      level: "note",
+      location: {
+        qualifiedName: String(n.qualifiedName),
+        ...(typeof n.attributes.sourceUri === "string"
+          ? { sourceUri: n.attributes.sourceUri }
+          : {}),
+      },
+      properties: {
+        label: n.label,
+        externalEntryPoint: eps.length > 0,
+        ...(eps.length > 0 ? { entryPointKinds: eps.join(",") } : {}),
+      },
+    };
+  });
 }
 
 export function danglingEdgesToFindings(audit: AuditResult): Finding[] {
@@ -221,6 +240,8 @@ export interface AllFindingsOpts {
   governor?: GovernorRisk[];
   security?: SecurityAudit;
   deadCode?: NodeFact[];
+  /** Known external entry points of the dead-code nodes, by qualified name. */
+  deadCodeEntryPoints?: ReadonlyMap<string, readonly string[]>;
   dangling?: AuditResult;
 }
 
@@ -228,7 +249,7 @@ export function collectFindings(opts: AllFindingsOpts): Finding[] {
   const out: Finding[] = [];
   if (opts.governor) out.push(...governorRisksToFindings(opts.governor));
   if (opts.security) out.push(...securityAuditToFindings(opts.security));
-  if (opts.deadCode) out.push(...deadCodeToFindings(opts.deadCode));
+  if (opts.deadCode) out.push(...deadCodeToFindings(opts.deadCode, opts.deadCodeEntryPoints));
   if (opts.dangling) out.push(...danglingEdgesToFindings(opts.dangling));
   return out;
 }

@@ -3,7 +3,21 @@ import { type EdgeFact, type NodeFact, REL_TYPES } from "../domain/index.js";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import type { GraphStore } from "../storage/interfaces.js";
 import { isMemberContainmentEdge, listMembers, membersReader, ownerOf } from "./containment.js";
+import {
+  ENTRY_POINT_REASON_PREFIX,
+  EXTERNAL_ENTRY_POINT_REASON,
+  type ExternalEntryPoint,
+  externalEntryPoints,
+} from "./entry-points.js";
 import { freshnessScore } from "./freshness.js";
+import {
+  type ScanCoverage,
+  type ScanFilter,
+  makeScanFilter,
+  nameLikePattern,
+  scanLabel,
+  sumCoverage,
+} from "./scan.js";
 
 /** The LWC parser (filesystem and live-org ingest alike) labels component
  *  nodes "LWC"; `METADATA_CATEGORY.LWC` is the member type
@@ -20,8 +34,6 @@ export const DEAD_CODE_LABELS: readonly string[] = [
   METADATA_CATEGORY.APEX_PAGE,
   METADATA_CATEGORY.APEX_COMPONENT,
 ];
-
-const DEAD_CODE_NODE_CAP = 10000;
 
 /** Bundle container label -> the component label it contains. */
 const BUNDLE_COMPONENT_LABEL: Readonly<Record<string, string>> = {
@@ -269,6 +281,8 @@ export interface DeadCodeCandidate {
   isTest: boolean;
   /** References from test code (> 0 only for `referenced-only-by-tests`). */
   testOnlyRefs: number;
+  /** Known external entry points (REST, global, schedulable, ...): code the graph cannot see callers of. */
+  externalEntryPoints: ExternalEntryPoint[];
 }
 
 /**
@@ -285,6 +299,12 @@ export function deadCodeKind(refs: IncomingRefs, isTest: boolean): DeadCodeKind 
   return null;
 }
 
+/** The dead-code scan's result: the candidates and how much of the graph was examined. */
+export interface DeadCodeScan {
+  candidates: DeadCodeCandidate[];
+  coverage: ScanCoverage;
+}
+
 /**
  * Dead-code candidates of DEAD_CODE_LABELS, both kinds (`deadCodeKind`):
  * the score cache holds both and readers keep them apart. Freshness does not
@@ -292,37 +312,76 @@ export function deadCodeKind(refs: IncomingRefs, isTest: boolean): DeadCodeKind 
  * (`populateDeadCodeScores`: stale = high, recently modified = low). A
  * filesystem ingest stamps every node with its checkout mtime, so a freshness
  * gate here would hide every unreferenced node.
+ *
+ * Every node of the selected labels is examined, a page at a time (keyset
+ * pagination, bounded memory). `filter.label` and `filter.pattern` narrow the
+ * scan in the store query, before any limit, so a match is never missed
+ * because it sits late in the table. `coverage` says how many nodes were
+ * examined of how many were in scope; `complete` is false only if the safety
+ * limit (`scanLimits`) stopped the scan.
  */
-export function deadCodeCandidates(store: GraphStore, orgId: OrgId): DeadCodeCandidate[] {
+export function scanDeadCode(
+  store: GraphStore,
+  orgId: OrgId,
+  filter: ScanFilter = {},
+): DeadCodeScan {
   const isTestSource = makeTestSourceCheck(store, orgId);
   const out: DeadCodeCandidate[] = [];
+  const parts: ScanCoverage[] = [];
+  const wantLabel = filter.label?.toLowerCase();
+  const nameLike = filter.pattern ? nameLikePattern(filter.pattern) : undefined;
+  // Exact matcher, re-applied to what the store's LIKE pre-filter returns.
+  const keep = filter.pattern ? makeScanFilter({ pattern: filter.pattern }) : null;
   for (const lbl of DEAD_CODE_LABELS) {
-    const nodes = store.listNodesByLabel(orgId, lbl, DEAD_CODE_NODE_CAP);
-    for (let i = 0; i < nodes.length; i += INCOMING_CHUNK) {
-      const chunk = nodes.slice(i, i + INCOMING_CHUNK);
-      const membersOf = membersReader(
-        store,
-        orgId,
-        chunk.map((n) => n.qualifiedName),
-      );
-      const targetsOf = chunk.map((n) => [n.qualifiedName, ...membersOf(n.qualifiedName)]);
-      const edgesTo = incomingEdgeReader(store, orgId, targetsOf.flat());
-      chunk.forEach((n, j) => {
-        const isTest = isTestClass(n);
-        const refs = countIncomingRefs(
+    if (wantLabel !== undefined && lbl.toLowerCase() !== wantLabel) continue;
+    const scan = scanLabel(store, orgId, lbl, nameLike !== undefined ? { nameLike } : {});
+    for (const page of scan.pages) {
+      const nodes = keep ? page.filter((n) => keep(String(n.qualifiedName))) : page;
+      for (let i = 0; i < nodes.length; i += INCOMING_CHUNK) {
+        const chunk = nodes.slice(i, i + INCOMING_CHUNK);
+        const membersOf = membersReader(
           store,
           orgId,
-          n.qualifiedName,
-          targetsOf[j] as QualifiedName[],
-          edgesTo,
-          isTestSource,
+          chunk.map((n) => n.qualifiedName),
         );
-        const kind = deadCodeKind(refs, isTest);
-        if (kind) out.push({ node: n, kind, isTest, testOnlyRefs: refs.testOnly });
-      });
+        const memberLists = chunk.map((n) => membersOf(n.qualifiedName));
+        const targetsOf = chunk.map((n, j) => [n.qualifiedName, ...(memberLists[j] ?? [])]);
+        const edgesTo = incomingEdgeReader(store, orgId, targetsOf.flat());
+        chunk.forEach((n, j) => {
+          const isTest = isTestClass(n);
+          const refs = countIncomingRefs(
+            store,
+            orgId,
+            n.qualifiedName,
+            targetsOf[j] as QualifiedName[],
+            edgesTo,
+            isTestSource,
+          );
+          const kind = deadCodeKind(refs, isTest);
+          if (kind) {
+            out.push({
+              node: n,
+              kind,
+              isTest,
+              testOnlyRefs: refs.testOnly,
+              externalEntryPoints: externalEntryPoints(store, orgId, n, memberLists[j] ?? []),
+            });
+          }
+        });
+      }
     }
+    parts.push(scan.coverage());
   }
-  return out;
+  return { candidates: out, coverage: sumCoverage(parts) };
+}
+
+/** `scanDeadCode`'s candidates (see there for the scan's coverage). */
+export function deadCodeCandidates(
+  store: GraphStore,
+  orgId: OrgId,
+  filter: ScanFilter = {},
+): DeadCodeCandidate[] {
+  return scanDeadCode(store, orgId, filter).candidates;
 }
 
 /** Candidates whose incoming edges are read together (one read per edge table). */
@@ -359,6 +418,25 @@ export function findDeadCode(store: GraphStore, orgId: OrgId): NodeFact[] {
     .map((c) => c.node);
 }
 
+/** `findDeadCode` with the entry points and the scan's coverage (SARIF, tools). */
+export function scanDeadNodes(
+  store: GraphStore,
+  orgId: OrgId,
+  filter: ScanFilter = {},
+): { nodes: NodeFact[]; entryPoints: Map<string, ExternalEntryPoint[]>; coverage: ScanCoverage } {
+  const { candidates, coverage } = scanDeadCode(store, orgId, filter);
+  const dead = candidates.filter((c) => c.kind === "dead");
+  return {
+    nodes: dead.map((c) => c.node),
+    entryPoints: new Map(
+      dead
+        .filter((c) => c.externalEntryPoints.length > 0)
+        .map((c) => [String(c.node.qualifiedName), c.externalEntryPoints]),
+    ),
+    coverage,
+  };
+}
+
 export type DeadCodeConfidence = "high" | "medium" | "low";
 
 export interface DeadCodeScore {
@@ -375,12 +453,20 @@ export interface DeadCodeScore {
  * `testOnlyRefs` > 0 (a `deadCodeCandidates` count) gives the reason
  * `referenced_only_by_tests` in place of `no_incoming_edges`; `isTest` adds
  * `test_class` (an unreferenced `@isTest` class).
+ *
+ * Age is one signal, an external entry point another: a node with
+ * `entryPoints` (REST endpoint, global, schedulable, ...) gets the reasons
+ * `external_entry_point` and `entry_point:<kind>`, and its confidence never
+ * goes above "low", however old it is: no graph evidence says whether an
+ * integration, the UI or a schedule still calls it. `score` stays the age
+ * score.
  */
 export function scoreDeadCode(
   node: NodeFact,
   now = Date.now(),
   testOnlyRefs = 0,
   isTest = false,
+  entryPoints: readonly ExternalEntryPoint[] = [],
 ): DeadCodeScore {
   const fresh = freshnessScore(node, now);
   // A class with only test references has incoming edges, so it is
@@ -388,7 +474,12 @@ export function scoreDeadCode(
   const reasons = [testOnlyRefs > 0 ? "referenced_only_by_tests" : "no_incoming_edges"];
   if (isTest) reasons.push("test_class");
   if (fresh < 0.4) reasons.push("stale_freshness");
+  if (entryPoints.length > 0) {
+    reasons.push(EXTERNAL_ENTRY_POINT_REASON);
+    for (const k of entryPoints) reasons.push(`${ENTRY_POINT_REASON_PREFIX}${k}`);
+  }
   const score = 0.6 * fresh;
-  const confidence: DeadCodeConfidence = score < 0.2 ? "high" : score < 0.45 ? "medium" : "low";
+  const byAge: DeadCodeConfidence = score < 0.2 ? "high" : score < 0.45 ? "medium" : "low";
+  const confidence: DeadCodeConfidence = entryPoints.length > 0 ? "low" : byAge;
   return { score, confidence, reasons };
 }

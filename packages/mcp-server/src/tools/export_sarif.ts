@@ -191,10 +191,14 @@ defineTool({
     // live-plus-cache merge as governor_risk_check; security and dangling
     // have no equivalent cache and are always live.
     const sources: Record<string, string> = {};
+    // How much of the graph each scan examined; written into the SARIF run so an
+    // incomplete scan is never read as "no findings".
+    const scanCoverage: Record<string, analyze.ScanCoverage> = {};
     if (audits.has("governor")) {
       const g = collectGovernorRisks(ctx, { includeTests: input.includeTests });
       collectArgs.governor = g.risks;
       sources.governor = describeSource(g.source, g.cache);
+      scanCoverage.governor = g.coverage;
     }
     if (audits.has("security")) {
       collectArgs.security = analyze.securityAudit(ctx.graphStore, ctx.orgId);
@@ -203,7 +207,9 @@ defineTool({
     if (audits.has("dead-code")) {
       const dc = collectDeadCode(ctx);
       collectArgs.deadCode = dc.nodes;
+      collectArgs.deadCodeEntryPoints = dc.entryPoints;
       sources["dead-code"] = describeSource(dc.source, dc.cache);
+      scanCoverage["dead-code"] = dc.coverage;
     }
     if (audits.has("dangling")) {
       collectArgs.dangling = analyze.auditDanglingEdges(ctx.graphStore, ctx.orgId, {
@@ -212,7 +218,7 @@ defineTool({
       sources.dangling = "live";
     }
     const findings = analyze.collectFindings(collectArgs);
-    const report = emitSarif({ version: getServerVersion(), findings });
+    const report = emitSarif({ version: getServerVersion(), findings, scanCoverage });
     const lintErrors = lintSarifReport(report);
 
     const countsByRule = new Map<string, number>();
@@ -235,12 +241,22 @@ defineTool({
       `_sources: ${Object.entries(sources)
         .map(([k, v]) => `${k}=${v}`)
         .join(", ")}_`,
+      ...(Object.keys(scanCoverage).length
+        ? [
+            `_scanned: ${Object.entries(scanCoverage)
+              .map(([k, c]) => `${k}=${c.scanned}/${c.total}${c.complete ? "" : " (incomplete)"}`)
+              .join(", ")}_`,
+          ]
+        : []),
       "",
       saved.ok
         ? `Saved to \`${shown}\`. Upload it to GitHub Code Scanning with the \`github/codeql-action/upload-sarif\` action.`
         : `Not saved: ${saved.reason}.`,
     ].join("\n");
     const ran = ORDER.filter((a) => audits.has(a));
+    const incomplete = Object.entries(scanCoverage).filter(([, c]) => !c.complete);
+    const incompleteText = (audit: string, c: analyze.ScanCoverage): string =>
+      `The ${audit} scan is incomplete: it inspected ${c.scanned} of ${c.total}, so a missing finding may be in the rest.`;
     const level = (l: string) => findings.filter((f) => f.level === l).length;
     const severities = [
       ...(level("error") ? [`${level("error")} serious`] : []),
@@ -261,8 +277,11 @@ defineTool({
         ran.length === 0
           ? "No checks selected: `audits` is empty, so the report has no findings; pass at least one check."
           : findings.length === 0
-            ? `Exported 0 findings: the checks for ${andList(ran.map((a) => AUDIT_PLAIN[a].check))} found nothing.`
+            ? incomplete.length > 0
+              ? "Exported 0 findings from the part of the graph inspected; the scan was incomplete."
+              : `Exported 0 findings: the checks for ${andList(ran.map((a) => AUDIT_PLAIN[a].check))} found nothing.`
             : `Exported ${countNoun(findings.length, "finding")}: ${andList(severities)}.`,
+        ...incomplete.map(([a, c]) => incompleteText(a, c)),
         ...(findings.length > 0 ? [`By check: ${andList(perAudit)}.`] : []),
         saved.ok
           ? `Saved the report to \`${shown}\`; upload it to GitHub code scanning.`
@@ -275,6 +294,11 @@ defineTool({
       ],
       details: oldMd,
       next: [
+        ...(audits.has("dead-code") && findings.some((f) => f.ruleId.startsWith("dead-code."))
+          ? [
+              "Unused-code findings mean no captured incoming references; callers outside the graph (integrations, the UI, schedules) are not captured, so check them before deleting.",
+            ]
+          : []),
         // Name only the tools whose checks ran (dangling links have no tool of their own).
         ...(findings.length > 0 && listTools.length > 0
           ? [
@@ -292,7 +316,7 @@ defineTool({
           ? `0 findings — emitted empty SARIF report${saved.ok ? ` — saved to ${shown}` : " — not saved"}`
           : `${findings.length} findings across ${countsByRule.size} rules (${ruleSummary})${saved.ok ? ` — saved to ${shown}` : " — not saved"}`,
       markdown,
-      data: { report, findings, lintErrors, sources },
+      data: { report, findings, lintErrors, sources, scanCoverage },
       follow_up_tools: ["governor_risk_check", "security_audit", "dead_code_audit"],
     };
   },
