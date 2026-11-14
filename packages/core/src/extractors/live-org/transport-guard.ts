@@ -51,9 +51,40 @@ export const SOAP_READ_OPERATIONS: ReadonlySet<string> = new Set([
 ]);
 
 const SAFE_HTTP_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
-/** GET endpoints that run Apex and so can write. Matched on the URL path. */
+/** GET endpoints that run Apex and so can write. Matched on the normalised path. */
 const STATE_CHANGING_GET =
-  /\/tooling\/(?:executeAnonymous|runTestsAsynchronous|runTestsSynchronous)(?:\/|$)/i;
+  /\/tooling\/(?:executeanonymous|runtestsasynchronous|runtestssynchronous)(?:\/|$)/;
+
+/**
+ * Normalise a request URL's path the way a server would before routing: parse
+ * once against a dummy base, percent-decode once (an encoded slash or
+ * backslash, a failed decode, or a leftover `%` is refused), drop `;params`,
+ * collapse repeated slashes and lower-case. Returns null when the URL cannot
+ * be understood, which the caller treats as a refusal.
+ */
+function normalisedPath(url: string): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(url, "https://example.invalid").pathname;
+  } catch {
+    return null;
+  }
+  if (/%(?:2f|5c)/i.test(pathname)) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  if (decoded.includes("%") || decoded.includes("\\")) return null;
+  const segs = decoded
+    .split("/")
+    .map((x) => (x.split(";")[0] as string).toLowerCase())
+    .filter((x) => x !== "" && x !== ".");
+  if (segs.includes("..")) return null;
+  return `/${segs.join("/")}`;
+}
+
 const METADATA_SOAP_PATH =
   /^(?:https?:\/\/[^/?#]+)?\/services\/Soap\/m\/\d+(?:\.\d+)?\/?(?:[?#].*)?$/;
 
@@ -208,8 +239,8 @@ export function assertReadOnlyRequest(req: unknown): unknown {
   const { method, url, passOn, ok } = snapshotRequest(req);
   if (ok) {
     if (SAFE_HTTP_METHODS.has(method)) {
-      const path = url.split(/[?#]/)[0] ?? "";
-      if (!STATE_CHANGING_GET.test(path)) return passOn;
+      const path = normalisedPath(url);
+      if (path !== null && !STATE_CHANGING_GET.test(path)) return passOn;
     } else if (method === "POST" && typeof passOn === "object" && passOn !== null) {
       const r = passOn as { url?: unknown; body?: unknown; _message?: unknown };
       if (typeof r.url === "string" && METADATA_SOAP_PATH.test(r.url)) {

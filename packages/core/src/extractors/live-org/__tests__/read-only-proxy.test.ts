@@ -323,6 +323,34 @@ describe("transport guard: writes through the REAL jsforce Connection never reac
     expect(requests).toEqual([]);
   });
 
+  it("refuses state-changing Tooling GETs written with encoding, repeated slashes or path params", async () => {
+    const { conn, requests } = setup();
+    const base = "/services/data/v60.0/tooling";
+    const paths = [
+      `${base}/%65xecuteAnonymous/?anonymousBody=x`,
+      `${base}/%45XECUTEANONYMOUS/?anonymousBody=x`,
+      `${base}//executeAnonymous/?anonymousBody=x`,
+      `${base}/executeAnonymous;x?anonymousBody=x`,
+      `${base};a=b/executeAnonymous/?anonymousBody=x`,
+      `${base}/./executeAnonymous/?anonymousBody=x`,
+      `${base}/runTests%41synchronous/?classids=x`,
+      `${base}/%2565xecuteAnonymous/?anonymousBody=x`,
+      `${base}%2fexecuteAnonymous/?anonymousBody=x`,
+      `${base}/%zzexecuteAnonymous`,
+      `https://example.invalid${base}/executeanonymous/?anonymousBody=x`,
+    ];
+    for (const url of paths) {
+      await refuses(() => conn.request(url));
+      expect(() => conn._transport.httpRequest({ method: "GET", url })).toThrow(
+        ReadOnlyViolationError,
+      );
+    }
+    expect(requests).toEqual([]);
+    // Ordinary tooling reads with encoded query text still pass.
+    await conn.request(`${base}/query?q=SELECT%20Id%20FROM%20ApexClass`);
+    expect(requests).toHaveLength(1);
+  });
+
   it("decides on the method it sends: a getter that changes on second read cannot flip it", async () => {
     const { conn, requests } = setup();
     let reads = 0;

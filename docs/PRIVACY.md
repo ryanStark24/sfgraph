@@ -18,11 +18,15 @@ sfgraph keeps its graph and vector store on your machine and is designed to only
      `list`/`read`/`describe`/`retrieve`). It has no write methods, no generic
      `request`, and no back-reference to the connection.
    - *Transport guard* (`transport-guard.ts`), installed on the real
-     connection. It refuses any request that is not GET or HEAD, except
+     connection sfgraph creates. It refuses any request made through that
+     connection that is not GET or HEAD, except
      Metadata API SOAP calls whose envelope operation is `listMetadata`,
      `readMetadata`, `describeMetadata`, `retrieve`, `checkStatus` or
      `checkRetrieveStatus`. It also refuses the Tooling GET endpoints that
-     execute Apex (`executeAnonymous`, `runTests*`). A refused call throws
+     execute Apex (`executeAnonymous`, `runTests*`), matched on the decoded,
+     slash-collapsed path. The request method and URL must be plain strings
+     and the SOAP body is read as markup, so comments and CDATA cannot hide an
+     operation. A refused call throws
      `ReadOnlyViolationError` naming the method and URL before anything is
      sent.
 
