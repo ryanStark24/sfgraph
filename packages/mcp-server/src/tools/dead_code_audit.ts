@@ -472,8 +472,21 @@ function renderCandidates(
     shownTestOnly.map((d) => d.qualifiedName),
   );
   if (pool.length === 0) {
+    // Some zero-reference pieces may be hidden by confidence/label/pattern: then "the rest have
+    // references" would be false, so say what was filtered instead.
+    const filteredOut = candidates.length > matches.length;
+    const restText = [
+      partial
+        ? `the scan was incomplete (${coverage.scanned} of ${coverage.total} inspected), so the rest were not checked`
+        : "",
+      filteredOut
+        ? `other pieces with no captured incoming references do not match the current filters${filterNote(input)}`
+        : partial
+          ? ""
+          : "the rest have captured references",
+    ].filter(Boolean);
     const none = entry.length
-      ? `No candidates: ${countNoun(entry.length, "piece")} ${entry.length === 1 ? "has" : "have"} no captured incoming references but ${entry.length === 1 ? "is a" : "are"} known external entry point${entry.length === 1 ? "" : "s"} (listed below)${partial ? `; the scan was incomplete (${coverage.scanned} of ${coverage.total} inspected), so the rest were not checked` : "; the rest have captured references"}.`
+      ? `No candidates among ${scopeText(input)}: ${countNoun(entry.length, "piece")} ${entry.length === 1 ? "has" : "have"} no captured incoming references but ${entry.length === 1 ? "is a" : "are"} known external entry point${entry.length === 1 ? "" : "s"} (listed below)${restText.length ? `; ${restText.join("; ")}` : ""}.`
       : partial
         ? `No code with no captured incoming references found in the ${coverage.scanned} of ${coverage.total} inspected among ${scopeText(input)}; the scan was incomplete, so the rest were not checked.`
         : `No code with no captured incoming references found among ${scopeText(input)}.`;

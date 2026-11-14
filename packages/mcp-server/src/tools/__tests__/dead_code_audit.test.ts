@@ -101,9 +101,34 @@ describe("dead_code_audit", () => {
     });
     const r = await callTool("dead_code_audit", { org: fix.orgId });
     expect(deadNames(r)).toEqual([]);
-    expect(r.markdown).toContain("No candidates: 1 piece");
-    expect(r.markdown).toContain("known external entry point");
+    expect(r.markdown).toContain("No candidates among");
+    expect(r.markdown).toContain(
+      "1 piece has no captured incoming references but is a known external entry point",
+    );
+    expect(r.markdown).toContain("the rest have captured references");
     expect(r.markdown).not.toContain("No code with no captured incoming references found");
+  });
+
+  it("a filter that hides an ordinary unreferenced class does not make the summary claim the rest have references", async () => {
+    const old = Date.now() - 1000 * 60 * 60 * 24 * 1000;
+    fix.addNode({ qualifiedName: "ApexClass:Acme_Api", label: "ApexClass", lastModifiedAt: old });
+    fix.addNode({
+      qualifiedName: "ApexMethod:Acme_Api.get(0)",
+      label: "ApexMethod",
+      attributes: { httpVerbs: ["GET"] },
+    });
+    fix.addEdge({
+      srcQualifiedName: "ApexClass:Acme_Api",
+      dstQualifiedName: "ApexMethod:Acme_Api.get(0)",
+      relType: REL_TYPES.CONTAINS_METHOD,
+    });
+    fix.addNode({ qualifiedName: "ApexClass:Acme_Stale", label: "ApexClass", lastModifiedAt: old });
+    const r = await callTool("dead_code_audit", { org: fix.orgId, confidence: "low" });
+    expect(deadNames(r)).toEqual([]);
+    expect(r.markdown).toContain("No candidates among");
+    expect(r.markdown).toContain("low confidence only");
+    expect(r.markdown).toContain("do not match the current filters (confidence=low)");
+    expect(r.markdown).not.toContain("the rest have captured references");
   });
 
   it("flags stale untouched class", async () => {
