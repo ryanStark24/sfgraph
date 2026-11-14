@@ -6,8 +6,8 @@ import { ReadOnlyViolationError } from "@ryanstark24/sfgraph-shared";
  * jsforce 3.x routes HTTP two ways: REST/Tooling/Apex/Bulk calls go through
  * `conn.request(...)`, while the Metadata API (SOAP) builds its own `HttpApi`
  * and sends through `conn._transport.httpRequest(...)` without touching
- * `conn.request`. Both ends are guarded here so that no jsforce surface can
- * put a write on the wire:
+ * `conn.request`. Both ends are guarded here, so every request made through
+ * the connection's request path is checked:
  *
  *  - GET and HEAD are allowed, except the few Tooling API GET endpoints that
  *    execute code (see {@link STATE_CHANGING_GET}): anonymous Apex and test
@@ -32,10 +32,12 @@ import { ReadOnlyViolationError } from "@ryanstark24/sfgraph-shared";
  * it; jsforce 3 has no per-instance HTTP function to wrap below that point.
  * sfgraph code never does this and extractors only receive the read facade.
  *
- * Not covered, because it does not go through the connection's transport: the
- * OAuth token refresh that `@salesforce/core` performs with its own client.
- * That call exchanges a refresh token for an access token and does not touch
- * org data.
+ * Not covered, because they do not go through the connection's request path:
+ * jsforce's OAuth calls (token refresh, and `conn.logout()`, which POSTs to
+ * `/services/oauth2/revoke` through its own oauth2 transport and revokes the
+ * session token, not org data) and the streaming (CometD) client
+ * `conn.streaming`, which opens its own sockets. sfgraph uses none of them and
+ * extractors only get the read facade.
  */
 
 /** Metadata API SOAP operations that only read. */

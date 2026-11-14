@@ -86,6 +86,54 @@ describe("dead_code_audit", () => {
     expect(t.markdown).not.toMatch(/something referring to it|each has something referring/);
   });
 
+  it("count sentence includes entry points: 2 candidate triggers plus 2 entry-point triggers read as 4 of 4 with none (live path)", async () => {
+    fix.addNode({ qualifiedName: "CustomObject:Acme_Event__e", label: "CustomObject" });
+    for (const n of ["Acme_EvA", "Acme_EvB"]) {
+      fix.addNode({ qualifiedName: `ApexTrigger:${n}`, label: "ApexTrigger" });
+      fix.addEdge({
+        srcQualifiedName: `ApexTrigger:${n}`,
+        dstQualifiedName: "CustomObject:Acme_Event__e",
+        relType: REL_TYPES.TRIGGERS_ON,
+      });
+    }
+    fix.addNode({ qualifiedName: "CustomObject:Acme_Thing__c", label: "CustomObject" });
+    for (const n of ["Acme_ThA", "Acme_ThB"]) {
+      fix.addNode({ qualifiedName: `ApexTrigger:${n}`, label: "ApexTrigger" });
+      fix.addEdge({
+        srcQualifiedName: `ApexTrigger:${n}`,
+        dstQualifiedName: "CustomObject:Acme_Thing__c",
+        relType: REL_TYPES.TRIGGERS_ON,
+      });
+    }
+    const t = await callTool("dead_code_audit", { org: fix.orgId, label: "ApexTrigger" });
+    expect(t.markdown).toMatch(
+      /4 of the 4 Apex triggers[^;]* checked have no captured incoming references; 2 of them are known external entry points \(listed separately\)/,
+    );
+    expect(t.markdown).not.toContain("2 of the 4");
+  });
+
+  it("scored path: a stale class plus a REST endpoint says 2 have none and 1 of the 2 is an entry point", async () => {
+    const old = Date.now() - 1000 * 60 * 60 * 24 * 1000;
+    fix.addNode({ qualifiedName: "ApexClass:Acme_Api", label: "ApexClass", lastModifiedAt: old });
+    fix.addNode({
+      qualifiedName: "ApexMethod:Acme_Api.get(0)",
+      label: "ApexMethod",
+      attributes: { httpVerbs: ["GET"] },
+    });
+    fix.addEdge({
+      srcQualifiedName: "ApexClass:Acme_Api",
+      dstQualifiedName: "ApexMethod:Acme_Api.get(0)",
+      relType: REL_TYPES.CONTAINS_METHOD,
+    });
+    fix.addNode({ qualifiedName: "ApexClass:Acme_Stale", label: "ApexClass", lastModifiedAt: old });
+    const r = await callTool("dead_code_audit", { org: fix.orgId });
+    expect(deadNames(r)).toEqual(["ApexClass:Acme_Stale"]);
+    expect(r.markdown).toContain(
+      "1 of the 2 pieces with no captured incoming references is a known external entry point",
+    );
+    expect(r.markdown).not.toContain("Separately, 1 piece");
+  });
+
   it("when the only zero-reference class is a REST endpoint, the scored summary names it an entry point, not 'no code found'", async () => {
     const old = Date.now() - 1000 * 60 * 60 * 24 * 1000;
     fix.addNode({ qualifiedName: "ApexClass:Acme_Api", label: "ApexClass", lastModifiedAt: old });
