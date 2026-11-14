@@ -1598,6 +1598,43 @@ export class SqliteGraphStore implements GraphStore {
     return total;
   }
 
+  listLabelCounts(orgId: OrgId): Array<{ label: string; count: number }> {
+    this.syncCaches();
+    const out: Array<{ label: string; count: number }> = [];
+    for (const [label, tbl] of this.nodeLabelCache) {
+      const row = this.db.prepare(`SELECT COUNT(*) AS c FROM ${tbl} WHERE org_id = ?`).get(orgId) as
+        | { c: number }
+        | undefined;
+      const count = row?.c ?? 0;
+      if (count > 0) out.push({ label, count });
+    }
+    return out;
+  }
+
+  searchQnames(
+    orgId: OrgId,
+    needle: string,
+    limit: number,
+  ): { hits: Array<{ qname: string; label: string }>; truncated: boolean } {
+    this.syncCaches();
+    const hits: Array<{ qname: string; label: string }> = [];
+    if (limit <= 0 || needle.length === 0) return { hits, truncated: false };
+    // LIKE folds ASCII case, the same fold as the NOCASE qualified_name column.
+    const pattern = `%${needle.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    // Ask for one more than `limit` so "more exist" is known without a count.
+    for (const [label, tbl] of this.nodeLabelCache) {
+      const want = limit + 1 - hits.length;
+      const rows = this.stmt(
+        `SELECT qualified_name FROM ${tbl} WHERE org_id = ? AND qualified_name LIKE ? ESCAPE '\\' LIMIT ?`,
+      ).all(orgId, pattern, want) as Array<{ qualified_name: string }>;
+      for (const r of rows) hits.push({ qname: r.qualified_name, label });
+      if (hits.length > limit) break;
+    }
+    const truncated = hits.length > limit;
+    if (truncated) hits.length = limit;
+    return { hits, truncated };
+  }
+
   /**
    * Count nodes of `label` for `orgId`. Returns 0 if the label table has
    * not been created yet. Used by the W1.5-07 detect-deletions guard.

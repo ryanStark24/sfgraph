@@ -6,7 +6,7 @@ import { search } from "../api.js";
 
 /**
  * Verifies the bounds added to `/api/search` after the pen-test:
- *   1. Queries shorter than `SEARCH_MIN_QUERY_LEN` return [] without scanning.
+ *   1. Queries shorter than `SEARCH_MIN_QUERY_LEN` return no hits without scanning.
  *   2. `listAllQnames` scan stops at `SEARCH_MAX_SCAN` rows even when the
  *      graph has more.
  *
@@ -36,13 +36,13 @@ afterEach(() => {
 });
 
 describe("web /api/search bounds", () => {
-  it("returns [] for empty query without opening a store", async () => {
+  it("returns no hits for empty query without opening a store", async () => {
     const r = await search("00DfakeOrgIdAbc12", "");
-    expect(r).toEqual([]);
+    expect(r).toEqual({ hits: [], truncated: false });
   });
 
-  it("returns [] for single-char query (below SEARCH_MIN_QUERY_LEN)", async () => {
+  it("returns no hits for single-char query (below SEARCH_MIN_QUERY_LEN)", async () => {
     const r = await search("00DfakeOrgIdAbc12", "a");
-    expect(r).toEqual([]);
+    expect(r).toEqual({ hits: [], truncated: false });
   });
 });
