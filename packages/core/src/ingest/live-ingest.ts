@@ -87,6 +87,13 @@ import {
   recoverReferencedObjects,
 } from "./recover-objects.js";
 
+function unsupportedTypesWarning(counts: Map<string, number>): string {
+  const parts = [...counts.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([t, n]) => `${t}=${n}`);
+  return `incremental:unsupportedTypes:${parts.join(",")}`;
+}
+
 export type IngestMode = "full" | "incremental" | "auto";
 
 export interface LiveIngestOpts {
@@ -707,10 +714,39 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     const existing = graph.getOrg(resolved.orgId);
     const requestedMode = opts.mode ?? "auto";
     let mode: IngestMode;
+    // Changes read by the auto-mode pre-scan; reused by the incremental branch
+    // so the SourceMember table is queried once.
+    let autoScan: { refs: MemberRef[]; unsupported: Map<string, number> } | undefined;
+    const autoFallback: string[] = [];
     if (opts.metadataSource) {
       mode = "full";
     } else if (requestedMode === "auto") {
       mode = existing?.lastSyncedAt && caps.sourceTracking ? "incremental" : "full";
+      if (mode === "incremental") {
+        // Incremental applies deletions only; it cannot fetch changed content.
+        // So auto looks at what changed first and runs a full refresh when
+        // anything beyond pure deletions (additions, modifications, or types
+        // sfgraph cannot map) is found.
+        const unsupported = new Map<string, number>();
+        const refs: MemberRef[] = [];
+        const scanSince = new Date(existing!.lastSyncedAt as number).toISOString();
+        for await (const ref of iterChanges(resolved.conn, resolved.orgId, scanSince, (t) =>
+          unsupported.set(t, (unsupported.get(t) ?? 0) + 1),
+        )) {
+          refs.push(ref);
+        }
+        autoScan = { refs, unsupported };
+        const changed = refs.filter((r) => !r.obsolete).length;
+        const unsupportedTotal = [...unsupported.values()].reduce((a, b) => a + b, 0);
+        if (changed > 0 || unsupportedTotal > 0) {
+          mode = "full";
+          if (unsupportedTotal > 0) autoFallback.push(unsupportedTypesWarning(unsupported));
+          autoFallback.push(`incremental:fellBackToFull:changed=${changed + unsupportedTotal}`);
+          logger.info(
+            `live-ingest: ${resolved.alias} has ${changed + unsupportedTotal} changed member(s) since the last sync; incremental sync applies deletions only, so auto is running a full refresh`,
+          );
+        }
+      }
     } else {
       mode = requestedMode;
     }
@@ -769,6 +805,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // final LiveIngestResult.warnings array. See bulk-retrieve.ts WedgeCoordinator.
     const wedgeWarnings: string[] = [];
     if (modeFallback) wedgeWarnings.push(modeFallback);
+    wedgeWarnings.push(...autoFallback);
 
     // Task 10 rebuild fast path. On a full ingest into an org whose graph is
     // empty at start, run the fan-out inside the store's bulk-load window:
@@ -1195,18 +1232,31 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       // members are counted and the user is told to run a full ingest to
       // refresh them. (Deletions are still valuable and safe.)
       let changedNotApplied = 0;
-      for await (const ref of iterChanges(resolved.conn, resolved.orgId, sinceIso)) {
+      const unsupportedSeen = autoScan?.unsupported ?? new Map<string, number>();
+      const changes: AsyncIterable<MemberRef> | MemberRef[] =
+        autoScan?.refs ??
+        iterChanges(resolved.conn, resolved.orgId, sinceIso, (t) =>
+          unsupportedSeen.set(t, (unsupportedSeen.get(t) ?? 0) + 1),
+        );
+      for await (const ref of changes) {
         if (ref.obsolete) {
           await processOne(ref, "");
         } else {
           changedNotApplied += 1;
         }
       }
-      incrementalUnfetched = changedNotApplied;
+      const unsupportedTotal = [...unsupportedSeen.values()].reduce((a, b) => a + b, 0);
+      incrementalUnfetched = changedNotApplied + unsupportedTotal;
       if (changedNotApplied > 0) {
-        const msg = `incremental: ${changedNotApplied} changed/added member(s) detected but NOT refreshed (content fetch not implemented for incremental). The sync watermark is being HELD so the next run re-detects them. Run \`sfgraph ingest --org ${resolved.alias} --rebuild\` (or --mode full) to capture them.`;
+        const msg = `incremental: ${changedNotApplied} added/modified member(s) detected but NOT fetched. Incremental sync applies deletions only. The sync watermark is being HELD so the next run re-detects them. Run \`sfgraph ingest --org ${resolved.alias} --mode full\` (or --mode auto, which falls back to a full refresh when content changed) to refresh them.`;
         logger.warn(msg);
         wedgeWarnings.push(`incremental:contentNotFetched:count=${changedNotApplied}`);
+      }
+      if (unsupportedTotal > 0) {
+        logger.warn(
+          `incremental: ${unsupportedTotal} change(s) of metadata types sfgraph cannot map were NOT processed; the sync watermark is being HELD. Run \`sfgraph ingest --org ${resolved.alias} --mode full\` to refresh them.`,
+        );
+        wedgeWarnings.push(unsupportedTypesWarning(unsupportedSeen));
       }
     } else {
       // The outer iteration is also wrapped: bulkRetrieve uses fail-soft per

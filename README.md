@@ -121,7 +121,7 @@ sfgraph rebuild-bindings
 
 ## First ingest
 
-The first sync of an org takes **2–6 minutes** on a typical 50K-node sandbox. Subsequent syncs on Source-Tracking-enabled orgs are incremental (<30 s).
+The first sync of an org takes **2–6 minutes** on a typical 50K-node sandbox. On Source-Tracking-enabled orgs, later syncs check what changed. If nothing changed, or only components were deleted, the sync applies the deletions and finishes quickly. Incremental sync applies deletions only: it does not fetch or re-parse added or modified components. So in the default `auto` mode, when anything was added or modified (or changed in a metadata type sfgraph cannot map, which is named in the result), the run falls back to a full refresh and says so. `--mode incremental` keeps the deletions-only behaviour and tells you what it did not refresh; `--mode full` always refreshes everything. (Filesystem `--delta` for project folders is a separate feature and is unchanged.)
 
 ```bash
 # Default org from `sf config target-org`

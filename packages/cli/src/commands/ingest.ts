@@ -331,6 +331,34 @@ export function reportEmbeddingOutcome(result: {
   );
 }
 
+/**
+ * Say plainly what a live sync did and did not refresh. Incremental sync applies
+ * deletions only; `auto` falls back to a full refresh when content changed, and
+ * SourceMember types sfgraph cannot map are reported, never dropped silently.
+ */
+export function reportSyncModeNotes(
+  alias: string,
+  result: { mode: string; warnings?: string[] },
+): void {
+  for (const w of result.warnings ?? []) {
+    if (w.startsWith("incremental:fellBackToFull:changed=")) {
+      const n = w.slice(w.lastIndexOf("=") + 1);
+      console.warn(
+        `ingest: ${alias}: ${n} member(s) changed since the last sync, and incremental sync only applies deletions, so auto ran a full refresh instead (mode=${result.mode}).`,
+      );
+    } else if (w.startsWith("incremental:contentNotFetched:count=")) {
+      const n = w.slice(w.lastIndexOf("=") + 1);
+      console.warn(
+        `warning: ${alias}: ${n} added/modified member(s) were NOT fetched: incremental sync applies deletions only. The sync watermark was held. Run with --mode full (or --mode auto) to refresh them.`,
+      );
+    } else if (w.startsWith("incremental:unsupportedTypes:")) {
+      console.warn(
+        `warning: ${alias}: changes to metadata types sfgraph cannot map (${w.slice("incremental:unsupportedTypes:".length)}) were not processed incrementally. Run with --mode full to refresh them.`,
+      );
+    }
+  }
+}
+
 /** Give every built ingest the same embedder (multi-org runs: one worker and
  *  one model in memory instead of one per org). The caller closes it. */
 export function shareEmbedder(
@@ -695,7 +723,12 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
         `\nMulti-org ingest complete (${summary.parallel ? "parallel" : "sequential"}, ${summary.totalElapsedMs}ms):`,
       );
       printResultsTable(summary.entries, opts.mode ?? "auto");
-      for (const e of summary.entries) if (e.result) reportEmbeddingOutcome(e.result);
+      for (const e of summary.entries) {
+        if (e.result) {
+          reportEmbeddingOutcome(e.result);
+          reportSyncModeNotes(e.alias, e.result);
+        }
+      }
       const failed = summary.entries.filter(
         (e: MultiOrgIngestEntry) => e.status === "error",
       ).length;
@@ -728,6 +761,7 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
     logger.info(`ingest: starting alias=${alias}`);
     const result = await liveIngest(built);
     reportEmbeddingOutcome(result);
+    reportSyncModeNotes(alias, result);
     logger.info("ingest: capabilities", result.capabilities as unknown as Record<string, unknown>);
     logger.info(
       `ingest: complete mode=${result.mode} members=${result.membersProcessed} deletions=${result.deletions} parseErrors=${result.parseErrors} elapsed=${Date.now() - startedAt}ms`,
