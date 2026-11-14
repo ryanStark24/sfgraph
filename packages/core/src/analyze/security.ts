@@ -60,6 +60,25 @@ function audienceOf(a: Record<string, unknown>): string | undefined {
 }
 
 /**
+ * The audience of an ingested rule. The parser stores the recipients as SHARING_TO_GROUP and
+ * SHARING_TO_ROLE edges (not as node attributes), and marks guest rules with `kind: "guest"`
+ * (the guest user's site name is not stored). Several recipients are joined with "; ".
+ */
+function audienceFromEdges(store: GraphStore, orgId: OrgId, n: NodeFact): string | undefined {
+  const parts: string[] = [];
+  const bare = (q: string) => q.slice(q.indexOf(":") + 1);
+  for (const e of store.listEdgesFrom(orgId, n.qualifiedName, REL_TYPES.SHARING_TO_GROUP))
+    parts.push(`group: ${bare(e.dstQualifiedName)}`);
+  for (const e of store.listEdgesFrom(orgId, n.qualifiedName, REL_TYPES.SHARING_TO_ROLE)) {
+    const sub =
+      (e.attributes as Record<string, unknown> | undefined)?.includesSubordinates === true;
+    parts.push(`${sub ? "role and subordinates" : "role"}: ${bare(e.dstQualifiedName)}`);
+  }
+  if ((n.attributes as Record<string, unknown>).kind === "guest") parts.push("guest users");
+  return parts.length ? parts.join("; ") : undefined;
+}
+
+/**
  * Sharing rules that give record-level Edit or All access. Shared by `securityAudit` and the
  * single-field path of the `security_audit` tool so both report the same rules.
  */
@@ -82,7 +101,7 @@ export function sharingEditRules(
           ? "Edit"
           : null;
     if (!access) continue;
-    const audience = audienceOf(a);
+    const audience = audienceFromEdges(store, orgId, n) ?? audienceOf(a);
     rules.push({
       qualifiedName: n.qualifiedName,
       access,
