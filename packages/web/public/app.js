@@ -845,6 +845,36 @@ async function renderOverview() {
 }
 document.getElementById("overviewGo").addEventListener("click", renderOverview);
 
+/** Plain-words summary of a whole-graph payload: how many nodes are shown,
+ *  and anything left out (by the node limit, or on purpose by label). */
+function fullSummary(payload) {
+  const total = payload.totalNodes ?? payload.nodes.length;
+  let text = `Showing ${payload.nodes.length.toLocaleString()} of ${total.toLocaleString()} nodes · ${payload.edges.length.toLocaleString()} edges`;
+  if (payload.omittedNodes > 0) {
+    text += ` · ${payload.omittedNodes.toLocaleString()} left out by the node limit (raise it above to see more)`;
+  }
+  const excluded = payload.excludedLabels ?? [];
+  if (excluded.length > 0) {
+    text += ` · left out on purpose: ${excluded.map((x) => `${x.label} (${x.count}, ${x.reason})`).join(", ")}`;
+  }
+  return text;
+}
+
+// "Render entire org": every stored label, up to the Node limit field below.
+async function renderFull() {
+  if (!currentOrgId) return alert("pick an org first");
+  const limit = document.getElementById("overviewLimit").value;
+  setHint("fullHint", "querying…");
+  try {
+    const payload = await api(`/api/full?org=${currentOrgId}&limit=${limit}`);
+    setData(payload);
+    setHint("fullHint", fullSummary(payload));
+  } catch (e) {
+    setHint("fullHint", `error: ${e.message}`);
+  }
+}
+document.getElementById("fullGo").addEventListener("click", renderFull);
+
 async function renderSchema() {
   if (!currentOrgId) return alert("pick an org first");
   const limit = document.getElementById("schemaLimit").value;

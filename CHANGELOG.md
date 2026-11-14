@@ -12,7 +12,7 @@ Fixes from an independent audit of 1.8.1. Nothing here was run against a real Sa
 - **Auto sync gives an up-to-date graph.** After the first sync, `sfgraph ingest` in auto mode used to apply only deletions, so a changed Apex class kept its old body. Auto now falls back to a full refresh when source tracking reports added or modified members. Changes to metadata types sfgraph cannot map (for example Workflow) are reported by name and count, and the sync watermark is no longer moved past them silently.
 - **Capped scans no longer say "no findings" when they did not look at everything.** `dead_code_audit`, `governor_risk_check` and `export_sarif` read every node (the 10,000 and 20,000 per-label limits are gone), apply your `pattern` and label filters before any limit, and report scanned and total counts. "No findings" is said only for a complete scan; otherwise the answer says how much was looked at.
 - **`unbounded_query` and `no_bulk` governor checks work on normally parsed Apex.** `return [SELECT Id FROM Account];` is now flagged as unbounded. Live answers and cached answers share one detector.
-- **Web explorer.** "Render entire org" includes every stored label (OmniScript, DataRaptor, IntegrationProcedure and others were left out). Capped schema views no longer contain edges to nodes that are not in the response, and say how many neighbours were omitted. Search finds names past the first 25,000 and says when it stopped.
+- **Web explorer.** "Render entire org" includes every stored label (OmniScript, DataRaptor, IntegrationProcedure and others were left out), and the button now works: it had no click handler. It shows how many nodes are displayed out of how many exist and how many the node limit left out. Capped schema views no longer contain edges to nodes that are not in the response, and say how many neighbours were omitted. Search finds names past the first 25,000 and says when it stopped.
 
 ### Changed
 
@@ -29,7 +29,6 @@ Fixes from an independent audit of 1.8.1. Nothing here was run against a real Sa
 - Live sync: Salesforce changes sfgraph cannot map are reported but not fetched. A full refresh is the only way to pick them up.
 - Dead code: `webservice` methods are recognised only where the parser keeps method modifiers; Flow, LWC and other labels have no entry-point detection.
 - Governor checks: no calibration against real org code, and string-built dynamic SOQL is not examined.
-- The explorer's "Render entire org" button has no click handler in the browser app, so `/api/full` is reachable only through the API.
 - The first ingest after upgrading re-parses every member once, as after any release.
 
 ## 1.8.1 — 2026-11-13
