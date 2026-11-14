@@ -7,6 +7,7 @@ import {
   ALL_REL_TYPES,
   closeAllStores,
   fullGraph,
+  labels,
   listOrgs,
   neighborhood,
   overview,
@@ -95,6 +96,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: string)
     }
     if (pathOnly === "/api/rel-types") {
       sendJson(res, 200, ALL_REL_TYPES);
+      return;
+    }
+    if (pathOnly === "/api/labels") {
+      const org = requireOrgId(qs, res);
+      if (!org) return;
+      sendJson(res, 200, await labels(org));
       return;
     }
     if (pathOnly === "/api/search") {

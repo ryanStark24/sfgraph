@@ -109,32 +109,24 @@ export interface SearchHit {
  */
 const SEARCH_MIN_QUERY_LEN = 2;
 
-/**
- * Cap on qnames scanned per request. `listAllQnames` is O(N) across every
- * label table; on a 50k-node org this is multi-second per call. The cap
- * lets us short-circuit instead of locking the event loop.
- */
-const SEARCH_MAX_SCAN = 25000;
-
-/** Substring-match autocomplete over qnames. Returns at most `limit` hits. */
-export async function search(orgId: string, q: string, limit = 25): Promise<SearchHit[]> {
-  if (!q || q.length < SEARCH_MIN_QUERY_LEN) return [];
+/** Substring-match autocomplete over qnames, case-insensitive. The match and
+ *  the limit run in storage (`searchQnames`); no name list is loaded. `truncated`
+ *  is true when more matches exist than `limit`. */
+export async function search(
+  orgId: string,
+  q: string,
+  limit = 25,
+): Promise<{ hits: SearchHit[]; truncated: boolean }> {
+  if (!q || q.length < SEARCH_MIN_QUERY_LEN) return { hits: [], truncated: false };
   const store = await getStore(orgId);
-  const oid = asOrgId(orgId);
-  const needle = q.toLowerCase();
-  const all = store.listAllQnames(oid);
-  const hits: SearchHit[] = [];
-  let scanned = 0;
-  for (const qn of all) {
-    scanned++;
-    if (scanned > SEARCH_MAX_SCAN) break;
-    if (String(qn).toLowerCase().includes(needle)) {
-      const node = store.getNode(oid, qn);
-      hits.push({ qname: String(qn), label: node?.label ?? "Unknown" });
-      if (hits.length >= limit) break;
-    }
-  }
-  return hits;
+  return store.searchQnames(asOrgId(orgId), q, limit);
+}
+
+/** Node labels stored for the org, with counts: the one source for the UI's
+ *  label choices and for `fullGraph`. */
+export async function labels(orgId: string): Promise<Array<{ label: string; count: number }>> {
+  const store = await getStore(orgId);
+  return store.listLabelCounts(asOrgId(orgId));
 }
 
 export interface GraphNode {
@@ -151,6 +143,13 @@ export interface GraphPayload {
   nodes: GraphNode[];
   edges: GraphEdge[];
   truncated?: boolean;
+  /** Nodes that exist but are not in `nodes` because of the node limit. */
+  omittedNodes?: number;
+  /** Total nodes of the labels this view covers (fullGraph only). */
+  totalNodes?: number;
+  /** Labels left out on purpose, with the reason. Empty: nothing is excluded
+   *  except by the node limit (fullGraph only). */
+  excludedLabels?: Array<{ label: string; count: number; reason: string }>;
 }
 
 /** Bidirectional BFS around a center node up to `depth` hops. */
@@ -255,47 +254,23 @@ export async function overview(
 /**
  * Full-graph view: every node in the org (capped at `limit`) plus every
  * edge between visible nodes. Used by the "Render entire org" button in
- * the web UI — gives the Obsidian-style global view instead of the
- * per-label or per-trace subsets.
+ * the web UI.
  *
- * We enumerate node-bearing labels rather than calling `listAllQnames`
- * because we want a stable label assignment for colouring without doing
- * one `getNode` per id.
+ * Labels come from the label tables actually stored for the org
+ * (`listLabelCounts`), so OmniStudio and any other family is included.
+ * No label is excluded on purpose (`excludedLabels` is empty); what the node
+ * limit cuts off is reported as `omittedNodes` and `truncated`.
  */
-const ALL_KNOWN_LABELS: string[] = [
-  "ApexClass",
-  "ApexTrigger",
-  "ApexMethod",
-  "TestMethod",
-  "ApexPage",
-  "LightningComponentBundle",
-  "LWC",
-  "LWCBundle",
-  "AuraDefinitionBundle",
-  "Flow",
-  "FlowVersion",
-  "CustomObject",
-  "CustomField",
-  "Profile",
-  "PermissionSet",
-  "PermissionSetGroup",
-  "SharingRule",
-  "NamedCredential",
-  "ExternalServiceRegistration",
-  "StaticResource",
-  "CustomLabel",
-  "Workflow",
-];
-
 export async function fullGraph(orgId: string, limit = 5000): Promise<GraphPayload> {
   const store = await getStore(orgId);
   const oid = asOrgId(orgId);
   const nodes = new Map<string, GraphNode>();
-  for (const lbl of ALL_KNOWN_LABELS) {
-    if (nodes.size >= limit) break;
-    const ns = store.listNodesByLabel(oid, lbl, limit);
-    for (const n of ns) {
-      if (nodes.size >= limit) break;
+  const counts = store.listLabelCounts(oid);
+  let totalNodes = 0;
+  for (const { label, count } of counts) {
+    totalNodes += count;
+    if (nodes.size >= limit) continue;
+    for (const n of store.listNodesByLabel(oid, label, limit - nodes.size)) {
       nodes.set(String(n.qualifiedName), { id: String(n.qualifiedName), label: n.label });
     }
   }
@@ -310,7 +285,15 @@ export async function fullGraph(orgId: string, limit = 5000): Promise<GraphPaylo
       }
     }
   }
-  return { nodes: [...nodes.values()], edges, truncated: nodes.size >= limit };
+  const omittedNodes = Math.max(0, totalNodes - nodes.size);
+  return {
+    nodes: [...nodes.values()],
+    edges,
+    truncated: omittedNodes > 0,
+    omittedNodes,
+    totalNodes,
+    excludedLabels: [],
+  };
 }
 
 /**
@@ -335,19 +318,32 @@ export async function schema(orgId: string, limit = 1500): Promise<GraphPayload>
   const oid = asOrgId(orgId);
   const nodes = new Map<string, GraphNode>();
   const edges: GraphEdge[] = [];
-  const addNode = (qn: string, label: string): void => {
-    if (nodes.size >= limit) return;
-    if (!nodes.has(qn)) nodes.set(qn, { id: qn, label });
+  // Neighbours the cap refused. An edge is only emitted when both endpoints
+  // are in `nodes`, so a refused node never leaves a dangling edge.
+  const omitted = new Set<string>();
+  const addNode = (qn: string, label: () => string): boolean => {
+    if (nodes.has(qn)) return true;
+    if (nodes.size >= limit) {
+      omitted.add(qn.toLowerCase());
+      return false;
+    }
+    nodes.set(qn, { id: qn, label: label() });
+    return true;
+  };
+  const addEdge = (source: string, target: string, relType: string): void => {
+    if (nodes.has(source) && nodes.has(target)) edges.push({ source, target, relType });
   };
 
-  // Seed with every CustomObject in the org.
-  for (const n of store.listNodesByLabel(oid, "CustomObject", limit)) {
-    addNode(String(n.qualifiedName), n.label);
-  }
-  // Also include CustomField if the org has them (some extraction profiles
-  // produce field-level nodes, others don't).
-  for (const n of store.listNodesByLabel(oid, "CustomField", limit)) {
-    addNode(String(n.qualifiedName), n.label);
+  // Seed with every CustomObject in the org. Also CustomField if the org has
+  // them (some extraction profiles produce field-level nodes, others don't).
+  for (const lbl of ["CustomObject", "CustomField"]) {
+    for (const n of store.listNodesByLabel(oid, lbl, limit)) {
+      addNode(String(n.qualifiedName), () => n.label);
+    }
+    // Seeds past the limit were never fetched; count them.
+    const seedTotal = store.countNodesByLabel(oid, lbl);
+    const seeded = [...nodes.values()].filter((x) => x.label === lbl).length;
+    for (let i = seeded; i < seedTotal; i++) omitted.add(`${lbl}#${i}`);
   }
 
   const wantedRels = new Set([
@@ -370,26 +366,28 @@ export async function schema(orgId: string, limit = 1500): Promise<GraphPayload>
   // (consumer → CustomObject), so we have to listEdgesTo, not From.
   const schemaSeeds = [...nodes.keys()];
   for (const qn of schemaSeeds) {
-    if (nodes.size >= limit) break;
     const inE = store.listEdgesTo(oid, asQualifiedName(qn));
     for (const e of inE) {
       if (!wantedRels.has(String(e.relType))) continue;
       const src = String(e.srcQualifiedName);
-      const srcNode = store.getNode(oid, asQualifiedName(src));
-      addNode(src, srcNode?.label ?? "Unknown");
-      edges.push({ source: src, target: qn, relType: String(e.relType) });
+      addNode(src, () => store.getNode(oid, asQualifiedName(src))?.label ?? "Unknown");
+      addEdge(src, qn, String(e.relType));
     }
     // Outgoing too (CustomField → CustomObject lookups, when present).
     const outE = store.listEdgesFrom(oid, asQualifiedName(qn));
     for (const e of outE) {
       if (!wantedRels.has(String(e.relType))) continue;
       const dst = String(e.dstQualifiedName);
-      const dstNode = store.getNode(oid, asQualifiedName(dst));
-      addNode(dst, dstNode?.label ?? "Unknown");
-      edges.push({ source: qn, target: dst, relType: String(e.relType) });
+      addNode(dst, () => store.getNode(oid, asQualifiedName(dst))?.label ?? "Unknown");
+      addEdge(qn, dst, String(e.relType));
     }
   }
-  return { nodes: [...nodes.values()], edges, truncated: nodes.size >= limit };
+  return {
+    nodes: [...nodes.values()],
+    edges,
+    truncated: omitted.size > 0,
+    omittedNodes: omitted.size,
+  };
 }
 
 /** List the rel-types available in the current graph for filter UI. */
