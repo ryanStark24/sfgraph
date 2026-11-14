@@ -720,7 +720,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       | {
           refs: MemberRef[];
           unsupported: Map<string, number>;
-          unsupportedRefs: Array<{ type: string; name: string }>;
+          unsupportedRefs: Array<{ type: string; name: string; obsolete: boolean }>;
         }
       | undefined;
     const autoFallback: string[] = [];
@@ -734,13 +734,18 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         // anything beyond pure deletions (additions, modifications, or types
         // sfgraph cannot map) is found.
         const unsupported = new Map<string, number>();
-        const unsupportedRefs: Array<{ type: string; name: string }> = [];
+        const unsupportedRefs: Array<{ type: string; name: string; obsolete: boolean }> = [];
         const refs: MemberRef[] = [];
         const scanSince = new Date(existing!.lastSyncedAt as number).toISOString();
-        for await (const ref of iterChanges(resolved.conn, resolved.orgId, scanSince, (t, n) => {
-          unsupported.set(t, (unsupported.get(t) ?? 0) + 1);
-          unsupportedRefs.push({ type: t, name: n });
-        })) {
+        for await (const ref of iterChanges(
+          resolved.conn,
+          resolved.orgId,
+          scanSince,
+          (t, n, obsolete) => {
+            unsupported.set(t, (unsupported.get(t) ?? 0) + 1);
+            unsupportedRefs.push({ type: t, name: n, obsolete });
+          },
+        )) {
           refs.push(ref);
         }
         autoScan = { refs, unsupported, unsupportedRefs };
@@ -800,6 +805,10 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // `Type:Name` (lower case) of members this run parsed and wrote; used to
     // check that an auto fallback really refreshed what the pre-scan saw.
     const refreshedMembers = new Set<string>();
+    // Members whose parse returned a ParseError / parseFailed placeholder, and
+    // the node keys it wrote: written, but not refreshed.
+    const failedParseMembers = new Set<string>();
+    const failedParseNodes = new Set<string>();
     // W1.5-07: maintain per-label touched-qnames sets in parallel with the
     // flat `touchedQnames` set so the deletion-sweep guard can compute
     // priorCount/touchedCount per label without re-deriving labels later.
@@ -1519,7 +1528,21 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
             if (batchOpen) graph.batchMemberStart?.();
             try {
               applyMember(member.ref, outcome);
-              if (autoScan && outcome.kind !== "error" && outcome.kind !== "skip") {
+              const parseFailedMember =
+                outcome.kind === "parsed" &&
+                outcome.result.nodes.some(
+                  (n) =>
+                    n.label === "ParseError" ||
+                    (n.attributes as Record<string, unknown> | undefined)?.parseFailed === true,
+                );
+              if (parseFailedMember && outcome.kind === "parsed") {
+                // The parser returned a placeholder, not the member's content.
+                for (const n of outcome.result.nodes)
+                  failedParseNodes.add(String(n.qualifiedName).toLowerCase());
+                failedParseMembers.add(
+                  `${member.ref.memberType}:${member.ref.memberName}`.toLowerCase(),
+                );
+              } else if (autoScan && outcome.kind !== "error" && outcome.kind !== "skip") {
                 refreshedMembers.add(
                   `${member.ref.memberType}:${member.ref.memberName}`.toLowerCase(),
                 );
@@ -2218,9 +2241,11 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // node with the matching `Label:Name` key). A change that cannot be matched
     // to anything written holds the watermark, the safe side.
     const writtenNodes = new Set<string>();
-    for (const q of touchedQnames) writtenNodes.add(q.toLowerCase());
+    for (const q of touchedQnames) {
+      if (!failedParseNodes.has(q.toLowerCase())) writtenNodes.add(q.toLowerCase());
+    }
     const unrefreshed: string[] = [];
-    const scannedChanges: Array<{ type: string; name: string }> = [
+    const scannedChanges: Array<{ type: string; name: string; obsolete?: boolean }> = [
       ...(autoScan?.refs ?? [])
         .filter((r) => !r.obsolete)
         .map((r) => ({ type: r.memberType, name: r.memberName })),
@@ -2229,6 +2254,17 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     for (const c of scannedChanges) {
       const key = `${c.type}:${c.name}`;
       const nodeKey = `${MEMBER_TYPE_TO_NODE_LABEL[c.type] ?? c.type}:${c.name}`;
+      if (c.obsolete) {
+        // A deleted member cannot be written: it is confirmed when its node is
+        // absent after the run (removed, or never there).
+        if (!graph.getNode(resolved.orgId, asQualifiedName(nodeKey))) continue;
+        unrefreshed.push(key);
+        continue;
+      }
+      if (failedParseMembers.has(key.toLowerCase())) {
+        unrefreshed.push(`${key}(parseFailed)`);
+        continue;
+      }
       if (refreshedMembers.has(key.toLowerCase()) || writtenNodes.has(nodeKey.toLowerCase()))
         continue;
       unrefreshed.push(key);

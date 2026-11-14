@@ -349,6 +349,34 @@ describe("live sync: auto falls back to a full refresh when content changed", ()
     await store.close();
   });
 
+  it("a deleted unsupported member does not hold the watermark once its node is absent", async () => {
+    const { store, state, conn } = await seeded();
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.sourceMembers = [{ MemberType: "Workflow", MemberName: "Account", IsNameObsolete: true }];
+    const r = await run(store, conn, "auto");
+    expect(r.mode).toBe("full");
+    expect(r.warnings.filter((x) => x.startsWith("incremental:fallbackIncomplete:"))).toEqual([]);
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
+    await store.close();
+  });
+
+  it("a modified class with broken syntax holds the watermark; valid syntax later advances", async () => {
+    const { store, state, conn } = await seeded();
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.body = "public class Billing { public void a( {} }";
+    state.sourceMembers = [{ MemberType: "ApexClass", MemberName: "Billing" }];
+    const r1 = await run(store, conn, "auto");
+    expect(r1.warnings.some((x) => x.includes("unrefreshed=ApexClass:Billing(parseFailed)"))).toBe(
+      true,
+    );
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt).toBe(before);
+    state.body = "public class Billing { public void fixed() {} }";
+    const r2 = await run(store, conn, "auto");
+    expect(r2.warnings.filter((x) => x.startsWith("incremental:fallbackIncomplete:"))).toEqual([]);
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
+    await store.close();
+  });
+
   it("a Workflow SourceMember change under auto falls back to full and names the type", async () => {
     const { store, state, conn } = await seeded();
     state.sourceMembers = [{ MemberType: "Workflow", MemberName: "Account" }];
