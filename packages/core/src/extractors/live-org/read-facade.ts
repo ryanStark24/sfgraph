@@ -20,6 +20,7 @@
  *   conn.metadata.list / read / describe   Metadata SOAP (POST, read operations)
  *   conn.metadata.retrieve(req).complete() Metadata SOAP retrieve + status polls
  *   conn.version                           negotiated API version
+ *   conn.limitInfo.apiUsage                copied out as plain numbers (quota guard)
  *
  * The facade is the first layer. The second is the transport guard in
  * transport-guard.ts, which refuses writes on the real connection even if a
@@ -55,8 +56,16 @@ export interface ReadOnlyMetadataApi {
   retrieve(request: unknown): ReadOnlyRetrieveHandle;
 }
 
+/** API usage from the most recent Sforce-Limit-Info header, or null. A copy. */
+export interface ApiUsage {
+  used: number;
+  limit: number;
+}
+
 export interface ReadOnlyOrgConnection extends ReadOnlyQueryApi {
   readonly version: string | undefined;
+  /** Most recent API usage the connection saw (REST responses), as plain numbers. */
+  limitInfo(): ApiUsage | null;
   describeGlobal(): Promise<any>;
   identity(): Promise<any>;
   readonly tooling: ReadOnlyQueryApi;
@@ -131,6 +140,12 @@ export function createReadFacade(raw: any): ReadOnlyOrgConnection {
   }
 
   const facade: Record<string, unknown> = { ...root };
+  facade.limitInfo = (): ApiUsage | null => {
+    const u = raw?.limitInfo?.apiUsage;
+    return typeof u?.used === "number" && typeof u?.limit === "number"
+      ? { used: u.used, limit: u.limit }
+      : null;
+  };
   Object.defineProperty(facade, "version", {
     get: () => (typeof raw?.version === "string" ? raw.version : undefined),
     enumerable: true,

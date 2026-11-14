@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { ReadOnlyViolationError } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it } from "vitest";
+import { iterOmnistudioRetrieve } from "../extractors/omnistudio-retrieve.js";
 import { wrapConnectionReadOnly } from "../read-only-proxy.js";
 import { assertReadOnlyRequest, soapOperation } from "../transport-guard.js";
 import { type RealConn, makeRealConnection, soapEnvelope } from "./_real-jsforce.js";
@@ -53,6 +54,7 @@ describe("read facade: no raw connection is reachable", () => {
       [
         "describeGlobal",
         "identity",
+        "limitInfo",
         "metadata",
         "query",
         "queryMore",
@@ -430,4 +432,58 @@ describe("every read the live extractors make still reaches the transport", () =
     expect(ops).toContain("checkRetrieveStatus");
     expect(requests.every((r) => r.method === "POST" && r.soapOp)).toBe(true);
   });
+});
+
+describe("API usage reaches the omnistudio quota guard through the facade", () => {
+  const limited = () => ({
+    body: JSON.stringify({ totalSize: 0, done: true, records: [] }),
+    headers: { "sforce-limit-info": "api-usage=9500/10000" },
+  });
+
+  it("limitInfo() is null before any response, then a plain copy of the header values", async () => {
+    const r = makeRealConnection(limited);
+    const facade: any = wrapConnectionReadOnly(r.conn);
+    expect(facade.limitInfo()).toBeNull();
+    await facade.query("SELECT Id FROM Account");
+    const u = facade.limitInfo();
+    expect(u).toEqual({ used: 9500, limit: 10000 });
+    expect(Object.getPrototypeOf(u)).toBe(Object.prototype);
+    u.used = 1; // a copy: mutating it does not change the connection's value
+    expect(facade.limitInfo()).toEqual({ used: 9500, limit: 10000 });
+    expect(r.conn.limitInfo.apiUsage.used).toBe(9500);
+    // Still no raw reference reachable.
+    const found = reachable(facade, []);
+    for (const f of [r.conn, r.conn._transport, r.conn.limitInfo]) expect(found.has(f)).toBe(false);
+  });
+
+  it("iterOmnistudioRetrieve skips retrieve() when the recorded usage is >= the threshold", async () => {
+    const r = makeRealConnection(limited);
+    const facade: any = wrapConnectionReadOnly(r.conn);
+    await facade.query("SELECT Id FROM Account");
+    const errors: string[] = [];
+    const out: unknown[] = [];
+    for await (const m of iterOmnistudioRetrieve(facade, "00Dxx0000000001AAA", {
+      apiVersion: "60.0",
+      onError: (label: string) => errors.push(label),
+    } as any)) {
+      out.push(m);
+    }
+    expect(errors).toEqual(["omnistudio-retrieve:quota-guard"]);
+    expect(out).toEqual([]);
+    expect(r.requests.some((q) => q.soapOp === "retrieve")).toBe(false);
+  });
+
+  it("without usage info the guard proceeds and retrieve() is sent", async () => {
+    const r = makeRealConnection();
+    const facade: any = wrapConnectionReadOnly(r.conn);
+    const errors: string[] = [];
+    for await (const _m of iterOmnistudioRetrieve(facade, "00Dxx0000000001AAA", {
+      apiVersion: "60.0",
+      onError: (label: string) => errors.push(label),
+    } as any)) {
+      /* none */
+    }
+    expect(errors).not.toContain("omnistudio-retrieve:quota-guard");
+    expect(r.requests.some((q) => q.soapOp === "retrieve")).toBe(true);
+  }, 30_000);
 });

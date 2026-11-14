@@ -66,16 +66,14 @@ interface SfLimitInfo {
   limit: number;
 }
 
-/** Parse the `Sforce-Limit-Info` header which Salesforce attaches to most
- *  REST/SOAP responses: `api-usage=12345/15000`. Returns null if absent
- *  or malformed — caller assumes "enough quota" in that case rather
- *  than refusing to proceed. */
-function parseLimitInfo(header: string | undefined): SfLimitInfo | null {
-  if (!header) return null;
-  const m = header.match(/api-usage=(\d+)\/(\d+)/);
-  if (!m) return null;
-  const current = Number.parseInt(m[1] ?? "", 10);
-  const limit = Number.parseInt(m[2] ?? "", 10);
+/** API usage from the read facade's `limitInfo()` (jsforce parses the
+ *  `Sforce-Limit-Info` header, `api-usage=12345/15000`, off REST responses).
+ *  Returns null if absent or malformed — caller assumes "enough quota" in
+ *  that case rather than refusing to proceed. */
+function readLimitInfo(conn: any): SfLimitInfo | null {
+  const info = typeof conn?.limitInfo === "function" ? conn.limitInfo() : null;
+  const current = info?.used;
+  const limit = info?.limit;
   if (!Number.isFinite(current) || !Number.isFinite(limit) || limit <= 0) return null;
   return { current, limit };
 }
@@ -143,8 +141,7 @@ export async function* iterOmnistudioRetrieve(
   // helper isn't available we proceed and let per-call failures surface.
   let limit: SfLimitInfo | null = null;
   try {
-    const limitInfo = (conn as { _sforceLimitInfo?: string })._sforceLimitInfo;
-    limit = parseLimitInfo(limitInfo);
+    limit = readLimitInfo(conn);
   } catch {
     // jsforce holds the most-recent limit header on the conn after any
     // call; if no calls have happened yet, we have no signal and proceed.
@@ -193,7 +190,7 @@ export async function* iterOmnistudioRetrieve(
       // thousands of components and shift utilisation significantly.
       const nextLimit = (() => {
         try {
-          return parseLimitInfo((conn as { _sforceLimitInfo?: string })._sforceLimitInfo);
+          return readLimitInfo(conn);
         } catch {
           return null;
         }

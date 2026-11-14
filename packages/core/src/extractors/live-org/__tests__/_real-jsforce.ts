@@ -18,7 +18,12 @@ export interface RecordedRequest {
   soapOp?: string;
 }
 
-export type Responder = (req: RecordedRequest) => { status?: number; type?: string; body: string };
+export type Responder = (req: RecordedRequest) => {
+  status?: number;
+  type?: string;
+  body: string;
+  headers?: Record<string, string>;
+};
 
 const SOAP_NS = "http://soap.sforce.com/2006/04/metadata";
 
@@ -125,7 +130,7 @@ export function makeRealConnection(responder: Responder = defaultResponder): Rea
       const out = current(rec);
       const response = {
         statusCode: out.status ?? 200,
-        headers: { "content-type": out.type ?? "application/json" },
+        headers: { "content-type": out.type ?? "application/json", ...(out.headers ?? {}) },
         body: out.body,
       };
       const p: any = Promise.resolve(response);
