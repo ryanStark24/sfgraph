@@ -852,6 +852,10 @@ function fullSummary(payload) {
   let text = `Showing ${payload.nodes.length.toLocaleString()} of ${total.toLocaleString()} nodes · ${payload.edges.length.toLocaleString()} edges`;
   if (payload.omittedNodes > 0) {
     text += ` · ${payload.omittedNodes.toLocaleString()} left out by the node limit (raise it above to see more)`;
+    const cut = payload.omittedByLabel ?? [];
+    if (cut.length > 0) {
+      text += `: ${cut.map((x) => `${x.label} ${x.omitted.toLocaleString()}`).join(", ")}`;
+    }
   }
   const excluded = payload.excludedLabels ?? [];
   if (excluded.length > 0) {

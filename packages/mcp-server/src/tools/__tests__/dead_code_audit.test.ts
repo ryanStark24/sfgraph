@@ -35,6 +35,42 @@ afterEach(async () => {
 });
 
 describe("dead_code_audit", () => {
+  it("an Apex trigger on a platform event is a known entry point, not a dead candidate (audit note N5)", async () => {
+    const old = Date.now() - 1000 * 60 * 60 * 24 * 1000;
+    fix.addNode({ qualifiedName: "CustomObject:Acme_Event__e", label: "CustomObject" });
+    fix.addNode({ qualifiedName: "CustomObject:Acme_Thing__c", label: "CustomObject" });
+    for (const [name, obj] of [
+      ["Acme_EventTrig", "Acme_Event__e"],
+      ["Acme_ThingTrig", "Acme_Thing__c"],
+    ] as const) {
+      fix.addNode({
+        qualifiedName: `ApexTrigger:${name}`,
+        label: "ApexTrigger",
+        lastModifiedAt: old,
+      });
+      fix.addEdge({
+        srcQualifiedName: `ApexTrigger:${name}`,
+        dstQualifiedName: `CustomObject:${obj}`,
+        relType: REL_TYPES.TRIGGERS_ON,
+      });
+    }
+    const t = await callTool("dead_code_audit", { org: fix.orgId, label: "ApexTrigger" });
+    const d = t.data as {
+      externalEntryPoints: Array<{ qualifiedName: string; kinds: string[] }>;
+      externalEntryPointsTotal: number;
+    };
+    expect(deadNames(t)).toEqual(["ApexTrigger:Acme_ThingTrig"]);
+    expect(d.externalEntryPoints).toMatchObject([
+      { qualifiedName: "ApexTrigger:Acme_EventTrig", kinds: ["event_subscriber"] },
+    ]);
+    expect(d.externalEntryPointsTotal).toBe(1);
+    expect(t.markdown).toContain("Known external entry points");
+    expect(t.markdown).toContain("platform event subscriber");
+    // Without a label, triggers are not scored candidates at all.
+    const all = await callTool("dead_code_audit", { org: fix.orgId });
+    expect(all.markdown).not.toContain("Acme_EventTrig");
+  });
+
   it("flags stale untouched class", async () => {
     fix.addNode({
       qualifiedName: "ApexClass:Stale",

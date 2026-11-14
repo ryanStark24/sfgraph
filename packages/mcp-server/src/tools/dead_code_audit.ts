@@ -236,6 +236,9 @@ function liveZeroInbound(
   );
   const isTestSource = analyze.makeTestSourceCheck(ctx.graphStore, ctx.orgId);
   const dead: Array<{ qualifiedName: string; isTest: boolean }> = [];
+  // Known external entry points (an Apex trigger on a platform event): no captured
+  // references, but the platform runs them, so they are listed apart from `dead`.
+  const entry: Array<{ qualifiedName: string; kinds: analyze.ExternalEntryPoint[] }> = [];
   const testOnly: string[] = [];
   let checked = 0;
   for (const page of scan.pages) {
@@ -245,8 +248,11 @@ function liveZeroInbound(
       const isTest = analyze.isTestClass(n);
       const refs = analyze.incomingRefs(ctx.graphStore, ctx.orgId, n.qualifiedName, isTestSource);
       const kind = analyze.deadCodeKind(refs, isTest);
-      if (kind === "dead") dead.push({ qualifiedName: String(n.qualifiedName), isTest });
-      else if (kind === "referenced-only-by-tests") testOnly.push(String(n.qualifiedName));
+      if (kind === "dead") {
+        const kinds = analyze.externalEntryPoints(ctx.graphStore, ctx.orgId, n, []);
+        if (kinds.length > 0) entry.push({ qualifiedName: String(n.qualifiedName), kinds });
+        else dead.push({ qualifiedName: String(n.qualifiedName), isTest });
+      } else if (kind === "referenced-only-by-tests") testOnly.push(String(n.qualifiedName));
     }
   }
   const coverage = scan.coverage();
@@ -294,6 +300,17 @@ function liveZeroInbound(
   if (dead.length > shown.length) {
     md.push("", `_${dead.length - shown.length} more not shown — ${NARROW_HINT}._`);
   }
+  const shownEntry = entry.slice(0, input.limit);
+  if (entry.length > 0) {
+    md.push(
+      "",
+      `### Known external entry points (${entry.length}${entry.length > shownEntry.length ? `, first ${shownEntry.length}` : ""}; no captured incoming references, but run by the platform)`,
+      ...shownEntry.map(
+        (d) =>
+          `- ${d.qualifiedName} — ${andList(d.kinds.map((k) => analyze.ENTRY_POINT_PLAIN[k] ?? k))}`,
+      ),
+    );
+  }
   md.push(...testOnlySection(testOnly.length, shownTestOnly));
   const kinds = kindInText(label, { plural: true });
   const scope = `${checked} ${kindInText(label, { plural: checked !== 1 })}${input.pattern ? ` named like ${code(input.pattern)}` : ""}`;
@@ -310,6 +327,11 @@ function liveZeroInbound(
               ? `None of the ${scope} checked has zero references: each has something referring to it.`
               : `No ${kinds}${input.pattern ? ` named like ${code(input.pattern)}` : ""} were found, so nothing was checked.`,
       `This kind has no age score, so it is checked live; references from tests count.${partial ? ` ${partialText}` : ""} ${OUTSIDE_GRAPH}`,
+      ...(entry.length
+        ? [
+            `Separately, ${countNoun(entry.length, "piece")} ${entry.length === 1 ? "is a" : "are"} known external entry point${entry.length === 1 ? "" : "s"} (an Apex trigger on a platform event): no captured references, but the platform runs ${entry.length === 1 ? "it" : "them"}.`,
+          ]
+        : []),
       ...testOnlySentence(testOnly.length),
     ],
     pieces: shown.map((d) => ({
@@ -336,6 +358,19 @@ function liveZeroInbound(
         reasons: [] as string[],
       })),
       total: dead.length,
+      // Only present when the label has entry points (the live shape stays as before otherwise).
+      ...(entry.length
+        ? {
+            externalEntryPoints: shownEntry.map((d) => ({
+              qualifiedName: d.qualifiedName,
+              kinds: d.kinds,
+              score: null,
+              confidence: null,
+              reasons: [analyze.EXTERNAL_ENTRY_POINT_REASON],
+            })),
+            externalEntryPointsTotal: entry.length,
+          }
+        : {}),
       referencedOnlyByTests: shownTestOnly.map((qualifiedName) => ({
         qualifiedName,
         score: null,

@@ -271,3 +271,86 @@ describe("F13: /api/search is a storage query with an incomplete flag", () => {
     expect(bs.hits.map((h) => h.qname)).toEqual(["ApexClass:Back\\Slash"]);
   });
 });
+
+describe("audit notes: edge case match, fair node limit, neighbourhood count", () => {
+  it("N4: an edge stored with another spelling of the target still shows in /api/full and /api/overview", async () => {
+    await seed((s) => {
+      s.mergeNodes([fact("ApexClass", "Svc"), fact("CustomObject", "Acme_Order__c")]);
+      // Stored with different case; the store matches names without ASCII case.
+      s.mergeEdges([edge("ApexClass:Svc", "customobject:ACME_ORDER__C")]);
+    });
+    await start();
+    const full = await get<GraphPayload>(`/api/full?org=${ORG}&limit=100`);
+    expect(full.edges).toEqual([
+      { source: "ApexClass:Svc", target: "CustomObject:Acme_Order__c", relType: "REFERENCES_OBJECT" },
+    ]);
+    assertGraphIntegrity(full, "/api/full case");
+    const ov = await get<GraphPayload>(
+      `/api/overview?org=${ORG}&labels=ApexClass,CustomObject&limit=100`,
+    );
+    expect(ov.edges).toEqual(full.edges);
+    assertGraphIntegrity(ov, "/api/overview case");
+  });
+
+  it("N2: 50,000 ApexClass + 1 OmniScript at limit 15000 keeps the OmniScript and names ApexClass as cut", async () => {
+    await seed((s) => {
+      s.transaction(() => {
+        for (let b = 0; b < 50; b++) {
+          s.mergeNodes(
+            Array.from({ length: 1000 }, (_, i) =>
+              fact("ApexClass", `Cls${String(b * 1000 + i).padStart(5, "0")}`),
+            ),
+          );
+        }
+        s.mergeNodes([fact("OmniScript", "Acme_Intake")]);
+      });
+    });
+    await start();
+    const full = await get<GraphPayload>(`/api/full?org=${ORG}&limit=15000`);
+    expect(full.nodes).toHaveLength(15_000);
+    expect(full.nodes.map((n) => n.id)).toContain("OmniScript:Acme_Intake");
+    expect(full.truncated).toBe(true);
+    expect(full.omittedNodes).toBe(35_001);
+    expect(full.omittedByLabel).toEqual([{ label: "ApexClass", omitted: 35_001 }]);
+  }, 60_000);
+
+  it("N2: several small labels each keep a share; every cut label is listed", async () => {
+    await seed((s) => {
+      s.mergeNodes([
+        ...Array.from({ length: 10 }, (_, i) => fact("ApexClass", `C${i}`)),
+        ...Array.from({ length: 6 }, (_, i) => fact("Flow", `F${i}`)),
+        fact("OmniScript", "S1"),
+      ]);
+    });
+    await start();
+    const full = await get<GraphPayload>(`/api/full?org=${ORG}&limit=9`);
+    const per = (l: string) => full.nodes.filter((n) => n.label === l).length;
+    expect([per("OmniScript"), per("Flow"), per("ApexClass")]).toEqual([1, 4, 4]);
+    expect(full.omittedByLabel).toEqual([
+      { label: "ApexClass", omitted: 6 },
+      { label: "Flow", omitted: 2 },
+    ]);
+    const whole = await get<GraphPayload>(`/api/full?org=${ORG}&limit=100`);
+    expect(whole.omittedByLabel).toEqual([]);
+  });
+
+  it("N6: /api/neighborhood reports how many neighbours the cap left out", async () => {
+    await seed((s) => {
+      const names = Array.from({ length: 300 }, (_, i) => `C${String(i).padStart(3, "0")}`);
+      s.mergeNodes([fact("CustomObject", "Account"), ...names.map((n) => fact("ApexClass", n))]);
+      s.mergeEdges(names.map((n) => edge(`ApexClass:${n}`, "CustomObject:Account")));
+    });
+    await start();
+    const q = encodeURIComponent("CustomObject:Account");
+    const g = await get<GraphPayload>(`/api/neighborhood?org=${ORG}&qname=${q}&depth=1`);
+    expect(g.nodes).toHaveLength(250);
+    expect(g.truncated).toBe(true);
+    expect(g.omittedNodes).toBe(51);
+    assertGraphIntegrity(g, "/api/neighborhood cap");
+    const small = await get<GraphPayload>(
+      `/api/neighborhood?org=${ORG}&qname=${encodeURIComponent("ApexClass:C000")}&depth=1`,
+    );
+    expect(small.truncated).toBe(false);
+    expect(small.omittedNodes).toBe(0);
+  });
+});
