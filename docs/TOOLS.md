@@ -403,7 +403,9 @@ unscored-label paths. Unscored labels have `score: null` and `confidence: null`.
   "include_non_fls_fields": false, "limit": 30 }
 // output.data (every list is capped at `limit`; *Total fields hold the full counts)
 {
-  "sharingFullAccess": ["SharingRule:Account.r1"], "sharingFullAccessTotal": 1,
+  "sharingEditAccess": ["SharingRule:Account.r1"], "sharingEditAccessTotal": 1,  // record sharing rules with Edit or All access; not Modify All / View All
+  "sharingRuleAccess": [{ "qualifiedName": "SharingRule:Account.r1", "access": "Edit", "audience": "group: Support" }],
+  "sharingFullAccess": ["SharingRule:Account.r1"], "sharingFullAccessTotal": 1,  // deprecated aliases of sharingEditAccess / sharingEditAccessTotal
   "flsGaps": ["CustomField:Account.SSN__c"],       "flsGapsTotal": 1,
   "fieldAccessMatrix": [...],                      "fieldAccessMatrixTotal": 0,
   "cachedFindings": [{ "qname": "...", "rule": "sharing.full_access", "message": "..." }],

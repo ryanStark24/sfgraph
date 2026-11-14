@@ -210,6 +210,19 @@ export interface GraphStore {
    *  find-nodes glob matching to enumerate label tables. */
   listAllLabels(): string[];
   countNodes(orgId: OrgId): number;
+  /** Every node label that has at least one node for `orgId`, with its node
+   *  count. Read from the label tables actually stored, so a family added by
+   *  any extractor appears without a code change. */
+  listLabelCounts(orgId: OrgId): Array<{ label: string; count: number }>;
+  /** Case-insensitive substring search over qualified names, done in SQL with
+   *  the limit pushed down (never materialises every name). `needle` is
+   *  literal text: `%`, `_` and `\` in it match themselves. Returns at most
+   *  `limit` hits; `truncated` is true when more matches exist. */
+  searchQnames(
+    orgId: OrgId,
+    needle: string,
+    limit: number,
+  ): { hits: Array<{ qname: string; label: string }>; truncated: boolean };
   /** Count nodes of a given label for `orgId`. Returns 0 if the label table
    *  has not yet been created. Used by the W1.5-07 detect-deletions guard
    *  to compute per-label drop ratios before mass-wiping nodes. */

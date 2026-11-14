@@ -84,12 +84,13 @@ describe("resolveOrg", () => {
     expect(alias).toBeNull();
   });
 
-  it("returns a read-only-wrapped connection (writes throw synchronously when invoked)", async () => {
+  it("returns a read facade with no write surface and no raw connection", async () => {
     state.shouldFail = false;
     const r = await resolveOrg("safe", { AuthInfo: FakeAuthInfo, Connection: FakeConnection });
-    expect(() => r.conn.sobject("Account").create({ Name: "x" })).toThrowError(
-      ReadOnlyViolationError,
-    );
-    expect(() => r.conn.create("Account", { Name: "x" })).toThrowError(ReadOnlyViolationError);
+    const conn = r.conn as any;
+    expect(conn.sobject("Account").create).toBeUndefined();
+    expect(conn.create).toBeUndefined();
+    expect(conn.request).toBeUndefined();
+    expect(conn._conn).toBeUndefined();
   });
 });

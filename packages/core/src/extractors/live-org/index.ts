@@ -1,4 +1,16 @@
 export { wrapConnectionReadOnly } from "./read-only-proxy.js";
+export { createReadFacade } from "./read-facade.js";
+export type {
+  ReadOnlyOrgConnection,
+  ReadOnlyQueryApi,
+  ReadOnlyMetadataApi,
+  QueryPage,
+} from "./read-facade.js";
+export {
+  installTransportGuard,
+  assertReadOnlyRequest,
+  SOAP_READ_OPERATIONS,
+} from "./transport-guard.js";
 export { startLivenessProbe } from "./liveness.js";
 export type { LivenessProbeHandle, LivenessProbeOptions } from "./liveness.js";
 export { ReadOnlyViolationError } from "./errors.js";

@@ -1,14 +1,36 @@
 import type { OrgId, QualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { NodeFact } from "../domain/index.js";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
+import { nameKey } from "../domain/name-key.js";
 import { REL_TYPES } from "../domain/rel-types.js";
 import type { GraphStore } from "../storage/interfaces.js";
 import { isEffectiveGrant } from "./edge-filters.js";
 
 export { isEffectiveGrant };
 
+/** One sharing rule that gives record-level Edit or All access, as the rule stores it. */
+export interface SharingRuleAccess {
+  qualifiedName: string;
+  /** `Edit` for edit access; `All` for the stored access level `All`. Kept apart on purpose. */
+  access: "Edit" | "All";
+  /** Who the rule shares with (group, role, guest user, ...), as stored on the rule; absent when not stored. */
+  audience?: string;
+}
+
 export interface SecurityAudit {
-  sharingFullAccess: string[];
+  /**
+   * Sharing rules that give record-level Edit or All access. This is record sharing only: it does
+   * not say the audience has object (CRUD) or field-level permissions, and it is not Modify All /
+   * View All, which are permission-set and profile facts.
+   */
+  sharingEditAccess: string[];
+  /** The same rules with their access level and audience. */
+  sharingRuleAccess?: SharingRuleAccess[];
+  /**
+   * @deprecated Alias of `sharingEditAccess`, kept for consumers of the old field. The name
+   * overstated what a sharing rule is; read `sharingEditAccess`.
+   */
+  sharingFullAccess?: string[];
   fieldAccessMatrix: Array<{ field: string; grantedBy: string[] }>;
   flsGaps: string[];
   /** FLS-gap rows suppressed as not-FLS-relevant (CMDT fields + standard
@@ -24,6 +46,70 @@ export interface SecurityAudit {
 }
 
 export const SECURITY_PER_LABEL_CAP = 5000;
+
+function audienceOf(a: Record<string, unknown>): string | undefined {
+  const v = a.sharedTo ?? a.shareTo ?? a.audience;
+  if (typeof v === "string" && v) return v;
+  if (v && typeof v === "object") {
+    const parts = Object.entries(v as Record<string, unknown>)
+      .filter(([, x]) => typeof x === "string" || typeof x === "number")
+      .map(([k, x]) => `${k}: ${String(x)}`);
+    if (parts.length) return parts.join(", ");
+  }
+  return undefined;
+}
+
+/**
+ * The audience of an ingested rule. The parser stores the recipients as SHARING_TO_GROUP and
+ * SHARING_TO_ROLE edges (not as node attributes), and marks guest rules with `kind: "guest"`
+ * (the guest user's site name is not stored). Several recipients are joined with "; ".
+ */
+function audienceFromEdges(store: GraphStore, orgId: OrgId, n: NodeFact): string | undefined {
+  const parts: string[] = [];
+  const bare = (q: string) => q.slice(q.indexOf(":") + 1);
+  for (const e of store.listEdgesFrom(orgId, n.qualifiedName, REL_TYPES.SHARING_TO_GROUP))
+    parts.push(`group: ${bare(e.dstQualifiedName)}`);
+  for (const e of store.listEdgesFrom(orgId, n.qualifiedName, REL_TYPES.SHARING_TO_ROLE)) {
+    const sub =
+      (e.attributes as Record<string, unknown> | undefined)?.includesSubordinates === true;
+    parts.push(`${sub ? "role and subordinates" : "role"}: ${bare(e.dstQualifiedName)}`);
+  }
+  if ((n.attributes as Record<string, unknown>).kind === "guest") parts.push("guest users");
+  return parts.length ? parts.join("; ") : undefined;
+}
+
+/**
+ * Sharing rules that give record-level Edit or All access. Shared by `securityAudit` and the
+ * single-field path of the `security_audit` tool so both report the same rules.
+ */
+export function sharingEditRules(
+  store: GraphStore,
+  orgId: OrgId,
+): { rules: SharingRuleAccess[]; truncated: boolean } {
+  const nodes = store.listNodesByLabel(
+    orgId,
+    METADATA_CATEGORY.SHARING_RULE,
+    SECURITY_PER_LABEL_CAP,
+  );
+  const rules: SharingRuleAccess[] = [];
+  for (const n of nodes) {
+    const a = n.attributes as Record<string, unknown>;
+    const access =
+      a.accessLevel === "All"
+        ? "All"
+        : a.access === "Edit" || a.accessLevel === "Edit"
+          ? "Edit"
+          : null;
+    if (!access) continue;
+    const audience = audienceFromEdges(store, orgId, n) ?? audienceOf(a);
+    rules.push({
+      qualifiedName: n.qualifiedName,
+      access,
+      ...(audience !== undefined ? { audience } : {}),
+    });
+  }
+  return { rules, truncated: nodes.length >= SECURITY_PER_LABEL_CAP };
+}
 
 /** Standard system / audit field API names. These are never subject to the
  *  field-level security a developer cares about — flagging them as "FLS gaps"
@@ -52,6 +138,8 @@ const SYSTEM_FIELD_NAMES: ReadonlySet<string> = new Set([
   "QualifiedApiName",
 ]);
 
+const SYSTEM_FIELD_KEYS: ReadonlySet<string> = new Set([...SYSTEM_FIELD_NAMES].map(nameKey));
+
 /**
  * True when a `CustomField:<Object>.<Field>` qname names a field that real
  * field-level security applies to. Excludes:
@@ -67,7 +155,8 @@ export function isFlsRelevantField(qname: string): boolean {
   const field = tail.slice(dot + 1);
   // CMDT and platform-event/big-object metadata don't use developer FLS.
   if (/__(mdt|e|b)$/i.test(object)) return false;
-  if (SYSTEM_FIELD_NAMES.has(field)) return false;
+  // Compared without case, like every other name the store holds.
+  if (SYSTEM_FIELD_KEYS.has(nameKey(field))) return false;
   return true;
 }
 
@@ -83,7 +172,8 @@ export interface SecurityAuditOptions {
 
 function matchesFilter(qname: string, opts: SecurityAuditOptions | undefined): boolean {
   if (!opts) return true;
-  if (opts.field) return qname === opts.field;
+  // Names are compared by the store's NOCASE identity (`nameKey`), not by exact string.
+  if (opts.field) return nameKey(qname) === nameKey(opts.field);
   if (opts.object) {
     // Match `<anything>:<object>.<field>` heuristically. Strip the label
     // prefix before `:` so the caller can pass either the full qname
@@ -91,7 +181,9 @@ function matchesFilter(qname: string, opts: SecurityAuditOptions | undefined): b
     const objName =
       (opts.object.includes(":") ? opts.object.split(":")[1] : opts.object) ?? opts.object;
     const tail = (qname.includes(":") ? qname.split(":")[1] : qname) ?? qname;
-    return tail.startsWith(`${objName}.`) || tail === objName;
+    const tailKey = nameKey(tail);
+    const objKey = nameKey(objName);
+    return tailKey.startsWith(`${objKey}.`) || tailKey === objKey;
   }
   return true;
 }
@@ -101,27 +193,17 @@ export function securityAudit(
   orgId: OrgId,
   opts?: SecurityAuditOptions,
 ): SecurityAudit {
-  const sharingFullAccess: string[] = [];
-  let truncated = false;
-  // SharingRule attribute scan
-  const sharingRules = store.listNodesByLabel(
-    orgId,
-    METADATA_CATEGORY.SHARING_RULE,
-    SECURITY_PER_LABEL_CAP,
-  );
-  if (sharingRules.length >= SECURITY_PER_LABEL_CAP) truncated = true;
-  for (const n of sharingRules) {
-    const a = n.attributes as Record<string, unknown>;
-    if (a.access === "Edit" || a.accessLevel === "Edit" || a.accessLevel === "All") {
-      sharingFullAccess.push(n.qualifiedName);
-    }
-  }
+  const sharing = sharingEditRules(store, orgId);
+  let truncated = sharing.truncated;
 
   // Field access matrix. FLS is granted via BOTH Profiles AND Permission Sets —
   // scanning only Permission Sets reported false FLS gaps on every field whose
   // access comes from a Profile (the most common case in older orgs). Fold both
   // grantors into the same matrix.
+  // Keyed by the store's NOCASE identity (`nameKey`), so a grant to `account.secret__c` and a
+  // field `Account.Secret__c` are one field. `spelling` keeps one display name per key.
   const fieldAccessMatrix = new Map<string, Set<string>>();
+  const spelling = new Map<string, string>();
   for (const grantorLabel of [METADATA_CATEGORY.PERMISSION_SET, METADATA_CATEGORY.PROFILE]) {
     const grantors = store.listNodesByLabel(orgId, grantorLabel, SECURITY_PER_LABEL_CAP);
     if (grantors.length >= SECURITY_PER_LABEL_CAP) truncated = true;
@@ -131,10 +213,12 @@ export function securityAudit(
         .listEdgesFrom(orgId, n.qualifiedName, REL_TYPES.GRANTS_FIELD_ACCESS)
         .filter(isEffectiveGrant);
       for (const e of grants) {
-        let set = fieldAccessMatrix.get(e.dstQualifiedName);
+        const key = nameKey(e.dstQualifiedName);
+        let set = fieldAccessMatrix.get(key);
         if (!set) {
           set = new Set();
-          fieldAccessMatrix.set(e.dstQualifiedName, set);
+          fieldAccessMatrix.set(key, set);
+          spelling.set(key, e.dstQualifiedName);
         }
         set.add(n.qualifiedName);
       }
@@ -167,7 +251,7 @@ export function securityAudit(
   }
   for (const n of fields) {
     if (!matchesFilter(n.qualifiedName, opts)) continue;
-    if (fieldAccessMatrix.has(n.qualifiedName)) continue;
+    if (fieldAccessMatrix.has(nameKey(n.qualifiedName))) continue;
     if (!opts?.includeNonFlsFields && !isFlsRelevantField(n.qualifiedName)) {
       flsGapsExcluded += 1;
       continue;
@@ -175,13 +259,21 @@ export function securityAudit(
     flsGaps.push(n.qualifiedName);
   }
 
-  // Filter the matrix too so a narrowed audit returns a narrowed matrix.
+  // Filter the matrix too so a narrowed audit returns a narrowed matrix. The display name is the
+  // field node's own spelling when the field exists, else the spelling of the first grant.
   const filteredMatrix = Array.from(fieldAccessMatrix.entries())
-    .filter(([field]) => matchesFilter(field, opts))
-    .map(([field, set]) => ({ field, grantedBy: Array.from(set) }));
+    .map(([key, set]) => ({
+      field:
+        store.getNode(orgId, spelling.get(key) as QualifiedName)?.qualifiedName ??
+        spelling.get(key)!,
+      grantedBy: Array.from(set),
+    }))
+    .filter(({ field }) => matchesFilter(field, opts));
 
   return {
-    sharingFullAccess,
+    sharingEditAccess: sharing.rules.map((r) => r.qualifiedName),
+    sharingRuleAccess: sharing.rules,
+    sharingFullAccess: sharing.rules.map((r) => r.qualifiedName),
     fieldAccessMatrix: filteredMatrix,
     flsGaps,
     flsGapsExcluded,

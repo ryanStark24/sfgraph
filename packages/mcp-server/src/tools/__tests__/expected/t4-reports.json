@@ -222,6 +222,13 @@
   },
   "security_audit.all": {
     "data": {
+      "sharingEditAccess": ["SharingRule:Case.OpenAll"],
+      "sharingRuleAccess": [
+        {
+          "qualifiedName": "SharingRule:Case.OpenAll",
+          "access": "All"
+        }
+      ],
       "sharingFullAccess": ["SharingRule:Case.OpenAll"],
       "fieldAccessMatrix": [
         {
@@ -232,6 +239,7 @@
       "flsGaps": ["CustomField:Account.SSN__c"],
       "flsGapsExcluded": 0,
       "truncated": false,
+      "sharingEditAccessTotal": 1,
       "sharingFullAccessTotal": 1,
       "flsGapsTotal": 1,
       "fieldAccessMatrixTotal": 1,
@@ -239,15 +247,18 @@
       "cachedFindingsTotal": 0,
       "limited": false
     },
-    "markdown": "**Full-access sharing rules:** 1\n- `SharingRule:Case.OpenAll`\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 1\n- `CustomField:Account.SSN__c`"
+    "markdown": "**Sharing rules giving record Edit or All access (record sharing only, not object or field permissions):** 1\n- `SharingRule:Case.OpenAll` (All)\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 1\n- `CustomField:Account.SSN__c`"
   },
   "security_audit.none": {
     "data": {
+      "sharingEditAccess": [],
+      "sharingRuleAccess": [],
       "sharingFullAccess": [],
       "fieldAccessMatrix": [],
       "flsGaps": [],
       "flsGapsExcluded": 0,
       "truncated": false,
+      "sharingEditAccessTotal": 0,
       "sharingFullAccessTotal": 0,
       "flsGapsTotal": 0,
       "fieldAccessMatrixTotal": 0,
@@ -255,10 +266,17 @@
       "cachedFindingsTotal": 0,
       "limited": false
     },
-    "markdown": "**Full-access sharing rules:** 0\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
+    "markdown": "**Sharing rules giving record Edit or All access (record sharing only, not object or field permissions):** 0\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
   },
   "security_audit.field": {
     "data": {
+      "sharingEditAccess": ["SharingRule:Case.OpenAll"],
+      "sharingRuleAccess": [
+        {
+          "qualifiedName": "SharingRule:Case.OpenAll",
+          "access": "All"
+        }
+      ],
       "sharingFullAccess": ["SharingRule:Case.OpenAll"],
       "fieldAccessMatrix": [
         {
@@ -269,6 +287,7 @@
       "flsGaps": [],
       "flsGapsExcluded": 0,
       "truncated": false,
+      "sharingEditAccessTotal": 1,
       "sharingFullAccessTotal": 1,
       "flsGapsTotal": 0,
       "fieldAccessMatrixTotal": 1,
@@ -276,15 +295,23 @@
       "cachedFindingsTotal": 0,
       "limited": false
     },
-    "markdown": "**Full-access sharing rules:** 1\n- `SharingRule:Case.OpenAll`\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
+    "markdown": "**Sharing rules giving record Edit or All access (record sharing only, not object or field permissions):** 1\n- `SharingRule:Case.OpenAll` (All)\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0\n\n**Granted by (read or edit):** 1\n- `PermissionSet:Support`"
   },
   "security_audit.ghostfield": {
     "data": {
+      "sharingEditAccess": ["SharingRule:Case.OpenAll"],
+      "sharingRuleAccess": [
+        {
+          "qualifiedName": "SharingRule:Case.OpenAll",
+          "access": "All"
+        }
+      ],
       "sharingFullAccess": ["SharingRule:Case.OpenAll"],
       "fieldAccessMatrix": [],
       "flsGaps": [],
       "flsGapsExcluded": 0,
       "truncated": false,
+      "sharingEditAccessTotal": 1,
       "sharingFullAccessTotal": 1,
       "flsGapsTotal": 0,
       "fieldAccessMatrixTotal": 0,
@@ -292,7 +319,7 @@
       "cachedFindingsTotal": 0,
       "limited": false
     },
-    "markdown": "**Full-access sharing rules:** 1\n- `SharingRule:Case.OpenAll`\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
+    "markdown": "**Sharing rules giving record Edit or All access (record sharing only, not object or field permissions):** 1\n- `SharingRule:Case.OpenAll` (All)\n\n**FLS gaps (custom/standard fields with no permission-set grant):** 0"
   },
   "find_similar.qname": {
     "data": {
@@ -312,7 +339,7 @@
         }
       ]
     },
-    "markdown": "**Top 1 nearest neighbour to ApexClass:CaseService:**\n\n| # | qname | label | similarity | via |\n| - | ----- | ----- | ---------- | --- |\n| 1 | `ApexClass:OrderService` | `ApexClass` | 0.875 | vector |\n\n_2 weaker vector match(es) hidden below the 0.4 similarity floor — lower `min_similarity` to include them._\n\n_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_"
+    "markdown": "**Top 1 nearest neighbour to ApexClass:CaseService:**\n\n| # | qname | label | similarity | via |\n| - | ----- | ----- | ---------- | --- |\n| 1 | `ApexClass:OrderService` | `ApexClass` | 0.875 | vector |\n\n_2 weaker vector match(es) hidden below the 0.4 similarity floor \u2014 lower `min_similarity` to include them._\n\n_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_"
   },
   "find_similar.ghost": {
     "data": {
@@ -492,7 +519,7 @@
       "truncated": false,
       "baselineEmpty": false
     },
-    "markdown": "**Components** — +1 / -0 / ~1\n**Records and configuration** (not components) — +0 / -0 / ~0\n**Nodes** — +1 / -0 / ~1\n**Edges** — +0 / -0\n\n```mermaid\nflowchart LR\n  n0[\"ApexClass:Brand_New\"]:::added\n  n1[\"ApexClass:CaseService\"]:::changed\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+    "markdown": "**Components** \u2014 +1 / -0 / ~1\n**Records and configuration** (not components) \u2014 +0 / -0 / ~0\n**Nodes** \u2014 +1 / -0 / ~1\n**Edges** \u2014 +0 / -0\n\n```mermaid\nflowchart LR\n  n0[\"ApexClass:Brand_New\"]:::added\n  n1[\"ApexClass:CaseService\"]:::changed\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
   },
   "point_in_time_diff.nochange": {
     "data": {
@@ -544,7 +571,7 @@
       "truncated": false,
       "baselineEmpty": false
     },
-    "markdown": "**Components** — +0 / -0 / ~0\n**Records and configuration** (not components) — +0 / -0 / ~0\n**Nodes** — +0 / -0 / ~0\n**Edges** — +0 / -0\n\n```mermaid\nflowchart LR\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+    "markdown": "**Components** \u2014 +0 / -0 / ~0\n**Records and configuration** (not components) \u2014 +0 / -0 / ~0\n**Nodes** \u2014 +0 / -0 / ~0\n**Edges** \u2014 +0 / -0\n\n```mermaid\nflowchart LR\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
   },
   "export_sarif.all": {
     "data": {
@@ -582,7 +609,7 @@
                       "text": "Apex method executes DML inside a loop."
                     },
                     "fullDescription": {
-                      "text": "Detected via the `hasDmlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 150 DML statements the platform allows per transaction — bulkify by collecting records into a list and committing once after the loop."
+                      "text": "Detected via the `hasDmlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 150 DML statements the platform allows per transaction \u2014 bulkify by collecting records into a list and committing once after the loop."
                     },
                     "defaultConfiguration": {
                       "level": "error"
@@ -598,7 +625,7 @@
                       "text": "Apex method executes SOQL inside a loop."
                     },
                     "fullDescription": {
-                      "text": "Detected via the `hasSoqlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 100 SOQL queries the platform allows per transaction — bulkify by moving the query outside the loop and consuming the results inline."
+                      "text": "Detected via the `hasSoqlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 100 SOQL queries the platform allows per transaction \u2014 bulkify by moving the query outside the loop and consuming the results inline."
                     },
                     "defaultConfiguration": {
                       "level": "error"
@@ -640,16 +667,16 @@
                     }
                   },
                   {
-                    "id": "security.sharing-full-access",
-                    "name": "Object granted full access via sharing",
+                    "id": "security.sharing-edit-access",
+                    "name": "Sharing rule gives record Edit access",
                     "shortDescription": {
-                      "text": "OWD or sharing rule grants Modify All / View All to a broad audience."
+                      "text": "A sharing rule gives its audience Edit (or All) access to records of the object."
                     },
                     "fullDescription": {
-                      "text": "Granting full access via OWD or sharing rules bypasses field-level security and CRUD checks. Review whether the audience genuinely needs unrestricted access; prefer scoped permission sets."
+                      "text": "Record-level access granted by a sharing rule, with the audience the rule stores (a group, role or guest user, for example). This is record sharing only. It does not show that the audience has object (CRUD) or field-level permissions, and it is not Modify All or View All, which are permission set and profile settings. Check that the audience should be able to edit these records. The analysis does not read org-wide defaults or work out any one user's effective access."
                     },
                     "defaultConfiguration": {
-                      "level": "warning"
+                      "level": "note"
                     },
                     "properties": {
                       "tags": ["security"]
@@ -737,10 +764,10 @@
                 ]
               },
               {
-                "ruleId": "security.sharing-full-access",
-                "level": "warning",
+                "ruleId": "security.sharing-edit-access",
+                "level": "note",
                 "message": {
-                  "text": "SharingRule:Case.OpenAll: granted full access via sharing rule or OWD"
+                  "text": "SharingRule:Case.OpenAll: sharing rule gives All access to records (record sharing only; says nothing about object or field permissions)"
                 },
                 "locations": [
                   {
@@ -751,7 +778,10 @@
                       }
                     ]
                   }
-                ]
+                ],
+                "properties": {
+                  "access": "All"
+                }
               },
               {
                 "ruleId": "dead-code.unreferenced",
@@ -941,11 +971,14 @@
           }
         },
         {
-          "ruleId": "security.sharing-full-access",
-          "message": "SharingRule:Case.OpenAll: granted full access via sharing rule or OWD",
-          "level": "warning",
+          "ruleId": "security.sharing-edit-access",
+          "message": "SharingRule:Case.OpenAll: sharing rule gives All access to records (record sharing only; says nothing about object or field permissions)",
+          "level": "note",
           "location": {
             "qualifiedName": "SharingRule:Case.OpenAll"
+          },
+          "properties": {
+            "access": "All"
           }
         },
         {
@@ -1124,7 +1157,8 @@
       "hidden": {
         "managed": 0,
         "standard": 1
-      }
+      },
+      "droppedFromDestructive": []
     },
     "markdown": "### package.xml\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>CaseService</members>\n    <members>OldHelper</members>\n    <name>ApexClass</name>\n  </types>\n  <types>\n    <members>Account.SSN__c</members>\n    <members>Case.Priority__c</members>\n    <name>CustomField</name>\n  </types>\n  <types>\n    <members>Old_Flow</members>\n    <name>Flow</name>\n  </types>\n  <types>\n    <members>caseCard</members>\n    <name>LightningComponentBundle</name>\n  </types>\n  <types>\n    <members>Support</members>\n    <name>PermissionSet</name>\n  </types>\n  <types>\n    <members>Case</members>\n    <name>SharingRules</name>\n  </types>\n  <version>59.0</version>\n</Package>\n```\n\n### destructiveChanges.xml\n```xml\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Package xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n  <types>\n    <members>NewThing</members>\n    <name>ApexClass</name>\n  </types>\n  <version>59.0</version>\n</Package>\n```"
   },
@@ -1180,10 +1214,10 @@
       "lastSyncedAt": null,
       "ageDays": null,
       "stale": true,
-      "recommendation": "ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis",
+      "recommendation": "ingest is missing \u2014 run `sfgraph ingest --org org1` to refresh before relying on this analysis",
       "sourceRevision": null
     },
-    "markdown": "| org | last synced | age (days) | stale | recommendation |\n|---|---|---|---|---|\n| `org1` | _never_ | - | yes | ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis |"
+    "markdown": "| org | last synced | age (days) | stale | recommendation |\n|---|---|---|---|---|\n| `org1` | _never_ | - | yes | ingest is missing \u2014 run `sfgraph ingest --org org1` to refresh before relying on this analysis |"
   },
   "freshness_report.all": {
     "data": {

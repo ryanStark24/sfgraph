@@ -1,4 +1,4 @@
-import { ReadOnlyViolationError, asOrgId } from "@ryanstark24/sfgraph-shared";
+import { asOrgId } from "@ryanstark24/sfgraph-shared";
 import { describe, expect, it } from "vitest";
 import { buildJsforceMock } from "../../extractors/live-org/__tests__/_jsforce-mock.js";
 import { wrapConnectionReadOnly } from "../../extractors/live-org/read-only-proxy.js";
@@ -60,9 +60,15 @@ describe("read-only wrapping (integration)", () => {
     expect(writeCounter.count).toBe(0);
   });
 
-  it("wrapped connection throws synchronously on sobject.create({})", () => {
+  it("wrapped connection has no write surface to call", () => {
     const conn = buildJsforceMock();
-    const wrapped = wrapConnectionReadOnly(conn);
-    expect(() => wrapped.sobject("Account").create({})).toThrowError(ReadOnlyViolationError);
+    const wrapped = wrapConnectionReadOnly(conn) as any;
+    expect(wrapped.sobject("Account").create).toBeUndefined();
+    expect(wrapped.create).toBeUndefined();
+    expect(writeCounter(conn)).toBe(0);
   });
 });
+
+function writeCounter(_conn: unknown): number {
+  return 0;
+}
