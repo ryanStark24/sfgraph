@@ -1,0 +1,54 @@
+import {pathToFileURL} from 'node:url';
+const AUDIT_REPO = process.env.SFGRAPH_AUDIT_REPO ?? '/tmp/sfgraph-audit-20261114';
+const repoUrl = p => pathToFileURL(`${AUDIT_REPO}/${p}`);
+import assert from 'node:assert/strict';
+import {performance} from 'node:perf_hooks';
+import {mkdtempSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+const {SqliteGraphStore} = await import(repoUrl('packages/core/dist/storage/sqlite/graph-store.js'));
+const {diffOrgs} = await import(repoUrl('packages/core/dist/analyze/cross-org.js'));
+const {generateManifest} = await import(repoUrl('packages/core/dist/analyze/deployment-manifest/generate.js'));
+const {deadCodeCandidates} = await import(repoUrl('packages/core/dist/analyze/dead-code.js'));
+const {findGovernorRisks} = await import(repoUrl('packages/core/dist/analyze/governor.js'));
+const {SfgraphMcpServer} = await import(repoUrl('packages/mcp-server/dist/server.js'));
+const {setToolContextFactory,closeAllContexts} = await import(repoUrl('packages/mcp-server/dist/context.js'));
+
+const orgId='00D000000000001AAA';
+const fact=(label,name)=>({orgId,label,qualifiedName:`${label}:${name}`,attributes:{modifiers:['public']},sourceHash:'same-source',firstSeenAt:1,lastSeenAt:1,lastModifiedAt:1});
+const make=async(dbPath=':memory:')=>{const s=new SqliteGraphStore({dbPath});await s.init();s.upsertOrg({id:orgId,alias:'audit',apiVersion:'65.0',instanceUrl:'',createdAt:1});return s;};
+const a=await make(),b=await make();a.mergeNodes([fact('ApexClass','BillingService')]);b.mergeNodes([fact('ApexClass','billingservice')]);
+const diff=diffOrgs({storeA:a,orgA:orgId,storeB:b,orgB:orgId});
+const manifest=generateManifest({storeA:a,orgA:orgId,storeB:b,orgB:orgId});
+assert.equal(diff.onlyInA.length,1);assert.equal(diff.onlyInB.length,1);assert(manifest.destructiveXml.includes('billingservice'));
+console.log('CASE_ONLY_DESTRUCTIVE',JSON.stringify({onlyInA:diff.onlyInA.map(n=>n.qualifiedName),onlyInB:diff.onlyInB.map(n=>n.qualifiedName),destructiveXml:manifest.destructiveXml,incomplete:manifest.incomplete}));
+await a.close();await b.close();
+
+const s=await make();
+s.transaction(()=>s.mergeNodes(Array.from({length:10001},(_,i)=>fact('ApexClass',`Scale${String(i).padStart(5,'0')}`))));
+const t=performance.now();const dead=deadCodeCandidates(s,orgId);const deadMs=performance.now()-t;
+assert.equal(dead.length,10000);
+setToolContextFactory(async()=>({graphStore:s,snapshotStore:{},orgId}));
+const mcp=new SfgraphMcpServer();mcp.registerDefaults();
+await mcp.loadAllTools();
+const result=await mcp.dispatch('dead_code_audit',{org:'audit',label:'ApexClass',pattern:'Scale10000'});
+assert.equal(result._meta.data.total,0);
+console.log('DEAD_CODE_SILENT_CAP',JSON.stringify({stored:s.countNodes(orgId),candidates:dead.length,deadMs,patternResult:result._meta,report:result.content[0].text}));
+await closeAllContexts();setToolContextFactory(null);
+
+const g=await make();
+g.transaction(()=>g.mergeNodes(Array.from({length:20001},(_,i)=>fact('ApexMethod',`Scale.m${String(i).padStart(5,'0')}(0)`))));
+g.mergeEdges([{orgId,srcQualifiedName:'ApexMethod:Scale.m20000(0)',dstQualifiedName:'CustomObject:Account',relType:'EXECUTES_SOQL',attributes:{inLoop:true,query:'[SELECT Id FROM Account]'},firstSeenAt:1,lastSeenAt:1}]);
+const gt=performance.now();const risks=findGovernorRisks(g,orgId);assert.equal(risks.length,0);
+console.log('GOVERNOR_SILENT_CAP',JSON.stringify({stored:g.countNodes(orgId),expectedRisk:'ApexMethod:Scale.m20000(0)',actual:risks,ms:performance.now()-gt}));await g.close();
+
+const root=mkdtempSync(path.join(tmpdir(),'sfgraph-audit-scale-'));process.env.SFGRAPH_DATA_DIR=root;
+const webstore=await make(path.join(root,`${orgId}.sqlite`));
+const seed=performance.now();webstore.transaction(()=>webstore.mergeNodes(Array.from({length:50000},(_,i)=>fact('ApexClass',`Search${String(i).padStart(5,'0')}`))));
+const web=await import(repoUrl('packages/web/dist/api.js'));
+const st=performance.now();const hits=await web.search(orgId,'Search49999');const searchMs=performance.now()-st;
+assert.equal(hits.length,0);
+const at=performance.now();const names=webstore.listAllQnames(orgId);const allMs=performance.now()-at;
+console.log('SEARCH_SILENT_CAP',JSON.stringify({stored:names.length,needle:'Search49999',hits,searchMs,listAllQnamesMs:allMs,seedMs:st-seed,rssMiB:process.memoryUsage().rss/1048576}));
+await web.closeAllStores();await webstore.close();
+console.log('ALL_SCALE_REPRODUCTIONS_CONFIRMED');

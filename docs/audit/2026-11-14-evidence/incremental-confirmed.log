@@ -1,0 +1,6 @@
+graph ready in 0.0s
+AUTO_SYNC_DOES_NOT_REFRESH {"mode":"incremental","membersProcessed":0,"warnings":["incremental:contentNotFetched:count=1"],"storedHash":"old-hash","watermarkHeld":true}
+SOURCE_MEMBER_WORKFLOW_IGNORED []
+graph ready in 0.0s
+UNSUPPORTED_CHANGE_MARKS_FRESH {"mode":"incremental","warnings":[],"watermarkAdvanced":true}
+INCREMENTAL_REPRODUCTION_CONFIRMED

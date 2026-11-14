@@ -1,0 +1,9 @@
+PROXY_BYPASS [{"method":"POST","url":"https://example.invalid/services/apexrest/audit-only"},{"method":"POST","url":"https://example.invalid/services/data/v50.0/sobjects/Account"}]
+METADATA_RAW_CONNECTION true
+REST_ENDPOINT_DEAD [{"name":"ApexClass:PublicEndpoint","kind":"dead"}]
+QUERY_GRAPH [{"sourceUri":"file:///audit/QueryAll","query":"[SELECT Id FROM Account]"}]
+UNBOUNDED_QUERY_UNREPORTED {"live":[],"cached":[]}
+SECURITY_CASE_MISMATCH {"sharingFullAccess":[],"fieldAccessMatrix":[{"field":"CustomField:account.secret__c","grantedBy":["PermissionSet:Reader"]}],"flsGaps":["CustomField:Account.Secret__c"],"flsGapsExcluded":0,"truncated":false}
+FULL_GRAPH_OMITS_LABEL {"totalStored":5,"shown":4,"truncated":false,"omitted":"OmniScript:HiddenScript"}
+SCHEMA_DANGLING_EDGES {"nodes":[{"id":"CustomObject:Account","label":"CustomObject"},{"id":"ApexClass:Consumer1","label":"ApexClass"}],"edges":[{"source":"ApexClass:Consumer1","target":"CustomObject:Account","relType":"REFERENCES_OBJECT"},{"source":"ApexClass:Consumer2","target":"CustomObject:Account","relType":"REFERENCES_OBJECT"},{"source":"ApexClass:Consumer3","target":"CustomObject:Account","relType":"REFERENCES_OBJECT"}],"dangling":2}
+ALL_REPRODUCTIONS_CONFIRMED
