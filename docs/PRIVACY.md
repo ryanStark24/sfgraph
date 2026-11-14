@@ -30,13 +30,15 @@ sfgraph keeps its graph and vector store on your machine and is designed to only
      `ReadOnlyViolationError` naming the method and URL before anything is
      sent.
 
-   Limits: this covers every request made through the connection objects
-   sfgraph creates (`resolveOrg`). Code that calls jsforce internals directly,
-   such as its transport prototype, is outside the guard; sfgraph does not do
-   that and extractors only receive the read facade.
-   The OAuth token refresh that `@salesforce/core` does with its own client is
-   outside the guard; it exchanges a refresh token and does not read or write
-   org data. A new read that needs POST must be added to the allow-list
+   Limits: this covers requests made through the connection's request path
+   (`resolveOrg`). jsforce's OAuth calls (token refresh, and `logout`, which
+   POSTs to `/services/oauth2/revoke` and revokes the session token, not org
+   data), its streaming (CometD) client (`conn.streaming`, which opens its own
+   sockets) and code that calls jsforce internals directly, such as its
+   transport prototype, are outside the guard. sfgraph uses none of them and
+   extractors only receive the read facade. The OAuth token refresh that
+   `@salesforce/core` does with its own client does not read or write org
+   data. A new read that needs POST must be added to the allow-list
    deliberately. sfgraph still sends queries to your org and receives
    metadata and source from it; "read-only" describes what it asks the org to
    do, not network silence.

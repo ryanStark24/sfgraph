@@ -318,7 +318,7 @@ function liveZeroInbound(
     title: TITLE,
     inShort: [
       dead.length
-        ? `${dead.length} of the ${scope} checked ${dead.length === 1 ? "has" : "have"} no captured incoming references${dead.length > shown.length ? `; ${firstListed(shown.length)}` : ""}.`
+        ? `${dead.length + entry.length} of the ${scope} checked ${dead.length + entry.length === 1 ? "has" : "have"} no captured incoming references${entry.length ? `; ${entry.length} of them ${entry.length === 1 ? "is a" : "are"} known external entry point${entry.length === 1 ? "" : "s"} (listed separately)` : ""}${dead.length > shown.length ? `; ${firstListed(shown.length)}` : ""}.`
         : entry.length
           ? `No candidates: ${countNoun(entry.length, "piece")} of the ${scope} checked ${entry.length === 1 ? "has" : "have"} no captured incoming references but ${entry.length === 1 ? "is a" : "are"} known external entry point${entry.length === 1 ? "" : "s"} (listed below)${partial ? `; the scan was incomplete (${coverage.scanned} of ${coverage.total} inspected), so the rest were not checked` : "; the rest have captured references"}.`
           : partial
@@ -331,7 +331,7 @@ function liveZeroInbound(
       `This kind has no age score, so it is checked live; references from tests count.${partial ? ` ${partialText}` : ""} ${OUTSIDE_GRAPH}`,
       ...(entry.length
         ? [
-            `Separately, ${countNoun(entry.length, "piece")} ${entry.length === 1 ? "is a" : "are"} known external entry point${entry.length === 1 ? "" : "s"} (an Apex trigger on a platform event): no captured references, but the platform runs ${entry.length === 1 ? "it" : "them"}.`,
+            `The entry point${entry.length === 1 ? "" : "s"} (an Apex trigger on a platform event) ${entry.length === 1 ? "has" : "have"} no captured references, but the platform runs ${entry.length === 1 ? "it" : "them"}.`,
           ]
         : []),
       ...testOnlySentence(testOnly.length),
@@ -453,7 +453,7 @@ function renderCandidates(
   const entryMd = entryPointSection(entry, input.limit);
   const entrySentence = entry.length
     ? [
-        `Separately, ${countNoun(entry.length, "piece")} ${entry.length === 1 ? "is a" : "are"} known external entry point${entry.length === 1 ? "" : "s"} (REST, global, scheduled and similar): no captured references, but callers outside the graph are likely.`,
+        `${entry.length} of the ${pool.length + entry.length} pieces with no captured incoming references ${entry.length === 1 ? "is a" : "are"} known external entry point${entry.length === 1 ? "" : "s"} (REST, global, scheduled and similar; listed separately): callers outside the graph are likely.`,
       ]
     : [];
   const testOnly = matches.filter(isTestOnlyRow);
@@ -543,7 +543,7 @@ function renderCandidates(
   const extra = [...entrySentence, ...testOnlySentence(testOnly.length)];
   const confSentence = `By confidence, which comes from age: ${andList(conf)}${pool.length > shown.length ? `; ${firstListed(shown.length)}` : ""}${partial ? `; the scan was incomplete (${coverage.scanned} of ${coverage.total} inspected), so pieces in the rest are not listed` : ""}; callers outside the graph (integrations, the UI, schedules) are not captured, so none of this is proof that nothing uses a piece.`;
   const base = [
-    `${countNoun(pool.length, "piece")} ${pool.length === 1 ? "has" : "have"} no captured incoming references: ${kindCounts(pool.map((d) => labelOf(d.qualifiedName)))}.`,
+    `${entry.length ? `${countNoun(pool.length, "piece")} ${pool.length === 1 ? "has" : "have"} no captured incoming references and ${pool.length === 1 ? "is not a known entry point" : "are not known entry points"}` : `${countNoun(pool.length, "piece")} ${pool.length === 1 ? "has" : "have"} no captured incoming references`}: ${kindCounts(pool.map((d) => labelOf(d.qualifiedName)))}.`,
     confSentence,
     ...extra,
   ];
