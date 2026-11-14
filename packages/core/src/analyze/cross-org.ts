@@ -1,6 +1,7 @@
 import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import type { NodeFact } from "../domain/index.js";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
+import { nameKey } from "../domain/name-key.js";
 import type { GraphStore } from "../storage/interfaces.js";
 import { namespaceOfApiName } from "./field-scope.js";
 
@@ -116,15 +117,18 @@ export function diffOrgs(
       ];
   // No stored label matches: still query the name as given (a store without the label cache).
   const labels = isAll ? allLabels(storeA, storeB) : resolved.length ? resolved : [category];
+  // Keyed by the store's NOCASE identity (`nameKey`): `ApexClass:BillingService` in one org and
+  // `ApexClass:billingservice` in the other are the same component. Each side keeps its own
+  // spelling; a pair is shown with the source org's (A's) spelling first.
   const aMap = new Map<string, NodeFact>();
   const bMap = new Map<string, NodeFact>();
   let truncated = false;
   for (const lbl of labels) {
     const aRows = storeA.listNodesByLabel(orgA, lbl, CROSS_ORG_PER_LABEL_CAP);
-    for (const n of aRows) aMap.set(n.qualifiedName, n);
+    for (const n of aRows) aMap.set(nameKey(n.qualifiedName), n);
     if (aRows.length >= CROSS_ORG_PER_LABEL_CAP) truncated = true;
     const bRows = storeB.listNodesByLabel(orgB, lbl, CROSS_ORG_PER_LABEL_CAP);
-    for (const n of bRows) bMap.set(n.qualifiedName, n);
+    for (const n of bRows) bMap.set(nameKey(n.qualifiedName), n);
     if (bRows.length >= CROSS_ORG_PER_LABEL_CAP) truncated = true;
   }
   const onlyInA: NodeFact[] = [];

@@ -376,7 +376,7 @@ export function populateSecurityFindings(
         "sharing.full_access",
         -1,
         "high",
-        "sharing rule grants full access (All/Edit)",
+        "sharing rule gives record Edit or All access (record sharing only, not an object or field permission)",
         JSON.stringify({ accessLevel: a.accessLevel ?? a.access ?? null }),
         now,
       );

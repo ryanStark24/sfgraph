@@ -94,21 +94,8 @@ const api = async (p) => {
 /* ── state ── */
 let currentOrgId = "";
 let relTypes = [];
-const labelOptions = [
-  "ApexClass",
-  "ApexTrigger",
-  "ApexMethod",
-  "LightningComponentBundle",
-  "LWC",
-  "LWCBundle",
-  "Flow",
-  "FlowVersion",
-  "CustomObject",
-  "CustomField",
-  "Profile",
-  "PermissionSet",
-  "NamedCredential",
-];
+/** Label choices come from /api/labels (the labels stored for the org). */
+let labelOptions = [];
 let hoveredNode = null;
 let inspectorNodeId = null;
 let alwaysShowLabels = false;
@@ -549,6 +536,35 @@ Graph.onNodeClick((node) => {
 });
 
 /* ── bootstrap ── */
+async function fillLabelList() {
+  const labList = document.getElementById("labelList");
+  labelOptions = [];
+  const orgAtStart = currentOrgId;
+  if (currentOrgId) {
+    try {
+      labelOptions = (await api(`/api/labels?org=${currentOrgId}`)).map((x) => x.label);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  if (orgAtStart !== currentOrgId) return; // org changed while loading
+  labList.innerHTML = "";
+  const defaults = new Set(["ApexClass", "LightningComponentBundle", "Flow"]);
+  for (const l of labelOptions) {
+    const lab = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = l;
+    cb.checked = defaults.has(l);
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = colorFor(l);
+    dot.style.color = colorFor(l);
+    lab.append(cb, dot, document.createTextNode(l));
+    labList.appendChild(lab);
+  }
+}
+
 async function bootstrap() {
   const orgsResp = await api("/api/orgs");
   const orgs = Array.isArray(orgsResp) ? orgsResp : orgsResp.orgs ?? [];
@@ -565,6 +581,7 @@ async function bootstrap() {
     currentOrgId = sel.value;
     const opt = sel.selectedOptions[0];
     document.getElementById("orgMeta").textContent = opt?.dataset?.meta ?? "";
+    fillLabelList();
   });
   if (orgs.length === 1) {
     sel.value = orgs[0].orgId;
@@ -585,22 +602,6 @@ async function bootstrap() {
     relList.appendChild(lab);
   }
   updateRelCount();
-
-  const labList = document.getElementById("labelList");
-  const defaults = new Set(["ApexClass", "LightningComponentBundle", "Flow"]);
-  for (const l of labelOptions) {
-    const lab = document.createElement("label");
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.value = l;
-    cb.checked = defaults.has(l);
-    const dot = document.createElement("span");
-    dot.className = "dot";
-    dot.style.background = colorFor(l);
-    dot.style.color = colorFor(l);
-    lab.append(cb, dot, document.createTextNode(l));
-    labList.appendChild(lab);
-  }
 
   // Legend.
   const legendList = document.getElementById("legendList");
@@ -725,7 +726,7 @@ searchBox.addEventListener("input", () => {
   }
   acTimer = setTimeout(async () => {
     try {
-      acHits = await api(`/api/search?org=${currentOrgId}&q=${encodeURIComponent(q)}&limit=20`);
+      acHits = (await api(`/api/search?org=${currentOrgId}&q=${encodeURIComponent(q)}&limit=20`)).hits;
       renderAutocomplete();
     } catch (e) {
       console.error(e);

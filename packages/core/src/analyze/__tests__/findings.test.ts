@@ -24,7 +24,7 @@ describe("W3-01: Finding adapters", () => {
       referenced.add(f.ruleId);
     }
     for (const f of securityAuditToFindings({
-      sharingFullAccess: ["CustomObject:X"],
+      sharingEditAccess: ["CustomObject:X"],
       flsGaps: ["CustomField:X.Y"],
       fieldAccessMatrix: [],
     })) {
@@ -73,16 +73,16 @@ describe("W3-01: Finding adapters", () => {
     ]);
   });
 
-  it("securityAuditToFindings emits both fls-gap and sharing-full-access", () => {
+  it("securityAuditToFindings emits both fls-gap and sharing-edit-access", () => {
     const audit: SecurityAudit = {
-      sharingFullAccess: ["CustomObject:Account"],
+      sharingEditAccess: ["CustomObject:Account"],
       flsGaps: ["CustomField:Account.SSN__c"],
       fieldAccessMatrix: [],
     };
     const findings = securityAuditToFindings(audit);
     const byId = new Map(findings.map((f) => [f.ruleId, f]));
     expect(byId.get("security.fls-gap")?.location.qualifiedName).toBe("CustomField:Account.SSN__c");
-    expect(byId.get("security.sharing-full-access")?.location.qualifiedName).toBe(
+    expect(byId.get("security.sharing-edit-access")?.location.qualifiedName).toBe(
       "CustomObject:Account",
     );
   });
@@ -90,7 +90,7 @@ describe("W3-01: Finding adapters", () => {
   it("collectFindings merges multiple audit outputs into a single array", () => {
     const findings = collectFindings({
       governor: [{ qualifiedName: "X", risk: "soql_in_loop", evidence: "" }],
-      security: { sharingFullAccess: [], flsGaps: ["CustomField:X.Y"], fieldAccessMatrix: [] },
+      security: { sharingEditAccess: [], flsGaps: ["CustomField:X.Y"], fieldAccessMatrix: [] },
     } as Parameters<typeof collectFindings>[0]);
     expect(findings.length).toBe(2);
     expect(findings.map((f) => f.ruleId).sort()).toEqual([
