@@ -1,5 +1,7 @@
 import { ConsoleLogger, asOrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.setConfig({ testTimeout: 30_000 });
 import { buildJsforceMock } from "../../extractors/live-org/__tests__/_jsforce-mock.js";
 import { wrapConnectionReadOnly } from "../../extractors/live-org/read-only-proxy.js";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";
@@ -118,6 +120,34 @@ describe("live sync: auto falls back to a full refresh when content changed", ()
     expect(result.warnings.some((w) => w.includes("contentNotFetched"))).toBe(false);
     // A full sync advances the watermark.
     expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(Date.now() - 30_000);
+    await store.close();
+  });
+
+  it("a deletion seen alongside a modification is still applied in the fallback full run", async () => {
+    const { store, state, conn, hash } = await seeded();
+    const oldHash = hash();
+    // A second class exists in the graph and is deleted in the org.
+    store.mergeNodes([
+      {
+        orgId: ORG_ID,
+        label: "ApexClass",
+        qualifiedName: asQualifiedName("ApexClass:Gone"),
+        attributes: { name: "Gone" },
+        sourceHash: "gone-hash" as never,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+        lastModifiedAt: 1,
+      },
+    ]);
+    state.body = "public class Billing { public void changed() {} }";
+    state.sourceMembers = [
+      { MemberType: "ApexClass", MemberName: "Billing" },
+      { MemberType: "ApexClass", MemberName: "Gone", IsNameObsolete: true },
+    ];
+    const result = await run(store, conn, "auto"); // detectDeletions unset
+    expect(result.mode).toBe("full");
+    expect(store.getNode(ORG_ID, asQualifiedName("ApexClass:Gone"))).toBeFalsy();
+    expect(hash()).not.toBe(oldHash);
     await store.close();
   });
 

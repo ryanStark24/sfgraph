@@ -1287,6 +1287,12 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       // different edge tables rather than competing for the same row, but
       // the pre-fan-out ordering preserves the "parsed wins" guarantee for
       // the (rare) case where a parser does emit REFERENCES.
+      // Auto fell back to full after the pre-scan: the scan also saw deletions,
+      // and a full run without --detect-deletions would not apply them while
+      // the watermark moves past them. Apply them here, as incremental does.
+      for (const ref of autoScan?.refs ?? []) {
+        if (ref.obsolete) await processOne(ref, "");
+      }
       openBulk();
       if (!opts.disableMcdBaseline && !opts.metadataSource) {
         try {
