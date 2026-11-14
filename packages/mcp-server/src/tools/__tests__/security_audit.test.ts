@@ -153,4 +153,41 @@ describe("security_audit", () => {
     expect((r.data as { truncated: boolean }).truncated).toBe(true);
     expect(r.summary).toContain("results capped");
   });
+  describe("plain text for Edit and All sharing rules (F09 note N3)", () => {
+    const rule = (name: string, accessLevel: string) =>
+      fix.addNode({
+        qualifiedName: `SharingRule:${name}`,
+        label: "SharingRule",
+        attributes: { accessLevel },
+      });
+    const inShort = (md: string) => md.split("What each piece does")[0] ?? md;
+    const line = (md: string, name: string) =>
+      md.split("\n").find((l) => l.startsWith(`- \`${name}\`:`)) ?? "";
+
+    it("an All rule is described as full record access, not edit access", async () => {
+      rule("Acme_Open", "All");
+      const r = await callTool("security_audit", { org: fix.orgId });
+      expect(line(r.markdown, "Acme_Open")).toContain("full record access (All)");
+      expect(line(r.markdown, "Acme_Open")).not.toContain("edit access");
+      expect(inShort(r.markdown)).toContain("full record access (All)");
+      expect(inShort(r.markdown)).not.toMatch(/give(s)? edit access/);
+    });
+
+    it("an Edit rule keeps saying edit access", async () => {
+      rule("Acme_Edit", "Edit");
+      const r = await callTool("security_audit", { org: fix.orgId });
+      expect(line(r.markdown, "Acme_Edit")).toContain("edit access");
+      expect(inShort(r.markdown)).toMatch(/gives edit access to records/);
+      expect(inShort(r.markdown)).not.toContain("full record access");
+    });
+
+    it("a mix names both in the headline and each rule its own", async () => {
+      rule("Acme_Edit", "Edit");
+      rule("Acme_Open", "All");
+      const r = await callTool("security_audit", { org: fix.orgId });
+      expect(inShort(r.markdown)).toContain("edit access (Edit) or full record access (All)");
+      expect(line(r.markdown, "Acme_Edit")).toContain("gives its audience edit access");
+      expect(line(r.markdown, "Acme_Open")).toContain("full record access (All)");
+    });
+  });
 });

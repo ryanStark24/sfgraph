@@ -147,7 +147,7 @@ try {
   console.log("rendered nodes:", JSON.stringify(ids));
   const ok =
     /Showing 3 of 4 nodes/.test(hint3) &&
-    /1 left out by the node limit/.test(hint3) &&
+    /1 left out by the node limit \(raise it above to see more\): [A-Za-z]+ 1$/.test(hint3) &&
     badge3 &&
     ids.includes("OmniScript:Acme_Intake_English") &&
     ids.length === 4 &&

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { type GraphStore, REL_TYPES, SqliteGraphStore } from "@ryanstark24/sfgraph-core";
+import { type GraphStore, REL_TYPES, SqliteGraphStore, nameKey } from "@ryanstark24/sfgraph-core";
 import { asOrgId, asQualifiedName, getSfgraphPaths } from "@ryanstark24/sfgraph-shared";
 
 /** Per-orgId open-store cache. Web server reuses stores across requests. */
@@ -145,6 +145,9 @@ export interface GraphPayload {
   truncated?: boolean;
   /** Nodes that exist but are not in `nodes` because of the node limit. */
   omittedNodes?: number;
+  /** Per label, how many nodes the node limit left out (fullGraph only;
+   *  labels with nothing left out are not listed). */
+  omittedByLabel?: Array<{ label: string; omitted: number }>;
   /** Total nodes of the labels this view covers (fullGraph only). */
   totalNodes?: number;
   /** Labels left out on purpose, with the reason. Empty: nothing is excluded
@@ -168,6 +171,8 @@ export async function neighborhood(
   const allowedRels = relTypes && relTypes.length > 0 ? new Set(relTypes) : null;
   const NODE_CAP = 250;
   let truncated = false;
+  // Neighbours the cap refused, counted once each by the store's name key.
+  const omitted = new Set<string>();
 
   const addNode = (qn: string): void => {
     if (nodes.has(qn)) return;
@@ -182,18 +187,19 @@ export async function neighborhood(
   // has 1000+ field/permission edges) can blow past the limit inside one
   // frontier iteration if we only check at the top. Check after every
   // node add and break early.
-  outer: for (let d = 0; d < depth; d++) {
+  for (let d = 0; d < depth; d++) {
     const next: string[] = [];
     for (const cur of frontier) {
       const outE = store.listEdgesFrom(oid, asQualifiedName(cur));
       const inE = store.listEdgesTo(oid, asQualifiedName(cur));
       for (const e of outE) {
         if (allowedRels && !allowedRels.has(String(e.relType))) continue;
-        if (nodes.size >= NODE_CAP) {
-          truncated = true;
-          break outer;
-        }
         const dst = String(e.dstQualifiedName);
+        if (nodes.size >= NODE_CAP && !nodes.has(dst)) {
+          truncated = true;
+          omitted.add(nameKey(dst));
+          continue;
+        }
         addNode(dst);
         edges.push({ source: cur, target: dst, relType: String(e.relType) });
         if (!seen.has(dst)) {
@@ -203,11 +209,12 @@ export async function neighborhood(
       }
       for (const e of inE) {
         if (allowedRels && !allowedRels.has(String(e.relType))) continue;
-        if (nodes.size >= NODE_CAP) {
-          truncated = true;
-          break outer;
-        }
         const src = String(e.srcQualifiedName);
+        if (nodes.size >= NODE_CAP && !nodes.has(src)) {
+          truncated = true;
+          omitted.add(nameKey(src));
+          continue;
+        }
         addNode(src);
         edges.push({ source: src, target: cur, relType: String(e.relType) });
         if (!seen.has(src)) {
@@ -218,7 +225,52 @@ export async function neighborhood(
     }
     frontier = next;
   }
-  return { nodes: [...nodes.values()], edges, truncated };
+  return {
+    nodes: [...nodes.values()],
+    edges,
+    truncated,
+    omittedNodes: omitted.size,
+  };
+}
+
+/** How many nodes each label may contribute under a node limit: labels are
+ *  served smallest first, each getting at most an equal share of what is left
+ *  (rounded up), so a small label is never dropped just because a huge one
+ *  would fill the limit. Deterministic (ties by label name). */
+function fairQuotas(
+  counts: Array<{ label: string; count: number }>,
+  limit: number,
+): Map<string, number> {
+  const quotas = new Map<string, number>();
+  const asc = [...counts].sort((a, b) => a.count - b.count || a.label.localeCompare(b.label));
+  let remaining = Math.max(0, limit);
+  asc.forEach((c, i) => {
+    const q = Math.min(c.count, Math.ceil(remaining / (asc.length - i)));
+    quotas.set(c.label, q);
+    remaining -= q;
+  });
+  return quotas;
+}
+
+/** Edges whose two endpoints are both in `nodes`. The store compares names
+ *  without ASCII case, so an edge stored as `customobject:ACME_ORDER__C` still
+ *  reaches the node `CustomObject:Acme_Order__c`; the edge is emitted with the
+ *  nodes' own spelling so every endpoint is an id in `nodes`. */
+function edgesAmong(
+  store: GraphStore,
+  oid: ReturnType<typeof asOrgId>,
+  nodes: Map<string, GraphNode>,
+): GraphEdge[] {
+  const byKey = new Map<string, string>();
+  for (const id of nodes.keys()) byKey.set(nameKey(id), id);
+  const edges: GraphEdge[] = [];
+  for (const qn of nodes.keys()) {
+    for (const e of store.listEdgesFrom(oid, asQualifiedName(qn))) {
+      const dst = byKey.get(nameKey(String(e.dstQualifiedName)));
+      if (dst !== undefined) edges.push({ source: qn, target: dst, relType: String(e.relType) });
+    }
+  }
+  return edges;
 }
 
 /** Pull every node matching one of `labels`, plus the edges among them.
@@ -239,15 +291,8 @@ export async function overview(
     }
     if (nodes.size >= limit) break;
   }
-  const edges: GraphEdge[] = [];
   // For overview, only emit edges where BOTH endpoints are in the node set.
-  for (const qn of nodes.keys()) {
-    const outE = store.listEdgesFrom(oid, asQualifiedName(qn));
-    for (const e of outE) {
-      const dst = String(e.dstQualifiedName);
-      if (nodes.has(dst)) edges.push({ source: qn, target: dst, relType: String(e.relType) });
-    }
-  }
+  const edges = edgesAmong(store, oid, nodes);
   return { nodes: [...nodes.values()], edges, truncated: nodes.size >= limit };
 }
 
@@ -267,30 +312,28 @@ export async function fullGraph(orgId: string, limit = 5000): Promise<GraphPaylo
   const nodes = new Map<string, GraphNode>();
   const counts = store.listLabelCounts(oid);
   let totalNodes = 0;
+  for (const c of counts) totalNodes += c.count;
+  const quotas = fairQuotas(counts, limit);
+  const omittedByLabel: Array<{ label: string; omitted: number }> = [];
   for (const { label, count } of counts) {
-    totalNodes += count;
-    if (nodes.size >= limit) continue;
-    for (const n of store.listNodesByLabel(oid, label, limit - nodes.size)) {
-      nodes.set(String(n.qualifiedName), { id: String(n.qualifiedName), label: n.label });
-    }
-  }
-  // All edges where both endpoints are in our node set.
-  const edges: GraphEdge[] = [];
-  for (const qn of nodes.keys()) {
-    const outE = store.listEdgesFrom(oid, asQualifiedName(qn));
-    for (const e of outE) {
-      const dst = String(e.dstQualifiedName);
-      if (nodes.has(dst)) {
-        edges.push({ source: qn, target: dst, relType: String(e.relType) });
+    const quota = quotas.get(label) ?? 0;
+    if (quota > 0) {
+      for (const n of store.listNodesByLabel(oid, label, quota)) {
+        nodes.set(String(n.qualifiedName), { id: String(n.qualifiedName), label: n.label });
       }
     }
+    if (count > quota) omittedByLabel.push({ label, omitted: count - quota });
   }
+  omittedByLabel.sort((a, b) => b.omitted - a.omitted || a.label.localeCompare(b.label));
+  // All edges where both endpoints are in our node set.
+  const edges = edgesAmong(store, oid, nodes);
   const omittedNodes = Math.max(0, totalNodes - nodes.size);
   return {
     nodes: [...nodes.values()],
     edges,
     truncated: omittedNodes > 0,
     omittedNodes,
+    omittedByLabel,
     totalNodes,
     excludedLabels: [],
   };

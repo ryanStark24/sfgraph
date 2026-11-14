@@ -13,6 +13,7 @@ Fixes from an independent audit of 1.8.1. Nothing here was run against a real Sa
 - **Capped scans no longer say "no findings" when they did not look at everything.** `dead_code_audit`, `governor_risk_check` and `export_sarif` read every node (the 10,000 and 20,000 per-label limits are gone), apply your `pattern` and label filters before any limit, and report scanned and total counts. "No findings" is said only for a complete scan; otherwise the answer says how much was looked at.
 - **`unbounded_query` and `no_bulk` governor checks work on normally parsed Apex.** `return [SELECT Id FROM Account];` is now flagged as unbounded. Live answers and cached answers share one detector.
 - **Web explorer.** "Render entire org" includes every stored label (OmniScript, DataRaptor, IntegrationProcedure and others were left out), and the button now works: it had no click handler. It shows how many nodes are displayed out of how many exist and how many the node limit left out. Capped schema views no longer contain edges to nodes that are not in the response, and say how many neighbours were omitted. Search finds names past the first 25,000 and says when it stopped.
+- **Web explorer, smaller fixes.** Edges to a node spelled with different case now show in `/api/full` and `/api/overview`. When the node limit cuts `/api/full`, each label gets a share (a small label such as OmniScript is no longer dropped by a large one), the response lists `omittedByLabel`, and the hint names the labels cut. `/api/neighborhood` reports `omittedNodes`. `security_audit` text says "full record access (All)" for All sharing rules instead of "edit access".
 
 ### Changed
 
@@ -27,6 +28,8 @@ Fixes from an independent audit of 1.8.1. Nothing here was run against a real Sa
 
 - **Not yet fixed (backlog):** the web explorer still loads its graph libraries and fonts from `esm.sh` and Google, so it needs a network connection on first load and the "nothing leaves your machine" line does not cover those requests; `pnpm audit` still lists open dependency advisories, including Zod 3.25.76 (GHSA-mrhx-c7xc-m3w5, fixed only in Zod 4, which needs a code change in how tool schemas are generated); `sfgraph telemetry enable` does not yet record any runtime events; the postinstall native-module check can print a spurious "Cannot find module" under pnpm; some unused files remain; a few documents are out of date.
 - Live sync: Salesforce changes sfgraph cannot map are reported but not fetched. A full refresh is the only way to pick them up.
+- Search in the web explorer is a storage-side substring scan with the limit pushed down (`LIKE '%text%'` per label table), not an index; the audit measured 3 ms to 5 ms at 50,000 nodes and time grows with node count.
+- Dead code: Apex triggers are not scored candidates; they are listed only when `label: ApexTrigger` is asked for, and then a trigger on a platform event (`__e`) is shown as an external entry point. Other labels still have no entry-point detection.
 - Dead code: `webservice` methods are recognised only where the parser keeps method modifiers; Flow, LWC and other labels have no entry-point detection.
 - Governor checks: no calibration against real org code, and string-built dynamic SOQL is not examined.
 - The first ingest after upgrading re-parses every member once, as after any release.

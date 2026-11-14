@@ -18,7 +18,8 @@ export type ExternalEntryPoint =
   | "schedulable"
   | "batchable"
   | "queueable"
-  | "inbound_email_handler";
+  | "inbound_email_handler"
+  | "event_subscriber";
 
 /** Plain words for each kind (tool text). */
 export const ENTRY_POINT_PLAIN: Readonly<Record<ExternalEntryPoint, string>> = {
@@ -32,6 +33,7 @@ export const ENTRY_POINT_PLAIN: Readonly<Record<ExternalEntryPoint, string>> = {
   batchable: "a Batchable class (run as a batch job)",
   queueable: "a Queueable class (run as a queued job)",
   inbound_email_handler: "an inbound email handler",
+  event_subscriber: "a platform event subscriber (an Apex trigger on a __e object)",
 };
 
 /** Reason-token prefix the score cache stores an entry point under. */
@@ -56,6 +58,7 @@ const ORDER: readonly ExternalEntryPoint[] = [
   "batchable",
   "queueable",
   "inbound_email_handler",
+  "event_subscriber",
   "global",
 ];
 
@@ -70,9 +73,11 @@ const modifiersOf = (n: NodeFact | null): string[] => {
  * `@RestResource`; the class annotation itself is not stored), `isInvocable`,
  * `auraEnabled`, `isRemote`, `webservice` / `global` modifiers (class and
  * methods), and IMPLEMENTS edges to Schedulable, Database.Batchable,
- * Queueable and Messaging.InboundEmailHandler. Other labels have none.
- * Platform-event triggers are not ApexClass nodes, and triggers are never
- * dead-code candidates (the platform fires them), so they do not appear here.
+ * Queueable and Messaging.InboundEmailHandler. An ApexTrigger whose
+ * TRIGGERS_ON target is a platform event (`__e`) is an event subscriber:
+ * the platform fires it when the event is published. Triggers are not in the
+ * scored dead-code labels, so this matters when `dead_code_audit` is asked for
+ * `label: ApexTrigger`. Other labels have none.
  */
 export function externalEntryPoints(
   store: GraphStore,
@@ -80,6 +85,16 @@ export function externalEntryPoints(
   node: NodeFact,
   members: readonly QualifiedName[],
 ): ExternalEntryPoint[] {
+  if (node.label === "ApexTrigger") {
+    // The Apex parser stores TRIGGERS_ON (trigger -> object); TRIGGER_FIRES_ON is the
+    // name other graphs use for the same fact.
+    for (const rel of [REL_TYPES.TRIGGERS_ON, REL_TYPES.TRIGGER_FIRES_ON]) {
+      for (const e of store.listEdgesFrom(orgId, node.qualifiedName, rel)) {
+        if (/__e$/i.test(String(e.dstQualifiedName))) return ["event_subscriber"];
+      }
+    }
+    return [];
+  }
   if (node.label !== "ApexClass") return [];
   const found = new Set<ExternalEntryPoint>();
   if (modifiersOf(node).includes("global")) found.add("global");

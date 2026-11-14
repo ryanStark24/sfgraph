@@ -179,11 +179,27 @@ defineTool({
               ? `No field access gaps: the field ${code(fieldName)} has access granted by ${countNoun(grants, "permission set or profile", "permission sets or profiles")}.`
               : "No field access gaps found.";
     const excluded = audit.flsGapsExcluded ?? 0;
+    const accessOf = (q: string): string | undefined =>
+      audit.sharingRuleAccess?.find((r) => r.qualifiedName === q)?.access;
+    const accessKinds = new Set(audit.sharingEditAccess.map(accessOf));
+    const hasAll = accessKinds.has("All");
+    const hasEdit = accessKinds.size > (hasAll ? 1 : 0);
+    // Edit and All are different grants; the sentence names the ones present.
+    const grantPhrase =
+      hasAll && hasEdit
+        ? "edit access (Edit) or full record access (All) to records"
+        : hasAll
+          ? "full record access (All) to records"
+          : "edit access to records";
     const pieces: Piece[] = [
       ...audit.sharingEditAccess.slice(0, 20).map((q) => ({
         name: q,
         kind: "SharingRule",
-        role: "gives its audience edit access to the records (record sharing, not an object or field permission).",
+        role: `${
+          accessOf(q) === "All"
+            ? "gives its audience full record access (All)"
+            : "gives its audience edit access"
+        } to the records (record sharing, not an object or field permission).`,
       })),
       ...audit.flsGaps.slice(0, input.limit).map((q) => {
         const n = nameOf(q);
@@ -201,7 +217,7 @@ defineTool({
         inShort: [
           gapSentence,
           rules
-            ? `${countNoun(rules, "sharing rule")} (who else can see records) ${rules === 1 ? "gives" : "give"} edit access to records (record sharing only; it says nothing about object or field permissions).`
+            ? `${countNoun(rules, "sharing rule")} (who else can see records) ${rules === 1 ? "gives" : "give"} ${grantPhrase} (record sharing only; it says nothing about object or field permissions).`
             : "No sharing rule gives edit access to records.",
           `Checked: ${scope}${excluded ? `; ${countNoun(excluded, "system or settings field")} ${excluded === 1 ? "was" : "were"} left out` : ""}.`,
           ...(audit.truncated

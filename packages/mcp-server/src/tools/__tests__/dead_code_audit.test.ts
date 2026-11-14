@@ -35,6 +35,102 @@ afterEach(async () => {
 });
 
 describe("dead_code_audit", () => {
+  it("an Apex trigger on a platform event is a known entry point, not a dead candidate (audit note N5)", async () => {
+    const old = Date.now() - 1000 * 60 * 60 * 24 * 1000;
+    fix.addNode({ qualifiedName: "CustomObject:Acme_Event__e", label: "CustomObject" });
+    fix.addNode({ qualifiedName: "CustomObject:Acme_Thing__c", label: "CustomObject" });
+    for (const [name, obj] of [
+      ["Acme_EventTrig", "Acme_Event__e"],
+      ["Acme_ThingTrig", "Acme_Thing__c"],
+    ] as const) {
+      fix.addNode({
+        qualifiedName: `ApexTrigger:${name}`,
+        label: "ApexTrigger",
+        lastModifiedAt: old,
+      });
+      fix.addEdge({
+        srcQualifiedName: `ApexTrigger:${name}`,
+        dstQualifiedName: `CustomObject:${obj}`,
+        relType: REL_TYPES.TRIGGERS_ON,
+      });
+    }
+    const t = await callTool("dead_code_audit", { org: fix.orgId, label: "ApexTrigger" });
+    const d = t.data as {
+      externalEntryPoints: Array<{ qualifiedName: string; kinds: string[] }>;
+      externalEntryPointsTotal: number;
+    };
+    expect(deadNames(t)).toEqual(["ApexTrigger:Acme_ThingTrig"]);
+    expect(d.externalEntryPoints).toMatchObject([
+      { qualifiedName: "ApexTrigger:Acme_EventTrig", kinds: ["event_subscriber"] },
+    ]);
+    expect(d.externalEntryPointsTotal).toBe(1);
+    expect(t.markdown).toContain("Known external entry points");
+    expect(t.markdown).toContain("platform event subscriber");
+    // Without a label, triggers are not scored candidates at all.
+    const all = await callTool("dead_code_audit", { org: fix.orgId });
+    expect(all.markdown).not.toContain("Acme_EventTrig");
+  });
+
+  it("when every zero-reference piece is an entry point, the summary does not say all have references (platform-event triggers)", async () => {
+    fix.addNode({ qualifiedName: "CustomObject:Acme_Event__e", label: "CustomObject" });
+    fix.addNode({ qualifiedName: "ApexTrigger:Acme_EventTrig", label: "ApexTrigger" });
+    fix.addEdge({
+      srcQualifiedName: "ApexTrigger:Acme_EventTrig",
+      dstQualifiedName: "CustomObject:Acme_Event__e",
+      relType: REL_TYPES.TRIGGERS_ON,
+    });
+    const t = await callTool("dead_code_audit", { org: fix.orgId, label: "ApexTrigger" });
+    expect(deadNames(t)).toEqual([]);
+    expect(t.markdown).toContain("No candidates: 1 piece");
+    expect(t.markdown).toContain("known external entry point");
+    expect(t.markdown).not.toMatch(/something referring to it|each has something referring/);
+  });
+
+  it("when the only zero-reference class is a REST endpoint, the scored summary names it an entry point, not 'no code found'", async () => {
+    const old = Date.now() - 1000 * 60 * 60 * 24 * 1000;
+    fix.addNode({ qualifiedName: "ApexClass:Acme_Api", label: "ApexClass", lastModifiedAt: old });
+    fix.addNode({
+      qualifiedName: "ApexMethod:Acme_Api.get(0)",
+      label: "ApexMethod",
+      attributes: { httpVerbs: ["GET"] },
+    });
+    fix.addEdge({
+      srcQualifiedName: "ApexClass:Acme_Api",
+      dstQualifiedName: "ApexMethod:Acme_Api.get(0)",
+      relType: REL_TYPES.CONTAINS_METHOD,
+    });
+    const r = await callTool("dead_code_audit", { org: fix.orgId });
+    expect(deadNames(r)).toEqual([]);
+    expect(r.markdown).toContain("No candidates among");
+    expect(r.markdown).toContain(
+      "1 piece has no captured incoming references but is a known external entry point",
+    );
+    expect(r.markdown).toContain("the rest have captured references");
+    expect(r.markdown).not.toContain("No code with no captured incoming references found");
+  });
+
+  it("a filter that hides an ordinary unreferenced class does not make the summary claim the rest have references", async () => {
+    const old = Date.now() - 1000 * 60 * 60 * 24 * 1000;
+    fix.addNode({ qualifiedName: "ApexClass:Acme_Api", label: "ApexClass", lastModifiedAt: old });
+    fix.addNode({
+      qualifiedName: "ApexMethod:Acme_Api.get(0)",
+      label: "ApexMethod",
+      attributes: { httpVerbs: ["GET"] },
+    });
+    fix.addEdge({
+      srcQualifiedName: "ApexClass:Acme_Api",
+      dstQualifiedName: "ApexMethod:Acme_Api.get(0)",
+      relType: REL_TYPES.CONTAINS_METHOD,
+    });
+    fix.addNode({ qualifiedName: "ApexClass:Acme_Stale", label: "ApexClass", lastModifiedAt: old });
+    const r = await callTool("dead_code_audit", { org: fix.orgId, confidence: "low" });
+    expect(deadNames(r)).toEqual([]);
+    expect(r.markdown).toContain("No candidates among");
+    expect(r.markdown).toContain("low confidence only");
+    expect(r.markdown).toContain("do not match the current filters (confidence=low)");
+    expect(r.markdown).not.toContain("the rest have captured references");
+  });
+
   it("flags stale untouched class", async () => {
     fix.addNode({
       qualifiedName: "ApexClass:Stale",

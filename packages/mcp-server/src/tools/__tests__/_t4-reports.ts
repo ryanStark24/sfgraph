@@ -561,12 +561,12 @@ export function registerT4Reports(part: { from: number; to?: number; rest: boole
 
         it("security_audit describes sharing as record access, not as a permission bypass", async () => {
           const t = await md("security_audit.all");
-          expect(section(t, "In short")).toContain("gives edit access to records");
+          expect(section(t, "In short")).toContain("gives full record access (All) to records");
           expect(section(t, "In short")).toContain(
             "says nothing about object or field permissions",
           );
           expect(pieceLine(t, "Case.OpenAll")).toContain(
-            "gives its audience edit access to the records",
+            "gives its audience full record access (All) to the records",
           );
           expect(t).not.toMatch(/bypass|Modify All|View All|full[- ]access/i);
         });
