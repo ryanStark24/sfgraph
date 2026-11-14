@@ -32,10 +32,12 @@ qname, and evidence (the query text or DML target):
 - **`sosl_in_loop`** (high): the same for SOSL (`EXECUTES_SOSL`).
 - **`dynamic_soql_in_loop`** (high): `Database.query(...)` inside a loop.
 - **`dml_in_loop`** (high): the same for DML statements.
-- **`no_bulk`** (high): a trigger that doesn't iterate `Trigger.new` (body-scan path).
-- **`unbounded_query`** (medium): a query with no `WHERE` and no `LIMIT`. Only the
-  body-scan path (project ingests, where the full query text is available) emits it;
-  live-org ingests do not, because the captured query head makes it pure noise.
+- **`no_bulk`** (high): a trigger that reads `Trigger.new[0]` / `Trigger.old[0]` (or
+  `.get(0)`), never loops over `Trigger.new` / `Trigger.old` / the maps, and does not
+  pass the collections on. A trigger that delegates to a handler is not judged.
+- **`unbounded_query`** (medium): an inline query with no `LIMIT` and no `WHERE` in its
+  own clause (`COUNT()` and Custom Metadata Type queries are not flagged). Both of the
+  last two read the stored source snippets, so they work on project and live-org ingests.
 
 Medium and above are listed by default; `min_severity: "high"` keeps only the loop and
 bulk findings. `includeTests: true` adds test code. There is no class or namespace

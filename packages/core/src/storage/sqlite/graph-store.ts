@@ -371,6 +371,10 @@ export function graphFileReadiness(dbPath: string, orgId?: string): GraphFileRea
   }
 }
 
+/** `nameLike` filter of listNodesPage / countNodesLike: the whole qname or the part after `Label:`. */
+const NAME_LIKE_SQL =
+  " AND (qualified_name LIKE ? ESCAPE '\\' OR substr(qualified_name, instr(qualified_name, ':') + 1) LIKE ? ESCAPE '\\')";
+
 export class SqliteGraphStore implements GraphStore {
   private conn: BetterSqlite3Database;
   /** Connections replaced after a file swap; closed with the store (review I2). */
@@ -1372,6 +1376,41 @@ export class SqliteGraphStore implements GraphStore {
     if (typeof limit === "number") params.push(limit);
     const rows = this.stmt(sql).all(...params) as RawNodeRow[];
     return rows.map((r) => rowToNode(r, label));
+  }
+
+  listNodesPage(
+    orgId: OrgId,
+    label: string,
+    opts: { afterRowid?: number; limit: number; nameLike?: string },
+  ): { nodes: NodeFact[]; lastRowid: number | null } {
+    validateLabel(label);
+    this.syncCaches();
+    const tbl = this.nodeLabelCache.get(label);
+    if (!tbl) return { nodes: [], lastRowid: null };
+    const like = opts.nameLike !== undefined;
+    const sql = `SELECT rowid AS rid, org_id, qualified_name, attributes, source_hash, first_seen_at, last_seen_at, last_modified_at FROM ${tbl} WHERE org_id = ? AND rowid > ?${like ? NAME_LIKE_SQL : ""} ORDER BY rowid LIMIT ?`;
+    const params: unknown[] = [orgId, opts.afterRowid ?? 0];
+    if (like) params.push(opts.nameLike, opts.nameLike);
+    params.push(Math.max(1, Math.floor(opts.limit)));
+    const rows = this.stmt(sql).all(...params) as Array<RawNodeRow & { rid: number }>;
+    return {
+      nodes: rows.map((r) => rowToNode(r, label)),
+      lastRowid: rows.length ? (rows[rows.length - 1] as { rid: number }).rid : null,
+    };
+  }
+
+  countNodesLike(orgId: OrgId, label: string, nameLike?: string): number {
+    validateLabel(label);
+    this.syncCaches();
+    const tbl = this.nodeLabelCache.get(label);
+    if (!tbl) return 0;
+    const like = nameLike !== undefined;
+    const params: unknown[] = [orgId];
+    if (like) params.push(nameLike, nameLike);
+    const r = this.stmt(
+      `SELECT COUNT(*) AS c FROM ${tbl} WHERE org_id = ?${like ? NAME_LIKE_SQL : ""}`,
+    ).get(...params) as { c: number };
+    return r.c;
   }
 
   /**

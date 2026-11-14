@@ -517,10 +517,10 @@ export function registerT4Reports(part: { from: number; to?: number; rest: boole
 
         it("dead_code_audit counts by kind and confidence, and says nothing matched with a filter", async () => {
           const all = await inShortOf("dead_code_audit.all");
-          expect(all).toMatch(/\d+ pieces? (looks?|seem) unused/);
+          expect(all).toMatch(/\d+ pieces? (has|have) no captured incoming references/);
           expect(all).toContain("high confidence");
           const none = await inShortOf("dead_code_audit.none");
-          expect(none).toContain("No unused code found");
+          expect(none).toContain("No code with no captured incoming references found");
           expect(none).toContain("`Nothing*`");
         });
 

@@ -118,6 +118,8 @@ export interface GovernorCollection {
   excludedTests: number;
   /** The qnames of the test-code risks left out, sorted (for naming what was left out). */
   excludedTestQnames: string[];
+  /** How much of the graph the scan examined (and whether it finished). */
+  coverage: analyze.ScanCoverage;
 }
 
 function readGovernorCache(db: Db, orgId: string): GovernorRiskRow[] {
@@ -161,7 +163,9 @@ export function collectGovernorRisks(
   ctx: ToolContext,
   opts: { includeTests?: boolean } = {},
 ): GovernorCollection {
-  const live: GovernorRiskRow[] = analyze.findGovernorRisks(ctx.graphStore, ctx.orgId);
+  const scan = analyze.scanGovernorRisks(ctx.graphStore, ctx.orgId);
+  const live: GovernorRiskRow[] = scan.risks;
+  let coverage = scan.coverage;
   const cache = cacheFreshness(ctx, "_sfgraph_governor_risks");
   const db = dbOf(ctx);
   let all = live;
@@ -175,6 +179,10 @@ export function collectGovernorRisks(
       all = [...live, ...extra];
       source = "live+cache";
     }
+    // Cache rows are part of the answer: a cache whose own scan stopped early
+    // makes the whole answer incomplete.
+    const cacheCoverage = analyze.readScanCoverage(db as never, ctx.orgId, "governor");
+    if (cacheCoverage && !cacheCoverage.complete) coverage = { ...coverage, complete: false };
   }
   let excludedTests = 0;
   const excludedQ = new Set<string>();
@@ -203,6 +211,7 @@ export function collectGovernorRisks(
     cache,
     excludedTests,
     excludedTestQnames: [...excludedQ].sort(),
+    coverage,
   };
 }
 
@@ -220,19 +229,27 @@ export function isDeadCodeCacheRow(reasons: readonly string[]): boolean {
   return reasons.includes("no_incoming_edges") || reasons.includes("referenced_only_by_tests");
 }
 
+/** Dead-code nodes for SARIF and their scan coverage; see `collectDeadCode`. */
+export interface DeadCodeCollection {
+  nodes: NodeFact[];
+  /** Known external entry points of the nodes (REST, global, schedulable, ...), by qname. */
+  entryPoints: Map<string, analyze.ExternalEntryPoint[]>;
+  source: "cache" | "live";
+  cache: CacheFreshness;
+  /** How much of the graph the scan examined (and whether it finished). */
+  coverage: analyze.ScanCoverage;
+}
+
 /**
  * Dead-code candidates for SARIF. Reads `_sfgraph_dead_code_scores` (through
  * core's version-stamped `readDeadCodeScores`) only when it is fresh: populateDeadCodeScores writes the
  * `deadCodeCandidates` rows (see `isDeadCodeCacheRow`); the dead ones are the `findDeadCode` set
  * (`referenced_only_by_tests` rows are skipped: not dead), so the rows are
  * equivalent to the live scan at compute time, without one listEdgesTo per
- * node. Falls back to the live scan when the cache is absent, stale or unknown.
+ * node. Falls back to the live scan when the cache is absent, stale or unknown,
+ * or has no recorded coverage.
  */
-export function collectDeadCode(ctx: ToolContext): {
-  nodes: NodeFact[];
-  source: "cache" | "live";
-  cache: CacheFreshness;
-} {
+export function collectDeadCode(ctx: ToolContext): DeadCodeCollection {
   const cache = cacheFreshness(ctx, "_sfgraph_dead_code_scores");
   const db = dbOf(ctx);
   if (db && cache.state === "fresh") {
@@ -240,8 +257,10 @@ export function collectDeadCode(ctx: ToolContext): {
       // Core's version-stamped reader: unstamped / older-version rows read
       // as null, so pre-fix legacy rows are never served.
       const rows = analyze.readDeadCodeScores(db as never, ctx.orgId);
+      const coverage = analyze.readScanCoverage(db as never, ctx.orgId, "dead_code");
       const nodes: NodeFact[] = [];
-      let legacy = rows === null;
+      const entryPoints = new Map<string, analyze.ExternalEntryPoint[]>();
+      let legacy = rows === null || coverage === null;
       for (const r of rows ?? []) {
         if (!isDeadCodeCacheRow(r.reasons)) {
           legacy = true;
@@ -257,14 +276,23 @@ export function collectDeadCode(ctx: ToolContext): {
           break;
         }
         nodes.push(n);
+        const eps = analyze.entryPointsFromReasons(r.reasons);
+        if (eps.length > 0) entryPoints.set(String(n.qualifiedName), eps);
       }
-      if (!legacy) {
+      if (!legacy && coverage) {
         nodes.sort((a, b) => String(a.qualifiedName).localeCompare(String(b.qualifiedName)));
-        return { nodes, source: "cache", cache };
+        return { nodes, entryPoints, source: "cache", cache, coverage };
       }
     } catch {
       // fall through to live
     }
   }
-  return { nodes: analyze.findDeadCode(ctx.graphStore, ctx.orgId), source: "live", cache };
+  const live = analyze.scanDeadNodes(ctx.graphStore, ctx.orgId);
+  return {
+    nodes: live.nodes,
+    entryPoints: live.entryPoints,
+    source: "live",
+    cache,
+    coverage: live.coverage,
+  };
 }

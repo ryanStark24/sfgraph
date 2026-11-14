@@ -83,6 +83,9 @@ const byName = (a: string, b: string): number =>
   nameOf(a).toLowerCase().localeCompare(nameOf(b).toLowerCase()) || a.localeCompare(b);
 const CHECKED =
   "Checked: Apex methods and triggers, direct only (a loop that calls another method which queries is not counted)";
+/** How the two source checks decide (Technical details). */
+const DEFINITIONS =
+  "_unbounded_query: an inline query with no LIMIT and no WHERE in its own clause (COUNT() and Custom Metadata Type queries are not flagged). no_bulk: a trigger that reads Trigger.new[0] / Trigger.old[0] (or .get(0)), never loops over the trigger's records and does not pass them on._";
 
 /** The documented sort applied before `limit` (T15 I-5). */
 const ORDER =
@@ -125,7 +128,13 @@ defineTool({
         ? ` ${bySeverity(belowFloor)} ${hiddenBelowSeverity === 1 ? "is" : "are"} not shown (set \`min_severity: "${lowestHidden}"\` to see ${hiddenBelowSeverity === 1 ? "it" : "them"}).`
         : "";
     const cached = source === "live+cache";
+    const cov = collected.coverage;
+    // A scan that did not look at everything never says "no spots".
+    const scanNote = cov.complete
+      ? ""
+      : `The scan was incomplete: it inspected ${cov.scanned} of ${cov.total} methods and triggers, so spots in the rest are not listed.`;
     const meta = {
+      scan: { scanned: cov.scanned, total: cov.total, complete: cov.complete },
       source,
       cache: cache.state,
       ...(cache.reason ? { cacheReason: cache.reason } : {}),
@@ -158,18 +167,27 @@ defineTool({
         summary:
           hiddenBelowSeverity > 0
             ? `no risks at or above ${input.min_severity} (${hiddenBelowSeverity} hidden below min_severity)`
-            : "no risks detected",
+            : cov.complete
+              ? "no risks detected"
+              : `no risks detected in the ${cov.scanned} of ${cov.total} inspected (scan incomplete)`,
         markdown: renderReport({
           title: "Code that may hit Salesforce limits",
           inShort: [
             hiddenBelowSeverity > 0
               ? `No spots are shown: the only ${one ? "spot found is" : "spots found are"} ${bySeverity(belowFloor)}, below \`min_severity: "${input.min_severity}"\`; set \`min_severity: "${lowestHidden}"\` to see ${one ? "it" : "them"}.`
-              : "No spots found where Apex code may hit Salesforce's per-transaction limits.",
+              : cov.complete
+                ? "No spots found where Apex code may hit Salesforce's per-transaction limits."
+                : `No spots found in the ${cov.scanned} of ${cov.total} methods and triggers inspected; the scan was incomplete, so the rest were not checked.`,
             `${CHECKED}.${testNote}`,
           ],
-          details: ["_no governor risks surfaced_", ...(testDetails ? ["", testDetails] : [])].join(
-            "\n",
-          ),
+          details: [
+            DEFINITIONS,
+            "",
+            cov.complete
+              ? "_no governor risks surfaced_"
+              : `_no governor risks surfaced in the ${cov.scanned} of ${cov.total} inspected (scan incomplete)_`,
+            ...(testDetails ? ["", testDetails] : []),
+          ].join("\n"),
           next: ["Use `explain_code` on a class to read its code.", ...scanNotes],
         }),
         data: { risks: [], total: 0, truncated: false, order: ORDER, cached, ...meta },
@@ -187,6 +205,8 @@ defineTool({
       shownByOwner.set(o, [...(shownByOwner.get(o) ?? []), r]);
     }
     const md = [
+      DEFINITIONS,
+      "",
       "Grouped by class or trigger, A to Z.",
       "",
       ...[...shownByOwner]
@@ -257,6 +277,7 @@ defineTool({
                 : []),
             ]
           : []),
+        ...(scanNote ? [scanNote] : []),
         `${CHECKED}.${testNote}`,
       ],
       pieces,
