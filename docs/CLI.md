@@ -37,7 +37,7 @@ Commands:
 | `--orgs <a,b,c>` | — | Comma-separated alias list (ignores `--org`) |
 | `--all` | `false` | Iterate every authenticated org from `sf` (ignores `--org`) |
 | `--parallel` | `false` | With `--orgs`/`--all`, run all orgs concurrently |
-| `--mode <mode>` | `auto` | `full`, `incremental`, or `auto` |
+| `--mode <mode>` | `auto` | `full`, `incremental`, or `auto`. `incremental` reads source tracking and applies deletions only; it does not fetch added or modified components, and it holds the sync watermark (and warns) if any were found, or if a changed metadata type sfgraph cannot map was found. `auto` uses incremental only when nothing was added or modified; otherwise it runs a full refresh and reports `incremental:fellBackToFull`. Use `full` to refresh everything. |
 | `--rebuild` | `false` | Move existing graph to `backups/`, open fresh DB, force full sync |
 | `--no-backup` | — | With `--rebuild`, delete existing graph instead of backing it up |
 | `--detect-deletions` | `false` | After full sync, delete qnames present in the graph but not touched this run |

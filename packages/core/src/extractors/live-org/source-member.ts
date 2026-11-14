@@ -35,6 +35,12 @@ export async function* iterChanges(
   conn: any,
   _orgId: OrgId,
   sinceIso: string,
+  /**
+   * Called with the type and name of every SourceMember row whose type has no
+   * category mapping. Such rows are never yielded; the caller must report them
+   * as incomplete work.
+   */
+  onUnsupported?: (memberType: string, memberName: string, obsolete: boolean) => void,
 ): AsyncIterable<MemberRef> {
   // Salesforce SOQL datetime literals are unquoted ISO-8601 (e.g. 2025-01-01T00:00:00Z).
   const since = sinceIso.replace(/'/g, "");
@@ -59,7 +65,10 @@ export async function* iterChanges(
     const records = (result.records ?? []) as SourceMemberRow[];
     for (const r of records) {
       const category = MEMBER_TYPE_TO_CATEGORY[r.MemberType];
-      if (!category) continue;
+      if (!category) {
+        onUnsupported?.(r.MemberType, r.MemberName, Boolean(r.IsNameObsolete));
+        continue;
+      }
       yield {
         category,
         memberType: r.MemberType,

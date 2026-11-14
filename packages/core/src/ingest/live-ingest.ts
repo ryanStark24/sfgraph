@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { type OrgId, type QualifiedName, asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import type { Logger } from "@ryanstark24/sfgraph-shared";
+import { METADATA_CATEGORY } from "../domain/index.js";
 import { type ArityResolveOpts, resolveApexMethodArity } from "../parsers/apex/arity-resolver.js";
 import { retargetApexInterfaceRefs } from "../parsers/apex/interface-ref-resolver.js";
 import { resolveAuraEmbeds } from "../parsers/aura/embed-resolver.js";
@@ -86,6 +87,25 @@ import {
   recoverObjectsEnabled,
   recoverReferencedObjects,
 } from "./recover-objects.js";
+
+/** A deletion ref for a member type sfgraph has no category for. */
+function syntheticDeletion(type: string, name: string): MemberRef {
+  return {
+    category: METADATA_CATEGORY.OPAQUE,
+    memberType: type,
+    memberName: name,
+    lastModifiedAt: null,
+    sourceUri: `sf://tooling/${type}/${name}`,
+    obsolete: true,
+  };
+}
+
+function unsupportedTypesWarning(counts: Map<string, number>): string {
+  const parts = [...counts.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([t, n]) => `${t}=${n}`);
+  return `incremental:unsupportedTypes:${parts.join(",")}`;
+}
 
 export type IngestMode = "full" | "incremental" | "auto";
 
@@ -707,10 +727,52 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     const existing = graph.getOrg(resolved.orgId);
     const requestedMode = opts.mode ?? "auto";
     let mode: IngestMode;
+    // Changes read by the auto-mode pre-scan; reused by the incremental branch
+    // so the SourceMember table is queried once.
+    let autoScan:
+      | {
+          refs: MemberRef[];
+          unsupported: Map<string, number>;
+          unsupportedRefs: Array<{ type: string; name: string; obsolete: boolean }>;
+        }
+      | undefined;
+    const autoFallback: string[] = [];
     if (opts.metadataSource) {
       mode = "full";
     } else if (requestedMode === "auto") {
       mode = existing?.lastSyncedAt && caps.sourceTracking ? "incremental" : "full";
+      if (mode === "incremental") {
+        // Incremental applies deletions only; it cannot fetch changed content.
+        // So auto looks at what changed first and runs a full refresh when
+        // anything beyond pure deletions (additions, modifications, or types
+        // sfgraph cannot map) is found.
+        const unsupported = new Map<string, number>();
+        const unsupportedRefs: Array<{ type: string; name: string; obsolete: boolean }> = [];
+        const refs: MemberRef[] = [];
+        const scanSince = new Date(existing!.lastSyncedAt as number).toISOString();
+        for await (const ref of iterChanges(
+          resolved.conn,
+          resolved.orgId,
+          scanSince,
+          (t, n, obsolete) => {
+            if (!obsolete) unsupported.set(t, (unsupported.get(t) ?? 0) + 1);
+            unsupportedRefs.push({ type: t, name: n, obsolete });
+          },
+        )) {
+          refs.push(ref);
+        }
+        autoScan = { refs, unsupported, unsupportedRefs };
+        const changed = refs.filter((r) => !r.obsolete).length;
+        const unsupportedTotal = [...unsupported.values()].reduce((a, b) => a + b, 0);
+        if (changed > 0 || unsupportedTotal > 0) {
+          mode = "full";
+          if (unsupportedTotal > 0) autoFallback.push(unsupportedTypesWarning(unsupported));
+          autoFallback.push(`incremental:fellBackToFull:changed=${changed + unsupportedTotal}`);
+          logger.info(
+            `live-ingest: ${resolved.alias} has ${changed + unsupportedTotal} changed member(s) since the last sync; incremental sync applies deletions only, so auto is running a full refresh`,
+          );
+        }
+      }
     } else {
       mode = requestedMode;
     }
@@ -753,6 +815,13 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // wiping nodes that were never visited due to the abort.
     let streamAborted = false;
     const touchedQnames = new Set<string>();
+    // `Type:Name` (lower case) of members this run parsed and wrote; used to
+    // check that an auto fallback really refreshed what the pre-scan saw.
+    const refreshedMembers = new Set<string>();
+    // Members whose parse returned a ParseError / parseFailed placeholder, and
+    // the node keys it wrote: written, but not refreshed.
+    const failedParseMembers = new Set<string>();
+    const failedParseNodes = new Set<string>();
     // W1.5-07: maintain per-label touched-qnames sets in parallel with the
     // flat `touchedQnames` set so the deletion-sweep guard can compute
     // priorCount/touchedCount per label without re-deriving labels later.
@@ -769,6 +838,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // final LiveIngestResult.warnings array. See bulk-retrieve.ts WedgeCoordinator.
     const wedgeWarnings: string[] = [];
     if (modeFallback) wedgeWarnings.push(modeFallback);
+    wedgeWarnings.push(...autoFallback);
 
     // Task 10 rebuild fast path. On a full ingest into an org whose graph is
     // empty at start, run the fan-out inside the store's bulk-load window:
@@ -1195,18 +1265,38 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       // members are counted and the user is told to run a full ingest to
       // refresh them. (Deletions are still valuable and safe.)
       let changedNotApplied = 0;
-      for await (const ref of iterChanges(resolved.conn, resolved.orgId, sinceIso)) {
+      const unsupportedSeen = autoScan?.unsupported ?? new Map<string, number>();
+      const unsupportedDeleted: Array<{ type: string; name: string }> = autoScan
+        ? autoScan.unsupportedRefs.filter((u) => u.obsolete)
+        : [];
+      const changes: AsyncIterable<MemberRef> | MemberRef[] =
+        autoScan?.refs ??
+        iterChanges(resolved.conn, resolved.orgId, sinceIso, (t, n, obsolete) => {
+          if (obsolete) unsupportedDeleted.push({ type: t, name: n });
+          else unsupportedSeen.set(t, (unsupportedSeen.get(t) ?? 0) + 1);
+        });
+      for await (const ref of changes) {
         if (ref.obsolete) {
           await processOne(ref, "");
         } else {
           changedNotApplied += 1;
         }
       }
-      incrementalUnfetched = changedNotApplied;
+      // Deletions of types sfgraph cannot map need no content either: remove
+      // their node by `Label:Name`, like a mapped deletion.
+      for (const u of unsupportedDeleted) await processOne(syntheticDeletion(u.type, u.name), "");
+      const unsupportedTotal = [...unsupportedSeen.values()].reduce((a, b) => a + b, 0);
+      incrementalUnfetched = changedNotApplied + unsupportedTotal;
       if (changedNotApplied > 0) {
-        const msg = `incremental: ${changedNotApplied} changed/added member(s) detected but NOT refreshed (content fetch not implemented for incremental). The sync watermark is being HELD so the next run re-detects them. Run \`sfgraph ingest --org ${resolved.alias} --rebuild\` (or --mode full) to capture them.`;
+        const msg = `incremental: ${changedNotApplied} added/modified member(s) detected but NOT fetched. Incremental sync applies deletions only. The sync watermark is being HELD so the next run re-detects them. Run \`sfgraph ingest --org ${resolved.alias} --mode full\` (or --mode auto, which falls back to a full refresh when content changed) to refresh them.`;
         logger.warn(msg);
         wedgeWarnings.push(`incremental:contentNotFetched:count=${changedNotApplied}`);
+      }
+      if (unsupportedTotal > 0) {
+        logger.warn(
+          `incremental: ${unsupportedTotal} change(s) of metadata types sfgraph cannot map were NOT processed; the sync watermark is being HELD. Run \`sfgraph ingest --org ${resolved.alias} --mode full\` to refresh them.`,
+        );
+        wedgeWarnings.push(unsupportedTypesWarning(unsupportedSeen));
       }
     } else {
       // The outer iteration is also wrapped: bulkRetrieve uses fail-soft per
@@ -1237,6 +1327,15 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       // different edge tables rather than competing for the same row, but
       // the pre-fan-out ordering preserves the "parsed wins" guarantee for
       // the (rare) case where a parser does emit REFERENCES.
+      // Auto fell back to full after the pre-scan: the scan also saw deletions,
+      // and a full run without --detect-deletions would not apply them while
+      // the watermark moves past them. Apply them here, as incremental does.
+      for (const ref of autoScan?.refs ?? []) {
+        if (ref.obsolete) await processOne(ref, "");
+      }
+      for (const u of autoScan?.unsupportedRefs ?? []) {
+        if (u.obsolete) await processOne(syntheticDeletion(u.type, u.name), "");
+      }
       openBulk();
       if (!opts.disableMcdBaseline && !opts.metadataSource) {
         try {
@@ -1452,6 +1551,25 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
             if (batchOpen) graph.batchMemberStart?.();
             try {
               applyMember(member.ref, outcome);
+              const parseFailedMember =
+                outcome.kind === "parsed" &&
+                outcome.result.nodes.some(
+                  (n) =>
+                    n.label === "ParseError" ||
+                    (n.attributes as Record<string, unknown> | undefined)?.parseFailed === true,
+                );
+              if (parseFailedMember && outcome.kind === "parsed") {
+                // The parser returned a placeholder, not the member's content.
+                for (const n of outcome.result.nodes)
+                  failedParseNodes.add(String(n.qualifiedName).toLowerCase());
+                failedParseMembers.add(
+                  `${member.ref.memberType}:${member.ref.memberName}`.toLowerCase(),
+                );
+              } else if (autoScan && outcome.kind !== "error" && outcome.kind !== "skip") {
+                refreshedMembers.add(
+                  `${member.ref.memberType}:${member.ref.memberName}`.toLowerCase(),
+                );
+              }
               if (profiler.enabled) {
                 profiler.member({
                   qname: `${member.ref.memberType}:${member.ref.memberName}`,
@@ -2138,7 +2256,58 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // incremental re-detects (and keeps warning about) those changes instead of
     // stepping over them forever. generation still increments / in-progress
     // still clears (markSyncComplete does both regardless of the timestamp).
-    const holdWatermark = incrementalUnfetched > 0 && existing?.lastSyncedAt != null;
+    // A fallback full run that left a source skipped, a member unparsed or the
+    // stream aborted may not have refreshed the changes the pre-scan saw; the
+    // watermark is held for the same reason. (A plain full run is unchanged.)
+    // Positive check: the watermark moves only if every scanned added/modified
+    // member was actually written by this run (as a streamed member, or as a
+    // node with the matching `Label:Name` key). A change that cannot be matched
+    // to anything written holds the watermark, the safe side.
+    const writtenNodes = new Set<string>();
+    for (const q of touchedQnames) {
+      if (!failedParseNodes.has(q.toLowerCase())) writtenNodes.add(q.toLowerCase());
+    }
+    const unrefreshed: string[] = [];
+    const scannedChanges: Array<{ type: string; name: string; obsolete?: boolean }> = [
+      ...(autoScan?.refs ?? [])
+        .filter((r) => !r.obsolete)
+        .map((r) => ({ type: r.memberType, name: r.memberName })),
+      ...(autoScan?.unsupportedRefs ?? []),
+    ];
+    for (const c of scannedChanges) {
+      const key = `${c.type}:${c.name}`;
+      const nodeKey = `${MEMBER_TYPE_TO_NODE_LABEL[c.type] ?? c.type}:${c.name}`;
+      if (c.obsolete) {
+        // A deleted member cannot be written: it is confirmed when its node is
+        // absent after the run (removed, or never there).
+        if (!graph.getNode(resolved.orgId, asQualifiedName(nodeKey))) continue;
+        unrefreshed.push(key);
+        continue;
+      }
+      if (failedParseMembers.has(key.toLowerCase())) {
+        unrefreshed.push(`${key}(parseFailed)`);
+        continue;
+      }
+      if (refreshedMembers.has(key.toLowerCase()) || writtenNodes.has(nodeKey.toLowerCase()))
+        continue;
+      unrefreshed.push(key);
+    }
+    const discoverySkipped = skipReport.skips.some((sk) => sk.label === "discovery");
+    const fallbackIncomplete =
+      autoFallback.length > 0 &&
+      (unrefreshed.length > 0 || discoverySkipped || parseErrors > 0 || streamAborted);
+    if (fallbackIncomplete) {
+      const shown = unrefreshed.slice(0, 10).join(",");
+      const more = unrefreshed.length > 10 ? `,+${unrefreshed.length - 10} more` : "";
+      wedgeWarnings.push(
+        `incremental:fallbackIncomplete:unrefreshed=${shown}${more},count=${unrefreshed.length}${discoverySkipped ? ",discoverySkipped" : ""},parseErrors=${parseErrors}${streamAborted ? ",streamAborted" : ""}`,
+      );
+      logger.warn(
+        "live-ingest: the full refresh that auto ran after detecting changes did not confirm every changed member (or no node could be matched to it); the sync watermark is being HELD so the next run re-detects them",
+      );
+    }
+    const holdWatermark =
+      (incrementalUnfetched > 0 || fallbackIncomplete) && existing?.lastSyncedAt != null;
     const watermarkIso = holdWatermark
       ? new Date(existing!.lastSyncedAt as number).toISOString()
       : completedIso;
