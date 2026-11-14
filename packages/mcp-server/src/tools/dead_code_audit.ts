@@ -319,13 +319,15 @@ function liveZeroInbound(
     inShort: [
       dead.length
         ? `${dead.length} of the ${scope} checked ${dead.length === 1 ? "has" : "have"} no captured incoming references${dead.length > shown.length ? `; ${firstListed(shown.length)}` : ""}.`
-        : partial
-          ? `None found in the ${coverage.scanned} of ${coverage.total} ${kinds} inspected; the scan was incomplete, so the rest were not checked.`
-          : checked === 1
-            ? `The ${scope} checked has something referring to it, so it is not unused.`
-            : checked
-              ? `None of the ${scope} checked has zero references: each has something referring to it.`
-              : `No ${kinds}${input.pattern ? ` named like ${code(input.pattern)}` : ""} were found, so nothing was checked.`,
+        : entry.length
+          ? `No candidates: ${countNoun(entry.length, "piece")} of the ${scope} checked ${entry.length === 1 ? "has" : "have"} no captured incoming references but ${entry.length === 1 ? "is a" : "are"} known external entry point${entry.length === 1 ? "" : "s"} (listed below)${partial ? `; the scan was incomplete (${coverage.scanned} of ${coverage.total} inspected), so the rest were not checked` : "; the rest have captured references"}.`
+          : partial
+            ? `None found in the ${coverage.scanned} of ${coverage.total} ${kinds} inspected; the scan was incomplete, so the rest were not checked.`
+            : checked === 1
+              ? `The ${scope} checked has something referring to it, so it is not unused.`
+              : checked
+                ? `None of the ${scope} checked has zero references: each has something referring to it.`
+                : `No ${kinds}${input.pattern ? ` named like ${code(input.pattern)}` : ""} were found, so nothing was checked.`,
       `This kind has no age score, so it is checked live; references from tests count.${partial ? ` ${partialText}` : ""} ${OUTSIDE_GRAPH}`,
       ...(entry.length
         ? [
@@ -470,9 +472,11 @@ function renderCandidates(
     shownTestOnly.map((d) => d.qualifiedName),
   );
   if (pool.length === 0) {
-    const none = partial
-      ? `No code with no captured incoming references found in the ${coverage.scanned} of ${coverage.total} inspected among ${scopeText(input)}; the scan was incomplete, so the rest were not checked.`
-      : `No code with no captured incoming references found among ${scopeText(input)}.`;
+    const none = entry.length
+      ? `No candidates: ${countNoun(entry.length, "piece")} ${entry.length === 1 ? "has" : "have"} no captured incoming references but ${entry.length === 1 ? "is a" : "are"} known external entry point${entry.length === 1 ? "" : "s"} (listed below)${partial ? `; the scan was incomplete (${coverage.scanned} of ${coverage.total} inspected), so the rest were not checked` : "; the rest have captured references"}.`
+      : partial
+        ? `No code with no captured incoming references found in the ${coverage.scanned} of ${coverage.total} inspected among ${scopeText(input)}; the scan was incomplete, so the rest were not checked.`
+        : `No code with no captured incoming references found among ${scopeText(input)}.`;
     return {
       summary: `${partial ? `no dead-code candidates in the ${coverage.scanned} of ${coverage.total} inspected (scan incomplete)` : "no dead-code candidates"}${entry.length ? `; ${entry.length} known external entry points` : ""}${testOnly.length ? `; ${testOnly.length} referenced only by tests` : ""}`,
       markdown: renderReport({

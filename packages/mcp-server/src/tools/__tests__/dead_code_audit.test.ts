@@ -71,6 +71,41 @@ describe("dead_code_audit", () => {
     expect(all.markdown).not.toContain("Acme_EventTrig");
   });
 
+  it("when every zero-reference piece is an entry point, the summary does not say all have references (platform-event triggers)", async () => {
+    fix.addNode({ qualifiedName: "CustomObject:Acme_Event__e", label: "CustomObject" });
+    fix.addNode({ qualifiedName: "ApexTrigger:Acme_EventTrig", label: "ApexTrigger" });
+    fix.addEdge({
+      srcQualifiedName: "ApexTrigger:Acme_EventTrig",
+      dstQualifiedName: "CustomObject:Acme_Event__e",
+      relType: REL_TYPES.TRIGGERS_ON,
+    });
+    const t = await callTool("dead_code_audit", { org: fix.orgId, label: "ApexTrigger" });
+    expect(deadNames(t)).toEqual([]);
+    expect(t.markdown).toContain("No candidates: 1 piece");
+    expect(t.markdown).toContain("known external entry point");
+    expect(t.markdown).not.toMatch(/something referring to it|each has something referring/);
+  });
+
+  it("when the only zero-reference class is a REST endpoint, the scored summary names it an entry point, not 'no code found'", async () => {
+    const old = Date.now() - 1000 * 60 * 60 * 24 * 1000;
+    fix.addNode({ qualifiedName: "ApexClass:Acme_Api", label: "ApexClass", lastModifiedAt: old });
+    fix.addNode({
+      qualifiedName: "ApexMethod:Acme_Api.get(0)",
+      label: "ApexMethod",
+      attributes: { httpVerbs: ["GET"] },
+    });
+    fix.addEdge({
+      srcQualifiedName: "ApexClass:Acme_Api",
+      dstQualifiedName: "ApexMethod:Acme_Api.get(0)",
+      relType: REL_TYPES.CONTAINS_METHOD,
+    });
+    const r = await callTool("dead_code_audit", { org: fix.orgId });
+    expect(deadNames(r)).toEqual([]);
+    expect(r.markdown).toContain("No candidates: 1 piece");
+    expect(r.markdown).toContain("known external entry point");
+    expect(r.markdown).not.toContain("No code with no captured incoming references found");
+  });
+
   it("flags stale untouched class", async () => {
     fix.addNode({
       qualifiedName: "ApexClass:Stale",
