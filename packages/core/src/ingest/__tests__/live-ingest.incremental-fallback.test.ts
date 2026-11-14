@@ -1,7 +1,7 @@
 import { ConsoleLogger, asOrgId, asQualifiedName } from "@ryanstark24/sfgraph-shared";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { limiter, metadataPool } from "../../extractors/live-org/rate-limit.js";
 
-vi.setConfig({ testTimeout: 30_000 });
 import { buildJsforceMock } from "../../extractors/live-org/__tests__/_jsforce-mock.js";
 import { wrapConnectionReadOnly } from "../../extractors/live-org/read-only-proxy.js";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";
@@ -14,6 +14,13 @@ import { liveIngest } from "../live-ingest.js";
  * run and says so. Explicit `incremental` keeps its deletions-only behaviour,
  * says so, and holds the watermark.
  */
+
+// The shared API pools meter calls with a reservoir that refills slowly; after
+// a few full syncs in one process the later tests waited ~8 s on it. Top it up.
+beforeEach(async () => {
+  await limiter.incrementReservoir(10_000);
+  await metadataPool.incrementReservoir(10_000);
+});
 
 const ORG_ID = asOrgId("00Dxx0000000ABCEAA");
 const APEX_SOQL =
