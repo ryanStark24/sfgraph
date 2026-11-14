@@ -26,7 +26,10 @@ sfgraph keeps its graph and vector store on your machine and is designed to only
      `ReadOnlyViolationError` naming the method and URL before anything is
      sent.
 
-   Limits: this covers connections created by sfgraph through `resolveOrg`.
+   Limits: this covers every request made through the connection objects
+   sfgraph creates (`resolveOrg`). Code that calls jsforce internals directly,
+   such as its transport prototype, is outside the guard; sfgraph does not do
+   that and extractors only receive the read facade.
    The OAuth token refresh that `@salesforce/core` does with its own client is
    outside the guard; it exchanges a refresh token and does not read or write
    org data. A new read that needs POST must be added to the allow-list

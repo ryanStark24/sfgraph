@@ -281,6 +281,93 @@ describe("transport guard: writes through the REAL jsforce Connection never reac
     expect(requests).toEqual([]);
   });
 
+  it("refuses a method that is not a primitive string (String object, array, toString object)", async () => {
+    const { conn, requests } = setup();
+    const url = "/services/data/v60.0/sobjects/Account";
+    const methods: unknown[] = [
+      new String("POST"),
+      ["POST"],
+      { toString: () => "POST" },
+      { valueOf: () => "POST" },
+      1,
+      null,
+      "",
+    ];
+    for (const method of methods) {
+      await refuses(() => conn.request({ method, url, body: "{}" }));
+      expect(() =>
+        conn._transport.httpRequest({ method, url: `https://example.invalid${url}`, body: "{}" }),
+      ).toThrow(ReadOnlyViolationError);
+    }
+    expect(requests).toEqual([]);
+  });
+
+  it("decides on the method it sends: a getter that changes on second read cannot flip it", async () => {
+    const { conn, requests } = setup();
+    let reads = 0;
+    const req = {
+      get method() {
+        reads += 1;
+        return reads === 1 ? "GET" : "POST";
+      },
+      url: "/services/data/v60.0/sobjects/Account",
+      body: "{}",
+    };
+    await conn.request(req);
+    expect(requests.map((r) => r.method)).toEqual(["GET"]);
+    let urlReads = 0;
+    await conn.request({
+      method: "GET",
+      get url() {
+        urlReads += 1;
+        return urlReads === 1
+          ? "/services/data/v60.0/tooling/query?q=x"
+          : "/services/data/v60.0/tooling/executeAnonymous/";
+      },
+    });
+    expect(requests.map((r) => r.url).join(" ")).not.toMatch(/executeAnonymous/);
+  });
+
+  it("refuses SOAP bodies that hide a write behind a comment, CDATA or processing instruction", async () => {
+    const { conn, requests } = setup();
+    const ns = 'xmlns="http://soap.sforce.com/2006/04/metadata"';
+    const env = (inner: string) =>
+      `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body>${inner}</soapenv:Body></soapenv:Envelope>`;
+    const bodies = [
+      env(
+        `<!-- <readMetadata> --><deleteMetadata ${ns}><type>CustomObject</type></deleteMetadata><!-- </readMetadata> -->`,
+      ),
+      env("<![CDATA[<readMetadata>]]><deleteMetadata/><![CDATA[</readMetadata>]]>"),
+      env("<?pi <readMetadata> ?><deleteMetadata/>"),
+      env("<readMetadata/><deleteMetadata/>"),
+      env("<deleteMetadata a='<readMetadata>'/>"),
+      env('<deleteMetadata a=">"><readMetadata/></deleteMetadata>'),
+      env("<readMetadata><x></readMetadata>"),
+      env(""),
+      "<!DOCTYPE x><soapenv:Envelope><soapenv:Body><readMetadata/></soapenv:Body></soapenv:Envelope>",
+      env("<readMetadata/>") + env("<deleteMetadata/>"),
+      "<readMetadata/>",
+      "",
+    ];
+    for (const body of bodies) {
+      await refuses(() =>
+        conn.request({ method: "POST", url: "/services/Soap/m/60.0", body, headers: {} }),
+      );
+    }
+    await refuses(() =>
+      conn.request({
+        method: "POST",
+        url: "/services/Soap/m/60.0",
+        body: Buffer.from(env("<readMetadata/>")),
+      }),
+    );
+    expect(requests).toEqual([]);
+    // The same operations, written plainly, are still allowed (prefix ignored).
+    expect(soapOperation(env("<readMetadata/>"))).toBe("readMetadata");
+    expect(soapOperation(env(`<m:retrieve ${ns} a="x>y"><m:r/></m:retrieve>`))).toBe("retrieve");
+    expect(soapOperation(env("<!-- note --><listMetadata/>"))).toBe("listMetadata");
+  });
+
   it("allows SOAP only by operation name, not by URL", () => {
     const url = "https://example.invalid/services/Soap/m/60.0";
     const body = (inner: string) => soapEnvelope(inner);
