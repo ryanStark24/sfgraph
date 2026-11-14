@@ -302,6 +302,27 @@ describe("transport guard: writes through the REAL jsforce Connection never reac
     expect(requests).toEqual([]);
   });
 
+  it("refuses a url that is not a primitive string (URL object, toString object)", async () => {
+    const { conn, requests } = setup();
+    const exec =
+      "https://example.invalid/services/data/v60.0/tooling/executeAnonymous/?anonymousBody=x";
+    const urls: unknown[] = [
+      new URL(exec),
+      { toString: () => exec },
+      new String(exec),
+      new URL("https://example.invalid/services/data/v60.0/sobjects/Account"),
+    ];
+    for (const url of urls) {
+      for (const method of ["GET", "POST"]) {
+        await refuses(() => conn.request({ method, url, body: "{}" }));
+        expect(() => conn._transport.httpRequest({ method, url, body: "{}" })).toThrow(
+          ReadOnlyViolationError,
+        );
+      }
+    }
+    expect(requests).toEqual([]);
+  });
+
   it("decides on the method it sends: a getter that changes on second read cannot flip it", async () => {
     const { conn, requests } = setup();
     let reads = 0;

@@ -61,8 +61,9 @@ const METADATA_SOAP_PATH =
  * Snapshot a request once. The guard decides on, and the transport is given,
  * this snapshot, so a getter or toString that answers differently on a second
  * read cannot change the method after it was checked. The method must be a
- * primitive string (or absent, which jsforce treats as GET); a String object,
- * array or object with toString is refused rather than coerced.
+ * primitive string (or absent, which jsforce treats as GET) and so must the url;
+ * a String object, array, URL or object with toString is refused rather than
+ * coerced. The body is only read from the snapshot, once.
  */
 function snapshotRequest(req: unknown): {
   method: string;
@@ -76,7 +77,12 @@ function snapshotRequest(req: unknown): {
   }
   const snap: Record<string, unknown> = { ...(req as Record<string, unknown>) };
   const m = snap.method;
-  const url = typeof snap.url === "string" ? snap.url : `<${typeof snap.url} url>`;
+  const urlIsString = typeof snap.url === "string";
+  const url = urlIsString ? (snap.url as string) : `<${typeof snap.url} url>`;
+  // The URL decides which GETs and which SOAP path are allowed, so like the
+  // method it must be a primitive string; a URL object is refused, not coerced.
+  if (!urlIsString)
+    return { method: typeof m === "string" ? m.toUpperCase() : "?", url, passOn: snap, ok: false };
   if (m === undefined) {
     snap.method = "GET";
     return { method: "GET", url, passOn: snap, ok: true };
