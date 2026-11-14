@@ -98,7 +98,7 @@ describe("audit perf-06: security_audit payload and scan", () => {
       relType: REL_TYPES.GRANTS_FIELD_ACCESS,
     });
     const norm = (a: analyze.SecurityAudit) => ({
-      sharingFullAccess: [...a.sharingFullAccess].sort(),
+      sharingEditAccess: [...a.sharingEditAccess].sort(),
       fieldAccessMatrix: a.fieldAccessMatrix.map((m) => ({
         ...m,
         grantedBy: [...m.grantedBy].sort(),
@@ -122,7 +122,7 @@ describe("audit perf-06: security_audit payload and scan", () => {
     }
   });
 
-  it("caps sharingFullAccess and cachedFindings at `limit` with totals (review M6)", async () => {
+  it("caps sharingEditAccess (and its deprecated alias sharingFullAccess) and cachedFindings at `limit` with totals (review M6)", async () => {
     for (let i = 0; i < 25; i++) {
       fix.addNode({
         qualifiedName: `SharingRule:Account.R${i}`,
@@ -135,17 +135,21 @@ describe("audit perf-06: security_audit payload and scan", () => {
     analyze.populateSecurityFindings(fix.ctx.graphStore, fix.orgId, db);
     const r = await callTool("security_audit", { org: fix.orgId, limit: 4 });
     const d = r.data as {
+      sharingEditAccess: string[];
+      sharingEditAccessTotal: number;
       sharingFullAccess: string[];
       sharingFullAccessTotal: number;
       cachedFindings: unknown[];
       cachedFindingsTotal: number;
       limited: boolean;
     };
-    expect(d.sharingFullAccess.length).toBe(4);
+    expect(d.sharingEditAccess.length).toBe(4);
+    expect(d.sharingEditAccessTotal).toBe(25);
+    expect(d.sharingFullAccess).toEqual(d.sharingEditAccess);
     expect(d.sharingFullAccessTotal).toBe(25);
     expect(d.cachedFindings.length).toBe(4);
     expect(d.cachedFindingsTotal).toBe(25);
     expect(d.limited).toBe(true);
-    expect(r.summary).toMatch(/25 full-access rules/);
+    expect(r.summary).toMatch(/25 sharing rules with record Edit or All access/);
   });
 });

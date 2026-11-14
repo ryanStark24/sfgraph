@@ -121,13 +121,14 @@ export const RULE_CATALOG: Record<string, RuleDescriptor> = {
       "Fields with no FLS grant are invisible to every user in API and UI alike. Either remove the field if unused or grant access on the appropriate permission set.",
     defaultLevel: "warning",
   },
-  "security.sharing-full-access": {
-    id: "security.sharing-full-access",
-    name: "Object granted full access via sharing",
-    shortDescription: "OWD or sharing rule grants Modify All / View All to a broad audience.",
+  "security.sharing-edit-access": {
+    id: "security.sharing-edit-access",
+    name: "Sharing rule gives record Edit access",
+    shortDescription:
+      "A sharing rule gives its audience Edit (or All) access to records of the object.",
     fullDescription:
-      "Granting full access via OWD or sharing rules bypasses field-level security and CRUD checks. Review whether the audience genuinely needs unrestricted access; prefer scoped permission sets.",
-    defaultLevel: "warning",
+      "Record-level access granted by a sharing rule, with the audience the rule stores (a group, role or guest user, for example). This is record sharing only. It does not show that the audience has object (CRUD) or field-level permissions, and it is not Modify All or View All, which are permission set and profile settings. Check that the audience should be able to edit these records. The analysis does not read org-wide defaults or work out any one user's effective access.",
+    defaultLevel: "note",
   },
   "dead-code.unreferenced": {
     id: "dead-code.unreferenced",
@@ -178,12 +179,19 @@ export function securityAuditToFindings(audit: SecurityAudit): Finding[] {
       location: { qualifiedName: gap },
     });
   }
-  for (const obj of audit.sharingFullAccess) {
+  const details = new Map((audit.sharingRuleAccess ?? []).map((r) => [r.qualifiedName, r]));
+  for (const obj of audit.sharingEditAccess ?? audit.sharingFullAccess ?? []) {
+    const d = details.get(obj);
+    const what = d ? `${d.access} access` : "Edit or All access";
+    const who = d?.audience ? ` to ${d.audience}` : "";
     out.push({
-      ruleId: "security.sharing-full-access",
-      message: `${obj}: granted full access via sharing rule or OWD`,
-      level: "warning",
+      ruleId: "security.sharing-edit-access",
+      message: `${obj}: sharing rule gives ${what} to records${who} (record sharing only; says nothing about object or field permissions)`,
+      level: "note",
       location: { qualifiedName: obj },
+      ...(d
+        ? { properties: { access: d.access, ...(d.audience ? { audience: d.audience } : {}) } }
+        : {}),
     });
   }
   return out;
