@@ -36,8 +36,9 @@ export async function* iterChanges(
   _orgId: OrgId,
   sinceIso: string,
   /**
-   * Called for every SourceMember row whose type has no category mapping.
-   * Such rows are never yielded; the caller must report them as incomplete work.
+   * Called with the type and name of every SourceMember row whose type has no
+   * category mapping. Such rows are never yielded; the caller must report them
+   * as incomplete work.
    */
   onUnsupported?: (memberType: string, memberName: string) => void,
 ): AsyncIterable<MemberRef> {

@@ -37,6 +37,8 @@ function makeConn(state: {
   sourceMembers: SmRow[];
   failApex?: boolean;
   discoveryFails?: boolean;
+  withObjectAndLwc?: boolean;
+  workflow?: "ok" | "fail" | undefined;
 }) {
   const conn = buildJsforceMock({
     toolingDescribeResults: { SourceMember: true },
@@ -47,10 +49,51 @@ function makeConn(state: {
     metadataDescribe: [],
   });
   const baseDescribe = conn.metadata.describe;
+  const baseList = conn.metadata.list;
+  conn.metadata.list = async (req: unknown) => {
+    const first = (Array.isArray(req) ? req[0] : req) as { type?: string };
+    if (first?.type === "Workflow" && state.workflow) {
+      if (state.workflow === "fail") throw new Error("socket hang up (ECONNRESET)");
+      return [{ fullName: "Account" }];
+    }
+    return baseList(req);
+  };
   conn.metadata.describe = async (v?: string) => {
     if (state.discoveryFails) throw new Error("socket hang up (ECONNRESET)");
+    if (state.workflow) return { metadataObjects: [{ xmlName: "Workflow" }] };
     return baseDescribe(v);
   };
+  const baseDescribeGlobal = conn.describeGlobal;
+  const baseSobject = conn.sobject;
+  if (state.withObjectAndLwc !== undefined) {
+    conn.describeGlobal = async () =>
+      state.withObjectAndLwc
+        ? {
+            sobjects: [
+              {
+                name: "Account",
+                label: "Account",
+                custom: false,
+                queryable: true,
+                deprecatedAndHidden: false,
+              },
+            ],
+          }
+        : baseDescribeGlobal();
+    conn.sobject = (name: string) =>
+      state.withObjectAndLwc && name === "Account"
+        ? {
+            describe: async () => ({
+              name: "Account",
+              label: "Account",
+              fields: [
+                { name: "Id", type: "id", label: "Id" },
+                { name: "Tier__c", type: "string", label: "Tier", custom: true },
+              ],
+            }),
+          }
+        : baseSobject(name);
+  }
   const baseQuery = conn.tooling.query;
   conn.tooling.query = async (soql: string) => {
     if (/FROM SourceMember/.test(soql)) {
@@ -63,6 +106,36 @@ function makeConn(state: {
           LastModifiedDate: new Date().toISOString(),
           ...r,
         })),
+      };
+    }
+    if (state.withObjectAndLwc && /FROM EntityDefinition/.test(soql)) {
+      return {
+        done: true,
+        records: [
+          {
+            QualifiedApiName: "Account",
+            IsCustomizable: true,
+            IsApexTriggerable: true,
+            IsDeprecatedAndHidden: false,
+            IsCustomSetting: false,
+          },
+        ],
+      };
+    }
+    if (state.withObjectAndLwc && /FROM LightningComponentBundle$/.test(soql)) {
+      return {
+        done: true,
+        records: [
+          { Id: "0Rb1", DeveloperName: "acmeCard", LastModifiedDate: "2025-01-01T00:00:00Z" },
+        ],
+      };
+    }
+    if (/FROM LightningComponentResource/.test(soql)) {
+      return {
+        done: true,
+        records: [
+          { FilePath: "lwc/acmeCard/acmeCard.js", Source: "export default class AcmeCard {}" },
+        ],
       };
     }
     if (soql === APEX_SOQL && state.failApex) throw new Error("socket hang up (ECONNRESET)");
@@ -114,6 +187,8 @@ async function seeded() {
     sourceMembers: [] as SmRow[],
     failApex: false,
     discoveryFails: false,
+    withObjectAndLwc: false,
+    workflow: undefined as "ok" | "fail" | undefined,
   };
   const conn = makeConn(state);
   const first = await run(store, conn, "full");
@@ -227,6 +302,49 @@ describe("live sync: auto falls back to a full refresh when content changed", ()
     // the mock always skips the `object` source (no describeGlobal)
     expect(r.warnings.some((x) => x.includes("object"))).toBe(true);
     expect(r.warnings.some((x) => x.startsWith("incremental:fallbackIncomplete:"))).toBe(false);
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
+    await store.close();
+  });
+
+  it("a modified CustomField and LWC bundle written by the extractors let the watermark advance", async () => {
+    const { store, state, conn } = await seeded();
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.withObjectAndLwc = true;
+    // SourceMember names: field as `Obj.Field` (any case), bundle by DeveloperName.
+    state.sourceMembers = [
+      { MemberType: "CustomField", MemberName: "account.tier__c" },
+      { MemberType: "LightningComponentBundle", MemberName: "AcmeCard" },
+    ];
+    const r = await run(store, conn, "auto");
+    expect(r.mode).toBe("full");
+    expect(store.getNode(ORG_ID, asQualifiedName("CustomField:Account.Tier__c"))).toBeTruthy();
+    expect(store.getNode(ORG_ID, asQualifiedName("LWC:acmeCard"))).toBeTruthy();
+    expect(r.warnings.filter((x) => x.startsWith("incremental:fallbackIncomplete:"))).toEqual([]);
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
+    await store.close();
+  });
+
+  it("a modified Workflow whose generic retrieval fails holds the watermark and names it", async () => {
+    const { store, state, conn } = await seeded();
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.sourceMembers = [{ MemberType: "Workflow", MemberName: "Account" }];
+    state.workflow = "fail";
+    const r = await run(store, conn, "auto");
+    expect(r.mode).toBe("full");
+    expect(r.warnings.some((x) => x.includes("unrefreshed=Workflow:Account"))).toBe(true);
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt).toBe(before);
+    await store.close();
+  });
+
+  it("a modified Workflow written by the generic extractor lets the watermark advance", async () => {
+    const { store, state, conn } = await seeded();
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.sourceMembers = [{ MemberType: "Workflow", MemberName: "Account" }];
+    state.workflow = "ok";
+    const r = await run(store, conn, "auto");
+    expect(r.mode).toBe("full");
+    expect(r.warnings).toContain("incremental:unsupportedTypes:Workflow=1");
+    expect(r.warnings.filter((x) => x.startsWith("incremental:fallbackIncomplete:"))).toEqual([]);
     expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
     await store.close();
   });

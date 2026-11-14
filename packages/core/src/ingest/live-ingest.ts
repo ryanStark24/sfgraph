@@ -716,7 +716,13 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     let mode: IngestMode;
     // Changes read by the auto-mode pre-scan; reused by the incremental branch
     // so the SourceMember table is queried once.
-    let autoScan: { refs: MemberRef[]; unsupported: Map<string, number> } | undefined;
+    let autoScan:
+      | {
+          refs: MemberRef[];
+          unsupported: Map<string, number>;
+          unsupportedRefs: Array<{ type: string; name: string }>;
+        }
+      | undefined;
     const autoFallback: string[] = [];
     if (opts.metadataSource) {
       mode = "full";
@@ -728,14 +734,16 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
         // anything beyond pure deletions (additions, modifications, or types
         // sfgraph cannot map) is found.
         const unsupported = new Map<string, number>();
+        const unsupportedRefs: Array<{ type: string; name: string }> = [];
         const refs: MemberRef[] = [];
         const scanSince = new Date(existing!.lastSyncedAt as number).toISOString();
-        for await (const ref of iterChanges(resolved.conn, resolved.orgId, scanSince, (t) =>
-          unsupported.set(t, (unsupported.get(t) ?? 0) + 1),
-        )) {
+        for await (const ref of iterChanges(resolved.conn, resolved.orgId, scanSince, (t, n) => {
+          unsupported.set(t, (unsupported.get(t) ?? 0) + 1);
+          unsupportedRefs.push({ type: t, name: n });
+        })) {
           refs.push(ref);
         }
-        autoScan = { refs, unsupported };
+        autoScan = { refs, unsupported, unsupportedRefs };
         const changed = refs.filter((r) => !r.obsolete).length;
         const unsupportedTotal = [...unsupported.values()].reduce((a, b) => a + b, 0);
         if (changed > 0 || unsupportedTotal > 0) {
@@ -1238,9 +1246,9 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       const unsupportedSeen = autoScan?.unsupported ?? new Map<string, number>();
       const changes: AsyncIterable<MemberRef> | MemberRef[] =
         autoScan?.refs ??
-        iterChanges(resolved.conn, resolved.orgId, sinceIso, (t) =>
-          unsupportedSeen.set(t, (unsupportedSeen.get(t) ?? 0) + 1),
-        );
+        iterChanges(resolved.conn, resolved.orgId, sinceIso, (t) => {
+          unsupportedSeen.set(t, (unsupportedSeen.get(t) ?? 0) + 1);
+        });
       for await (const ref of changes) {
         if (ref.obsolete) {
           await processOne(ref, "");
@@ -2212,10 +2220,15 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     const writtenNodes = new Set<string>();
     for (const q of touchedQnames) writtenNodes.add(q.toLowerCase());
     const unrefreshed: string[] = [];
-    for (const r of autoScan?.refs ?? []) {
-      if (r.obsolete) continue;
-      const key = `${r.memberType}:${r.memberName}`;
-      const nodeKey = `${MEMBER_TYPE_TO_NODE_LABEL[r.memberType] ?? r.memberType}:${r.memberName}`;
+    const scannedChanges: Array<{ type: string; name: string }> = [
+      ...(autoScan?.refs ?? [])
+        .filter((r) => !r.obsolete)
+        .map((r) => ({ type: r.memberType, name: r.memberName })),
+      ...(autoScan?.unsupportedRefs ?? []),
+    ];
+    for (const c of scannedChanges) {
+      const key = `${c.type}:${c.name}`;
+      const nodeKey = `${MEMBER_TYPE_TO_NODE_LABEL[c.type] ?? c.type}:${c.name}`;
       if (refreshedMembers.has(key.toLowerCase()) || writtenNodes.has(nodeKey.toLowerCase()))
         continue;
       unrefreshed.push(key);
