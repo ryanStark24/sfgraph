@@ -32,14 +32,25 @@ interface SmRow {
   IsNameObsolete?: boolean;
 }
 
-function makeConn(state: { body: string; sourceMembers: SmRow[]; failApex?: boolean }) {
+function makeConn(state: {
+  body: string;
+  sourceMembers: SmRow[];
+  failApex?: boolean;
+  discoveryFails?: boolean;
+}) {
   const conn = buildJsforceMock({
     toolingDescribeResults: { SourceMember: true },
     toolingQueryResults: {
       [APEX_SOQL]: { records: [], done: true },
     },
     metadataList: {},
+    metadataDescribe: [],
   });
+  const baseDescribe = conn.metadata.describe;
+  conn.metadata.describe = async (v?: string) => {
+    if (state.discoveryFails) throw new Error("socket hang up (ECONNRESET)");
+    return baseDescribe(v);
+  };
   const baseQuery = conn.tooling.query;
   conn.tooling.query = async (soql: string) => {
     if (/FROM SourceMember/.test(soql)) {
@@ -102,6 +113,7 @@ async function seeded() {
     body: "public class Billing { public void a() {} }",
     sourceMembers: [] as SmRow[],
     failApex: false,
+    discoveryFails: false,
   };
   const conn = makeConn(state);
   const first = await run(store, conn, "full");
@@ -176,6 +188,45 @@ describe("live sync: auto falls back to a full refresh when content changed", ()
     const r2 = await run(store, conn, "auto");
     expect(r2.mode).toBe("full");
     expect(hash()).not.toBe(oldHash);
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
+    await store.close();
+  });
+
+  it("a modified Aura bundle with metadata discovery failing holds the watermark", async () => {
+    const { store, state, conn } = await seeded();
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.sourceMembers = [{ MemberType: "AuraDefinitionBundle", MemberName: "AcmeCard" }];
+    state.discoveryFails = true;
+    const r = await run(store, conn, "auto");
+    expect(r.mode).toBe("full");
+    const w = r.warnings.find((x) => x.startsWith("incremental:fallbackIncomplete:"));
+    expect(w).toContain("unrefreshed=AuraDefinitionBundle:AcmeCard");
+    expect(w).toContain("discoverySkipped");
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt).toBe(before);
+    await store.close();
+  });
+
+  it("a change that no written node matches (child type) holds and is named", async () => {
+    const { store, state, conn } = await seeded();
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.sourceMembers = [{ MemberType: "CustomField", MemberName: "Account.Tier__c" }];
+    const r = await run(store, conn, "auto");
+    expect(r.warnings.some((x) => x.includes("unrefreshed=CustomField:Account.Tier__c"))).toBe(
+      true,
+    );
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt).toBe(before);
+    await store.close();
+  });
+
+  it("unrelated skips do not hold the watermark when every change was refreshed", async () => {
+    const { store, state, conn } = await seeded();
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.body = "public class Billing { public void z() {} }";
+    state.sourceMembers = [{ MemberType: "ApexClass", MemberName: "billing" }];
+    const r = await run(store, conn, "auto");
+    // the mock always skips the `object` source (no describeGlobal)
+    expect(r.warnings.some((x) => x.includes("object"))).toBe(true);
+    expect(r.warnings.some((x) => x.startsWith("incremental:fallbackIncomplete:"))).toBe(false);
     expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
     await store.close();
   });

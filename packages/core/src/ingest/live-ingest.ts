@@ -87,20 +87,6 @@ import {
   recoverReferencedObjects,
 } from "./recover-objects.js";
 
-/** bulkRetrieve source label that fetches each mapped SourceMember type. Types
- *  not listed are fetched by `generic:<Type>`. */
-const SOURCE_LABEL_BY_MEMBER_TYPE: Record<string, string> = {
-  ApexClass: "apex",
-  ApexTrigger: "apex",
-  LightningComponentBundle: "lwc",
-  Flow: "flow",
-  CustomObject: "object",
-  CustomField: "object",
-  Profile: "security",
-  PermissionSet: "security",
-  NamedCredential: "integration",
-};
-
 function unsupportedTypesWarning(counts: Map<string, number>): string {
   const parts = [...counts.entries()]
     .sort(([a], [b]) => (a < b ? -1 : 1))
@@ -803,6 +789,9 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // wiping nodes that were never visited due to the abort.
     let streamAborted = false;
     const touchedQnames = new Set<string>();
+    // `Type:Name` (lower case) of members this run parsed and wrote; used to
+    // check that an auto fallback really refreshed what the pre-scan saw.
+    const refreshedMembers = new Set<string>();
     // W1.5-07: maintain per-label touched-qnames sets in parallel with the
     // flat `touchedQnames` set so the deletion-sweep guard can compute
     // priorCount/touchedCount per label without re-deriving labels later.
@@ -1522,6 +1511,11 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
             if (batchOpen) graph.batchMemberStart?.();
             try {
               applyMember(member.ref, outcome);
+              if (autoScan && outcome.kind !== "error" && outcome.kind !== "skip") {
+                refreshedMembers.add(
+                  `${member.ref.memberType}:${member.ref.memberName}`.toLowerCase(),
+                );
+              }
               if (profiler.enabled) {
                 profiler.member({
                   qname: `${member.ref.memberType}:${member.ref.memberName}`,
@@ -2211,22 +2205,33 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // A fallback full run that left a source skipped, a member unparsed or the
     // stream aborted may not have refreshed the changes the pre-scan saw; the
     // watermark is held for the same reason. (A plain full run is unchanged.)
-    const coveredLabels = new Set<string>();
+    // Positive check: the watermark moves only if every scanned added/modified
+    // member was actually written by this run (as a streamed member, or as a
+    // node with the matching `Label:Name` key). A change that cannot be matched
+    // to anything written holds the watermark, the safe side.
+    const writtenNodes = new Set<string>();
+    for (const q of touchedQnames) writtenNodes.add(q.toLowerCase());
+    const unrefreshed: string[] = [];
     for (const r of autoScan?.refs ?? []) {
       if (r.obsolete) continue;
-      coveredLabels.add(`generic:${r.memberType}`);
-      const grouped = SOURCE_LABEL_BY_MEMBER_TYPE[r.memberType];
-      if (grouped) coveredLabels.add(grouped);
+      const key = `${r.memberType}:${r.memberName}`;
+      const nodeKey = `${MEMBER_TYPE_TO_NODE_LABEL[r.memberType] ?? r.memberType}:${r.memberName}`;
+      if (refreshedMembers.has(key.toLowerCase()) || writtenNodes.has(nodeKey.toLowerCase()))
+        continue;
+      unrefreshed.push(key);
     }
-    const coveredSkips = skipReport.skips.filter((sk) => coveredLabels.has(sk.label));
+    const discoverySkipped = skipReport.skips.some((sk) => sk.label === "discovery");
     const fallbackIncomplete =
-      autoFallback.length > 0 && (coveredSkips.length > 0 || parseErrors > 0 || streamAborted);
+      autoFallback.length > 0 &&
+      (unrefreshed.length > 0 || discoverySkipped || parseErrors > 0 || streamAborted);
     if (fallbackIncomplete) {
+      const shown = unrefreshed.slice(0, 10).join(",");
+      const more = unrefreshed.length > 10 ? `,+${unrefreshed.length - 10} more` : "";
       wedgeWarnings.push(
-        `incremental:fallbackIncomplete:skips=${coveredSkips.map((sk) => sk.label).join("+")},parseErrors=${parseErrors}${streamAborted ? ",streamAborted" : ""}`,
+        `incremental:fallbackIncomplete:unrefreshed=${shown}${more},count=${unrefreshed.length}${discoverySkipped ? ",discoverySkipped" : ""},parseErrors=${parseErrors}${streamAborted ? ",streamAborted" : ""}`,
       );
       logger.warn(
-        "live-ingest: the full refresh that auto ran after detecting changes was incomplete; the sync watermark is being HELD so the next run re-detects them",
+        "live-ingest: the full refresh that auto ran after detecting changes did not confirm every changed member (or no node could be matched to it); the sync watermark is being HELD so the next run re-detects them",
       );
     }
     const holdWatermark =
