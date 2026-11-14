@@ -87,6 +87,20 @@ import {
   recoverReferencedObjects,
 } from "./recover-objects.js";
 
+/** bulkRetrieve source label that fetches each mapped SourceMember type. Types
+ *  not listed are fetched by `generic:<Type>`. */
+const SOURCE_LABEL_BY_MEMBER_TYPE: Record<string, string> = {
+  ApexClass: "apex",
+  ApexTrigger: "apex",
+  LightningComponentBundle: "lwc",
+  Flow: "flow",
+  CustomObject: "object",
+  CustomField: "object",
+  Profile: "security",
+  PermissionSet: "security",
+  NamedCredential: "integration",
+};
+
 function unsupportedTypesWarning(counts: Map<string, number>): string {
   const parts = [...counts.entries()]
     .sort(([a], [b]) => (a < b ? -1 : 1))
@@ -2194,7 +2208,29 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // incremental re-detects (and keeps warning about) those changes instead of
     // stepping over them forever. generation still increments / in-progress
     // still clears (markSyncComplete does both regardless of the timestamp).
-    const holdWatermark = incrementalUnfetched > 0 && existing?.lastSyncedAt != null;
+    // A fallback full run that left a source skipped, a member unparsed or the
+    // stream aborted may not have refreshed the changes the pre-scan saw; the
+    // watermark is held for the same reason. (A plain full run is unchanged.)
+    const coveredLabels = new Set<string>();
+    for (const r of autoScan?.refs ?? []) {
+      if (r.obsolete) continue;
+      coveredLabels.add(`generic:${r.memberType}`);
+      const grouped = SOURCE_LABEL_BY_MEMBER_TYPE[r.memberType];
+      if (grouped) coveredLabels.add(grouped);
+    }
+    const coveredSkips = skipReport.skips.filter((sk) => coveredLabels.has(sk.label));
+    const fallbackIncomplete =
+      autoFallback.length > 0 && (coveredSkips.length > 0 || parseErrors > 0 || streamAborted);
+    if (fallbackIncomplete) {
+      wedgeWarnings.push(
+        `incremental:fallbackIncomplete:skips=${coveredSkips.map((sk) => sk.label).join("+")},parseErrors=${parseErrors}${streamAborted ? ",streamAborted" : ""}`,
+      );
+      logger.warn(
+        "live-ingest: the full refresh that auto ran after detecting changes was incomplete; the sync watermark is being HELD so the next run re-detects them",
+      );
+    }
+    const holdWatermark =
+      (incrementalUnfetched > 0 || fallbackIncomplete) && existing?.lastSyncedAt != null;
     const watermarkIso = holdWatermark
       ? new Date(existing!.lastSyncedAt as number).toISOString()
       : completedIso;

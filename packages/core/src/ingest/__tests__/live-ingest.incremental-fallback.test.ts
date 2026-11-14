@@ -32,7 +32,7 @@ interface SmRow {
   IsNameObsolete?: boolean;
 }
 
-function makeConn(state: { body: string; sourceMembers: SmRow[] }) {
+function makeConn(state: { body: string; sourceMembers: SmRow[]; failApex?: boolean }) {
   const conn = buildJsforceMock({
     toolingDescribeResults: { SourceMember: true },
     toolingQueryResults: {
@@ -54,6 +54,7 @@ function makeConn(state: { body: string; sourceMembers: SmRow[] }) {
         })),
       };
     }
+    if (soql === APEX_SOQL && state.failApex) throw new Error("socket hang up (ECONNRESET)");
     if (soql === APEX_SOQL) {
       return {
         done: true,
@@ -100,6 +101,7 @@ async function seeded() {
   const state = {
     body: "public class Billing { public void a() {} }",
     sourceMembers: [] as SmRow[],
+    failApex: false,
   };
   const conn = makeConn(state);
   const first = await run(store, conn, "full");
@@ -155,6 +157,26 @@ describe("live sync: auto falls back to a full refresh when content changed", ()
     expect(result.mode).toBe("full");
     expect(store.getNode(ORG_ID, asQualifiedName("ApexClass:Gone"))).toBeFalsy();
     expect(hash()).not.toBe(oldHash);
+    await store.close();
+  });
+
+  it("a fallback whose Apex retrieval fails holds the watermark; the next auto run refreshes", async () => {
+    const { store, state, conn, hash } = await seeded();
+    const oldHash = hash();
+    const before = store.getOrg(ORG_ID)!.lastSyncedAt;
+    state.body = "public class Billing { public void changed() {} }";
+    state.sourceMembers = [{ MemberType: "ApexClass", MemberName: "Billing" }];
+    state.failApex = true;
+    const r1 = await run(store, conn, "auto");
+    expect(r1.mode).toBe("full");
+    expect(r1.warnings.some((w) => w.startsWith("incremental:fallbackIncomplete:"))).toBe(true);
+    expect(hash()).toBe(oldHash);
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt).toBe(before);
+    state.failApex = false;
+    const r2 = await run(store, conn, "auto");
+    expect(r2.mode).toBe("full");
+    expect(hash()).not.toBe(oldHash);
+    expect(store.getOrg(ORG_ID)!.lastSyncedAt!).toBeGreaterThan(before!);
     await store.close();
   });
 
