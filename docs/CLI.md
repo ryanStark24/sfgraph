@@ -59,7 +59,7 @@ Auto-detects default org from `sf config`. Auto-snapshot taken before every sync
 
 ```
 ingest: using default org from sf config: my-prod
-ingest: resolving auth from ~/.sfdx/                       ← read-only Proxy wrapped here
+ingest: resolving auth from ~/.sfdx/                       ← read-only facade + transport guard applied here
 ingest: probing capabilities…
 ingest: capabilities { vlocityNamespaces: ['vlocity_cmt'],
                        omnistudioOncore: true,
