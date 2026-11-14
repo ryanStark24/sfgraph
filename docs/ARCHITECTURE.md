@@ -57,9 +57,9 @@ CREATE TABLE _sfgraph_snippets (
 
 `sfgraph ingest --org <alias>` runs the pipeline in `packages/core/src/ingest/live-ingest.ts`. The pipeline runs from the CLI only; the MCP server is read-only and `start_ingest_job` returns the shell command to run rather than executing the pipeline in-process.
 
-### Phase 1 — Auth and read-only proxy
+### Phase 1 — Auth and read-only connection
 
-The CLI delegates to `@salesforce/core` to resolve the alias to a `jsforce` Connection. The first thing `liveIngest` does is wrap that Connection in `wrapConnectionReadOnly()` — a `Proxy` that throws `ReadOnlyViolationError` synchronously on any mutating method (`create`, `update`, `delete`, `upsert`, `deploy`, …). This is verified by ~40 adversarial tests; nothing inside sfgraph can write to Salesforce even by accident.
+The CLI delegates to `@salesforce/core` to resolve the alias to a `jsforce` Connection. `resolveOrg` passes that Connection through `wrapConnectionReadOnly()`, which does two things. (1) A transport guard on the real Connection (`extractors/live-org/transport-guard.ts`) refuses every request that is not GET or HEAD, except Metadata API SOAP calls whose envelope names a read operation (`listMetadata`, `readMetadata`, `describeMetadata`, `retrieve`, `checkStatus`, `checkRetrieveStatus`); it also refuses the Tooling GET endpoints that run Apex (`executeAnonymous`, `runTests*`). A refused call throws `ReadOnlyViolationError` naming the method and URL and never reaches the transport. (2) Extractors receive a typed facade (`extractors/live-org/read-facade.ts`) that exposes only the read calls sfgraph makes (`query`, `queryMore`, `describeGlobal`, `sobject().describe`, `identity`, Tooling `query`/`queryMore`/`sobject().describe`, Metadata `list`/`read`/`describe`/`retrieve().complete`). The raw Connection is private to the facade. Tests run against the real `jsforce` 3.x `Connection` with a recording transport. Not covered: the OAuth token refresh `@salesforce/core` performs with its own client, which does not read or write org data.
 
 ### Phase 2 — Capability probe
 

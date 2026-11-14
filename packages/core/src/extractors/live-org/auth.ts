@@ -1,5 +1,6 @@
 import { ErrorCode, SfgraphError, asOrgId } from "@ryanstark24/sfgraph-shared";
 import type { OrgId } from "@ryanstark24/sfgraph-shared";
+import type { ReadOnlyOrgConnection } from "./read-facade.js";
 import { wrapConnectionReadOnly } from "./read-only-proxy.js";
 
 export interface ResolvedOrg {
@@ -8,7 +9,8 @@ export interface ResolvedOrg {
   username: string;
   instanceUrl: string;
   apiVersion: string;
-  conn: any;
+  /** Read-only facade; the raw connection is not reachable from it. */
+  conn: ReadOnlyOrgConnection;
 }
 
 /** Strip secrets from anything that might be logged/persisted. */
@@ -54,7 +56,7 @@ async function resolveAliasToUsername(
 
 /**
  * Resolve a Salesforce org by alias/username using @salesforce/core. Returns a
- * read-only-wrapped jsforce Connection.
+ * read-only facade over the jsforce Connection.
  *
  * @throws SfgraphError with code E_SF_AUTH on authentication failures.
  */

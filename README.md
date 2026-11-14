@@ -15,7 +15,7 @@ A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-s
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-**Privacy in one line.** Nothing leaves your machine — graph, vectors, logs all live under the platform's user-data directory (`~/Library/Application Support/sfgraph/` on macOS, `~/.local/share/sfgraph/` on Linux, `%APPDATA%\sfgraph\` on Windows; see [`docs/DATA_LOCATIONS.md`](docs/DATA_LOCATIONS.md)). Salesforce auth is delegated to the `sf` CLI (token stays in `~/.sfdx/`). Every connection is wrapped in a read-only Proxy. Full threat model: [`docs/PRIVACY.md`](docs/PRIVACY.md).
+**Privacy in one line.** Nothing leaves your machine — graph, vectors, logs all live under the platform's user-data directory (`~/Library/Application Support/sfgraph/` on macOS, `~/.local/share/sfgraph/` on Linux, `%APPDATA%\sfgraph\` on Windows; see [`docs/DATA_LOCATIONS.md`](docs/DATA_LOCATIONS.md)). Salesforce auth is delegated to the `sf` CLI (token stays in `~/.sfdx/`). Extractors get a read-only facade (only the read calls sfgraph makes), and the Salesforce connection refuses any HTTP request that is not a GET/HEAD or a Metadata API read call; details and limits in the read-only section of the privacy doc. Full threat model: [`docs/PRIVACY.md`](docs/PRIVACY.md).
 
 ---
 

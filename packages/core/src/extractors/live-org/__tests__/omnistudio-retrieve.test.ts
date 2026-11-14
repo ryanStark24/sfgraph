@@ -20,7 +20,10 @@ function mockConn(behaviors: {
 }): unknown {
   const requested: string[] = [];
   return {
-    _sforceLimitInfo: behaviors.limitInfo,
+    limitInfo: () => {
+      const m = behaviors.limitInfo?.match(/api-usage=(\d+)\/(\d+)/);
+      return m ? { used: Number(m[1]), limit: Number(m[2]) } : null;
+    },
     requested,
     metadata: {
       retrieve(req: { unpackaged: { types: Array<{ name: string }> } }) {
