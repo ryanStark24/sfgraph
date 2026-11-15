@@ -14,6 +14,7 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 
 ### Changed
 
+- DOM injection: a `+` inside a string literal (`'<button>+</button>'`) no longer makes a literal-only value high, and a value continued on the next line (`el.innerHTML = ''\n + userInput;`) is read to the end of the statement instead of being cut at the line break.
 - **Re-ingest once after upgrading.** The Apex, LWC and Aura parsers now record extra attributes, so their content hashes changed and the first ingest after upgrading re-parses every Apex class, trigger, LWC and Aura component. Existing graphs keep working but do not show the new security findings until then.
 - `governor_risk_check` documents the two new risk kinds in its `order` text (after `dml_in_loop`, before `no_bulk`); the order of the older kinds is unchanged.
 

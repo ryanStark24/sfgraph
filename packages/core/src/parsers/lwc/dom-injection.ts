@@ -134,20 +134,65 @@ function maskStrings(src: string): string {
   return out.join("");
 }
 
-const ASSIGN_RE = /\.\s*(innerHTML|outerHTML)\s*(\+?=)(?!=)\s*([^;\n]*)/g;
+const ASSIGN_RE = /\.\s*(innerHTML|outerHTML)\s*(\+?=)(?!=)\s*/g;
 const INSERT_RE = /\.\s*insertAdjacentHTML\s*\(/g;
 
-/** A plain string literal (no `${}`), possibly concatenated only with other plain literals. */
-function isLiteralOnly(rhs: string): boolean {
-  const t = rhs.trim().replace(/[,)]+$/, "");
-  if (t === "") return false;
-  const parts = t.split(/\s*\+\s*/);
-  return parts.every(
-    (p) => /^'(?:[^'\\]|\\.)*'$/.test(p) || /^"(?:[^"\\]|\\.)*"$/.test(p) || /^`[^`$]*`$/.test(p),
-  );
+/**
+ * A plain string literal (no `${}`), possibly concatenated only with other plain literals.
+ * `masked` is the same text as `rhs` with string contents blanked, so only a `+` operator
+ * outside a string literal splits it.
+ */
+function isLiteralOnly(rhs: string, masked: string): boolean {
+  const trimmed = rhs.replace(/[\s,)]+$/, "");
+  if (trimmed.trim() === "") return false;
+  const parts: string[] = [];
+  let from = 0;
+  for (let k = 0; k < trimmed.length; k++) {
+    if (masked[k] === "+") {
+      parts.push(trimmed.slice(from, k));
+      from = k + 1;
+    }
+  }
+  parts.push(trimmed.slice(from));
+  return parts.every((raw) => {
+    const p = raw.trim();
+    return (
+      /^'(?:[^'\\]|\\.)*'$/.test(p) ||
+      /^"(?:[^"\\]|\\.)*"$/.test(p) ||
+      /^`(?:[^`\\$]|\\[\s\S]|\$(?!\{))*`$/.test(p)
+    );
+  });
 }
 
 const isEmptyLiteral = (rhs: string): boolean => /^\s*(?:''|""|``)\s*;?\s*$/.test(rhs);
+
+/**
+ * End index (exclusive) of the expression that starts at `from` in comment-and-string-masked
+ * code: the first `;` at depth 0, an unmatched closing bracket, or a line break at depth 0
+ * unless the expression visibly continues (the line ends with a binary `+`, or the next line
+ * starts with one).
+ */
+function expressionEnd(masked: string, from: number): number {
+  let d = 0;
+  for (let j = from; j < masked.length; j++) {
+    const c = masked[j];
+    if (c === "(" || c === "[" || c === "{") d += 1;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (d === 0) return j;
+      d -= 1;
+    } else if (c === ";" && d === 0) return j;
+    else if (c === "\n" && d === 0) {
+      let p = j - 1;
+      while (p >= from && /\s/.test(masked[p] ?? "")) p--;
+      let n = j + 1;
+      while (n < masked.length && /\s/.test(masked[n] ?? "")) n++;
+      const endsWithPlus = p >= from && masked[p] === "+" && masked[p - 1] !== "+";
+      const startsWithPlus = masked[n] === "+" && masked[n + 1] !== "+";
+      if (!endsWithPlus && !startsWithPlus) return j;
+    }
+  }
+  return masked.length;
+}
 
 /** The spots in one JS file. */
 export function detectDomInjection(file: string, source: string): DomInjectionSpot[] {
@@ -163,16 +208,19 @@ export function detectDomInjection(file: string, source: string): DomInjectionSp
   const evidenceAt = (line: number): string => (lines[line - 1] ?? "").trim().slice(0, 200);
   const out: DomInjectionSpot[] = [];
   for (const m of masked.matchAll(ASSIGN_RE)) {
-    // Sink located on the masked text; the right-hand side is read from the original.
-    const rhsAt = (m.index ?? 0) + m[0].length - (m[3] ?? "").length;
-    const rhs = clean.slice(rhsAt, rhsAt + (m[3] ?? "").length);
+    // Sink located on the masked text; the right-hand side is read from the original and
+    // runs to the end of the statement, across line breaks.
+    const rhsAt = (m.index ?? 0) + m[0].length;
+    const rhsEnd = expressionEnd(masked, rhsAt);
+    const rhs = clean.slice(rhsAt, rhsEnd);
+    const rhsMasked = masked.slice(rhsAt, rhsEnd);
     if (m[2] === "=" && isEmptyLiteral(rhs)) continue;
     const line = lineAt(m.index ?? 0);
     out.push({
       file,
       line,
       kind: m[1] === "outerHTML" ? "outerHTML" : "innerHTML",
-      severity: isLiteralOnly(rhs) ? "low" : "high",
+      severity: isLiteralOnly(rhs, rhsMasked) ? "low" : "high",
       evidence: evidenceAt(line),
     });
   }
@@ -194,12 +242,13 @@ export function detectDomInjection(file: string, source: string): DomInjectionSp
       } else if (c === "," && d === 0 && comma < 0) comma = j;
     }
     const markup = comma < 0 ? "" : clean.slice(comma + 1, end);
+    const maskedMarkup = comma < 0 ? "" : masked.slice(comma + 1, end);
     const line = lineAt(m.index ?? 0);
     out.push({
       file,
       line,
       kind: "insertAdjacentHTML",
-      severity: isLiteralOnly(markup) ? "low" : "high",
+      severity: isLiteralOnly(markup, maskedMarkup) ? "low" : "high",
       evidence: evidenceAt(line),
     });
   }
