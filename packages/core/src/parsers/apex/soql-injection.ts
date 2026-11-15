@@ -67,19 +67,27 @@ const DYNAMIC_CALL_RE =
 
 /** Types whose values cannot carry a quote: a variable of one of these is safe in a query string. */
 const SAFE_TYPE_RE =
-  /^(?:integer|long|double|decimal|boolean|id|date|datetime|time|sobjecttype|sobjectfield|schema\s*\.\s*\w+)$/i;
-const SAFE_GENERIC_RE = /^(?:list|set)\s*<\s*(?:integer|long|double|decimal|boolean|id)\s*>$/i;
+  /^(?:system\s*\.\s*)?(?:integer|long|double|decimal|boolean|id|date|datetime|time|sobjecttype|sobjectfield|schema\s*\.\s*\w+)$/i;
+const SAFE_GENERIC_RE =
+  /^(?:system\s*\.\s*)?(?:list|set)\s*<\s*(?:system\s*\.\s*)?(?:integer|long|double|decimal|boolean|id)\s*>$/i;
+/** `Map<K, Integer>`: a value read out of it (`.get(k)`) is a number, whatever the key type. */
+const SAFE_MAP_VALUE_RE =
+  /^(?:system\s*\.\s*)?map\s*<[^<>]*,\s*(?:system\s*\.\s*)?(?:integer|long|double|decimal|boolean|id|date|datetime|time)\s*>$/i;
+const MAP_READ_RE = /^\s*\.\s*(?:get|getOrDefault)\s*\(/i;
 const NOT_A_TYPE = new Set(["return", "new", "else", "throw", "in", "instanceof", "case", "when"]);
 /** Methods of any value that return a number or a boolean. */
 const NUMERIC_MEMBER_RE =
   /\.\s*(?:size|length|isEmpty|hashCode|getTime|year|month|day)\s*\(\s*\)\s*$/i;
 const ESCAPE_CALL_RE = /^(?:String\s*\.\s*)?escapeSingleQuotes\s*\(/i;
-const ESCAPE_ANYWHERE_RE = /(?<![\w.])(?:String\s*\.\s*)?escapeSingleQuotes\s*\(/gi;
 const ALLCAPS_RE = /^[A-Z][A-Z0-9_]*$/;
 /** Conversions to a type that cannot carry a quote (`Integer.valueOf(x)` throws on text). */
 const SAFE_CONVERSION_RE =
   /^(?:Integer|Long|Double|Decimal|Boolean|Id|Date|Datetime|Time)\s*\.\s*valueOf\s*\(/i;
-/** `String.valueOf(x)` keeps x's text, so it carries x's taint. */
+/**
+ * `String.valueOf(x)` keeps x's text, so it carries x's taint when x is text. When x is a
+ * variable of a type in SAFE_TYPE_RE (Integer, Long, Decimal, Double, Boolean, Id, Date,
+ * Datetime, Time...) the argument is judged safe by `variable()`, so nothing propagates.
+ */
 const STRING_VALUEOF_RE = /^String\s*\.\s*valueOf\s*\(/i;
 
 /** Index of the delimiter matching the opener at `open` in `masked`, or -1. */
@@ -144,8 +152,20 @@ class InjectionAnalyzer {
   private readonly clean: string;
   private readonly masked: string;
   private readonly headerEnd: number;
-  private readonly visiting = new Set<string>();
-  private readonly memo = new Map<string, string | null>();
+  /** Taint of each variable (lower-case name) after the assignments processed so far. */
+  private readonly state = new Map<string, string | null>();
+  /** True while a variable's value is still the caller's parameter (no assignment yet). */
+  private readonly fromParam = new Set<string>();
+  private readonly decls = new Map<string, { type: string; index: number } | null>();
+  /** Every assignment to a declared variable, in source order, with how it is reached. */
+  private assignments: Array<{
+    name: string;
+    plus: boolean;
+    from: number;
+    to: number;
+    definite: boolean;
+  }> | null = null;
+  private applied = 0;
 
   constructor(code: string) {
     this.clean = stripComments(code);
@@ -163,6 +183,7 @@ class InjectionAnalyzer {
       if (close < 0) continue;
       const first = pieces(this.masked, open + 1, close, ",")[0];
       if (!first || first[0] >= first[1]) continue;
+      this.applyAssignmentsBefore(m.index ?? 0);
       const tainted = this.expr(first[0], first[1]);
       if (!tainted) continue;
       const call = (m[1] ?? "").replace(/\s+/g, "");
@@ -223,7 +244,7 @@ class InjectionAnalyzer {
         const arg = pieces(m, open + 1, close, ",")[0];
         return arg ? this.operand(arg[0], arg[1]) : null;
       }
-      return this.anyIdentifier(open + 1, close);
+      return this.formatArgs(open + 1, close);
     }
     const root = /^([A-Za-z_]\w*)/.exec(raw);
     if (!root) return null;
@@ -234,6 +255,11 @@ class InjectionAnalyzer {
       return null;
     }
     if (rest === "") return this.variable(name);
+    // `numbers.get(k)` on a Map<K, Integer>: the value is a number even when the key is text.
+    if (MAP_READ_RE.test(rest)) {
+      const decl = this.declaration(name);
+      if (decl && SAFE_MAP_VALUE_RE.test(decl.type)) return null;
+    }
     // `var.member...` / `var.method(...)`: tainted when the variable is.
     if (/^\s*\.\s*\w+/.test(rest)) {
       const last = /([A-Za-z_]\w*)\s*(?:\([^)]*\))?\s*$/.exec(rest);
@@ -265,26 +291,40 @@ class InjectionAnalyzer {
     return this.expr(q + 1, c) ?? this.expr(c + 1, b);
   }
 
-  /** The first declared variable among the identifiers of masked[a, b) that is tainted. */
-  private anyIdentifier(a: number, b: number): string | null {
-    // Arguments of an `escapeSingleQuotes(...)` call are escaped: blank them, keep siblings.
-    const chars = this.masked.slice(a, b).split("");
-    for (const esc of this.masked.slice(a, b).matchAll(ESCAPE_ANYWHERE_RE)) {
-      const open = (esc.index ?? 0) + esc[0].length - 1;
-      const close = matchClose(this.masked.slice(a, b), open);
-      for (let k = esc.index ?? 0; k <= (close < 0 ? chars.length - 1 : close); k++) chars[k] = " ";
-    }
-    for (const m of chars.join("").matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
-      const name = m[0];
-      if (this.isDeclared(name)) {
-        const t = this.variable(name);
-        if (t) return t;
+  /**
+   * `String.format(template, args)`: each argument is judged as an expression, so a
+   * conversion (`Integer.valueOf(x)`), an `escapeSingleQuotes(x)` call or a describe name makes
+   * only its own argument safe. A `new List<String>{ a, b }` argument is judged element by element.
+   */
+  private formatArgs(a: number, b: number): string | null {
+    const m = this.masked;
+    for (const [s, e] of pieces(m, a, b, ",")) {
+      if (s >= e) continue;
+      if (/^new\b/i.test(this.clean.slice(s, e))) {
+        const brace = m.indexOf("{", s);
+        if (brace < 0 || brace >= e || matchClose(m, brace) !== e - 1) continue;
+        for (const [es, ee] of pieces(m, brace + 1, e - 1, ",")) {
+          const t = this.expr(es, ee);
+          if (t) return t;
+        }
+        continue;
       }
+      const t = this.expr(s, e);
+      if (t) return t;
     }
     return null;
   }
 
   private declaration(name: string): { type: string; index: number } | null {
+    const key = name.toLowerCase();
+    const cached = this.decls.get(key);
+    if (cached !== undefined) return cached;
+    const found = this.findDeclaration(name);
+    this.decls.set(key, found);
+    return found;
+  }
+
+  private findDeclaration(name: string): { type: string; index: number } | null {
     const re = new RegExp(
       `(?<![\\w.])([A-Za-z_][\\w.]*(?:\\s*<[^;=()]*>)?(?:\\s*\\[\\s*\\])?)\\s+${name}\\s*(?=[=;,):])`,
       "gi",
@@ -305,41 +345,88 @@ class InjectionAnalyzer {
     return decl.index < this.headerEnd;
   }
 
+  /**
+   * Every assignment to a declared variable, in source order. A plain assignment is definite
+   * when it sits at the method body's own brace depth and is not the body of a braceless
+   * `if`/`else`/`for`/`while`; anything else is conditional.
+   */
+  private collectAssignments(): NonNullable<InjectionAnalyzer["assignments"]> {
+    const m = this.masked;
+    const out: NonNullable<InjectionAnalyzer["assignments"]> = [];
+    const base = m.indexOf("{") < 0 ? 0 : 1;
+    let depth = 0;
+    let pos = 0;
+    const re = /(?<![\w.])([A-Za-z_]\w*)\s*(\+?)=(?!=)/g;
+    for (const hit of m.matchAll(re)) {
+      const name = hit[1] ?? "";
+      if (!this.isDeclared(name)) continue;
+      const at = hit.index ?? 0;
+      for (; pos < at; pos++) {
+        const ch = m[pos];
+        if (ch === "{") depth += 1;
+        else if (ch === "}") depth -= 1;
+      }
+      const stmt = Math.max(m.lastIndexOf(";", at), m.lastIndexOf("{", at), m.lastIndexOf("}", at));
+      const prefix = m.slice(stmt + 1, at).trim();
+      const braceless = /(?:\)|\belse|\bdo)$/i.test(prefix);
+      const from = at + hit[0].length;
+      out.push({
+        name,
+        plus: hit[2] === "+",
+        from,
+        to: statementEnd(m, from),
+        definite: depth === base && !braceless,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Apply, in source order, the assignments that start before `limit`. The last definite plain
+   * assignment wins (`v = term; v = escapeSingleQuotes(v);` is safe). A tainted value stays
+   * tainted through a conditional assignment, and a conditional safe assignment clears only a
+   * parameter's own text (the documented rule: a parameter escaped on one branch is treated as
+   * escaped). `+=` only ever adds taint. One forward pass, no recursion, so a chain of
+   * thousands of aliases costs time and no stack.
+   */
+  private applyAssignmentsBefore(limit: number): void {
+    this.assignments ??= this.collectAssignments();
+    while (this.applied < this.assignments.length) {
+      const a = this.assignments[this.applied];
+      if (!a || a.from > limit) break;
+      this.applied += 1;
+      const key = a.name.toLowerCase();
+      const t = this.expr(a.from, a.to);
+      const current = this.variable(a.name);
+      if (t) {
+        this.state.set(key, t);
+        this.fromParam.delete(key);
+      } else if (a.plus) {
+        // an append of safe text keeps what the variable held
+      } else if (a.definite) {
+        this.state.set(key, null);
+        this.fromParam.delete(key);
+      } else if (current && this.fromParam.has(key)) {
+        this.state.set(key, null);
+        this.fromParam.delete(key);
+      }
+    }
+  }
+
   /** `name` when the variable can carry unescaped text into a query, else null. */
   private variable(name: string): string | null {
     const key = name.toLowerCase();
     const decl = this.declaration(name);
     if (!decl) return null;
-    const param = this.isParam(decl);
-    if (this.visiting.has(key)) return param ? name : null;
-    if (this.memo.has(key)) return this.memo.get(key) ?? null;
-    const type = decl.type;
-    if (SAFE_TYPE_RE.test(type) || SAFE_GENERIC_RE.test(type)) {
-      this.memo.set(key, null);
-      return null;
+    if (SAFE_TYPE_RE.test(decl.type) || SAFE_GENERIC_RE.test(decl.type)) return null;
+    if (this.state.has(key)) return this.state.get(key) ?? null;
+    if (this.isParam(decl)) {
+      this.fromParam.add(key);
+      this.state.set(key, name);
+      return name;
     }
-    this.visiting.add(key);
-    let result: string | null = null;
-    let assigned = false;
-    let plain = false;
-    const re = new RegExp(`(?<![\\w.])${name}\\s*(\\+?)=(?!=)`, "gi");
-    for (const m of this.masked.matchAll(re)) {
-      // A declaration's own `=` and a plain assignment are both a value flowing in.
-      const from = (m.index ?? 0) + m[0].length;
-      const to = statementEnd(this.masked, from);
-      assigned = true;
-      if (m[1] !== "+") plain = true;
-      const t = this.expr(from, to);
-      if (t) {
-        result = t === name ? name : t;
-        break;
-      }
-    }
-    // A parameter keeps its caller's text unless a plain assignment replaced it; `+=` only appends.
-    if (result === null && param && (!assigned || !plain)) result = name;
-    this.visiting.delete(key);
-    this.memo.set(key, result);
-    return result;
+    this.state.set(key, null);
+    return null;
   }
 }
 
@@ -349,7 +436,7 @@ class InjectionAnalyzer {
  * concatenating a variable that is a method parameter or was assigned from one,
  * and that did not pass through `String.escapeSingleQuotes`. Not flagged: string
  * literals and numbers; a variable (or an assignment) from `escapeSingleQuotes`;
- * `Integer`/`Long`/`Decimal`/`Id`/`Date`... `valueOf` conversions (`String.valueOf(x)` carries x's taint); variables of type Integer, Long, Decimal, Boolean, Id, Date,
+ * `Integer`/`Long`/`Decimal`/`Id`/`Date`... `valueOf` conversions (`String.valueOf(x)` carries x's taint only when x is text: an Integer, Long, Decimal, Double, Boolean, Id, Date, Datetime or Time x stays safe through it, through `+` and through `String.format` arguments); values read from a `Map<K, Integer>`; variables of type Integer, Long, Decimal, Boolean, Id, Date,
  * Datetime and lists or sets of them; names derived from `Schema` describe calls;
  * ALL_CAPS constants; and bind variables (`:var` sits inside the literal, so it
  * is not a concatenation at all).

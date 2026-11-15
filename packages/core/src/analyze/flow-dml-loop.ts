@@ -54,22 +54,37 @@ function targetsOf(el: El, includeLoopExit: boolean): string[] {
   return out;
 }
 
-function lineOfElement(xml: string, tag: string, name: string): number {
-  const open = `<${tag}>`;
-  const close = `</${tag}>`;
-  let from = 0;
-  for (;;) {
-    const i = xml.indexOf(open, from);
-    if (i < 0) return -1;
-    const j = xml.indexOf(close, i);
-    const body = xml.slice(i, j < 0 ? xml.length : j);
-    if (body.includes(`<name>${name}</name>`)) {
-      let n = 1;
-      for (let k = 0; k < i; k++) if (xml.charCodeAt(k) === 10) n += 1;
-      return n;
+/**
+ * 1-based line of the opening tag of each DML element, keyed `tag\0name`, in one pass over
+ * the XML (the first element of that tag that contains `<name>name</name>` wins).
+ */
+function dmlLines(xml: string): Map<string, number> {
+  const lines = new Map<string, number>();
+  for (const tag of Object.keys(DML_KINDS)) {
+    const open = `<${tag}>`;
+    const close = `</${tag}>`;
+    let from = 0;
+    for (;;) {
+      const i = xml.indexOf(open, from);
+      if (i < 0) break;
+      const j = xml.indexOf(close, i);
+      const body = xml.slice(i, j < 0 ? xml.length : j);
+      for (const m of body.matchAll(/<name>([^<]*)<\/name>/g)) {
+        const key = `${tag}\0${m[1]}`;
+        if (!lines.has(key)) lines.set(key, i);
+      }
+      from = i + open.length;
     }
-    from = i + open.length;
   }
+  // Turn character offsets into line numbers with one sweep over the sorted offsets.
+  const sorted = [...lines].sort((x, y) => x[1] - y[1]);
+  let line = 1;
+  let pos = 0;
+  for (const [key, offset] of sorted) {
+    for (; pos < offset; pos++) if (xml.charCodeAt(pos) === 10) line += 1;
+    lines.set(key, line);
+  }
+  return lines;
 }
 
 export function detectFlowDmlInLoop(xml: string): FlowDmlInLoop[] {
@@ -92,6 +107,18 @@ export function detectFlowDmlInLoop(xml: string): FlowDmlInLoop[] {
   }
   const loops = [...byName].filter(([, e]) => e.type === "loops");
   if (loops.length === 0) return [];
+  // Each element's connector targets, computed once (a loop is walked with its exit, so it is
+  // cached both ways; everything else has one list).
+  const targetCache = new Map<string, string[]>();
+  const targetsFor = (name: string, node: { type: string; el: El }): string[] => {
+    const key = node.type === "loops" ? `${name}\0loop` : name;
+    let t = targetCache.get(key);
+    if (!t) {
+      t = targetsOf(node.el, node.type === "loops");
+      targetCache.set(key, t);
+    }
+    return t;
+  };
   // For each loop: the elements on its iteration path.
   const iteration = new Map<string, Set<string>>();
   for (const [loopName, { el }] of loops) {
@@ -105,26 +132,40 @@ export function detectFlowDmlInLoop(xml: string): FlowDmlInLoop[] {
       if (!node) continue;
       seen.add(name);
       // A nested loop continues both ways inside the outer iteration.
-      for (const t of targetsOf(node.el, node.type === "loops")) stack.push(t);
+      for (const t of targetsFor(name, node)) stack.push(t);
     }
     // Only elements whose path comes back to the loop run once per record: a path
     // that ends the flow (a fault path to a log record, say) runs at most once.
+    // Walk the reversed connectors from the loop, inside `seen` only: one pass, linear.
+    const back = new Map<string, string[]>();
     const returns = new Set<string>();
-    for (let changed = true; changed; ) {
-      changed = false;
-      for (const name of seen) {
-        if (returns.has(name)) continue;
-        const node = byName.get(name);
-        if (!node) continue;
-        const next = targetsOf(node.el, node.type === "loops");
-        if (next.some((t) => t === loopName || returns.has(t))) {
-          returns.add(name);
-          changed = true;
+    const queue: string[] = [];
+    for (const name of seen) {
+      const node = byName.get(name);
+      if (!node) continue;
+      for (const t of targetsFor(name, node)) {
+        if (t === loopName) {
+          if (!returns.has(name)) {
+            returns.add(name);
+            queue.push(name);
+          }
+        } else if (seen.has(t)) {
+          const list = back.get(t);
+          if (list) list.push(name);
+          else back.set(t, [name]);
         }
+      }
+    }
+    for (let qi = 0; qi < queue.length; qi++) {
+      for (const prev of back.get(queue[qi] as string) ?? []) {
+        if (returns.has(prev)) continue;
+        returns.add(prev);
+        queue.push(prev);
       }
     }
     iteration.set(loopName, returns);
   }
+  const lines = dmlLines(xml);
   const out = new Map<string, FlowDmlInLoop>();
   const innermost = new Map<string, number>();
   for (const [loopName, seen] of iteration) {
@@ -141,7 +182,7 @@ export function detectFlowDmlInLoop(xml: string): FlowDmlInLoop[] {
         action,
         loop: loopName,
         ...(object ? { object } : {}),
-        line: lineOfElement(xml, node.type, name),
+        line: lines.get(`${node.type}\0${name}`) ?? -1,
       });
     }
   }

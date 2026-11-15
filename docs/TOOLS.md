@@ -340,7 +340,8 @@ Two more risk kinds (1.9.0), both severity high (SARIF `error`):
   element on a Loop element's iteration path in Flow XML (from the loop's next-value
   connector, back to the loop; never through its "after last" connector). The risk's
   `qualifiedName` is the Flow; `element` and `loop` name the elements and `line` is the
-  element's line in the Flow file.
+  element's line in the Flow file. Time is linear in the Flow's elements and connectors
+  (a 16,000-element loop body takes well under a second).
 
 ### `export_sarif`
 
@@ -444,8 +445,10 @@ before 1.9.0 needs a re-ingest to show them:
   `getQueryLocator` or `Search.query` whose string is built by concatenating a method
   parameter (or a variable assigned from one) that did not pass through
   `String.escapeSingleQuotes` and is not a bind (`:var`). Not flagged: literals, numbers,
-  Id/Boolean/Date/Integer-typed values, escaped values, `valueOf`, Schema describe names,
-  ALL_CAPS constants. Class fields, another method's return value and instance calls are
+  Id/Boolean/Date/Integer-typed values (also through `String.valueOf`, `+` and
+  `String.format` arguments), values read from a `Map<K, Integer>`, escaped values,
+  `Integer.valueOf`-style conversions, Schema describe names, ALL_CAPS constants.
+  `String.valueOf(x)` of a String parameter is still flagged. Class fields, another method's return value and instance calls are
   not traced, so those are not reported. Test code is skipped.
 - `security.dom-injection`: in LWC and Aura JavaScript, an assignment to `innerHTML` or
   `outerHTML`, or `insertAdjacentHTML(...)`. High when the value is not a plain string
