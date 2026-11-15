@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.9.0 — 2026-11-15
+
+Four new static checks, added after a blind comparison with Salesforce Code Analyzer on a fixture of 15 planted defects, where sfgraph 1.8.2 caught one and Code Analyzer caught the four below. Nothing here was run against a real Salesforce org; the tests use synthetic fixtures. All output changes are additive: existing fields, risk kinds and their order are unchanged.
+
+### Added
+
+- **`governor.async-in-loop` (`governor_risk_check`, risk `async_in_loop`, severity high).** `System.enqueueJob`, `Database.executeBatch`, `EventBus.publish`, `Messaging.sendEmail` and calls to `@future` methods inside a `for`, `while` or `do` loop body of an Apex method or trigger.
+- **`governor.flow-dml-in-loop` (`governor_risk_check`, risk `flow_dml_in_loop`).** A Record Create, Update or Delete element on a Flow Loop element's iteration path, reported against the Flow with the element name. Works on graphs ingested before 1.9.0, because it reads the stored Flow XML.
+- **`security.soql-injection` (`security_audit`, `codeFindings`).** `Database.query`, `queryWithBinds`, `countQuery`, `getQueryLocator` and `Search.query` whose query string is built by concatenating a method parameter that was not escaped (`String.escapeSingleQuotes`) or bound.
+- **`security.dom-injection` (`security_audit`, `codeFindings`).** Assignment to `innerHTML` or `outerHTML` and `insertAdjacentHTML(...)` in LWC and Aura component JavaScript. Severity high, or low when the value is a plain string literal.
+- **`export_sarif` has rule entries for the four new rule ids.** `security_audit` gains optional `codeFindings`, `codeFindingsTotal` and `codeScan`, present only when the code scan found something or did not finish.
+
+### Changed
+
+- **Re-ingest once after upgrading.** The Apex, LWC and Aura parsers now record extra attributes, so their content hashes changed and the first ingest after upgrading re-parses every Apex class, trigger, LWC and Aura component. Existing graphs keep working but do not show the new security findings until then.
+- `governor_risk_check` documents the two new risk kinds in its `order` text (after `dml_in_loop`, before `no_bulk`); the order of the older kinds is unchanged.
+
+### Known limits
+
+- Async in loop: a one-line `@future public static void` declaration is not recognised (an existing `isFuture` parsing limit), so calls to that method inside a loop are missed. Otherwise direct calls only. A loop that calls a helper which enqueues is not followed, an `@future` method called through an instance variable is not matched, and class-level initialisers are not scanned.
+- SOQL injection: per method and not flow-sensitive. Class fields, values returned by another method, for-each variables and instance calls are not traced, so they are not reported (fewer false positives, less coverage).
+- DOM injection: no data-flow check of whether the value is user-controlled. `aura:unescapedHtml`, `document.write`, `eval` and `lwc:dom="manual"` without an `innerHTML` assignment are not checked.
+- Flow DML in loop: subflows and Apex actions inside a loop are not followed.
+- On the one blind project the checks were built against they caught D02, D08, D13 and D15 as well as D04; that shows they work, not what they find on unseen code. No calibration against real org code.
+
 ## 1.8.2 — 2026-11-14
 
 Fixes from an independent audit of 1.8.1. Nothing here was run against a real Salesforce org; the tests use mock responses, recorded transports and temporary stores.
