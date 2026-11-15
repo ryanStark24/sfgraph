@@ -358,4 +358,8 @@ See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the full status matrix: every typ
 
 ## License
 
-MIT
+The sfgraph package code is MIT, see [LICENSE](LICENSE). The bundled embedding
+model in `@ryanstark24/sfgraph-models` (all-MiniLM-L6-v2) is Apache-2.0; its
+license text and attribution are in
+[packages/models/THIRD_PARTY_LICENSES/all-MiniLM-L6-v2/LICENSE](packages/models/THIRD_PARTY_LICENSES/all-MiniLM-L6-v2/LICENSE)
+and [packages/models/NOTICE](packages/models/NOTICE).
