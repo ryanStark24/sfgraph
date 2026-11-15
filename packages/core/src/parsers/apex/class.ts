@@ -41,6 +41,7 @@ import {
 } from "./name-refs.js";
 import { emitPageRefEdges } from "./page-refs.js";
 import { blankBracketGroups, findInlineQueries, soqlFieldRefs } from "./soql-fields.js";
+import { detectSoqlInjection } from "./soql-injection.js";
 import {
   classStringConstants,
   extractVlocityCalls,
@@ -450,6 +451,26 @@ function extractShadowsManaged(metaXml?: string): string[] {
 
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
+}
+
+/**
+ * `soqlInjection` for one method or trigger body: the dynamic-query calls whose string
+ * is built from an unescaped, unbound value (analyze/apex-code-checks.ts). `line` is the
+ * file line when the body's first line is known. Undefined when there are none.
+ */
+export function soqlInjectionAttr(
+  rawBody: string,
+  params: readonly string[] | undefined,
+  startLine: number | undefined,
+): Array<{ line?: number; evidence: string; variable?: string; kind: string }> | undefined {
+  const spots = detectSoqlInjection(rawBody, params ? { params } : {});
+  if (spots.length === 0) return undefined;
+  return spots.slice(0, 20).map((s) => ({
+    ...(startLine != null ? { line: startLine + s.line - 1 } : {}),
+    evidence: s.evidence,
+    ...(s.variable ? { variable: s.variable } : {}),
+    kind: s.kind,
+  }));
 }
 
 /**
@@ -1321,6 +1342,9 @@ export class ApexClassParser implements Parser<ApexClassInput> {
       if (startLine != null) snippetRec.startLine = startLine;
       if (endLine != null) snippetRec.endLine = endLine;
       snippets.push(snippetRec);
+      // SOQL / SOSL injection spots (security.soql-injection), read by the security scan.
+      const injection = soqlInjectionAttr(rawBody, m.params, startLine);
+      if (injection) (methodNode.attributes as Record<string, unknown>).soqlInjection = injection;
 
       // Apex -> Vlocity calls (IP / DataRaptor), extracted from the raw body.
       const rawDecl = decl?.text ?? null;
