@@ -78,6 +78,7 @@ const NOT_A_TYPE = new Set(["return", "new", "else", "throw", "in", "instanceof"
 /** Methods of any value that return a number or a boolean. */
 const NUMERIC_MEMBER_RE =
   /\.\s*(?:size|length|isEmpty|hashCode|getTime|year|month|day)\s*\(\s*\)\s*$/i;
+const ESCAPE_ANYWHERE_RE = /(?<![\w.])(?:String\s*\.\s*)?escapeSingleQuotes\s*\(/gi;
 const ESCAPE_CALL_RE = /^(?:String\s*\.\s*)?escapeSingleQuotes\s*\(/i;
 const ALLCAPS_RE = /^[A-Z][A-Z0-9_]*$/;
 /** Conversions to a type that cannot carry a quote (`Integer.valueOf(x)` throws on text). */
@@ -368,6 +369,13 @@ class InjectionAnalyzer {
 
   /** `cond ? x : y`: the taint of x or y (the condition is not a value). undefined: not a ternary. */
   private ternary(a: number, b: number): string | null | undefined {
+    const split = this.ternarySplit(a, b);
+    if (!split) return undefined;
+    return this.expr(split[0] + 1, split[1]) ?? this.expr(split[1] + 1, b);
+  }
+
+  /** Positions of the top-level `?` and `:` of a ternary in masked[a, b), or null. */
+  private ternarySplit(a: number, b: number): [number, number] | null {
     const m = this.masked;
     let d = 0;
     let q = -1;
@@ -379,45 +387,96 @@ class InjectionAnalyzer {
       else if (d === 0 && ch === "?" && m[j + 1] !== "." && q < 0) q = j;
       else if (d === 0 && ch === ":" && q >= 0 && c < 0) c = j;
     }
-    if (q < 0 || c < 0) return undefined;
-    return this.expr(q + 1, c) ?? this.expr(c + 1, b);
+    return q < 0 || c < 0 ? null : [q, c];
   }
 
   /**
    * `String.format(template, args)`: each argument is judged as an expression, so a
    * conversion (`Integer.valueOf(x)`), an `escapeSingleQuotes(x)` call or a describe name makes
-   * only its own argument safe. A `new List<String>{ a, b }` argument is judged element by element.
+   * only its own argument safe. A collection argument is judged by what is inside it (see
+   * `collectionArg`).
    */
   private formatArgs(a: number, b: number): string | null {
+    for (const [s, e] of pieces(this.masked, a, b, ",")) {
+      const t = this.collectionArg(s, e);
+      if (t) return t;
+    }
+    return null;
+  }
+
+  /**
+   * One `String.format` argument. Redundant parentheses and a cast are removed, both branches
+   * of a ternary are inspected, `new X{ a, b }` is judged element by element and `new X(args)`
+   * by its arguments. Any other expression that holds a `new` is not understood here, so it
+   * falls back to the parent's view: any tainted variable named inside it (minus the arguments
+   * of `escapeSingleQuotes`) taints it. An expression without `new` is judged as usual.
+   */
+  private collectionArg(s0: number, e0: number): string | null {
     const m = this.masked;
-    for (const [s0, e0] of pieces(m, a, b, ",")) {
-      // Redundant parentheses around an argument or a `new` expression change nothing.
-      let s = s0;
-      let e = e0;
-      while (s < e && m[s] === "(" && matchClose(m, s) === e - 1) {
+    let s = s0;
+    let e = e0;
+    for (;;) {
+      while (s < e && /\s/.test(m[s] ?? "")) s++;
+      while (e > s && /\s/.test(m[e - 1] ?? "")) e--;
+      if (s >= e) return null;
+      if (m[s] !== "(") break;
+      const close = matchClose(m, s);
+      if (close < 0) break;
+      if (close === e - 1) {
         s += 1;
         e -= 1;
-        while (s < e && /\s/.test(m[s] ?? "")) s++;
-        while (e > s && /\s/.test(m[e - 1] ?? "")) e--;
-      }
-      if (s >= e) continue;
-      if (/^new\b/i.test(this.clean.slice(s, e))) {
-        // `new List<String>{ a, b }` (elements) or `new List<String>(copy)` (constructor
-        // arguments): safe only when every element or argument is.
-        const brace = m.indexOf("{", s);
-        const paren = m.indexOf("(", s);
-        let inner: [number, number] | null = null;
-        if (brace >= 0 && brace < e && matchClose(m, brace) === e - 1) inner = [brace + 1, e - 1];
-        else if (paren >= 0 && paren < e && matchClose(m, paren) === e - 1)
-          inner = [paren + 1, e - 1];
-        if (!inner) continue;
-        for (const [es, ee] of pieces(m, inner[0], inner[1], ",")) {
-          const t = this.expr(es, ee);
-          if (t) return t;
-        }
         continue;
       }
-      const t = this.expr(s, e);
+      // `(List<String>) value`: a cast.
+      if (/^[A-Za-z_][\w.]*(?:\s*<[^()]*>)?(?:\s*\[\s*\])?$/.test(m.slice(s + 1, close).trim())) {
+        s = close + 1;
+        continue;
+      }
+      break;
+    }
+    const text = this.clean.slice(s, e);
+    if (!/\bnew\b/i.test(text)) return this.expr(s, e);
+    const ternary = this.ternarySplit(s, e);
+    if (ternary) {
+      return (
+        this.collectionArg(ternary[0] + 1, ternary[1]) ?? this.collectionArg(ternary[1] + 1, e)
+      );
+    }
+    if (/^new\b/i.test(text)) {
+      // `new List<String>{ a, b }` (elements) or `new List<String>(copy)` (constructor arguments).
+      const brace = m.indexOf("{", s);
+      const paren = m.indexOf("(", s);
+      let inner: [number, number] | null = null;
+      // The `new Type<...>` header must come right before the opener (not `new X{...}.clone()`).
+      const header = (at: number): boolean =>
+        /^new\s+[A-Za-z_][\w.]*(?:\s*<[^()]*>)?(?:\s*\[\s*\])?\s*$/i.test(m.slice(s, at));
+      if (brace >= 0 && brace < e && header(brace) && matchClose(m, brace) === e - 1)
+        inner = [brace + 1, e - 1];
+      else if (paren >= 0 && paren < e && header(paren) && matchClose(m, paren) === e - 1)
+        inner = [paren + 1, e - 1];
+      if (inner) {
+        for (const [es, ee] of pieces(m, inner[0], inner[1], ",")) {
+          const t = this.collectionArg(es, ee);
+          if (t) return t;
+        }
+        return null;
+      }
+    }
+    return this.anyIdentifier(s, e);
+  }
+
+  /** The first declared, tainted variable named in masked[a, b), ignoring escaped arguments. */
+  private anyIdentifier(a: number, b: number): string | null {
+    const slice = this.masked.slice(a, b);
+    const chars = slice.split("");
+    for (const esc of slice.matchAll(ESCAPE_ANYWHERE_RE)) {
+      const open = (esc.index ?? 0) + esc[0].length - 1;
+      const close = matchClose(slice, open);
+      for (let k = esc.index ?? 0; k <= (close < 0 ? chars.length - 1 : close); k++) chars[k] = " ";
+    }
+    for (const hit of chars.join("").matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
+      if (!this.isDeclared(hit[0])) continue;
+      const t = this.variable(hit[0]);
       if (t) return t;
     }
     return null;

@@ -79,6 +79,53 @@ const CASES: Case[] = [
     code: `\n${q("String.valueOf(m.get(k))")}`,
     params: ["Map<String, String> m", "String k"],
   },
+  // collections reached through ternaries, parentheses and casts
+  {
+    name: "format ternary of lists",
+    code: fmt("flag ? new List<String>{ term } : new List<String>{ 'fixed' }"),
+    params: ["String term", "Boolean flag"],
+  },
+  {
+    name: "format ternary, tainted in the else branch",
+    code: fmt("flag ? new List<String>{ 'fixed' } : new List<String>{ term }"),
+    params: ["String term", "Boolean flag"],
+  },
+  {
+    name: "format parenthesised ternary",
+    code: fmt("(flag ? new List<String>{ term } : new List<String>{ 'fixed' })"),
+    params: ["String term", "Boolean flag"],
+  },
+  {
+    name: "format nested ternary",
+    code: fmt(
+      "a ? new List<String>{ 'x' } : (b ? new List<String>{ term } : new List<String>{ 'y' })",
+    ),
+    params: ["String term", "Boolean a", "Boolean b"],
+  },
+  { name: "format cast around a list", code: fmt("(List<String>) new List<String>{ term }") },
+  {
+    name: "format cast around a ternary",
+    code: fmt("(List<String>) (flag ? new List<String>{ term } : new List<String>{ 'x' })"),
+    params: ["String term", "Boolean flag"],
+  },
+  {
+    name: "format ternary of copies",
+    code: fmt("flag ? new List<String>(terms) : new List<String>()"),
+    params: ["List<String> terms", "Boolean flag"],
+  },
+  { name: "format method call on a new expression", code: fmt("new List<String>{ term }.clone()") },
+  {
+    name: "format new expression inside a call",
+    code: fmt("Helper.pick(new List<String>{ term })"),
+  },
+  {
+    name: "format nested new in an element",
+    code: fmt("new List<Object>{ new List<String>{ term } }"),
+  },
+  {
+    name: "format new Foo(term).name element",
+    code: fmt("new List<String>{ new Foo(term).name }"),
+  },
   // earlier review cases
   {
     name: "countQuery in RHS",
