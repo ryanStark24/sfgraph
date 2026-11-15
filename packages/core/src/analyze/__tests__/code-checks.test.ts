@@ -434,6 +434,33 @@ describe("detectSoqlInjection", () => {
       ).toHaveLength(1);
     });
 
+    it("carries taint through indexed access on a tainted collection", () => {
+      const code = (arg: string): string =>
+        `\nreturn Database.query(String.format('SELECT Id FROM A WHERE N = {0}', new List<String>{ ${arg} }));`;
+      expect(flag(code("terms[0]"), ["List<String> terms"])).toHaveLength(1);
+      expect(flag(code("terms.get(0)"), ["List<String> terms"])).toHaveLength(1);
+      expect(
+        flag("\nreturn Database.query('SELECT Id FROM A WHERE N = \\'' + terms[0] + '\\'');", [
+          "List<String> terms",
+        ]),
+      ).toHaveLength(1);
+      expect(flag(code("nums[0]"), ["List<Integer> nums"])).toEqual([]);
+    });
+
+    it("treats the condition and update clauses of a for header as conditional", () => {
+      expect(
+        flag(
+          "\nString q = term;\nfor (Integer i = 0; i < 0; q = 'SELECT Id FROM Account') { i++; }\nDatabase.query(q);",
+        ),
+      ).toHaveLength(1);
+      // The init clause always runs once, so a safe value there is definite.
+      expect(
+        flag(
+          "\nString q = term;\nfor (q = 'SELECT Id FROM Account'; false; ) { }\nDatabase.query(q);",
+        ),
+      ).toEqual([]);
+    });
+
     it("handles a 2000-alias chain without a stack overflow", () => {
       const lines = ["\nString v0 = term;"];
       for (let i = 1; i < 2000; i++) lines.push(`String v${i} = v${i - 1};`);

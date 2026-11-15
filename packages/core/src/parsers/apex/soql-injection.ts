@@ -104,7 +104,7 @@ function matchClose(masked: string, open: number): number {
 }
 
 /** Positions of `sep` at nesting depth 0 in masked[a, b). `+` ignores `++` and `+=`. */
-function splitTopLevel(masked: string, a: number, b: number, sep: "+" | ","): number[] {
+function splitTopLevel(masked: string, a: number, b: number, sep: "+" | "," | ";"): number[] {
   const cuts: number[] = [];
   let d = 0;
   for (let j = a; j < b; j++) {
@@ -309,6 +309,8 @@ class InjectionAnalyzer {
       return null;
     }
     if (rest === "") return this.variable(name);
+    // `terms[0]` on a tainted collection is tainted like `terms.get(0)`.
+    if (/^\s*\[/.test(rest)) return this.variable(name);
     // `numbers.get(k)` on a Map<K, Integer>: the value is a number even when the key is text.
     if (MAP_READ_RE.test(rest)) {
       const decl = this.declaration(name);
@@ -417,6 +419,17 @@ class InjectionAnalyzer {
     const base = m.indexOf("{") < 0 ? 0 : 1;
     let depth = 0;
     let pos = 0;
+    // The condition and update clauses of a `for (init; cond; update)` header run only
+    // conditionally (the update never runs when the body does not); the init clause always runs
+    // once, so it stays definite.
+    const headerClauses: Array<[number, number]> = [];
+    for (const f of m.matchAll(/(?<![\w.])for\s*\(/gi)) {
+      const open = (f.index ?? 0) + f[0].length - 1;
+      const close = matchClose(m, open);
+      if (close < 0) continue;
+      const cuts = splitTopLevel(m, open + 1, close, ";");
+      if (cuts[0] !== undefined) headerClauses.push([cuts[0], close]);
+    }
     const re = /(?<![\w.])([A-Za-z_]\w*)\s*(\+?)=(?!=)/g;
     for (const hit of m.matchAll(re)) {
       const name = hit[1] ?? "";
@@ -436,7 +449,8 @@ class InjectionAnalyzer {
         plus: hit[2] === "+",
         from,
         to: statementEnd(m, from),
-        definite: depth === base && !braceless,
+        definite:
+          depth === base && !braceless && !headerClauses.some(([a, b]) => a <= at && at < b),
       });
     }
     return out;
