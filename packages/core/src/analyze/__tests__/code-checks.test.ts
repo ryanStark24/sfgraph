@@ -285,6 +285,20 @@ describe("detectDomInjection", () => {
     const spots = detectDomInjection("c.js", 'const m = "a\\"b";\n  el.innerHTML = x;\n');
     expect(spots.map((s) => [s.line, s.evidence])).toEqual([[2, "el.innerHTML = x;"]]);
   });
+  it("ignores quotes in comments inside a template interpolation", () => {
+    expect(kinds("const x = `${/* user's input */ value}`; el.innerHTML = userInput;")).toEqual([
+      "innerHTML:high",
+    ]);
+    expect(kinds("const x = `${a // it's\n}`; el.innerHTML = userInput;")).toEqual([
+      "innerHTML:high",
+    ]);
+  });
+  it("handles a nested template inside an interpolation", () => {
+    expect(kinds("const x = `a ${`b ${c} 'q'`} d`; el.innerHTML = userInput;")).toEqual([
+      "innerHTML:high",
+    ]);
+    expect(kinds("const x = `a ${`el.innerHTML = 1`}`;")).toEqual([]);
+  });
   it("reports the 1-based line and the source line", () => {
     expect(detectDomInjection("c.js", "a();\n  el.innerHTML = x;\n")).toEqual([
       { file: "c.js", line: 2, kind: "innerHTML", severity: "high", evidence: "el.innerHTML = x;" },

@@ -91,7 +91,17 @@ function maskStrings(src: string): string {
     let d = 0;
     while (i < src.length) {
       const c = src[i];
-      if (c === "'" || c === '"') i = quoted(i);
+      if (c === "/" && src[i + 1] === "/") {
+        const a = i;
+        while (i < src.length && src[i] !== "\n") i++;
+        blank(a, i);
+      } else if (c === "/" && src[i + 1] === "*") {
+        const a = i;
+        i += 2;
+        while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
+        i = Math.min(i + 2, src.length);
+        blank(a, i);
+      } else if (c === "'" || c === '"') i = quoted(i);
       else if (c === "`") i = template(i + 1);
       else if (c === "{") {
         d++;
