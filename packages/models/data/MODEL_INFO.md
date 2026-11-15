@@ -5,6 +5,8 @@ sentence embeddings) so retrieval works fully offline.
 
 ## Source
 
+License: Apache-2.0 (see `../NOTICE` and `../THIRD_PARTY_LICENSES/`).
+
 - HF repo: https://huggingface.co/Xenova/all-MiniLM-L6-v2
 - Files we pull (all under `Xenova/all-MiniLM-L6-v2/`):
   - `onnx/model_quantized.onnx`
