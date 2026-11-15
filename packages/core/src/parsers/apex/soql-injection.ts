@@ -184,7 +184,7 @@ class InjectionAnalyzer {
       const first = pieces(this.masked, open + 1, close, ",")[0];
       if (!first || first[0] >= first[1]) continue;
       this.applyAssignmentsBefore(m.index ?? 0);
-      const tainted = this.expr(first[0], first[1]);
+      const tainted = this.withLoopTaint(m.index ?? 0, () => this.expr(first[0], first[1]));
       if (!tainted) continue;
       const call = (m[1] ?? "").replace(/\s+/g, "");
       out.push({
@@ -195,6 +195,60 @@ class InjectionAnalyzer {
       });
     }
     return out;
+  }
+
+  /** `[start, end)` of every loop body (for, while, do; braced or not), found once. */
+  private loops: Array<[number, number]> | null = null;
+
+  private loopBodies(): Array<[number, number]> {
+    if (this.loops) return this.loops;
+    const m = this.masked;
+    const out: Array<[number, number]> = [];
+    for (const hit of m.matchAll(/(?<![\w.])(for|while|do)\b/gi)) {
+      let at = (hit.index ?? 0) + hit[0].length;
+      if (hit[1]?.toLowerCase() !== "do") {
+        while (/\s/.test(m[at] ?? "")) at++;
+        if (m[at] !== "(") continue;
+        const close = matchClose(m, at);
+        if (close < 0) continue;
+        at = close + 1;
+      }
+      while (/\s/.test(m[at] ?? "")) at++;
+      const end = m[at] === "{" ? matchClose(m, at) + 1 : statementEnd(m, at) + 1;
+      if (end > at) out.push([at, end]);
+    }
+    this.loops = out;
+    return out;
+  }
+
+  /**
+   * Run `check` with loop-carried taint: for a call inside a loop body, a tainting assignment
+   * anywhere in the outermost enclosing loop body counts, even after the call (the next pass
+   * reads it). A safe reassignment later in the loop never clears the taint.
+   */
+  private withLoopTaint<T>(at: number, check: () => T): T {
+    const enclosing = this.loopBodies().filter(([a, b]) => a <= at && at < b);
+    if (enclosing.length === 0 || !this.assignments) return check();
+    const start = Math.min(...enclosing.map(([a]) => a));
+    const end = Math.max(...enclosing.map(([, b]) => b));
+    const savedState = new Map(this.state);
+    const savedParam = new Set(this.fromParam);
+    for (const a of this.assignments.slice(this.applied)) {
+      if (a.from < start || a.from >= end) continue;
+      const t = this.expr(a.from, a.to);
+      if (t) {
+        this.state.set(a.name.toLowerCase(), t);
+        this.fromParam.delete(a.name.toLowerCase());
+      }
+    }
+    try {
+      return check();
+    } finally {
+      this.state.clear();
+      for (const [k, v] of savedState) this.state.set(k, v);
+      this.fromParam.clear();
+      for (const k of savedParam) this.fromParam.add(k);
+    }
   }
 
   /** The name of a tainted variable used in the expression masked[a, b), else null. */
@@ -301,9 +355,16 @@ class InjectionAnalyzer {
     for (const [s, e] of pieces(m, a, b, ",")) {
       if (s >= e) continue;
       if (/^new\b/i.test(this.clean.slice(s, e))) {
+        // `new List<String>{ a, b }` (elements) or `new List<String>(copy)` (constructor
+        // arguments): safe only when every element or argument is.
         const brace = m.indexOf("{", s);
-        if (brace < 0 || brace >= e || matchClose(m, brace) !== e - 1) continue;
-        for (const [es, ee] of pieces(m, brace + 1, e - 1, ",")) {
+        const paren = m.indexOf("(", s);
+        let inner: [number, number] | null = null;
+        if (brace >= 0 && brace < e && matchClose(m, brace) === e - 1) inner = [brace + 1, e - 1];
+        else if (paren >= 0 && paren < e && matchClose(m, paren) === e - 1)
+          inner = [paren + 1, e - 1];
+        if (!inner) continue;
+        for (const [es, ee] of pieces(m, inner[0], inner[1], ",")) {
           const t = this.expr(es, ee);
           if (t) return t;
         }
@@ -382,7 +443,7 @@ class InjectionAnalyzer {
   }
 
   /**
-   * Apply, in source order, the assignments that start before `limit`. The last definite plain
+   * Apply, in source order, the assignments that end before `limit` (an assignment whose own right-hand side holds the query call is applied after that call is checked). The last definite plain
    * assignment wins (`v = term; v = escapeSingleQuotes(v);` is safe). A tainted value stays
    * tainted through a conditional assignment, and a conditional safe assignment clears only a
    * parameter's own text (the documented rule: a parameter escaped on one branch is treated as
@@ -393,7 +454,7 @@ class InjectionAnalyzer {
     this.assignments ??= this.collectAssignments();
     while (this.applied < this.assignments.length) {
       const a = this.assignments[this.applied];
-      if (!a || a.from > limit) break;
+      if (!a || a.to > limit) break;
       this.applied += 1;
       const key = a.name.toLowerCase();
       const t = this.expr(a.from, a.to);

@@ -396,6 +396,44 @@ describe("detectSoqlInjection", () => {
       ).toEqual([]);
     });
 
+    it("checks a query call inside an assignment's own right-hand side against the incoming state", () => {
+      expect(flag("\nString q = term;\nq = String.valueOf(Database.countQuery(q));")).toHaveLength(
+        1,
+      );
+    });
+
+    it("inspects the arguments of a copy constructor in String.format", () => {
+      const code = (arg: string): string =>
+        `\nreturn Database.query(String.format('SELECT Id FROM A WHERE N = {0}', ${arg}));`;
+      expect(flag(code("new List<String>(terms)"), ["List<String> terms"])).toHaveLength(1);
+      expect(flag(code("new List<Integer>(nums)"), ["List<Integer> nums"])).toEqual([]);
+      expect(flag(code("new List<String>(1)"), ["String term"])).toEqual([]);
+    });
+
+    it("carries taint around a loop, and a later safe assignment does not clear it", () => {
+      expect(
+        flag(
+          "\nString q = 'SELECT Id FROM Account';\nfor (Integer i = 0; i < 2; i++) { Database.query(q); q = term; }",
+        ),
+      ).toHaveLength(1);
+      expect(
+        flag(
+          "\nString q = 'SELECT Id FROM Account';\nwhile (more) { Database.query(q); q = term; q = String.escapeSingleQuotes(q); }",
+          ["String term", "Boolean more"],
+        ),
+      ).toHaveLength(1);
+      expect(
+        flag(
+          "\nString q = 'SELECT Id FROM Account';\nfor (Integer i = 0; i < 2; i++) Database.query(q);\nq = term;",
+        ),
+      ).toEqual([]);
+      expect(
+        flag(
+          "\nString q = 'SELECT Id FROM Account';\ndo { Database.query(q); q = term; } while (false);",
+        ),
+      ).toHaveLength(1);
+    });
+
     it("handles a 2000-alias chain without a stack overflow", () => {
       const lines = ["\nString v0 = term;"];
       for (let i = 1; i < 2000; i++) lines.push(`String v${i} = v${i - 1};`);
