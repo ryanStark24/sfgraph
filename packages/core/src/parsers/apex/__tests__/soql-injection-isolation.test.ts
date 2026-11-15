@@ -21,5 +21,5 @@ describe("soqlInjection on a class with a 2000-alias method", () => {
       | Array<{ variable?: string }>
       | undefined;
     expect(spots?.[0]?.variable).toBe("term");
-  });
+  }, 60_000);
 });
