@@ -83,6 +83,21 @@ describe("detectAsyncInLoop", () => {
       expect(detectAsyncInLoop(loop("send(Map.of(a, b), true);"), opts)).toEqual([]);
       expect(detectAsyncInLoop(loop("send();"), opts)).toEqual([]);
     });
+    it("keeps reporting an ambiguous generic-or-comparison argument list", () => {
+      expect(detectAsyncInLoop(loop("send(a<b, c>d);"), opts)).toHaveLength(1);
+      const two = { ...opts, futureArities: new Map([["own.send", new Set([2])]]) };
+      expect(detectAsyncInLoop(loop("send(a<b, c>d);"), two)).toHaveLength(1);
+      expect(countCallArguments("a<b, c>d)", 0)).toBeNull();
+    });
+    it("counts a generic literal as one argument and a trailing argument as another", () => {
+      const two = { ...opts, futureArities: new Map([["own.send", new Set([2])]]) };
+      expect(countCallArguments("new List<Id>{x}, true)", 0)).toBe(2);
+      expect(detectAsyncInLoop(loop("send(new List<Id>{x}, true);"), opts)).toEqual([]);
+      expect(detectAsyncInLoop(loop("send(new List<Id>{x}, true);"), two)).toHaveLength(1);
+      expect(countCallArguments("new Map<Id, String>())", 0)).toBe(1);
+      expect(detectAsyncInLoop(loop("send(new Map<Id, String>());"), opts)).toHaveLength(1);
+      expect(detectAsyncInLoop(loop("send(new Map<Id, String>());"), two)).toEqual([]);
+    });
     it("keeps reporting when the arity is unknown", () => {
       expect(
         detectAsyncInLoop(loop("send(value, true);"), { ...opts, futureArities: new Map() }),

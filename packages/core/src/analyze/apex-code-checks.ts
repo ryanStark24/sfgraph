@@ -116,7 +116,8 @@ export function detectAsyncInLoop(code: string, opts: AsyncInLoopOpts = {}): Cod
 /**
  * Number of top-level arguments of a call whose `(` just before `from` is already consumed, on
  * masked code (strings blanked). Commas inside nested `()`, `[]`, `{}` and generic `<...>` do not
- * count. Null when the closing paren is not found (the arity is unknown).
+ * count. Null when the closing paren is not found or the count is ambiguous (`a<b, c>d` could be one
+ * argument or two); the caller then keeps reporting.
  */
 export function countCallArguments(masked: string, from: number): number | null {
   let depth = 0;
@@ -135,6 +136,14 @@ export function countCallArguments(masked: string, from: number): number | null 
       re.lastIndex = i;
       const g = re.exec(masked);
       if (g) {
+        // A span with a comma changes the count depending on whether `<...>` is a generic type
+        // or a pair of comparisons (`a<b, c>d`). It is a generic only after `new Type` or when
+        // `(`, `{`, `[` or `.` follows; otherwise the count is ambiguous and unknown (null).
+        if (g[0].includes(",")) {
+          const next = /^\s*(.)/.exec(masked.slice(i + g[0].length))?.[1] ?? "";
+          const afterNew = /\bnew\s+[\w.]+$/.test(masked.slice(from, i));
+          if (!afterNew && !"({[.".includes(next)) return null;
+        }
         i += g[0].length - 1;
         sawContent = true;
       }
