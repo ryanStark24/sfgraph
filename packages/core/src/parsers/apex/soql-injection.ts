@@ -80,6 +80,9 @@ const NUMERIC_MEMBER_RE =
   /\.\s*(?:size|length|isEmpty|hashCode|getTime|year|month|day)\s*\(\s*\)\s*$/i;
 const ESCAPE_ANYWHERE_RE = /(?<![\w.])(?:String\s*\.\s*)?escapeSingleQuotes\s*\(/gi;
 const ESCAPE_CALL_RE = /^(?:String\s*\.\s*)?escapeSingleQuotes\s*\(/i;
+/** A describe chain (`Schema.SObjectType.Account.getName()`, `x.getSObjectType().getDescribe().getName()`). */
+const DESCRIBE_CHAIN_RE =
+  /^(?:Schema\s*\.\s*[\w.]+\s*(?:\([^()]*\))?(?:\s*\.\s*\w+\s*\([^()]*\))*|[\w.]+(?:\s*\([^()]*\))?\s*\.\s*(?:getDescribe|getSObjectType)\s*\(\s*\)(?:\s*\.\s*\w+\s*\(\s*\))*)$/i;
 const ALLCAPS_RE = /^[A-Z][A-Z0-9_]*$/;
 /** Conversions to a type that cannot carry a quote (`Integer.valueOf(x)` throws on text). */
 const SAFE_CONVERSION_RE =
@@ -153,8 +156,12 @@ function pieces(masked: string, a: number, b: number, sep: "+" | ","): Array<[nu
 interface Assignment {
   name: string;
   plus: boolean;
+  /** Offset of the assigned name. */
+  at: number;
   from: number;
   to: number;
+  /** Declared variables named anywhere in the right-hand side (a plain scan of its text). */
+  ids: string[];
   /** Straight-line at the body's own brace depth: not in a branch, loop, header or call. */
   simple: boolean;
 }
@@ -223,35 +230,37 @@ class InjectionAnalyzer {
    * straight-line, and the source-order value at the call is safe.
    */
   private provablySafe(at: number, a: number, b: number): boolean {
-    if (this.loopRanges().some(([s, e]) => s <= at && at < e)) return false;
-    this.applyAssignmentsBefore(at);
-    this.mode = "ordered";
+    const loops = this.loopRanges();
+    if (loops.some(([ls, le]) => ls <= at && at < le)) return false;
+    // The parent's rule implicates every declared variable named in the argument and, through
+    // the right-hand sides of their assignments, every variable those were copied from. This
+    // closure is a plain scan of the text, never the result of evaluating it.
     const seen = new Set<string>();
-    this.reads = seen;
-    const ordered = this.expr(a, b);
-    this.reads = null;
-    this.mode = "fixed";
-    if (ordered) return false;
-    // Close over the variables the right-hand sides of those assignments read.
-    const work = [...seen];
+    const work: string[] = [];
+    const add = (name: string): void => {
+      if (!seen.has(name)) {
+        seen.add(name);
+        work.push(name);
+      }
+    };
+    for (const hit of this.masked.slice(a, b).matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
+      if (this.isDeclared(hit[0])) add(hit[0].toLowerCase());
+    }
     const all = this.assignments ?? [];
     for (let i = 0; i < work.length; i++) {
       for (const asg of all) {
         if (asg.name.toLowerCase() !== work[i]) continue;
-        if (!asg.simple) return false;
-        for (const r of this.readsOf.get(asg) ?? []) {
-          if (!seen.has(r)) {
-            seen.add(r);
-            work.push(r);
-          }
-        }
+        // Final guard: only straight-line assignments, none inside a loop.
+        if (!asg.simple || loops.some(([ls, le]) => ls <= asg.at && asg.at < le)) return false;
+        for (const id of asg.ids) add(id);
       }
     }
-    return true;
+    this.applyAssignmentsBefore(at);
+    this.mode = "ordered";
+    const ordered = this.expr(a, b);
+    this.mode = "fixed";
+    return !ordered;
   }
-
-  /** Reads of each assignment's right-hand side, recorded by the fixpoint. */
-  private readonly readsOf = new Map<Assignment, Set<string>>();
 
   /** `[start, end)` of every loop (for, while, do) from its keyword to the end of its body. */
   private loops: Array<[number, number]> | null = null;
@@ -297,40 +306,55 @@ class InjectionAnalyzer {
     return null;
   }
 
+  /**
+   * One operand of a `+` chain. An operand is judged safe only when it matches a known-safe
+   * shape exactly (a literal, a numeric conversion, an `escapeSingleQuotes(...)` wrapper, a
+   * describe chain, a safe-typed variable); any other shape is read by the parent's rule: a
+   * tainted variable named anywhere in it, outside `escapeSingleQuotes` arguments, taints it.
+   */
   private operand(s: number, e: number): string | null {
     if (s >= e) return null;
     const m = this.masked;
     const raw = this.clean.slice(s, e);
-    const first = m[s];
-    // A string literal, a number, `null`, `true`/`false`.
-    if (first === "'" || /^[\d.]/.test(raw) || /^(?:null|true|false)$/i.test(raw)) return null;
-    if (first === "(" && matchClose(m, s) === e - 1) {
+    // A whole string literal, a number, `null`, `true`/`false`.
+    if (m[s] === "'" && m.indexOf("'", s + 1) === e - 1) return null;
+    if (/^(?:\d[\d_]*\.?\d*[lLdD]?|\.\d+|null|true|false)$/i.test(raw)) return null;
+    if (m[s] === "(" && matchClose(m, s) === e - 1) {
       // `(cond ? a : b)` or a parenthesised expression.
       return this.ternaryOrExpr(s + 1, e - 1);
     }
+    const ternary = this.ternary(s, e);
+    if (ternary !== undefined) return ternary;
     // Only the sanitizer call's own result is safe, not an expression that merely contains one.
     const esc = ESCAPE_CALL_RE.exec(raw);
     if (esc && matchClose(m, s + esc[0].length - 1) === e - 1) return null;
-    if (/\bSchema\s*\./i.test(raw) || /getDescribe\s*\(|getSObjectType\s*\(/i.test(raw))
-      return null;
-    if (SAFE_CONVERSION_RE.test(raw)) return null;
+    if (DESCRIBE_CHAIN_RE.test(raw)) return null;
+    // `Integer.valueOf(x)` (then only calls without arguments) cannot carry a quote.
+    const conv = SAFE_CONVERSION_RE.exec(raw);
+    if (conv) {
+      const close = matchClose(m, s + conv[0].length - 1);
+      if (
+        close === e - 1 ||
+        (close > 0 && /^(?:\s*\.\s*\w+\s*\(\s*\))+$/.test(raw.slice(close - s + 1)))
+      )
+        return null;
+      return this.anyIdentifier(s, e);
+    }
+    if (NUMERIC_MEMBER_RE.test(raw)) return null;
     const sv = STRING_VALUEOF_RE.exec(raw);
     if (sv) {
       const open = s + sv[0].length - 1;
       const close = matchClose(m, open);
-      if (close < 0 || close !== e - 1) return null;
+      if (close < 0 || close !== e - 1) return this.anyIdentifier(s, e);
       const arg = pieces(m, open + 1, close, ",")[0];
       return arg ? this.expr(arg[0], arg[1]) : null;
     }
-    if (NUMERIC_MEMBER_RE.test(raw)) return null;
-    if (/^new\b/i.test(raw)) return null;
-    const ternary = this.ternary(s, e);
-    if (ternary !== undefined) return ternary;
+    if (/^new\b/i.test(raw)) return this.anyIdentifier(s, e);
     const call = /^(String)\s*\.\s*(join|format)\s*\(/i.exec(raw);
     if (call) {
       const open = s + call[0].length - 1;
       const close = matchClose(m, open);
-      if (close < 0) return null;
+      if (close < 0 || close !== e - 1) return this.anyIdentifier(s, e);
       if ((call[2] ?? "").toLowerCase() === "join") {
         const arg = pieces(m, open + 1, close, ",")[0];
         return arg ? this.operand(arg[0], arg[1]) : null;
@@ -338,7 +362,7 @@ class InjectionAnalyzer {
       return this.formatArgs(open + 1, close);
     }
     const root = /^([A-Za-z_]\w*)/.exec(raw);
-    if (!root) return null;
+    if (!root) return this.anyIdentifier(s, e);
     const name = root[1] ?? "";
     const rest = raw.slice(name.length);
     if (!this.isDeclared(name)) {
@@ -359,7 +383,7 @@ class InjectionAnalyzer {
       if (last && ALLCAPS_RE.test(last[1] ?? "")) return null;
       return this.variable(name);
     }
-    return null;
+    return this.anyIdentifier(s, e);
   }
 
   private ternaryOrExpr(a: number, b: number): string | null {
@@ -540,11 +564,17 @@ class InjectionAnalyzer {
       const prefix = m.slice(stmt + 1, at).trim();
       const braceless = /(?:\)|\belse|\bdo)$/i.test(prefix);
       const from = at + hit[0].length;
+      const to = statementEnd(m, from);
+      const ids = [...m.slice(from, to).matchAll(/(?<![\w.])[A-Za-z_]\w*/g)]
+        .map((x) => x[0].toLowerCase())
+        .filter((x) => this.isDeclared(x));
       out.push({
         name,
         plus: hit[2] === "+",
+        at,
         from,
-        to: statementEnd(m, from),
+        to,
+        ids,
         simple: depth === base && parens === 0 && !braceless,
       });
     }
@@ -586,8 +616,7 @@ class InjectionAnalyzer {
       const t = this.expr(asg.from, asg.to);
       this.reads = null;
       this.target = null;
-      this.readsOf.set(asg, seen);
-      for (const r of seen) {
+      for (const r of [...seen, ...asg.ids]) {
         const list = readers.get(r);
         if (!list) readers.set(r, [i]);
         else if (!list.includes(i)) list.push(i);
@@ -619,7 +648,7 @@ class InjectionAnalyzer {
       const key = a.name.toLowerCase();
       const t = this.expr(a.from, a.to);
       if (t) this.state.set(key, t);
-      else if (!a.plus) this.state.set(key, null);
+      else if (!a.plus && a.simple) this.state.set(key, null);
     }
     this.mode = "fixed";
   }

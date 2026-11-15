@@ -126,6 +126,26 @@ const CASES: Case[] = [
     name: "format new Foo(term).name element",
     code: fmt("new List<String>{ new Foo(term).name }"),
   },
+  // lexical dependencies and the allow-list of safe shapes (Codex, 5df1e5e)
+  {
+    name: "a short-circuited dependency",
+    code: "\nString b = term;\nb = '';\nString c = term;\nif (flag) c = '';\nString a = b + c;\nDatabase.query(a);",
+    params: ["String term", "Boolean flag"],
+  },
+  {
+    name: "String.valueOf(term).trim() in a collection",
+    code: fmt("new List<String>{ String.valueOf(term).trim() }"),
+  },
+  {
+    name: "String.valueOf(term).trim() concatenated",
+    code: `\n${q("String.valueOf(term).trim()")}`,
+  },
+  {
+    name: "ternary hiding behind a numeric member",
+    code: `\n${q("flag ? term : items.size()")}`,
+    params: ["String term", "Boolean flag", "List<String> items"],
+  },
+  { name: "cast", code: `\n${q("(String) term")}` },
   // earlier review cases
   {
     name: "countQuery in RHS",
@@ -258,6 +278,16 @@ for (const type of TYPES) {
   });
 }
 
+/** Cases where the new analysis reports more than the parent (true positives the parent missed). */
+const MORE = [
+  "valueOf concat from list index", // terms[0] on a tainted collection
+  "format list variable", // a list variable built from `new List<String>{ term }`
+  "format describe beside an unescaped argument", // the parent exempted the whole call
+  "String.valueOf(term).trim() concatenated", // the parent read only a bare String.valueOf(...)
+  "ternary hiding behind a numeric member", // the parent judged the whole operand by its tail
+  "cast", // `(String) term`: the parent did not read past the cast
+];
+
 describe("flow-sensitive SOQL injection check against the flow-insensitive parent", () => {
   it("only the allow-listed fixes differ", () => {
     expect(ALLOWED).toHaveLength(5);
@@ -287,7 +317,53 @@ describe("flow-sensitive SOQL injection check against the flow-insensitive paren
       const opts = { params: c.params ?? T };
       const before = parentDetect(c.code, opts).length;
       const after = detectSoqlInjection(c.code, opts).length;
-      if (after > before) expect(c.name).toBe("valueOf concat from list index");
+      if (after > before) expect(MORE).toContain(c.name);
     }
   });
+});
+
+// Generated: 6 right-hand-side shapes x 4 assignment patterns. The new analysis must report at
+// least what the parent reported in every combination.
+const SHAPES: Array<[string, string]> = [
+  ["concat", "'a' + term"],
+  ["ternary", "flag ? term : 'x'"],
+  ["chained method", "term.trim().toLowerCase()"],
+  ["valueOf chain", "String.valueOf(term).trim()"],
+  ["new collection", "String.join(new List<String>{ term }, ',')"],
+  ["cast", "(String) term"],
+];
+const PATTERNS: Array<[string, (rhs: string) => string]> = [
+  ["straight", (r) => `\nString q = ${r};\nDatabase.query(q);`],
+  ["straight then safe", (r) => `\nString q = ${r};\nq = 'fixed';\nDatabase.query(q);`],
+  ["conditional", (r) => `\nString q = 'x';\nif (flag) { q = ${r}; }\nDatabase.query(q);`],
+  ["conditional safe", (r) => `\nString q = ${r};\nif (flag) { q = 'x'; }\nDatabase.query(q);`],
+  [
+    "loop",
+    (r) => `\nString q = 'x';\nfor (Integer i = 0; i < 2; i++) { Database.query(q); q = ${r}; }`,
+  ],
+  ["alias", (r) => `\nString a = ${r};\nString q = a;\nDatabase.query(q);`],
+  ["alias reassigned", (r) => `\nString a = ${r};\nString q = a;\na = 'x';\nDatabase.query(q);`],
+  [
+    "two aliases, one conditional",
+    (r) =>
+      `\nString b = ${r};\nb = '';\nString c = ${r};\nif (flag) c = '';\nString q = b + c;\nDatabase.query(q);`,
+  ],
+];
+
+describe("generated corpus: shapes x assignment patterns", () => {
+  for (const [shape, rhs] of SHAPES) {
+    for (const [pattern, build] of PATTERNS) {
+      it(`${shape} / ${pattern}`, () => {
+        const code = build(rhs);
+        const opts = { params: ["String term", "Boolean flag"] };
+        const before = parentDetect(code, opts);
+        const after = detectSoqlInjection(code, opts);
+        const key = (x: { line: number; kind: string }): string => `${x.line}:${x.kind}`;
+        const afterKeys = new Set(after.map(key));
+        // "straight then safe" is the allow-listed straight-line-sanitizer fix.
+        if (pattern === "straight then safe") return;
+        expect(before.filter((x) => !afterKeys.has(key(x)))).toEqual([]);
+      });
+    }
+  }
 });
