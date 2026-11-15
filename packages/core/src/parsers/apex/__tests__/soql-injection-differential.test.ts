@@ -211,6 +211,37 @@ const CASES: Case[] = [
     name: "describe chain followed by a chained call with a tainted argument",
     code: fmt("new List<String>{ Schema.SObjectType.Account.getName().replace('A', term) }"),
   },
+  // exact offsets, position-aware expansion, indexed receivers (Codex, aa1c617)
+  {
+    name: "same-line pair, both tainted",
+    code: `\nString fixed = 'f';\nDatabase.query('S' + term); Database.query(String.format('S {0}', new List<String>{ fixed.replace('f', term) }));`,
+  },
+  {
+    name: "same-line pair, first tainted second hidden behind a replace",
+    code: "\nString fixed = 'f';\nDatabase.query('S' + term); Database.query('S' + fixed.replace('f', term));",
+  },
+  {
+    name: "alias read before its source is reassigned",
+    code: "\nString a = term;\nString b = a;\na = 'x';\nDatabase.query('S' + b);",
+  },
+  {
+    name: "alias chain read before each source is reassigned",
+    code: "\nString a = term;\nString b = a;\nString c = b;\nb = 'x';\na = 'y';\nDatabase.query('S' + c);",
+  },
+  {
+    name: "alias whose source is sanitised later",
+    code: "\nString a = term;\nString b = a + 'x';\na = String.escapeSingleQuotes(a);\nDatabase.query('S' + b);",
+  },
+  {
+    name: "indexed receiver with a tainted argument",
+    code: `\n${q("parts[0].replace('fixed', term)")}`,
+    params: ["String term", "List<String> parts"],
+  },
+  {
+    name: "indexed receiver in a collection",
+    code: fmt("new List<String>{ parts[0].replace('fixed', term) }"),
+    params: ["String term", "List<String> parts"],
+  },
   // earlier review cases
   {
     name: "countQuery in RHS",
@@ -356,6 +387,8 @@ const MORE = [
   "left with a tainted argument",
   "static helper taking term", // a call on an undeclared receiver is read by its arguments
   "chained call whose argument is tainted",
+  "indexed receiver with a tainted argument",
+  "same-line pair, first tainted second hidden behind a replace", // the second call's replace argument
 ];
 
 describe("flow-sensitive SOQL injection check against the flow-insensitive parent", () => {
@@ -377,6 +410,8 @@ describe("flow-sensitive SOQL injection check against the flow-insensitive paren
         expect(after).toEqual([]);
       } else {
         expect(missing).toEqual([]);
+        // Same-line sinks share a line:kind key, so also compare counts.
+        expect(after.length).toBeGreaterThanOrEqual(before.length);
       }
     });
   }

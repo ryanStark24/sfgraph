@@ -2,7 +2,7 @@
 // bb00bc5). `detectSoqlInjection` runs it beside the current analysis and keeps every finding
 // it reports unless a purely lexical check proves no tainted parameter text survives, so the
 // current analysis can only ever drop findings in the intended false-positive cases. Do not edit
-// (the exceptions: the depth cap in `variable` and the declaration cache).
+// (the exceptions: the depth cap in `variable`, the declaration cache and the `at` offset on each spot).
 import { maskApex } from "./dynamic-soql.js";
 
 /**
@@ -21,6 +21,8 @@ export interface BaselineSpot {
   kind: string;
   /** The variable that carries unescaped text into the query. */
   variable?: string;
+  /** Offset of the call in the unit's text (added to the released code so callers can match sinks exactly). */
+  at?: number;
 }
 
 const lineOfIndex = (text: string, idx: number): number => {
@@ -176,6 +178,7 @@ class InjectionAnalyzer {
         evidence: lineText(code, m.index ?? 0),
         kind: call,
         variable: tainted,
+        at: m.index ?? 0,
       });
     }
     return out;

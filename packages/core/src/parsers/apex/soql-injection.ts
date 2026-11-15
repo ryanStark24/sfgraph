@@ -203,6 +203,8 @@ class InjectionAnalyzer {
 
   /** Every dynamic-query call site found by `run`, reported or not. */
   readonly sinks: Array<{ line: number; kind: string; at: number; a: number; b: number }> = [];
+  /** Offsets of the calls `run` reported. */
+  readonly reportedAt = new Set<number>();
 
   /** The call sites and the tainted variable of each unsafe one. */
   run(code: string): InjectionSpot[] {
@@ -221,6 +223,7 @@ class InjectionAnalyzer {
       const tainted = this.expr(first[0], first[1]);
       if (!tainted) continue;
       if (this.provablySafe(at, first[0], first[1])) continue;
+      this.reportedAt.add(at);
       out.push({
         line: lineOfIndex(code, at),
         evidence: lineText(code, at),
@@ -326,39 +329,52 @@ class InjectionAnalyzer {
   }
 
   /**
-   * Pure text check. Starting from the argument's text, replace each named variable by the text
-   * of its assignments, strip the allow-listed safe substrings, and report whether a parameter
-   * the parent's rule leaves tainted is still named. A variable whose assignments are all
-   * straight-line, outside every loop, with the call outside every loop, is replaced by its
-   * effective assignments only (the last plain one before the call and every `+=` after it);
-   * any other variable by all of its assignments.
+   * Pure text check, and the backstop's explicit rule: a baseline finding may be dropped only
+   * when the flattened text contains no parameter identifier at all, other than inside blanked
+   * allow-listed spans (and parameters of a safe type). The argument's text is flattened
+   * position by position: a variable read at some position is replaced by its effective
+   * assignments before that position (the last plain one and every `+=` after it), and inside
+   * that right-hand side each variable is read at the assignment's own position, recursively.
+   * A variable whose position is ambiguous (any assignment not straight-line, inside a loop, or
+   * the call inside a loop) is replaced by all of its assignments, and an ambiguous parameter
+   * keeps the finding. When in doubt, keep.
    */
   private taintedLeafRemains(at: number, a: number, b: number): boolean {
     const all = this.assignments ?? [];
     const loops = this.loopRanges();
-    const callInLoop = loops.some(([ls, le]) => ls <= at && at < le);
-    const todo = [this.masked.slice(a, b)];
-    const seen = new Set<string>();
-    for (let i = 0; i < todo.length; i++) {
-      const text = this.stripSafe(todo[i] ?? "");
+    const inLoop = (pos: number): boolean => loops.some(([ls, le]) => ls <= pos && pos < le);
+    const callInLoop = inLoop(at);
+    const queue: Array<{ text: string; pos: number }> = [
+      { text: this.masked.slice(a, b), pos: at },
+    ];
+    const expanded = new Set<Assignment>();
+    const expand = (x: Assignment): void => {
+      if (expanded.has(x)) return;
+      expanded.add(x);
+      queue.push({ text: this.masked.slice(x.from, x.to), pos: x.at });
+    };
+    for (let i = 0; i < queue.length; i++) {
+      const item = queue[i];
+      if (!item) continue;
+      const text = this.stripSafe(item.text);
       for (const hit of text.matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
         const name = hit[0];
-        const key = name.toLowerCase();
-        if (seen.has(key) || !this.isDeclared(name)) continue;
-        seen.add(key);
+        if (!this.isDeclared(name)) continue;
         const decl = this.declaration(name);
         if (!decl || this.safeType(decl.type)) continue;
+        const key = name.toLowerCase();
         const own = all.filter((x) => x.name.toLowerCase() === key);
-        const straight =
-          !callInLoop &&
-          own.every((x) => x.simple && !loops.some(([ls, le]) => ls <= x.at && x.at < le));
-        const mine = straight ? own.filter((x) => x.to <= at) : own;
-        const lastPlain = straight ? mine.map((x) => x.plus).lastIndexOf(false) : -1;
-        // A parameter that is never replaced keeps the caller's text.
-        if (this.isParam(decl) && lastPlain < 0 && (!straight || mine.every((x) => x.plus)))
-          return true;
-        for (const x of mine.slice(Math.max(lastPlain, 0)))
-          todo.push(this.masked.slice(x.from, x.to));
+        const straight = !callInLoop && own.every((x) => x.simple && !inLoop(x.at));
+        if (!straight) {
+          if (this.isParam(decl)) return true;
+          for (const x of own) expand(x);
+          continue;
+        }
+        const mine = own.filter((x) => x.to <= item.pos);
+        const lastPlain = mine.map((x) => x.plus).lastIndexOf(false);
+        // Before any plain assignment a parameter still holds the caller's text.
+        if (this.isParam(decl) && lastPlain < 0) return true;
+        for (const x of mine.slice(Math.max(lastPlain, 0))) expand(x);
       }
     }
     return false;
@@ -479,7 +495,8 @@ class InjectionAnalyzer {
     }
     if (rest === "") return this.variable(name);
     // `terms[0]` on a tainted collection is tainted like `terms.get(0)`.
-    if (/^\s*\[/.test(rest)) return this.variable(name);
+    if (/^\s*\[/.test(rest))
+      return this.variable(name) ?? (rest.includes("(") ? this.anyIdentifier(s, e) : null);
     // `numbers.get(k)` on a Map<K, Integer>: the value is a number even when the key is text.
     if (MAP_READ_RE.test(rest)) {
       const decl = this.declaration(name);
@@ -822,18 +839,14 @@ export function detectSoqlInjection(
     return spots;
   }
   if (baseline.length === 0) return spots;
-  const have = new Set(spots.map((x) => `${x.line}:${x.kind}`));
-  const claimed = new Set<number>();
   const kept: InjectionSpot[] = [...spots];
   for (const base of baseline) {
-    const key = `${base.line}:${base.kind}`;
-    if (have.has(key)) continue;
-    const i = analyzer.sinks.findIndex(
-      (x, k) => !claimed.has(k) && x.line === base.line && x.kind === base.kind,
-    );
-    if (i < 0) continue;
-    claimed.add(i);
-    if (analyzer.backstop(i)) kept.push(base);
+    // Match by the exact call offset; a finding that cannot be matched is kept.
+    const i = base.at === undefined ? -1 : analyzer.sinks.findIndex((x) => x.at === base.at);
+    if (i >= 0 && base.at !== undefined && analyzer.reportedAt.has(base.at)) continue;
+    if (i >= 0 && !analyzer.backstop(i)) continue;
+    const { at: _at, ...spot } = base;
+    kept.push(spot);
   }
   return kept.sort((x, y) => x.line - y.line);
 }

@@ -461,6 +461,16 @@ describe("detectSoqlInjection", () => {
       ).toHaveLength(1);
     });
 
+    it("matches sinks on one line by their exact offset", () => {
+      // The first call is a typed-safe false positive the new analysis drops; the second stays.
+      const found = detectSoqlInjection(
+        "\nDatabase.query('S' + String.valueOf(n)); Database.query('S' + term);",
+        { params: ["String term", "System.Integer n"] },
+      );
+      expect(found).toHaveLength(1);
+      expect(found[0]?.variable).toBe("term");
+    });
+
     it("handles a 2000-alias chain without a stack overflow", () => {
       const lines = ["\nString v0 = term;"];
       for (let i = 1; i < 2000; i++) lines.push(`String v${i} = v${i - 1};`);
