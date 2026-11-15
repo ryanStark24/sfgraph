@@ -27,9 +27,9 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 ### Known limits
 
 - Async in loop: a one-line `@future public static void` declaration is not recognised (an existing `isFuture` parsing limit), so calls to that method inside a loop are missed. Otherwise direct calls only. A loop that calls a helper which enqueues is not followed, an `@future` method called through an instance variable is not matched, and class-level initialisers are not scanned.
-- SOQL injection: per method and not flow-sensitive; `String.valueOf(x)` and `+=` keep x's taint. Class fields, values returned by another method, for-each variables and instance calls are not traced, so they are not reported (fewer false positives, less coverage).
+- SOQL injection: per method and not flow-sensitive; `String.valueOf(x)` and `+=` keep x's taint when x is text; an Integer, Long, Decimal, Double, Boolean, Id, Date, Datetime or Time x (and a `Map<K, Integer>` value) stays safe through `String.valueOf`, `+` and `String.format`. Class fields, values returned by another method, for-each variables and instance calls are not traced, so they are not reported (fewer false positives, less coverage).
 - DOM injection: sinks named inside string literals are ignored (a simple lexer, regex literals with quotes are not understood); no data-flow check of whether the value is user-controlled. `aura:unescapedHtml`, `document.write`, `eval` and `lwc:dom="manual"` without an `innerHTML` assignment are not checked.
-- Flow DML in loop: subflows and Apex actions inside a loop are not followed.
+- Flow DML in loop: subflows and Apex actions inside a loop are not followed. The analysis is linear in elements and connectors (a 16,000-element loop body took about 14 s before, under a second now).
 - On the one blind project the checks were built against they caught D02, D08, D13 and D15 as well as D04; that shows they work, not what they find on unseen code. No calibration against real org code.
 
 ## 1.8.2 — 2026-11-14

@@ -463,7 +463,13 @@ export function soqlInjectionAttr(
   params: readonly string[] | undefined,
   startLine: number | undefined,
 ): Array<{ line?: number; evidence: string; variable?: string; kind: string }> | undefined {
-  const spots = detectSoqlInjection(rawBody, params ? { params } : {});
+  // A failure of this check loses only this attribute, never the class being parsed.
+  let spots: ReturnType<typeof detectSoqlInjection>;
+  try {
+    spots = detectSoqlInjection(rawBody, params ? { params } : {});
+  } catch {
+    return undefined;
+  }
   if (spots.length === 0) return undefined;
   return spots.slice(0, 20).map((s) => ({
     ...(startLine != null ? { line: startLine + s.line - 1 } : {}),

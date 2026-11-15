@@ -324,6 +324,240 @@ describe("detectSoqlInjection", () => {
       },
     ]);
   });
+  describe("String.format arguments, assignment order and long alias chains", () => {
+    const fmt = (arg: string): string =>
+      `\nreturn Database.query(String.format('SELECT Id FROM Account LIMIT {0}', new List<String>{ ${arg} }));`;
+
+    it.each([
+      ["String.valueOf(Integer.valueOf(term))", "String.valueOf(Integer.valueOf(term))"],
+      ["Long.valueOf(term)", "String.valueOf(Long.valueOf(term))"],
+      ["Decimal.valueOf(term)", "String.valueOf(Decimal.valueOf(term))"],
+      ["Double.valueOf(term)", "String.valueOf(Double.valueOf(term))"],
+      ["Boolean.valueOf(term)", "String.valueOf(Boolean.valueOf(term))"],
+      ["Id.valueOf(term)", "String.valueOf(Id.valueOf(term))"],
+      ["Date.valueOf(term)", "String.valueOf(Date.valueOf(term))"],
+      ["escapeSingleQuotes(term)", "String.escapeSingleQuotes(term)"],
+      ["a describe name", "Schema.SObjectType.Account.getName()"],
+    ])("does not flag a String.format argument that is %s", (_n, arg) => {
+      expect(flag(fmt(arg))).toEqual([]);
+    });
+
+    it("judges each String.format argument on its own", () => {
+      expect(flag(fmt("String.escapeSingleQuotes(term), term"))).toHaveLength(1);
+      expect(flag(fmt("String.valueOf(Integer.valueOf(term)), term"))).toHaveLength(1);
+      expect(flag(fmt("String.valueOf(term)"))).toHaveLength(1);
+    });
+
+    it("an unconditional sanitiser clears earlier taint; the last definite assignment wins", () => {
+      const q = "return Database.query('SELECT Id FROM A WHERE N = \\'' + value + '\\'');";
+      expect(
+        flag(`\nString value = term;\nvalue = String.escapeSingleQuotes(value);\n${q}`),
+      ).toEqual([]);
+      expect(flag(`\nString value = term;\nvalue = 'fixed';\n${q}`)).toEqual([]);
+      // Taint added after the sanitiser is reported again.
+      expect(
+        flag(`\nString value = String.escapeSingleQuotes(term);\nvalue = term;\n${q}`),
+      ).toHaveLength(1);
+      // An assignment after the query does not clear it.
+      expect(
+        flag(
+          "\nString value = term;\nDatabase.query('SELECT Id FROM A WHERE N = \\'' + value + '\\'');\nvalue = 'x';",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("keeps taint through conditional assignments", () => {
+      const q = "return Database.query('SELECT Id FROM A WHERE N = \\'' + value + '\\'');";
+      // Tainted value, safe value assigned only in a branch: still tainted.
+      expect(
+        flag(`\nString value = term;\nif (flag) { value = 'x'; }\n${q}`, [
+          "String term",
+          "Boolean flag",
+        ]),
+      ).toHaveLength(1);
+      expect(
+        flag(`\nString value = term;\nif (flag) value = 'x';\n${q}`, [
+          "String term",
+          "Boolean flag",
+        ]),
+      ).toHaveLength(1);
+      // A tainted value assigned in a branch after a safe one.
+      expect(
+        flag(`\nString value = 'a';\nif (flag) { value = term; }\n${q}`, [
+          "String term",
+          "Boolean flag",
+        ]),
+      ).toHaveLength(1);
+      // Documented rule kept: a parameter escaped inside a branch counts as escaped.
+      expect(
+        flag(
+          "\nif (term != null) { term = String.escapeSingleQuotes(term); }\nreturn Database.query('SELECT Id FROM A WHERE N = \\'' + term + '\\'');",
+        ),
+      ).toEqual([]);
+    });
+
+    it("checks a query call inside an assignment's own right-hand side against the incoming state", () => {
+      expect(flag("\nString q = term;\nq = String.valueOf(Database.countQuery(q));")).toHaveLength(
+        1,
+      );
+    });
+
+    it("inspects the arguments of a copy constructor in String.format", () => {
+      const code = (arg: string): string =>
+        `\nreturn Database.query(String.format('SELECT Id FROM A WHERE N = {0}', ${arg}));`;
+      expect(flag(code("new List<String>(terms)"), ["List<String> terms"])).toHaveLength(1);
+      expect(flag(code("new List<Integer>(nums)"), ["List<Integer> nums"])).toEqual([]);
+      expect(flag(code("new List<String>(1)"), ["String term"])).toEqual([]);
+    });
+
+    it("carries taint around a loop, and a later safe assignment does not clear it", () => {
+      expect(
+        flag(
+          "\nString q = 'SELECT Id FROM Account';\nfor (Integer i = 0; i < 2; i++) { Database.query(q); q = term; }",
+        ),
+      ).toHaveLength(1);
+      expect(
+        flag(
+          "\nString q = 'SELECT Id FROM Account';\nwhile (more) { Database.query(q); q = term; q = String.escapeSingleQuotes(q); }",
+          ["String term", "Boolean more"],
+        ),
+      ).toHaveLength(1);
+      expect(
+        flag(
+          "\nString q = 'SELECT Id FROM Account';\nfor (Integer i = 0; i < 2; i++) Database.query(q);\nq = term;",
+        ),
+      ).toHaveLength(1);
+      expect(
+        flag(
+          "\nString q = 'SELECT Id FROM Account';\ndo { Database.query(q); q = term; } while (false);",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("carries taint through indexed access on a tainted collection", () => {
+      const code = (arg: string): string =>
+        `\nreturn Database.query(String.format('SELECT Id FROM A WHERE N = {0}', new List<String>{ ${arg} }));`;
+      expect(flag(code("terms[0]"), ["List<String> terms"])).toHaveLength(1);
+      expect(flag(code("terms.get(0)"), ["List<String> terms"])).toHaveLength(1);
+      expect(
+        flag("\nreturn Database.query('SELECT Id FROM A WHERE N = \\'' + terms[0] + '\\'');", [
+          "List<String> terms",
+        ]),
+      ).toHaveLength(1);
+      expect(flag(code("nums[0]"), ["List<Integer> nums"])).toEqual([]);
+    });
+
+    it("treats the condition and update clauses of a for header as conditional", () => {
+      expect(
+        flag(
+          "\nString q = term;\nfor (Integer i = 0; i < 0; q = 'SELECT Id FROM Account') { i++; }\nDatabase.query(q);",
+        ),
+      ).toHaveLength(1);
+      // An assignment inside a for header is never provably simple, so the taint is kept.
+      expect(
+        flag(
+          "\nString q = term;\nfor (q = 'SELECT Id FROM Account'; false; ) { }\nDatabase.query(q);",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("matches sinks on one line by their exact offset", () => {
+      // The first call is a typed-safe false positive the new analysis drops; the second stays.
+      const found = detectSoqlInjection(
+        "\nDatabase.query('S' + String.valueOf(n)); Database.query('S' + term);",
+        { params: ["String term", "System.Integer n"] },
+      );
+      expect(found).toHaveLength(1);
+      expect(found[0]?.variable).toBe("term");
+    });
+
+    it("handles a 2000-alias chain without a stack overflow", () => {
+      const lines = ["\nString v0 = term;"];
+      for (let i = 1; i < 2000; i++) lines.push(`String v${i} = v${i - 1};`);
+      const tail = "return Database.query('SELECT Id FROM A WHERE N = \\'' + v1999 + '\\'');";
+      const found = detectSoqlInjection(`${lines.join("\n")}\n${tail}`, { params: P });
+      expect(found.map((f) => f.variable)).toEqual(["term"]);
+      lines[1] = "String v1 = String.escapeSingleQuotes(v0);";
+      expect(detectSoqlInjection(`${lines.join("\n")}\n${tail}`, { params: P })).toEqual([]);
+    });
+  });
+
+  describe("typed non-String values through String.valueOf, format and +", () => {
+    const TYPES = [
+      "Integer",
+      "Long",
+      "Decimal",
+      "Double",
+      "Boolean",
+      "Id",
+      "Date",
+      "Datetime",
+      "Time",
+    ];
+    const SHAPES: Array<[string, string]> = [
+      [
+        "String.format with String.valueOf in a list",
+        "\nString q = String.format('SELECT Id FROM Account LIMIT {0}', new List<String>{ String.valueOf(x) });\nreturn Database.query(q);",
+      ],
+      [
+        "String.format with the value as an Object argument",
+        "\nreturn Database.query(String.format('SELECT Id FROM Account LIMIT {0}', new List<Object>{ x }));",
+      ],
+      [
+        "String.format with a String.valueOf local",
+        "\nString lim = String.valueOf(x);\nreturn Database.query(String.format('SELECT Id FROM Account LIMIT {0}', new List<String>{ lim }));",
+      ],
+      [
+        "an empty string plus the value",
+        "\nreturn Database.query('SELECT Id FROM Account LIMIT ' + '' + x);",
+      ],
+      [
+        "a local made from an empty string plus the value",
+        "\nString s = '' + x;\nreturn Database.query('SELECT Id FROM Account LIMIT ' + s);",
+      ],
+      [
+        "String.valueOf concatenated",
+        "\nreturn Database.query('SELECT Id FROM Account LIMIT ' + String.valueOf(x));",
+      ],
+      [
+        "String.valueOf in a ternary",
+        "\nreturn Database.query('SELECT Id FROM Account LIMIT ' + (x == null ? '1' : String.valueOf(x)));",
+      ],
+      [
+        "the value's own format()",
+        "\nreturn Database.query('SELECT Id FROM Account LIMIT ' + x.format());",
+      ],
+    ];
+    for (const type of TYPES) {
+      it.each(SHAPES)(`does not flag a ${type} parameter in %s`, (_n, code) => {
+        expect(flag(code, [`${type} x`])).toEqual([]);
+        expect(flag(code, [`System.${type} x`])).toEqual([]);
+      });
+    }
+
+    it("does not flag a value read from a Map with numeric values", () => {
+      const code =
+        "\nreturn Database.query('SELECT Id FROM Account LIMIT ' + String.valueOf(caps.get(k)));";
+      expect(flag(code, ["Map<String, Integer> caps", "String k"])).toEqual([]);
+      expect(flag(code, ["Map<Id, Decimal> caps", "Id k"])).toEqual([]);
+    });
+
+    it("still flags a String parameter through String.valueOf, format and +", () => {
+      const shapes = [
+        "\nString q = String.format('SELECT Id FROM Account WHERE N = {0}', new List<String>{ String.valueOf(x) });\nreturn Database.query(q);",
+        "\nreturn Database.query('SELECT Id FROM Account WHERE N = ' + String.valueOf(x));",
+        "\nreturn Database.query('SELECT Id FROM Account WHERE N = ' + '' + x);",
+      ];
+      for (const code of shapes) expect(flag(code, ["String x"])).toHaveLength(1);
+      // A Map with String values is still text.
+      expect(
+        flag("\nreturn Database.query('SELECT Id FROM A WHERE N = ' + String.valueOf(m.get(k)));", [
+          "Map<String, String> m",
+          "String k",
+        ]),
+      ).toHaveLength(1);
+    });
+  });
 });
 
 describe("normalizeSourceUri", () => {
@@ -571,6 +805,40 @@ describe("detectFlowDmlInLoop", () => {
     const xml =
       "<Flow>\n<loops><name>L</name><nextValueConnector><targetReference>U</targetReference></nextValueConnector></loops>\n<recordUpdates>\n<name>U</name><connector><targetReference>L</targetReference></connector>\n</recordUpdates>\n</Flow>";
     expect(detectFlowDmlInLoop(xml)[0]?.line).toBe(3);
+  });
+  it("analyses a 16,000-element loop body in linear time and still finds the DML", () => {
+    const n = 16_000;
+    const parts: string[] = [loop("L", "E0", "After")];
+    for (let i = 0; i < n; i++) {
+      const to = i + 1 < n ? `E${i + 1}` : "L";
+      parts.push(
+        i === n - 2
+          ? el("recordUpdates", `E${i}`, to, "<object>Account</object>")
+          : el("assignments", `E${i}`, to),
+      );
+    }
+    parts.push(el("actionCalls", "After"));
+    const xml = flow(parts.join("\n"));
+    const started = performance.now();
+    const found = detectFlowDmlInLoop(xml);
+    const ms = performance.now() - started;
+    expect(found.map((d) => [d.element, d.action, d.loop, d.object])).toEqual([
+      [`E${n - 2}`, "Update Records", "L", "Account"],
+    ]);
+    expect(found[0]?.line).toBe(n);
+    expect(ms).toBeLessThan(2000);
+  });
+
+  it("finds the line of every DML element in a flow with thousands of them", () => {
+    const n = 3000;
+    const parts: string[] = [loop("L", "D0", "After")];
+    for (let i = 0; i < n; i++) {
+      parts.push(el("recordCreates", `D${i}`, i + 1 < n ? `D${i + 1}` : "L"));
+    }
+    const found = detectFlowDmlInLoop(flow(parts.join("\n")));
+    expect(found).toHaveLength(n);
+    expect(found[0]?.line).toBe(2);
+    expect(found[n - 1]?.line).toBe(n + 1);
   });
 });
 
