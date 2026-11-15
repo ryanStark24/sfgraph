@@ -142,7 +142,25 @@ const INSERT_RE = /\.\s*insertAdjacentHTML\s*\(/g;
  * `masked` is the same text as `rhs` with string contents blanked, so only a `+` operator
  * outside a string literal splits it.
  */
-function isLiteralOnly(rhs: string, masked: string): boolean {
+function isLiteralOnly(rhsIn: string, maskedIn: string): boolean {
+  // `'a'.concat('b', 'c')` with literal receiver and arguments reads as `'a' + 'b' + 'c'`.
+  // `rhsIn` and `maskedIn` have the same length, so the same span is rewritten in both.
+  let rhs = rhsIn.replace(/[\s;]+$/, "");
+  let masked = maskedIn.slice(0, rhs.length);
+  for (;;) {
+    const m = /\.\s*concat\s*\(([^()]*)\)$/.exec(masked);
+    if (!m) break;
+    const argStart = m.index + m[0].indexOf("(") + 1;
+    const rewrite = (t: string): string => {
+      const args = [...t.slice(argStart, t.length - 1)]
+        .map((ch, k) => (masked[argStart + k] === "," ? "+" : ch))
+        .join("");
+      return `${t.slice(0, m.index)}+${args}`;
+    };
+    const nextMasked = rewrite(masked);
+    rhs = rewrite(rhs);
+    masked = nextMasked;
+  }
   const trimmed = rhs.replace(/[\s,)]+$/, "");
   if (trimmed.trim() === "") return false;
   const parts: string[] = [];
@@ -166,11 +184,28 @@ function isLiteralOnly(rhs: string, masked: string): boolean {
 
 const isEmptyLiteral = (rhs: string): boolean => /^\s*(?:''|""|``)\s*;?\s*$/.test(rhs);
 
+/** Operators (longest first) that join two operands, so a line starting with one continues the expression. */
+const CONTINUE_START_RE =
+  /^(?:\?\.(?!\d)|\.(?!\d)|\?\?|\|\||&&|===|!==|==|!=|<=|>=|\+(?!\+)|-(?!-)|[*%/?:<>|&^[(`]|(?:instanceof|in)(?![\w$]))/;
+const CONTINUE_END_RE =
+  /(?:\?\?|\|\||&&|===|!==|==|!=|<=|>=|[*%/?:<>|&^=([{,]|(?<!\+)\+|(?<!-)-|(?<![\w$])(?:instanceof|in))$/;
+
+/**
+ * JS automatic semicolon insertion, as far as this check needs it: a line break at bracket
+ * depth 0 does not end the expression when the previous line ends in an operator (`p` is the
+ * index of its last non-blank character) or the next non-blank line (starting at `n`) begins
+ * with a token that cannot start a statement and joins operands (`.`, `?.`, `[`, `(`, a
+ * template, a binary or logical operator). A prefix `++`/`--` starts a new statement.
+ */
+function lineContinues(masked: string, p: number, n: number, from: number): boolean {
+  if (p >= from && CONTINUE_END_RE.test(masked.slice(from, p + 1))) return true;
+  return n < masked.length && CONTINUE_START_RE.test(masked.slice(n, n + 12));
+}
+
 /**
  * End index (exclusive) of the expression that starts at `from` in comment-and-string-masked
  * code: the first `;` at depth 0, an unmatched closing bracket, or a line break at depth 0
- * unless the expression visibly continues (the line ends with a binary `+`, or the next line
- * starts with one). A line break inside a template literal (text or `${...}`) never ends it.
+ * unless the expression continues under JS automatic-semicolon-insertion rules (see `lineContinues`). A line break inside a template literal (text or `${...}`) never ends it.
  */
 function expressionEnd(masked: string, from: number): number {
   let d = 0;
@@ -206,9 +241,7 @@ function expressionEnd(masked: string, from: number): number {
       while (p >= from && /\s/.test(masked[p] ?? "")) p--;
       let n = j + 1;
       while (n < masked.length && /\s/.test(masked[n] ?? "")) n++;
-      const endsWithPlus = p >= from && masked[p] === "+" && masked[p - 1] !== "+";
-      const startsWithPlus = masked[n] === "+" && masked[n + 1] !== "+";
-      if (!endsWithPlus && !startsWithPlus) return j;
+      if (!lineContinues(masked, p, n, from)) return j;
     }
   }
   return masked.length;

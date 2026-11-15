@@ -682,6 +682,26 @@ describe("detectDomInjection", () => {
   ])("does not flag %s", (_n, js) => {
     expect(kinds(js)).toEqual([]);
   });
+  it("reads a fluent chain on the next line as part of the right-hand side (Codex 4579252385)", () => {
+    expect(kinds("el.innerHTML = ''\n  .concat(userInput);")).toEqual(["innerHTML:high"]);
+    expect(kinds("el.innerHTML = ''\n  ?.concat(userInput);")).toEqual(["innerHTML:high"]);
+    expect(kinds("el.innerHTML = ''.concat(userInput);")).toEqual(["innerHTML:high"]);
+    expect(kinds("el.innerHTML = cond\n  ? this.a\n  : '';")).toEqual(["innerHTML:high"]);
+    expect(kinds("el.innerHTML = '<b>' +\n  userInput;")).toEqual(["innerHTML:high"]);
+    expect(kinds("el.innerHTML = ''\n  [method](userInput);")).toEqual(["innerHTML:high"]);
+  });
+  it("still treats a clear followed by a new statement as a clear", () => {
+    expect(kinds("el.innerHTML = '';\nfoo(userInput);")).toEqual([]);
+    expect(kinds("el.innerHTML = ''\nfoo(userInput);")).toEqual([]);
+    expect(kinds("el.innerHTML = ''\nconst a = x + 1;")).toEqual([]);
+    expect(kinds("el.innerHTML = ''\n++count;")).toEqual([]);
+  });
+  it("does not promote a fixed-string fluent chain", () => {
+    expect(kinds("el.innerHTML = ''\n  .concat('<b>', 'a+b $5', '</b>');")).toEqual([
+      "innerHTML:low",
+    ]);
+    expect(kinds("el.innerHTML = '<i>a+b</i>'\n  .concat('$1');")).toEqual(["innerHTML:low"]);
+  });
   it("keeps line numbers right after a multi-line template", () => {
     const js =
       "const a = 1;\nel.innerHTML = `<b>\nx\n</b>`;\nconst b = 2;\nel.innerHTML = this.n;\n";
