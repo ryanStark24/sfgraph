@@ -73,6 +73,8 @@ const NOT_A_TYPE = new Set(["return", "new", "else", "throw", "in", "instanceof"
 /** Methods of any value that return a number or a boolean. */
 const NUMERIC_MEMBER_RE =
   /\.\s*(?:size|length|isEmpty|hashCode|getTime|year|month|day)\s*\(\s*\)\s*$/i;
+const ESCAPE_CALL_RE = /^(?:String\s*\.\s*)?escapeSingleQuotes\s*\(/i;
+const ESCAPE_ANYWHERE_RE = /(?<![\w.])(?:String\s*\.\s*)?escapeSingleQuotes\s*\(/gi;
 const ALLCAPS_RE = /^[A-Z][A-Z0-9_]*$/;
 /** Conversions to a type that cannot carry a quote (`Integer.valueOf(x)` throws on text). */
 const SAFE_CONVERSION_RE =
@@ -194,7 +196,9 @@ class InjectionAnalyzer {
       // `(cond ? a : b)` or a parenthesised expression.
       return this.ternaryOrExpr(s + 1, e - 1);
     }
-    if (/escapeSingleQuotes\s*\(/i.test(raw)) return null;
+    // Only the sanitizer call's own result is safe, not an expression that merely contains one.
+    const esc = ESCAPE_CALL_RE.exec(raw);
+    if (esc && matchClose(m, s + esc[0].length - 1) === e - 1) return null;
     if (/\bSchema\s*\./i.test(raw) || /getDescribe\s*\(|getSObjectType\s*\(/i.test(raw))
       return null;
     if (SAFE_CONVERSION_RE.test(raw)) return null;
@@ -263,7 +267,14 @@ class InjectionAnalyzer {
 
   /** The first declared variable among the identifiers of masked[a, b) that is tainted. */
   private anyIdentifier(a: number, b: number): string | null {
-    for (const m of this.masked.slice(a, b).matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
+    // Arguments of an `escapeSingleQuotes(...)` call are escaped: blank them, keep siblings.
+    const chars = this.masked.slice(a, b).split("");
+    for (const esc of this.masked.slice(a, b).matchAll(ESCAPE_ANYWHERE_RE)) {
+      const open = (esc.index ?? 0) + esc[0].length - 1;
+      const close = matchClose(this.masked.slice(a, b), open);
+      for (let k = esc.index ?? 0; k <= (close < 0 ? chars.length - 1 : close); k++) chars[k] = " ";
+    }
+    for (const m of chars.join("").matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
       const name = m[0];
       if (this.isDeclared(name)) {
         const t = this.variable(name);
