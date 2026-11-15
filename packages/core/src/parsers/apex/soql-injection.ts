@@ -148,24 +148,40 @@ function pieces(masked: string, a: number, b: number, sep: "+" | ","): Array<[nu
   return out;
 }
 
+/** One assignment (or declaration with an initializer) to a declared variable. */
+interface Assignment {
+  name: string;
+  plus: boolean;
+  from: number;
+  to: number;
+  /** Straight-line at the body's own brace depth: not in a branch, loop, header or call. */
+  simple: boolean;
+}
+
+/**
+ * Two analyses over one unit. The default is the flow-insensitive one: a variable is tainted
+ * when it is a parameter that was not replaced, or when any assignment to it anywhere carries
+ * taint (alias chains are followed with a worklist, not recursion). A finding that rule reports
+ * is dropped only in the provably simple case: the call is not in a loop, and every assignment
+ * to the variables the argument reads is a straight-line statement at the body's own depth, and
+ * in source order the last one before the call is safe. Anything else keeps the finding.
+ */
 class InjectionAnalyzer {
   private readonly clean: string;
   private readonly masked: string;
   private readonly headerEnd: number;
-  /** Taint of each variable (lower-case name) after the assignments processed so far. */
-  private readonly state = new Map<string, string | null>();
-  /** True while a variable's value is still the caller's parameter (no assignment yet). */
-  private readonly fromParam = new Set<string>();
   private readonly decls = new Map<string, { type: string; index: number } | null>();
-  /** Every assignment to a declared variable, in source order, with how it is reached. */
-  private assignments: Array<{
-    name: string;
-    plus: boolean;
-    from: number;
-    to: number;
-    definite: boolean;
-  }> | null = null;
+  private assignments: Assignment[] | null = null;
+  /** Flow-insensitive taint of each variable (lower-case name). */
+  private fixed: Map<string, string | null> | null = null;
+  /** Source-order taint, after the assignments applied so far. */
+  private readonly state = new Map<string, string | null>();
   private applied = 0;
+  private mode: "fixed" | "ordered" = "fixed";
+  /** Variables read (lower-case) while an expression is evaluated, when not null. */
+  private reads: Set<string> | null = null;
+  /** The variable whose assignment is being evaluated by the fixpoint. */
+  private target: string | null = null;
 
   constructor(code: string) {
     this.clean = stripComments(code);
@@ -178,18 +194,21 @@ class InjectionAnalyzer {
   run(code: string): InjectionSpot[] {
     const out: InjectionSpot[] = [];
     for (const m of this.masked.matchAll(DYNAMIC_CALL_RE)) {
-      const open = (m.index ?? 0) + m[0].length - 1;
+      const at = m.index ?? 0;
+      const open = at + m[0].length - 1;
       const close = matchClose(this.masked, open);
       if (close < 0) continue;
       const first = pieces(this.masked, open + 1, close, ",")[0];
       if (!first || first[0] >= first[1]) continue;
-      this.applyAssignmentsBefore(m.index ?? 0);
-      const tainted = this.withLoopTaint(m.index ?? 0, () => this.expr(first[0], first[1]));
+      this.solve();
+      this.mode = "fixed";
+      const tainted = this.expr(first[0], first[1]);
       if (!tainted) continue;
+      if (this.provablySafe(at, first[0], first[1])) continue;
       const call = (m[1] ?? "").replace(/\s+/g, "");
       out.push({
-        line: lineOfIndex(code, m.index ?? 0),
-        evidence: lineText(code, m.index ?? 0),
+        line: lineOfIndex(code, at),
+        evidence: lineText(code, at),
         kind: call,
         variable: tainted,
       });
@@ -197,16 +216,54 @@ class InjectionAnalyzer {
     return out;
   }
 
-  /** `[start, end)` of every loop body (for, while, do; braced or not), found once. */
+  /**
+   * True only in the simple case: the call is outside every loop (header and body), every
+   * assignment to the variables its argument reads (and to the ones they were copied from) is
+   * straight-line, and the source-order value at the call is safe.
+   */
+  private provablySafe(at: number, a: number, b: number): boolean {
+    if (this.loopRanges().some(([s, e]) => s <= at && at < e)) return false;
+    this.applyAssignmentsBefore(at);
+    this.mode = "ordered";
+    const seen = new Set<string>();
+    this.reads = seen;
+    const ordered = this.expr(a, b);
+    this.reads = null;
+    this.mode = "fixed";
+    if (ordered) return false;
+    // Close over the variables the right-hand sides of those assignments read.
+    const work = [...seen];
+    const all = this.assignments ?? [];
+    for (let i = 0; i < work.length; i++) {
+      for (const asg of all) {
+        if (asg.name.toLowerCase() !== work[i]) continue;
+        if (!asg.simple) return false;
+        for (const r of this.readsOf.get(asg) ?? []) {
+          if (!seen.has(r)) {
+            seen.add(r);
+            work.push(r);
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  /** Reads of each assignment's right-hand side, recorded by the fixpoint. */
+  private readonly readsOf = new Map<Assignment, Set<string>>();
+
+  /** `[start, end)` of every loop (for, while, do) from its keyword to the end of its body. */
   private loops: Array<[number, number]> | null = null;
 
-  private loopBodies(): Array<[number, number]> {
+  private loopRanges(): Array<[number, number]> {
     if (this.loops) return this.loops;
     const m = this.masked;
     const out: Array<[number, number]> = [];
     for (const hit of m.matchAll(/(?<![\w.])(for|while|do)\b/gi)) {
-      let at = (hit.index ?? 0) + hit[0].length;
-      if (hit[1]?.toLowerCase() !== "do") {
+      const keyword = hit[1]?.toLowerCase();
+      const start = hit.index ?? 0;
+      let at = start + hit[0].length;
+      if (keyword !== "do") {
         while (/\s/.test(m[at] ?? "")) at++;
         if (m[at] !== "(") continue;
         const close = matchClose(m, at);
@@ -214,41 +271,20 @@ class InjectionAnalyzer {
         at = close + 1;
       }
       while (/\s/.test(m[at] ?? "")) at++;
-      const end = m[at] === "{" ? matchClose(m, at) + 1 : statementEnd(m, at) + 1;
-      if (end > at) out.push([at, end]);
+      let end = m[at] === "{" ? matchClose(m, at) + 1 : statementEnd(m, at) + 1;
+      if (keyword === "do") {
+        // `do { ... } while (cond);`: the condition is part of the loop.
+        const tail = /^\s*while\s*\(/i.exec(m.slice(end));
+        if (tail) {
+          const open = end + tail[0].length - 1;
+          const close = matchClose(m, open);
+          if (close >= 0) end = close + 1;
+        }
+      }
+      if (end > at) out.push([start, end]);
     }
     this.loops = out;
     return out;
-  }
-
-  /**
-   * Run `check` with loop-carried taint: for a call inside a loop body, a tainting assignment
-   * anywhere in the outermost enclosing loop body counts, even after the call (the next pass
-   * reads it). A safe reassignment later in the loop never clears the taint.
-   */
-  private withLoopTaint<T>(at: number, check: () => T): T {
-    const enclosing = this.loopBodies().filter(([a, b]) => a <= at && at < b);
-    if (enclosing.length === 0 || !this.assignments) return check();
-    const start = Math.min(...enclosing.map(([a]) => a));
-    const end = Math.max(...enclosing.map(([, b]) => b));
-    const savedState = new Map(this.state);
-    const savedParam = new Set(this.fromParam);
-    for (const a of this.assignments.slice(this.applied)) {
-      if (a.from < start || a.from >= end) continue;
-      const t = this.expr(a.from, a.to);
-      if (t) {
-        this.state.set(a.name.toLowerCase(), t);
-        this.fromParam.delete(a.name.toLowerCase());
-      }
-    }
-    try {
-      return check();
-    } finally {
-      this.state.clear();
-      for (const [k, v] of savedState) this.state.set(k, v);
-      this.fromParam.clear();
-      for (const k of savedParam) this.fromParam.add(k);
-    }
   }
 
   /** The name of a tainted variable used in the expression masked[a, b), else null. */
@@ -354,7 +390,16 @@ class InjectionAnalyzer {
    */
   private formatArgs(a: number, b: number): string | null {
     const m = this.masked;
-    for (const [s, e] of pieces(m, a, b, ",")) {
+    for (const [s0, e0] of pieces(m, a, b, ",")) {
+      // Redundant parentheses around an argument or a `new` expression change nothing.
+      let s = s0;
+      let e = e0;
+      while (s < e && m[s] === "(" && matchClose(m, s) === e - 1) {
+        s += 1;
+        e -= 1;
+        while (s < e && /\s/.test(m[s] ?? "")) s++;
+        while (e > s && /\s/.test(m[e - 1] ?? "")) e--;
+      }
       if (s >= e) continue;
       if (/^new\b/i.test(this.clean.slice(s, e))) {
         // `new List<String>{ a, b }` (elements) or `new List<String>(copy)` (constructor
@@ -409,27 +454,17 @@ class InjectionAnalyzer {
   }
 
   /**
-   * Every assignment to a declared variable, in source order. A plain assignment is definite
-   * when it sits at the method body's own brace depth and is not the body of a braceless
-   * `if`/`else`/`for`/`while`; anything else is conditional.
+   * Every assignment to a declared variable, in source order. An assignment is `simple` when it
+   * sits at the method body's own brace depth, outside every parenthesis (a `for` header, a
+   * condition, a call argument) and is not the body of a braceless `if`/`else`/loop.
    */
-  private collectAssignments(): NonNullable<InjectionAnalyzer["assignments"]> {
+  private collectAssignments(): Assignment[] {
     const m = this.masked;
-    const out: NonNullable<InjectionAnalyzer["assignments"]> = [];
+    const out: Assignment[] = [];
     const base = m.indexOf("{") < 0 ? 0 : 1;
     let depth = 0;
+    let parens = 0;
     let pos = 0;
-    // The condition and update clauses of a `for (init; cond; update)` header run only
-    // conditionally (the update never runs when the body does not); the init clause always runs
-    // once, so it stays definite.
-    const headerClauses: Array<[number, number]> = [];
-    for (const f of m.matchAll(/(?<![\w.])for\s*\(/gi)) {
-      const open = (f.index ?? 0) + f[0].length - 1;
-      const close = matchClose(m, open);
-      if (close < 0) continue;
-      const cuts = splitTopLevel(m, open + 1, close, ";");
-      if (cuts[0] !== undefined) headerClauses.push([cuts[0], close]);
-    }
     const re = /(?<![\w.])([A-Za-z_]\w*)\s*(\+?)=(?!=)/g;
     for (const hit of m.matchAll(re)) {
       const name = hit[1] ?? "";
@@ -439,6 +474,8 @@ class InjectionAnalyzer {
         const ch = m[pos];
         if (ch === "{") depth += 1;
         else if (ch === "}") depth -= 1;
+        else if (ch === "(") parens += 1;
+        else if (ch === ")") parens -= 1;
       }
       const stmt = Math.max(m.lastIndexOf(";", at), m.lastIndexOf("{", at), m.lastIndexOf("}", at));
       const prefix = m.slice(stmt + 1, at).trim();
@@ -449,43 +486,83 @@ class InjectionAnalyzer {
         plus: hit[2] === "+",
         from,
         to: statementEnd(m, from),
-        definite:
-          depth === base && !braceless && !headerClauses.some(([a, b]) => a <= at && at < b),
+        simple: depth === base && parens === 0 && !braceless,
       });
     }
     return out;
   }
 
   /**
-   * Apply, in source order, the assignments that end before `limit` (an assignment whose own right-hand side holds the query call is applied after that call is checked). The last definite plain
-   * assignment wins (`v = term; v = escapeSingleQuotes(v);` is safe). A tainted value stays
-   * tainted through a conditional assignment, and a conditional safe assignment clears only a
-   * parameter's own text (the documented rule: a parameter escaped on one branch is treated as
-   * escaped). `+=` only ever adds taint. One forward pass, no recursion, so a chain of
-   * thousands of aliases costs time and no stack.
+   * The flow-insensitive taint of every variable, by a worklist: an assignment is re-evaluated
+   * when a variable its right-hand side read changes. Taint only ever grows, and a chain of
+   * thousands of aliases costs no stack. A parameter keeps its caller's text unless a plain
+   * assignment replaced it; `+=` only appends; the parameter itself read inside its own
+   * assignment is still the caller's text.
    */
+  private solve(): void {
+    if (this.fixed) return;
+    this.assignments = this.collectAssignments();
+    const fixed = new Map<string, string | null>();
+    this.fixed = fixed;
+    const all = this.assignments;
+    const plainTo = new Set(all.filter((x) => !x.plus).map((x) => x.name.toLowerCase()));
+    const readers = new Map<string, number[]>();
+    this.mode = "fixed";
+    const queue = all.map((_, i) => i);
+    const queued = new Set(queue);
+    const names = new Set(all.map((x) => x.name.toLowerCase()));
+    for (const n of names) {
+      const decl = this.declaration(n);
+      const param = decl !== null && this.isParam(decl);
+      fixed.set(n, param && !plainTo.has(n) && !this.safeType(decl?.type ?? "") ? n : null);
+    }
+    for (let qi = 0; qi < queue.length; qi++) {
+      const i = queue[qi] as number;
+      queued.delete(i);
+      const asg = all[i] as Assignment;
+      const key = asg.name.toLowerCase();
+      const seen = new Set<string>();
+      this.reads = seen;
+      this.target = key;
+      const t = this.expr(asg.from, asg.to);
+      this.reads = null;
+      this.target = null;
+      this.readsOf.set(asg, seen);
+      for (const r of seen) {
+        const list = readers.get(r);
+        if (!list) readers.set(r, [i]);
+        else if (!list.includes(i)) list.push(i);
+      }
+      if (t && !this.safeType(this.declaration(asg.name)?.type ?? "") && !fixed.get(key)) {
+        fixed.set(key, t);
+        for (const j of readers.get(key) ?? []) {
+          if (!queued.has(j)) {
+            queued.add(j);
+            queue.push(j);
+          }
+        }
+      }
+    }
+  }
+
+  private safeType(type: string): boolean {
+    return SAFE_TYPE_RE.test(type) || SAFE_GENERIC_RE.test(type);
+  }
+
+  /** Apply, in source order, the assignments that end before `limit` (see `provablySafe`). */
   private applyAssignmentsBefore(limit: number): void {
-    this.assignments ??= this.collectAssignments();
-    while (this.applied < this.assignments.length) {
-      const a = this.assignments[this.applied];
+    const all = this.assignments ?? [];
+    this.mode = "ordered";
+    while (this.applied < all.length) {
+      const a = all[this.applied];
       if (!a || a.to > limit) break;
       this.applied += 1;
       const key = a.name.toLowerCase();
       const t = this.expr(a.from, a.to);
-      const current = this.variable(a.name);
-      if (t) {
-        this.state.set(key, t);
-        this.fromParam.delete(key);
-      } else if (a.plus) {
-        // an append of safe text keeps what the variable held
-      } else if (a.definite) {
-        this.state.set(key, null);
-        this.fromParam.delete(key);
-      } else if (current && this.fromParam.has(key)) {
-        this.state.set(key, null);
-        this.fromParam.delete(key);
-      }
+      if (t) this.state.set(key, t);
+      else if (!a.plus) this.state.set(key, null);
     }
+    this.mode = "fixed";
   }
 
   /** `name` when the variable can carry unescaped text into a query, else null. */
@@ -493,15 +570,15 @@ class InjectionAnalyzer {
     const key = name.toLowerCase();
     const decl = this.declaration(name);
     if (!decl) return null;
-    if (SAFE_TYPE_RE.test(decl.type) || SAFE_GENERIC_RE.test(decl.type)) return null;
-    if (this.state.has(key)) return this.state.get(key) ?? null;
-    if (this.isParam(decl)) {
-      this.fromParam.add(key);
-      this.state.set(key, name);
-      return name;
+    if (this.safeType(decl.type)) return null;
+    this.reads?.add(key);
+    if (this.mode === "ordered") {
+      if (this.state.has(key)) return this.state.get(key) ?? null;
+      return this.isParam(decl) ? name : null;
     }
-    this.state.set(key, null);
-    return null;
+    if (this.target === key && this.isParam(decl)) return name;
+    if (this.fixed?.has(key)) return this.fixed.get(key) ?? null;
+    return this.isParam(decl) ? name : null;
   }
 }
 

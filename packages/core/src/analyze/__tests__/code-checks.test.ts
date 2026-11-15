@@ -426,7 +426,7 @@ describe("detectSoqlInjection", () => {
         flag(
           "\nString q = 'SELECT Id FROM Account';\nfor (Integer i = 0; i < 2; i++) Database.query(q);\nq = term;",
         ),
-      ).toEqual([]);
+      ).toHaveLength(1);
       expect(
         flag(
           "\nString q = 'SELECT Id FROM Account';\ndo { Database.query(q); q = term; } while (false);",
@@ -453,12 +453,12 @@ describe("detectSoqlInjection", () => {
           "\nString q = term;\nfor (Integer i = 0; i < 0; q = 'SELECT Id FROM Account') { i++; }\nDatabase.query(q);",
         ),
       ).toHaveLength(1);
-      // The init clause always runs once, so a safe value there is definite.
+      // An assignment inside a for header is never provably simple, so the taint is kept.
       expect(
         flag(
           "\nString q = term;\nfor (q = 'SELECT Id FROM Account'; false; ) { }\nDatabase.query(q);",
         ),
-      ).toEqual([]);
+      ).toHaveLength(1);
     });
 
     it("handles a 2000-alias chain without a stack overflow", () => {
