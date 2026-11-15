@@ -9,6 +9,7 @@ import {
 import { makeEdge, makeNode, messageChannelQname, platformEventQname, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
 import { AURA_NODE_HASH_SALT } from "../hash-salts.js";
+import { DOM_SPOTS_MAX, type DomInjectionSpot, detectDomInjection } from "../lwc/dom-injection.js";
 export { AURA_NODE_HASH_SALT } from "../hash-salts.js";
 
 /**
@@ -208,6 +209,7 @@ export class AuraBundleParser implements Parser<AuraBundleInput> {
     const serverActions = new Set<string>();
     const scripts: string[] = [];
     const markups: string[] = [];
+    const domSpots: DomInjectionSpot[] = [];
     for (const fname of Object.keys(input.files).sort()) {
       const raw = input.files[fname] ?? "";
       if (MARKUP_EXT.test(fname)) {
@@ -247,6 +249,7 @@ export class AuraBundleParser implements Parser<AuraBundleInput> {
         labelRefs(src);
         markups.push(src);
       } else if (fname.endsWith(".js")) {
+        domSpots.push(...detectDomInjection(fname, raw));
         const js = stripJsComments(raw);
         labelRefs(js);
         scripts.push(js);
@@ -307,6 +310,7 @@ export class AuraBundleParser implements Parser<AuraBundleInput> {
           name: bundleName,
           ...(bundleKind ? { bundleKind } : {}),
           files: Object.keys(input.files).sort(),
+          ...(domSpots.length > 0 ? { domInjection: domSpots.slice(0, DOM_SPOTS_MAX) } : {}),
         },
         bundleContentHash(input.files),
       ),

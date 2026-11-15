@@ -104,11 +104,8 @@ export function describeSource(source: string, f: CacheFreshness): string {
 // Governor risks
 // ---------------------------------------------------------------------------
 
-export interface GovernorRiskRow {
-  qualifiedName: string;
-  risk: analyze.GovernorRisk["risk"];
-  evidence: string;
-}
+/** A governor risk; the optional location fields are set on the newer risk kinds (async, flow). */
+export type GovernorRiskRow = analyze.GovernorRisk;
 
 export interface GovernorCollection {
   risks: GovernorRiskRow[];

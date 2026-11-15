@@ -4,6 +4,7 @@ import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../.
 import type { SnippetRecord } from "../../storage/interfaces.js";
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
+import { APEX_NODE_HASH_SALT } from "../hash-salts.js";
 import {
   emitClassRefEdges,
   emitDescribeRefEdges,
@@ -20,6 +21,7 @@ import {
   emitFieldAccessEdges,
   parseSoql,
   setDynamicSoqlSkips,
+  soqlInjectionAttr,
 } from "./class.js";
 import { stripCommentsAndStrings } from "./common.js";
 import { foldDynamicSoql, maskApex } from "./dynamic-soql.js";
@@ -69,6 +71,12 @@ function extractTriggerBodyEdges(
     triggerObject: object,
   });
   return edges;
+}
+
+/** `soqlInjection` for a trigger (security.soql-injection); `line` is the file line. */
+function injectionAttr(body: string): { soqlInjection?: ReturnType<typeof soqlInjectionAttr> } {
+  const spots = soqlInjectionAttr(body, undefined, 1);
+  return spots ? { soqlInjection: spots } : {};
 }
 
 /** `dynamicQueryInLoop` for a trigger body with dynamic queries in a loop (T15 I-5). */
@@ -146,8 +154,9 @@ export class ApexTriggerParser implements Parser<ApexTriggerInput> {
           events,
           apiVersion,
           ...dynamicInLoopAttr(cleaned),
+          ...injectionAttr(input.body),
         },
-        sha256(input.body),
+        sha256(`${APEX_NODE_HASH_SALT}\n${input.body}`),
       ),
     );
     edges.push(
