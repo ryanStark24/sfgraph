@@ -45,6 +45,13 @@ Override the vendored model via either options or env vars:
 The model directory layout must match what `transformers.js` expects:
 `<modelPath>/<modelId>/onnx/model.onnx` (and the matching tokenizer files).
 
+## License
+
+The package code is MIT (see `LICENSE`). The bundled model files under `data/`
+are all-MiniLM-L6-v2, which is **Apache-2.0**; the full text is in
+`THIRD_PARTY_LICENSES/all-MiniLM-L6-v2/LICENSE` and the attribution in `NOTICE`.
+Both ship in the npm tarball.
+
 ## Data files
 
 `data/MODEL_INFO.md` documents the exact origin and SHA-256 of every file
