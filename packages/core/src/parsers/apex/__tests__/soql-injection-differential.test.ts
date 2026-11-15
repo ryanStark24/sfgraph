@@ -184,6 +184,15 @@ const CASES: Case[] = [
     params: ["String term", "List<String> parts"],
   },
   {
+    name: "String.join separator with a local list",
+    code: `\nList<String> parts = new List<String>{ 'a', 'b' };${fmt("new List<String>{ String.join(parts, term) }")}`,
+  },
+  {
+    name: "numeric map read with a literal key followed by a tainted replace",
+    code: fmt("new List<String>{ counts.get('x').format().replace('1', term) }"),
+    params: ["String term", "Map<String, Integer> counts"],
+  },
+  {
     name: "String.join separator",
     code: `\n${q("String.join(parts, term)")}`,
     params: ["String term", "List<String> parts"],
