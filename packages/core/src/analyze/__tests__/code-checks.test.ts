@@ -80,7 +80,11 @@ describe("detectAsyncInLoop", () => {
   it("reports the line within the text and the source line as evidence", () => {
     const spots = detectAsyncInLoop("\nfor (Id i : ids) {\n    System.enqueueJob(new Q(i));\n}\n");
     expect(spots).toEqual([
-      { line: 3, evidence: "System.enqueueJob(new Q(i));", kind: "System.enqueueJob" },
+      {
+        line: 3,
+        evidence: "System.enqueueJob(new Q(i));",
+        kind: "System.enqueueJob",
+      },
     ]);
   });
 });
@@ -260,7 +264,12 @@ describe("detectSoqlInjection", () => {
       params: P,
     });
     expect(spots).toEqual([
-      { line: 3, evidence: "return Database.query(q);", kind: "Database.query", variable: "term" },
+      {
+        line: 3,
+        evidence: "return Database.query(q);",
+        kind: "Database.query",
+        variable: "term",
+      },
     ]);
   });
   describe("String.format arguments, assignment order and long alias chains", () => {
@@ -451,6 +460,59 @@ describe("detectDomInjection", () => {
       ["insertAdjacentHTML:high"],
     ],
     ["a fixed string", "el.innerHTML = '<b>Hi</b>';", ["innerHTML:low"]],
+    ["a literal with a plus sign", "el.innerHTML = '<button>+</button>';", ["innerHTML:low"]],
+    [
+      "an insertAdjacentHTML literal with a plus sign",
+      "el.insertAdjacentHTML('beforeend', '<button>+ Add</button>');",
+      ["insertAdjacentHTML:low"],
+    ],
+    [
+      "a double-quoted literal with a plus sign",
+      "el.innerHTML = \"a + b\" + '+';",
+      ["innerHTML:low"],
+    ],
+    ["a literal with a dollar sign", "el.innerHTML = '<span>$10</span>';", ["innerHTML:low"]],
+    [
+      "a template literal with a dollar sign",
+      "el.innerHTML = `<b>Price: $5</b>`;",
+      ["innerHTML:low"],
+    ],
+    [
+      "a template literal with a dollar sign in insertAdjacentHTML",
+      "el.insertAdjacentHTML('beforeend', `<b>$5 + $6</b>`);",
+      ["insertAdjacentHTML:low"],
+    ],
+    [
+      "a template literal with a dollar sign and interpolation",
+      "el.innerHTML = `<b>$5 ${x}</b>`;",
+      ["innerHTML:high"],
+    ],
+    ["a multi-line pure literal", "el.innerHTML = '<b>' +\n '</b>';", ["innerHTML:low"]],
+    [
+      "a multi-line literal in insertAdjacentHTML",
+      "el.insertAdjacentHTML('beforeend', '<b>' +\n  '</b>');",
+      ["insertAdjacentHTML:low"],
+    ],
+    [
+      "an empty literal then data on the next line",
+      "el.innerHTML = ''\n + userInput;",
+      ["innerHTML:high"],
+    ],
+    [
+      "a literal then data on the next line",
+      "el.innerHTML = '<b>'\n + userInput;",
+      ["innerHTML:high"],
+    ],
+    [
+      "data after a trailing plus (Prettier)",
+      "el.innerHTML = '<b>' +\n  userInput;",
+      ["innerHTML:high"],
+    ],
+    [
+      "multi-line insertAdjacentHTML with data",
+      "el.insertAdjacentHTML('beforeend', '<b>'\n + userInput);",
+      ["insertAdjacentHTML:high"],
+    ],
     [
       "a fixed insertAdjacentHTML",
       "el.insertAdjacentHTML('afterbegin', '<hr>');",
@@ -462,6 +524,8 @@ describe("detectDomInjection", () => {
   it.each([
     ["clearing", "el.innerHTML = '';"],
     ["clearing with double quotes", 'el.innerHTML = "";'],
+    ["clearing followed by another statement", "el.innerHTML = '';\nel.className = 'x';"],
+    ["clearing without a semicolon", "el.innerHTML = ''\nfoo();"],
     ["reading", "const h = el.innerHTML;"],
     ["comparing", "if (el.innerHTML === other) {}"],
     ["textContent", "el.textContent = this.notes;"],
@@ -500,7 +564,13 @@ describe("detectDomInjection", () => {
   });
   it("reports the 1-based line and the source line", () => {
     expect(detectDomInjection("c.js", "a();\n  el.innerHTML = x;\n")).toEqual([
-      { file: "c.js", line: 2, kind: "innerHTML", severity: "high", evidence: "el.innerHTML = x;" },
+      {
+        file: "c.js",
+        line: 2,
+        kind: "innerHTML",
+        severity: "high",
+        evidence: "el.innerHTML = x;",
+      },
     ]);
   });
   it("sees lwc:dom manual in a template", () => {

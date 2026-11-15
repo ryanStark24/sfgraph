@@ -452,7 +452,8 @@ before 1.9.0 needs a re-ingest to show them:
   not traced, so those are not reported. Test code is skipped.
 - `security.dom-injection`: in LWC and Aura JavaScript, an assignment to `innerHTML` or
   `outerHTML`, or `insertAdjacentHTML(...)`. High when the value is not a plain string
-  literal, low (SARIF note) when it is; clearing (`innerHTML = ''`), reading and
+  literal (a `+` inside a string is text, only a `+` operator joins literals; the value is
+  read across line breaks up to its `;`), low (SARIF note) when it is; clearing (`innerHTML = ''`), reading and
   `textContent` are not reported. In an LWC whose template has `lwc:dom="manual"` the
   finding says so. Aura `aura:unescapedHtml` is not checked.
 

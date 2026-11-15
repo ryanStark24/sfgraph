@@ -25,7 +25,7 @@ A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-s
 
 | | How |
 |---|---|
-| **Node.js ≥ 20** | [nodejs.org](https://nodejs.org) or `brew install node` |
+| **Node.js ≥ 22** | [nodejs.org](https://nodejs.org) or `brew install node` |
 | **`sf` CLI** | `npm install -g @salesforce/cli` |
 | **At least one `sf` login** | `sf org login web --alias my-org && sf config set target-org=my-org` |
 
@@ -147,6 +147,8 @@ Restart your IDE so it picks up the new MCP entry. Then in any project ask the a
 - *"Who reads `Account.Status__c`?"*
 - *"What changed in prod since last week?"*
 - *"Show me how `accountTile` flows from UI to DB."*
+- *"Any SOQL injection or `innerHTML` in this project?"*
+- *"Is anything doing DML or enqueueing jobs inside a loop, including Flows?"*
 
 The agent routes to the right tool automatically via the installed skill playbooks. A short worked example:
 
@@ -316,6 +318,12 @@ sfgraph aims to be honest about gaps. Read this section before relying on it for
 - **Generic-type whitelist.** sfgraph dispatches ~80 of the ~327 metadata types Salesforce returns from `describeMetadata()` to the parsed extractor path. The rest are recorded only as opaque generic nodes when matched by the whitelist; everything else is filtered out. Set `SFGRAPH_INCLUDE_ALL_GENERIC=1` to override (every discovered type runs through the generic extractor — longer ingest, more opaque nodes). The full type list is documented in [`docs/COVERAGE.md`](docs/COVERAGE.md).
 - **LWC empty-bundle behavior change (Phase 1.5).** Prior versions yielded a stub `RawMember` with `files: {}` on per-bundle resource-fetch failure, creating empty bundle nodes in the graph. Phase 1.5 emits a `wedge:lwc:bundleFetchFailed:...` warning and **no record**. Users who upgrade may see previously-recorded empty LWC bundles disappear from their graph on the next re-ingest. **This is correct.**
 - **Socket leak on wedged HTTP requests.** When the per-source watchdog fires, sfgraph releases the slot but the underlying jsforce HTTP request is NOT cancelled (no `AbortController` exposed by jsforce 3.10.15). The socket is reaped by Node's idle-timeout (~10min). Worst case: `SFGRAPH_MAX_BACKGROUND_WEDGES` (default 4) × ~1MB ≈ 4MB transient memory per ingest, GC'd at process exit. Tracked as future hardening; an upstream jsforce PR or fork is needed for true in-flight HTTP cancellation.
+- **Code checks (1.9.0).** `governor_risk_check`, `security_audit` and `export_sarif` report four static checks: `governor.async-in-loop`, `governor.flow-dml-in-loop`, `security.soql-injection` and `security.dom-injection`. They read the source stored in the local graph, never run code, and were tested on synthetic fixtures and one blind project, not calibrated against real org code. They report what they can see and stay silent on the rest, so **no finding is not a clean bill of health**. What they miss:
+  - *Async in a loop:* direct calls only. A loop that calls a helper which enqueues, an `@future` method called through an instance variable (`svc.notify(...)`), a one-line `@future public static void` declaration, and class-level initialisers are not seen. Severity is always high, and a loop bounded to one iteration is still reported.
+  - *Flow DML in a loop:* subflows and Apex actions inside the loop are not followed, so a subflow that does DML is missed.
+  - *SOQL injection:* taint is followed within one method (a parameter, or a variable assigned from one, through `+`, `+=`, `String.valueOf` and `String.format` arguments, in source order up to the query; Integer, Long, Decimal, Double, Boolean, Id, Date, Datetime and Time values and `Map<K, Integer>` reads stay safe through them), not across methods. Class fields, values returned by another method, for-each variables and instance calls are not traced, and a parameter escaped on only one branch counts as escaped (a tainted value stays tainted through a conditional assignment). One confirmed gap: bracket indexing such as `terms[0]` does not carry taint (`terms.get(0)` does).
+  - *DOM injection:* only `innerHTML`, `outerHTML` and `insertAdjacentHTML` in LWC and Aura JavaScript. There is no data-flow check: any non-literal value is high. `aura:unescapedHtml`, `document.write`, `eval` and `lwc:dom="manual"` without an `innerHTML` assignment are not checked, and the string lexer does not understand regex literals that contain quotes.
+  - **Upgrade note:** the Apex, LWC and Aura parsers record new attributes, so the first ingest after upgrading to 1.9.0 re-parses every Apex class, trigger, LWC and Aura component (the content-hash salts changed). Until then the SOQL and DOM findings do not appear; the async-in-loop and Flow checks read stored source and work on older graphs. Full rule text: [`docs/TOOLS.md`](docs/TOOLS.md), [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -333,7 +341,7 @@ See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the full status matrix: every typ
 |---|---|
 | [`docs/CLI.md`](docs/CLI.md) | Full CLI reference — every command, every flag |
 | [`docs/TOOLS.md`](docs/TOOLS.md) | The 29 MCP tools — schemas, examples, algorithms |
-| [`docs/SKILLS.md`](docs/SKILLS.md) | The 20 skill playbooks installed into your editor |
+| [`docs/SKILLS.md`](docs/SKILLS.md) | The 21 skill playbooks installed into your editor |
 | [`docs/SAMPLES.md`](docs/SAMPLES.md) | Worked agent-conversation examples |
 | [`docs/COVERAGE.md`](docs/COVERAGE.md) | Metadata coverage matrix and SObject classification logic |
 | [`docs/WEB.md`](docs/WEB.md) | Local web visualiser |
