@@ -79,6 +79,8 @@ const NOT_A_TYPE = new Set(["return", "new", "else", "throw", "in", "instanceof"
 const NUMERIC_MEMBER_RE =
   /\.\s*(?:size|length|isEmpty|hashCode|getTime|year|month|day)\s*\(\s*\)\s*$/i;
 const ESCAPE_ANYWHERE_RE = /(?<![\w.])(?:String\s*\.\s*)?escapeSingleQuotes\s*\(/gi;
+const NUMERIC_VALUEOF_ANYWHERE_RE =
+  /(?<![\w.])(?:Integer|Long|Double|Decimal|Boolean|Id|Date|Datetime|Time)\s*\.\s*valueOf\s*\(/gi;
 const ESCAPE_CALL_RE = /^(?:String\s*\.\s*)?escapeSingleQuotes\s*\(/i;
 /** A describe chain (`Schema.SObjectType.Account.getName()`, `x.getSObjectType().getDescribe().getName()`). */
 const DESCRIBE_CHAIN_RE =
@@ -255,11 +257,70 @@ class InjectionAnalyzer {
         for (const id of asg.ids) add(id);
       }
     }
+    // Text-level backstop, no evaluation: flatten the argument through the effective assignments
+    // of the variables it names, drop the allow-listed safe substrings, and keep the finding when
+    // a parameter the parent's rule leaves tainted is still named in what is left.
+    if (this.taintedLeafRemains(at, a, b)) return false;
     this.applyAssignmentsBefore(at);
     this.mode = "ordered";
     const ordered = this.expr(a, b);
     this.mode = "fixed";
     return !ordered;
+  }
+
+  /** `text` with the exact allow-listed safe substrings blanked (same length). */
+  private stripSafe(text: string): string {
+    const chars = text.split("");
+    const blank = (from: number, to: number): void => {
+      for (let k = from; k <= to && k < chars.length; k++) chars[k] = " ";
+    };
+    for (const re of [ESCAPE_ANYWHERE_RE, NUMERIC_VALUEOF_ANYWHERE_RE]) {
+      for (const hit of text.matchAll(re)) {
+        const start = hit.index ?? 0;
+        const close = matchClose(text, start + hit[0].length - 1);
+        blank(start, close < 0 ? chars.length - 1 : close);
+      }
+    }
+    const describe =
+      /(?<![\w.])Schema\s*\.\s*[\w.]+(?:\s*\([^()]*\))?(?:\s*\.\s*\w+\s*\([^()]*\))*/gi;
+    for (const hit of text.matchAll(describe)) {
+      const start = hit.index ?? 0;
+      blank(start, start + hit[0].length - 1);
+    }
+    return chars.join("");
+  }
+
+  /**
+   * Pure text check. Starting from the argument's text, replace each named variable by the text
+   * of its effective assignments (the last plain one before the call and every `+=` after it),
+   * strip the allow-listed safe substrings, and report whether a parameter the parent's rule
+   * leaves tainted is still named.
+   */
+  private taintedLeafRemains(at: number, a: number, b: number): boolean {
+    const all = this.assignments ?? [];
+    const todo = [this.masked.slice(a, b)];
+    const seen = new Set<string>();
+    for (let i = 0; i < todo.length; i++) {
+      const text = this.stripSafe(todo[i] ?? "");
+      for (const hit of text.matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
+        const name = hit[0];
+        const key = name.toLowerCase();
+        if (seen.has(key) || !this.isDeclared(name)) continue;
+        seen.add(key);
+        const decl = this.declaration(name);
+        if (!decl || this.safeType(decl.type)) continue;
+        const mine = all.filter((x) => x.name.toLowerCase() === key && x.to <= at);
+        const lastPlain = mine.map((x) => x.plus).lastIndexOf(false);
+        // A parameter that is never replaced keeps the caller's text.
+        if (this.isParam(decl) && lastPlain < 0) {
+          if (this.fixed?.get(key) || this.variable(name)) return true;
+          continue;
+        }
+        for (const x of mine.slice(Math.max(lastPlain, 0)))
+          todo.push(this.masked.slice(x.from, x.to));
+      }
+    }
+    return false;
   }
 
   /** `[start, end)` of every loop (for, while, do) from its keyword to the end of its body. */
@@ -366,8 +427,9 @@ class InjectionAnalyzer {
     const name = root[1] ?? "";
     const rest = raw.slice(name.length);
     if (!this.isDeclared(name)) {
-      // A constant (`MAX`, `Cls.MAX`), a field or another class's member: not judged.
-      return null;
+      // A constant (`MAX`, `Cls.MAX`) or a field is not judged; a call on any receiver
+      // (`Helper.pick(term)`) is read by its arguments.
+      return raw.includes("(") ? this.anyIdentifier(s, e) : null;
     }
     if (rest === "") return this.variable(name);
     // `terms[0]` on a tainted collection is tainted like `terms.get(0)`.
@@ -381,7 +443,8 @@ class InjectionAnalyzer {
     if (/^\s*\.\s*\w+/.test(rest)) {
       const last = /([A-Za-z_]\w*)\s*(?:\([^)]*\))?\s*$/.exec(rest);
       if (last && ALLCAPS_RE.test(last[1] ?? "")) return null;
-      return this.variable(name);
+      // The receiver's own taint, then the arguments of the call (`fixed.replace('a', term)`).
+      return this.variable(name) ?? (rest.includes("(") ? this.anyIdentifier(s, e) : null);
     }
     return this.anyIdentifier(s, e);
   }

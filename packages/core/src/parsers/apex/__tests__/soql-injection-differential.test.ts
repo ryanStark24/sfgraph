@@ -146,6 +146,37 @@ const CASES: Case[] = [
     params: ["String term", "Boolean flag", "List<String> items"],
   },
   { name: "cast", code: `\n${q("(String) term")}` },
+  // method arguments and the text-level backstop (Codex, 90776f7)
+  {
+    name: "replace on a local literal receiver in a collection",
+    code: `\nString fixed = 'fixed';${fmt("new List<String>{ fixed.replace('fixed', term) }")}`,
+  },
+  { name: "replace on a literal receiver", code: `\n${q("'fixed'.replace('fixed', term)")}` },
+  {
+    name: "replaceAll with a tainted argument",
+    code: `\nString fixed = 'x';\n${q("fixed.replaceAll('x', term)")}`,
+  },
+  {
+    name: "left with a tainted argument",
+    code: `\nString fixed = 'abcdef';\n${q("fixed.left(term)")}`,
+  },
+  {
+    name: "String.join with a tainted list",
+    code: `\n${q("String.join(terms, ',')")}`,
+    params: ["List<String> terms"],
+  },
+  { name: "+= onto a safe variable", code: `\nString s = 'a';\ns += term;\n${q("s")}` },
+  {
+    name: "+= onto a safe variable, then a safe reassign",
+    code: `\nString s = 'a';\ns += term;\ns = 'b';\n${q("s")}`,
+    fixes: "straight-line-sanitizer",
+  },
+  { name: "static helper taking term", code: `\n${q("Helper.pick(term)")}` },
+  { name: "static helper in a collection", code: fmt("new List<String>{ Helper.pick(term) }") },
+  {
+    name: "chained call whose argument is tainted",
+    code: `\nString f = 'f';\n${q("f.trim().replace('f', term)")}`,
+  },
   // earlier review cases
   {
     name: "countQuery in RHS",
@@ -286,6 +317,11 @@ const MORE = [
   "String.valueOf(term).trim() concatenated", // the parent read only a bare String.valueOf(...)
   "ternary hiding behind a numeric member", // the parent judged the whole operand by its tail
   "cast", // `(String) term`: the parent did not read past the cast
+  "replace on a literal receiver", // the parent judged a call by its receiver only
+  "replaceAll with a tainted argument",
+  "left with a tainted argument",
+  "static helper taking term", // a call on an undeclared receiver is read by its arguments
+  "chained call whose argument is tainted",
 ];
 
 describe("flow-sensitive SOQL injection check against the flow-insensitive parent", () => {
@@ -331,6 +367,9 @@ const SHAPES: Array<[string, string]> = [
   ["valueOf chain", "String.valueOf(term).trim()"],
   ["new collection", "String.join(new List<String>{ term }, ',')"],
   ["cast", "(String) term"],
+  ["method argument on a literal", "'x'.replace('x', term)"],
+  ["method argument on a local", "fixedValue.replace('a', term)"],
+  ["static helper", "Helper.pick(term)"],
 ];
 const PATTERNS: Array<[string, (rhs: string) => string]> = [
   ["straight", (r) => `\nString q = ${r};\nDatabase.query(q);`],
@@ -354,7 +393,7 @@ describe("generated corpus: shapes x assignment patterns", () => {
   for (const [shape, rhs] of SHAPES) {
     for (const [pattern, build] of PATTERNS) {
       it(`${shape} / ${pattern}`, () => {
-        const code = build(rhs);
+        const code = build(rhs).replace(/^\n/, "\nString fixedValue = 'fixed';\n");
         const opts = { params: ["String term", "Boolean flag"] };
         const before = parentDetect(code, opts);
         const after = detectSoqlInjection(code, opts);
