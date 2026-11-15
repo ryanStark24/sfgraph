@@ -146,6 +146,46 @@ describe("detectSoqlInjection", () => {
     ).toEqual([]);
   });
 
+  it("an escapeSingleQuotes call exempts only its own result, not its siblings", () => {
+    const P2 = ["String term", "String other"];
+    const fmt = (args: string) =>
+      `\nreturn Database.query(String.format('SELECT Id FROM A WHERE N = {0} AND M = {1}', ${args}));`;
+    expect(flag(fmt("new List<String>{term, String.escapeSingleQuotes(other)}"), P2)).toHaveLength(
+      1,
+    );
+    expect(flag(fmt("new List<String>{String.escapeSingleQuotes(other), term}"), P2)).toHaveLength(
+      1,
+    );
+    expect(
+      flag(
+        "\nreturn Database.query('SELECT Id FROM A WHERE N = ' + term + String.escapeSingleQuotes(other));",
+        P2,
+      ),
+    ).toHaveLength(1);
+    expect(
+      flag(
+        "\nreturn Database.query('SELECT Id FROM A WHERE N = ' + String.escapeSingleQuotes(other) + term);",
+        P2,
+      ),
+    ).toHaveLength(1);
+    // Fully escaped, and binds: silent.
+    expect(
+      flag(
+        fmt("new List<String>{String.escapeSingleQuotes(term), String.escapeSingleQuotes(other)}"),
+        P2,
+      ),
+    ).toEqual([]);
+    expect(
+      flag(
+        "\nreturn Database.query('SELECT Id FROM A WHERE N = ' + String.escapeSingleQuotes(term) + String.escapeSingleQuotes(other));",
+        P2,
+      ),
+    ).toEqual([]);
+    expect(
+      flag("\nreturn Database.query('SELECT Id FROM A WHERE N = :term AND M = :other');", P2),
+    ).toEqual([]);
+  });
+
   it("flags queryWithBinds, countQuery, getQueryLocator and Search.query", () => {
     expect(
       flag(
