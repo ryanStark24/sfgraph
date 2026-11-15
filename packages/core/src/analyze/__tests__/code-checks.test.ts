@@ -13,6 +13,7 @@ import { scanCodeSecurity } from "../code-security.js";
 import { collectFindings } from "../findings.js";
 import { detectFlowDmlInLoop } from "../flow-dml-loop.js";
 import { scanGovernorRisks } from "../governor.js";
+import { normalizeSourceUri } from "../source-uri.js";
 
 // S-1.9.0-001..004: async work in a loop, SOQL/SOSL injection, DOM injection and Flow DML in a
 // loop. Detector unit tests (positive and negative per rule), then the same rules through a real
@@ -111,6 +112,18 @@ describe("detectSoqlInjection", () => {
       "\nreturn Database.query('SELECT Id FROM A WHERE N = \\'' + (term == null ? 'x' : term) + '\\'');",
     ],
     [
+      "String.valueOf of a String parameter",
+      "\nreturn Database.query('SELECT Id FROM A WHERE N = \\'' + String.valueOf(term) + '\\'');",
+    ],
+    [
+      "a parameter appended to with +=",
+      "\nterm += '%';\nreturn Database.query('SELECT Id FROM A WHERE N LIKE \\'' + term + '\\'');",
+    ],
+    [
+      "a variable appended to with += from a parameter copy",
+      "\nString t = term;\nt += '%';\nreturn Database.query('SELECT Id FROM A WHERE N LIKE \\'' + t + '\\'');",
+    ],
+    [
       "a method on the parameter",
       "\nreturn Database.query('SELECT Id FROM A WHERE N = \\'' + term.trim() + '\\'');",
     ],
@@ -118,6 +131,19 @@ describe("detectSoqlInjection", () => {
     const found = flag(code);
     expect(found).toHaveLength(1);
     expect(found[0]).toMatch(/^Database\.query:/);
+  });
+
+  it("does not flag safe conversions, a sanitised parameter appended to, or typed arguments", () => {
+    const q = (e: string) => `\nreturn Database.query('SELECT Id FROM A WHERE N = ' + ${e});`;
+    expect(flag(q("Integer.valueOf(term)"))).toEqual([]);
+    expect(flag(q("String.valueOf(n)"), ["Integer n"])).toEqual([]);
+    expect(flag(q("String.valueOf(5)"))).toEqual([]);
+    expect(flag(q("String.valueOf(String.escapeSingleQuotes(term))"))).toEqual([]);
+    expect(
+      flag(
+        "\nterm = String.escapeSingleQuotes(term);\nterm += '%';\nreturn Database.query('SELECT Id FROM A WHERE N LIKE \\'' + term + '\\'');",
+      ),
+    ).toEqual([]);
   });
 
   it("flags queryWithBinds, countQuery, getQueryLocator and Search.query", () => {
@@ -199,6 +225,19 @@ describe("detectSoqlInjection", () => {
   });
 });
 
+describe("normalizeSourceUri", () => {
+  it("gives Windows paths and file URIs one forward-slash spelling", () => {
+    expect(normalizeSourceUri("file://C:\\Users\\me\\proj\\force-app\\lwc\\visitBanner")).toBe(
+      "file:///C:/Users/me/proj/force-app/lwc/visitBanner",
+    );
+    expect(normalizeSourceUri("file:///C:/Users/me/proj/a.cls")).toBe(
+      "file:///C:/Users/me/proj/a.cls",
+    );
+    expect(normalizeSourceUri("file:///home/me/proj/a.cls")).toBe("file:///home/me/proj/a.cls");
+    expect(normalizeSourceUri("sf://org/ApexClass/A")).toBe("sf://org/ApexClass/A");
+  });
+});
+
 describe("detectDomInjection", () => {
   const kinds = (js: string) =>
     detectDomInjection("c.js", js).map((s) => `${s.kind}:${s.severity}`);
@@ -231,6 +270,34 @@ describe("detectDomInjection", () => {
     ["a block comment", "/* el.innerHTML = this.notes; */"],
   ])("does not flag %s", (_n, js) => {
     expect(kinds(js)).toEqual([]);
+  });
+  it("does not locate a sink inside a string or template text", () => {
+    expect(kinds('const example = "el.innerHTML = data";')).toEqual([]);
+    expect(kinds("const e = 'el.insertAdjacentHTML(\\'x\\', d)';")).toEqual([]);
+    expect(kinds("const e = `el.outerHTML = ${x}`;")).toEqual([]);
+  });
+  it("still locates a sink in code beside or inside strings, with the original right-hand side", () => {
+    expect(kinds('const a = "x"; el.innerHTML = this.notes;')).toEqual(["innerHTML:high"]);
+    expect(kinds("el.innerHTML = '<b>Hi</b>';")).toEqual(["innerHTML:low"]);
+    expect(kinds("const s = `a ${fn(`el.innerHTML = 1`)}`; el.innerHTML = `<b>${n}</b>`;")).toEqual(
+      ["innerHTML:high"],
+    );
+    const spots = detectDomInjection("c.js", 'const m = "a\\"b";\n  el.innerHTML = x;\n');
+    expect(spots.map((s) => [s.line, s.evidence])).toEqual([[2, "el.innerHTML = x;"]]);
+  });
+  it("ignores quotes in comments inside a template interpolation", () => {
+    expect(kinds("const x = `${/* user's input */ value}`; el.innerHTML = userInput;")).toEqual([
+      "innerHTML:high",
+    ]);
+    expect(kinds("const x = `${a // it's\n}`; el.innerHTML = userInput;")).toEqual([
+      "innerHTML:high",
+    ]);
+  });
+  it("handles a nested template inside an interpolation", () => {
+    expect(kinds("const x = `a ${`b ${c} 'q'`} d`; el.innerHTML = userInput;")).toEqual([
+      "innerHTML:high",
+    ]);
+    expect(kinds("const x = `a ${`el.innerHTML = 1`}`;")).toEqual([]);
   });
   it("reports the 1-based line and the source line", () => {
     expect(detectDomInjection("c.js", "a();\n  el.innerHTML = x;\n")).toEqual([
@@ -352,7 +419,8 @@ describe("through a real project ingest", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const rel = (uri: string | undefined): string => (uri ?? "").replace(`file://${proj}/`, "");
+  const rel = (uri: string | undefined): string =>
+    (uri ?? "").replace(`${normalizeSourceUri(`file://${proj}`)}/`, "");
 
   it("governor: async work in a loop, with file, line, rule id and severity", () => {
     const { risks, coverage } = scanGovernorRisks(store, orgId);

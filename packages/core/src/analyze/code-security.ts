@@ -3,6 +3,7 @@ import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import type { DomInjectionSpot } from "../parsers/lwc/dom-injection.js";
 import type { GraphStore } from "../storage/interfaces.js";
 import { type ScanCoverage, scanLabel, sumCoverage } from "./scan.js";
+import { normalizeSourceUri } from "./source-uri.js";
 
 /**
  * Security findings read from component and Apex source: SOQL / SOSL injection in
@@ -40,7 +41,7 @@ const SEVERITY_RANK = { high: 0, medium: 1, low: 2 } as const;
 /** Where a bundle file lives: the bundle's folder URI plus the file name. */
 function bundleFileUri(sourceUri: unknown, file: string): string | undefined {
   if (typeof sourceUri !== "string") return undefined;
-  const base = sourceUri.replace(/\/+$/, "");
+  const base = normalizeSourceUri(sourceUri).replace(/\/+$/, "");
   return /\.(?:js|cmp|html)$/i.test(base) ? base.replace(/[^/]+$/, file) : `${base}/${file}`;
 }
 
@@ -73,7 +74,9 @@ export function scanCodeSecurity(store: GraphStore, orgId: OrgId): CodeSecurityS
             ruleId: "security.soql-injection",
             severity: "high",
             qualifiedName: String(n.qualifiedName),
-            ...(typeof attrs.sourceUri === "string" ? { file: attrs.sourceUri } : {}),
+            ...(typeof attrs.sourceUri === "string"
+              ? { file: normalizeSourceUri(attrs.sourceUri) }
+              : {}),
             ...(spot.line != null ? { line: spot.line } : {}),
             message: `${spot.kind} builds its query from ${spot.variable ?? "a value"} without String.escapeSingleQuotes or a bind variable`,
             evidence: spot.evidence,

@@ -74,8 +74,11 @@ const NOT_A_TYPE = new Set(["return", "new", "else", "throw", "in", "instanceof"
 const NUMERIC_MEMBER_RE =
   /\.\s*(?:size|length|isEmpty|hashCode|getTime|year|month|day)\s*\(\s*\)\s*$/i;
 const ALLCAPS_RE = /^[A-Z][A-Z0-9_]*$/;
-const CONVERSION_RE =
-  /^(?:String|Integer|Long|Double|Decimal|Boolean|Id|Date|Datetime|Time)\s*\.\s*valueOf\s*\(/i;
+/** Conversions to a type that cannot carry a quote (`Integer.valueOf(x)` throws on text). */
+const SAFE_CONVERSION_RE =
+  /^(?:Integer|Long|Double|Decimal|Boolean|Id|Date|Datetime|Time)\s*\.\s*valueOf\s*\(/i;
+/** `String.valueOf(x)` keeps x's text, so it carries x's taint. */
+const STRING_VALUEOF_RE = /^String\s*\.\s*valueOf\s*\(/i;
 
 /** Index of the delimiter matching the opener at `open` in `masked`, or -1. */
 function matchClose(masked: string, open: number): number {
@@ -194,7 +197,15 @@ class InjectionAnalyzer {
     if (/escapeSingleQuotes\s*\(/i.test(raw)) return null;
     if (/\bSchema\s*\./i.test(raw) || /getDescribe\s*\(|getSObjectType\s*\(/i.test(raw))
       return null;
-    if (CONVERSION_RE.test(raw)) return null;
+    if (SAFE_CONVERSION_RE.test(raw)) return null;
+    const sv = STRING_VALUEOF_RE.exec(raw);
+    if (sv) {
+      const open = s + sv[0].length - 1;
+      const close = matchClose(m, open);
+      if (close < 0 || close !== e - 1) return null;
+      const arg = pieces(m, open + 1, close, ",")[0];
+      return arg ? this.expr(arg[0], arg[1]) : null;
+    }
     if (NUMERIC_MEMBER_RE.test(raw)) return null;
     if (/^new\b/i.test(raw)) return null;
     const ternary = this.ternary(s, e);
@@ -299,19 +310,22 @@ class InjectionAnalyzer {
     this.visiting.add(key);
     let result: string | null = null;
     let assigned = false;
+    let plain = false;
     const re = new RegExp(`(?<![\\w.])${name}\\s*(\\+?)=(?!=)`, "gi");
     for (const m of this.masked.matchAll(re)) {
       // A declaration's own `=` and a plain assignment are both a value flowing in.
       const from = (m.index ?? 0) + m[0].length;
       const to = statementEnd(this.masked, from);
       assigned = true;
+      if (m[1] !== "+") plain = true;
       const t = this.expr(from, to);
       if (t) {
         result = t === name ? name : t;
         break;
       }
     }
-    if (result === null && !assigned && param) result = name;
+    // A parameter keeps its caller's text unless a plain assignment replaced it; `+=` only appends.
+    if (result === null && param && (!assigned || !plain)) result = name;
     this.visiting.delete(key);
     this.memo.set(key, result);
     return result;
@@ -324,7 +338,7 @@ class InjectionAnalyzer {
  * concatenating a variable that is a method parameter or was assigned from one,
  * and that did not pass through `String.escapeSingleQuotes`. Not flagged: string
  * literals and numbers; a variable (or an assignment) from `escapeSingleQuotes`;
- * `valueOf` conversions; variables of type Integer, Long, Decimal, Boolean, Id, Date,
+ * `Integer`/`Long`/`Decimal`/`Id`/`Date`... `valueOf` conversions (`String.valueOf(x)` carries x's taint); variables of type Integer, Long, Decimal, Boolean, Id, Date,
  * Datetime and lists or sets of them; names derived from `Schema` describe calls;
  * ALL_CAPS constants; and bind variables (`:var` sits inside the literal, so it
  * is not a concatenation at all).

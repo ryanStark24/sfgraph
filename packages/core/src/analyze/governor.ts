@@ -6,6 +6,7 @@ import { detectAsyncInLoop } from "./apex-code-checks.js";
 import { detectFlowDmlInLoop } from "./flow-dml-loop.js";
 import { unitSourceRisks } from "./governor-source.js";
 import { type ScanCoverage, scanLabel, sumCoverage } from "./scan.js";
+import { normalizeSourceUri } from "./source-uri.js";
 
 export interface GovernorRisk {
   qualifiedName: string;
@@ -203,7 +204,7 @@ export function scanGovernorRisks(store: GraphStore, orgId: OrgId): GovernorScan
             add(qname, "async_in_loop", spot.evidence, {
               ruleId: "governor.async-in-loop",
               severity: "high",
-              ...(typeof file === "string" ? { file } : {}),
+              ...(typeof file === "string" ? { file: normalizeSourceUri(file) } : {}),
               line: base + spot.line,
               message: `${spot.kind} runs inside a loop; each iteration uses the transaction's async limits`,
             });
@@ -228,7 +229,7 @@ export function scanGovernorRisks(store: GraphStore, orgId: OrgId): GovernorScan
           {
             ruleId: "governor.flow-dml-in-loop",
             severity: "high",
-            ...(typeof file === "string" ? { file } : {}),
+            ...(typeof file === "string" ? { file: normalizeSourceUri(file) } : {}),
             ...(d.line > 0 ? { line: d.line } : {}),
             message: `${d.action} element ${d.element} runs once per iteration of loop ${d.loop}; collect the records and save once after the loop`,
             element: d.element,
