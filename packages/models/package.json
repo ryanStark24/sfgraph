@@ -47,6 +47,8 @@
     "dist",
     "!dist/**/__tests__",
     "data",
+    "NOTICE",
+    "THIRD_PARTY_LICENSES",
     "README.md"
   ],
   "keywords": [

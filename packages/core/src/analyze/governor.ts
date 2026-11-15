@@ -76,24 +76,44 @@ export function compareGovernorRisks(a: GovernorRisk, b: GovernorRisk): number {
 // that made them emit these edges).
 const RISK_SOURCE_LABELS = ["ApexMethod", "TestMethod", METADATA_CATEGORY.APEX_TRIGGER];
 
-/** Lower-cased `Class.method` of every `@future` method, from the stored method nodes. */
-function futureMethodKeys(store: GraphStore, orgId: OrgId): Set<string> {
-  const out = new Set<string>();
+/**
+ * Lower-cased `Class.method` of every `@future` method, from the stored method nodes, with the
+ * parameter counts each has. A method whose qname carries no count is left out of `arities`, so
+ * its calls are matched by name alone (reported, as before arity was tracked).
+ */
+function futureMethodKeys(
+  store: GraphStore,
+  orgId: OrgId,
+): { keys: Set<string>; arities: Map<string, Set<number>> } {
+  const keys = new Set<string>();
+  const arities = new Map<string, Set<number>>();
+  const unknown = new Set<string>();
   const add = (q: string): void => {
     const k = classMethodKey(q);
-    if (k) out.add(k);
+    if (!k) return;
+    keys.add(k);
+    const a = /\((\d+)\)$/.exec(q);
+    if (!a?.[1]) {
+      unknown.add(k);
+      return;
+    }
+    const set = arities.get(k) ?? new Set<number>();
+    set.add(Number(a[1]));
+    arities.set(k, set);
   };
   if (store.listNodesWithTrueAttribute) {
     for (const q of store.listNodesWithTrueAttribute(orgId, "isFuture")) add(q);
-    return out;
-  }
-  const scan = scanLabel(store, orgId, "ApexMethod");
-  for (const page of scan.pages) {
-    for (const n of page) {
-      if ((n.attributes as Record<string, unknown>).isFuture === true) add(String(n.qualifiedName));
+  } else {
+    const scan = scanLabel(store, orgId, "ApexMethod");
+    for (const page of scan.pages) {
+      for (const n of page) {
+        if ((n.attributes as Record<string, unknown>).isFuture === true)
+          add(String(n.qualifiedName));
+      }
     }
   }
-  return out;
+  for (const k of unknown) arities.delete(k);
+  return { keys, arities };
 }
 
 /** `ApexMethod:Outer.Inner.run(0)` to `outer.inner.run`. */
@@ -198,7 +218,8 @@ export function scanGovernorRisks(store: GraphStore, orgId: OrgId): GovernorScan
           const file = (n.attributes as Record<string, unknown>).sourceUri;
           const base = (snip.startLine ?? 1) - 1;
           for (const spot of detectAsyncInLoop(snip.sourceText, {
-            futureMethods: future,
+            futureMethods: future.keys,
+            futureArities: future.arities,
             ...(ownerClassOf(qname) ? { ownerClass: ownerClassOf(qname) as string } : {}),
           })) {
             add(qname, "async_in_loop", spot.evidence, {

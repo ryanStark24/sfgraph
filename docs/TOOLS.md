@@ -335,7 +335,10 @@ Two more risk kinds (1.9.0), both severity high (SARIF `error`):
   `Database.executeBatch`, `EventBus.publish`, `Messaging.sendEmail` or a call to an
   `@future` method inside a `for`, `while` or `do` loop of a method or trigger, from the
   stored source snippet. Direct only; an `@future` method called on an instance
-  variable is not matched.
+  variable is not matched. An `@future` call matches by name and number of arguments
+  (nested commas, strings and generics are not counted), so a synchronous overload with
+  another parameter count is not reported; when the arguments cannot be counted the call
+  is reported.
 - `flow_dml_in_loop` (`governor.flow-dml-in-loop`): a Create, Update or Delete Records
   element on a Loop element's iteration path in Flow XML (from the loop's next-value
   connector, back to the loop; never through its "after last" connector). The risk's
@@ -351,7 +354,7 @@ Two more risk kinds (1.9.0), both severity high (SARIF `error`):
 //                scanCoverage: { governor: { scanned, total, complete }, "dead-code": {...} } }
 ```
 
-One SARIF 2.1.0 report for the selected audits. The run carries
+One SARIF 2.1.0 report for the selected audits. Each `artifactLocation.uri` is a percent-encoded URI reference (spaces, `#`, `%` and non-ASCII characters in a path are encoded per segment), and `lintErrors` lists any uri that is not a valid URI reference. The run carries
 `properties.sfgraphScanCoverage` (per audit: scanned, total, complete) and
 `sfgraphScanComplete`; an incomplete scan also adds a warning tool-execution
 notification. Dead-code results say "no captured incoming references" and carry
