@@ -1290,6 +1290,12 @@ export class ApexClassParser implements Parser<ApexClassInput> {
 
       const isTestLabel = isTestMethod || (header.isTest && m.modifiers.includes("static"));
 
+      // The method's own declaration (not the first textual occurrence of its
+      // name, which can be a call site, a comment or another method's
+      // parameter), from the ORIGINAL source so comments and strings survive.
+      const decl = declRawBody(input.body, maskedBody, m, usedDecls);
+      if (decl) declRanges.push(decl);
+
       const methodNode = makeNode(
         ctx,
         isTestLabel ? "TestMethod" : "ApexMethod",
@@ -1314,17 +1320,27 @@ export class ApexClassParser implements Parser<ApexClassInput> {
           // Never derived from filename.
           isTest: isTestLabel,
         },
-        sha256(`${APEX_NODE_HASH_SALT}\n${m.body}`),
+        // Every input the node's attributes and the injection scan read: the full signature
+        // (name, return type, parameter types and names, modifiers, annotations), the stripped
+        // and the raw body, the line the body starts on, and the class-level test flag. A body-only
+        // hash let `run(String t)` -> `run(Id t)` keep the old `soqlInjection` attribute.
+        sha256(
+          `${APEX_NODE_HASH_SALT}\n${JSON.stringify([
+            m.name,
+            m.returnType,
+            m.params,
+            m.modifiers,
+            m.annotations,
+            header.isTest,
+            decl ? input.body.slice(0, decl.start).split("\n").length : null,
+            decl?.text ?? null,
+            m.body,
+          ])}`,
+        ),
       );
       nodes.push(methodNode);
       methodNodes.set(methodQname, methodNode);
       edges.push(makeEdge(ctx, classQname, REL_TYPES.CONTAINS_METHOD, methodQname));
-
-      // The method's own declaration (not the first textual occurrence of its
-      // name, which can be a call site, a comment or another method's
-      // parameter), from the ORIGINAL source so comments and strings survive.
-      const decl = declRawBody(input.body, maskedBody, m, usedDecls);
-      if (decl) declRanges.push(decl);
 
       // Snippet: the raw method body keyed on the method's qname. startLine is
       // the line the body text starts on (the line of its opening brace), so
