@@ -1,10 +1,11 @@
-import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   FilesystemMetadataSource,
   SqliteGraphStore,
   SqliteSnapshotStore,
+  analyze,
   liveIngest,
   offlineResolvedOrg,
 } from "@ryanstark24/sfgraph-core";
@@ -168,12 +169,84 @@ describe("security_audit: injection in Apex and component JavaScript", () => {
     expect(r.markdown).toContain("Code security findings (injection)");
   });
 
-  it("an audit with no code findings returns the same data keys as before 1.9.0", async () => {
-    store.mergeNodes([]);
-    const r = await callTool("security_audit", { org: "fixture", object: "Visit__c" });
-    const d = r.data as Record<string, unknown>;
-    expect("codeFindings" in d).toBe(false);
-    expect("codeScan" in d).toBe(false);
+  it("an unscoped audit with nothing to find returns the pre-1.9.0 shape, code scan included", async () => {
+    // A clean project (no injection, no async in a loop), a real ingest, and no object/field
+    // filter, so the code scan runs. Its output must carry no code-check key, text or value.
+    const cleanDir = path.join(dir, "clean");
+    const classes = path.join(cleanDir, "force-app/main/default/classes");
+    mkdirSync(classes, { recursive: true });
+    writeFileSync(
+      path.join(cleanDir, "sfdx-project.json"),
+      '{ "packageDirectories": [{ "path": "force-app" }] }',
+    );
+    writeFileSync(
+      path.join(classes, "Clean.cls"),
+      `public with sharing class Clean {
+    public static List<Account> find(Id accountId) {
+        return [SELECT Id FROM Account WHERE Id = :accountId];
+    }
+    public static String safe(String term) {
+        return Database.query('SELECT Id FROM Account WHERE Name = \\'' + String.escapeSingleQuotes(term) + '\\'')[0].Id;
+    }
+}
+`,
+    );
+    const cleanDb = path.join(dir, "clean.sqlite");
+    const cleanStore = new SqliteGraphStore({ dbPath: cleanDb, backupDir: path.join(dir, "bk2") });
+    await cleanStore.init();
+    const cleanSnapshots = new SqliteSnapshotStore({
+      dbPath: cleanDb,
+      db: (cleanStore as unknown as { db: never }).db,
+      skipMigrations: true,
+    });
+    await cleanSnapshots.init();
+    const cleanOrg = offlineResolvedOrg(cleanDir, "clean");
+    await liveIngest({
+      alias: "clean",
+      graphStore: cleanStore,
+      mode: "full",
+      rebuild: true,
+      preResolved: cleanOrg,
+      metadataSource: FilesystemMetadataSource.fromProjectRoot(cleanDir),
+      logger: new ConsoleLogger("error"),
+      skipSnapshot: true,
+      analysisDb: cleanStore.db,
+    });
+    try {
+      const cleanCtx: ToolContext = {
+        graphStore: cleanStore,
+        snapshotStore: cleanSnapshots,
+        orgId: cleanOrg.orgId as OrgId,
+      };
+      setToolContextFactory(async () => cleanCtx);
+      // The scan really runs on this project (it has units to inspect) and finds nothing.
+      const scan = analyze.scanCodeSecurity(cleanStore, cleanOrg.orgId);
+      expect(scan.findings).toEqual([]);
+      expect(scan.coverage.complete).toBe(true);
+      expect(scan.coverage.total).toBeGreaterThan(0);
+
+      const r = await callTool("security_audit", { org: "clean" });
+      expect(r.data).toEqual({
+        sharingEditAccess: [],
+        sharingEditAccessTotal: 0,
+        sharingRuleAccess: [],
+        sharingFullAccess: [],
+        sharingFullAccessTotal: 0,
+        fieldAccessMatrix: [],
+        fieldAccessMatrixTotal: 0,
+        flsGaps: [],
+        flsGapsTotal: 0,
+        flsGapsExcluded: 0,
+        cachedFindings: [],
+        cachedFindingsTotal: 0,
+        limited: false,
+        truncated: false,
+      });
+      expect(r.summary).toBe("0 FLS gaps, 0 sharing rules with record Edit or All access");
+      expect(`${r.summary}\n${r.markdown}`).not.toMatch(/code (security|scan)|injection/i);
+    } finally {
+      await cleanStore.close().catch(() => {});
+    }
   });
 
   it("narrowed to one field, the code checks are left out", async () => {

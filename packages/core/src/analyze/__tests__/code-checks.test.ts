@@ -9,6 +9,7 @@ import { offlineResolvedOrg } from "../../ingest/offline-org.js";
 import { detectDomInjection, hasLwcDomManual } from "../../parsers/lwc/dom-injection.js";
 import { SqliteGraphStore } from "../../storage/sqlite/graph-store.js";
 import { detectAsyncInLoop, detectSoqlInjection } from "../apex-code-checks.js";
+import { countCallArguments } from "../apex-code-checks.js";
 import { scanCodeSecurity } from "../code-security.js";
 import { collectFindings } from "../findings.js";
 import { detectFlowDmlInLoop } from "../flow-dml-loop.js";
@@ -52,6 +53,57 @@ describe("detectAsyncInLoop", () => {
         ownerClass: "own",
       }).map((s) => s.kind),
     ).toEqual(["@future run"]);
+  });
+
+  describe("@future arity", () => {
+    const future = new Set(["own.send"]);
+    const futureArities = new Map([["own.send", new Set([1])]]);
+    const opts = { futureMethods: future, futureArities, ownerClass: "own" };
+    const loop = (call: string): string => `\nfor (Id i : ids) { ${call} }\n`;
+
+    it("does not flag a synchronous overload of another arity", () => {
+      expect(detectAsyncInLoop(loop("send(value, true);"), opts)).toEqual([]);
+    });
+    it("flags a call with the @future method's arity", () => {
+      expect(detectAsyncInLoop(loop("send(value);"), opts).map((s) => s.kind)).toEqual([
+        "@future send",
+      ]);
+    });
+    it("counts nested commas, strings and generics as one argument", () => {
+      for (const call of [
+        "send(Map.of(a, b, c));",
+        "send(new Map<String, Integer>{ 'a' => 1, 'b' => 2 });",
+        "send('a, b');",
+        "send(new List<Id>{ a, b }[0]);",
+        "send(f(a, b));",
+        "send(new Map<String, List<Id>>());",
+      ]) {
+        expect(detectAsyncInLoop(loop(call), opts), call).toHaveLength(1);
+      }
+      expect(detectAsyncInLoop(loop("send(Map.of(a, b), true);"), opts)).toEqual([]);
+      expect(detectAsyncInLoop(loop("send();"), opts)).toEqual([]);
+    });
+    it("keeps reporting an ambiguous generic-or-comparison argument list", () => {
+      expect(detectAsyncInLoop(loop("send(a<b, c>d);"), opts)).toHaveLength(1);
+      const two = { ...opts, futureArities: new Map([["own.send", new Set([2])]]) };
+      expect(detectAsyncInLoop(loop("send(a<b, c>d);"), two)).toHaveLength(1);
+      expect(countCallArguments("a<b, c>d)", 0)).toBeNull();
+    });
+    it("counts a generic literal as one argument and a trailing argument as another", () => {
+      const two = { ...opts, futureArities: new Map([["own.send", new Set([2])]]) };
+      expect(countCallArguments("new List<Id>{x}, true)", 0)).toBe(2);
+      expect(detectAsyncInLoop(loop("send(new List<Id>{x}, true);"), opts)).toEqual([]);
+      expect(detectAsyncInLoop(loop("send(new List<Id>{x}, true);"), two)).toHaveLength(1);
+      expect(countCallArguments("new Map<Id, String>())", 0)).toBe(1);
+      expect(detectAsyncInLoop(loop("send(new Map<Id, String>());"), opts)).toHaveLength(1);
+      expect(detectAsyncInLoop(loop("send(new Map<Id, String>());"), two)).toEqual([]);
+    });
+    it("keeps reporting when the arity is unknown", () => {
+      expect(
+        detectAsyncInLoop(loop("send(value, true);"), { ...opts, futureArities: new Map() }),
+      ).toHaveLength(1);
+      expect(countCallArguments("a, b", 0)).toBeNull();
+    });
   });
 
   it.each([

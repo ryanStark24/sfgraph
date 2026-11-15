@@ -52,6 +52,12 @@ const ASYNC_CANON: Record<string, string> = {
 export interface AsyncInLoopOpts {
   /** Lower-cased `Class.method` of every `@future` method in the org. */
   futureMethods?: ReadonlySet<string>;
+  /**
+   * Parameter counts of each `@future` method, keyed like `futureMethods`. A call is matched only
+   * when its argument count is in the set, so a synchronous overload of another arity is not
+   * reported. A key with no entry, or a call whose arguments cannot be counted, keeps reporting.
+   */
+  futureArities?: ReadonlyMap<string, ReadonlySet<number>>;
   /** The class the unit is in (lower-cased `Outer.Inner`), for unqualified calls. */
   ownerClass?: string;
 }
@@ -91,6 +97,11 @@ export function detectAsyncInLoop(code: string, opts: AsyncInLoopOpts = {}): Cod
       const cls = (m[1] ?? opts.ownerClass ?? "").toLowerCase();
       const name = (m[2] ?? "").toLowerCase();
       if (!cls || !future.has(`${cls}.${name}`)) continue;
+      const arities = opts.futureArities?.get(`${cls}.${name}`);
+      if (arities) {
+        const n = countCallArguments(masked, idx + m[0].length);
+        if (n !== null && !arities.has(n)) continue;
+      }
       out.push({
         line: lineOfIndex(code, idx),
         evidence: lineText(code, idx),
@@ -100,6 +111,49 @@ export function detectAsyncInLoop(code: string, opts: AsyncInLoopOpts = {}): Cod
   }
   out.sort((a, b) => a.line - b.line);
   return out;
+}
+
+/**
+ * Number of top-level arguments of a call whose `(` just before `from` is already consumed, on
+ * masked code (strings blanked). Commas inside nested `()`, `[]`, `{}` and generic `<...>` do not
+ * count. Null when the closing paren is not found or the count is ambiguous (`a<b, c>d` could be one
+ * argument or two); the caller then keeps reporting.
+ */
+export function countCallArguments(masked: string, from: number): number | null {
+  let depth = 0;
+  let commas = 0;
+  let sawContent = false;
+  for (let i = from; i < masked.length; i++) {
+    const c = masked[i] as string;
+    if (c === "(" || c === "[" || c === "{") {
+      depth++;
+      sawContent = true;
+    } else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) return c === ")" ? (sawContent ? commas + 1 : 0) : null;
+      depth--;
+    } else if (c === "<" && depth === 0 && /\w/.test(masked[i - 1] ?? "")) {
+      const re = /<[\w\s,.<>?]*>/y;
+      re.lastIndex = i;
+      const g = re.exec(masked);
+      if (g) {
+        // A span with a comma changes the count depending on whether `<...>` is a generic type
+        // or a pair of comparisons (`a<b, c>d`). It is a generic only after `new Type` or when
+        // `(`, `{`, `[` or `.` follows; otherwise the count is ambiguous and unknown (null).
+        if (g[0].includes(",")) {
+          const next = /^\s*(.)/.exec(masked.slice(i + g[0].length))?.[1] ?? "";
+          const afterNew = /\bnew\s+[\w.]+$/.test(masked.slice(from, i));
+          if (!afterNew && !"({[.".includes(next)) return null;
+        }
+        i += g[0].length - 1;
+        sawContent = true;
+      }
+    } else if (c === "," && depth === 0) {
+      commas++;
+    } else if (!/\s/.test(c)) {
+      sawContent = true;
+    }
+  }
+  return null;
 }
 
 export { detectSoqlInjection } from "../parsers/apex/soql-injection.js";

@@ -18,6 +18,12 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 - **Re-ingest once after upgrading.** The Apex, LWC and Aura parsers now record extra attributes, so their content hashes changed and the first ingest after upgrading re-parses every Apex class, trigger, LWC and Aura component. Existing graphs keep working but do not show the new security findings until then.
 - `governor_risk_check` documents the two new risk kinds in its `order` text (after `dml_in_loop`, before `no_bulk`); the order of the older kinds is unchanged.
 
+### Fixed (outside review of 1.9.0)
+
+- **`export_sarif` writes valid URI references.** A finding in a path with spaces, `#`, `%` or non-ASCII characters (`project with spaces/force-app/...`) is now written percent-encoded per path segment, and `lintErrors` flags any `artifactLocation.uri` that is not a valid URI reference. Before, the file failed the SARIF 2.1.0 `uri-reference` check while `lintErrors` was empty. Findings in the tool output (`file`) keep the plain path.
+- **A safe edit to a method signature clears its injection finding.** The Apex method content hash covered only the body, so changing `run(String term)` to `run(Id term)` kept the stored `soqlInjection` attribute and `security_audit` still reported it. The hash now covers the name, return type, parameter types and names, modifiers, annotations, the raw and stripped body and the body's start line. A full ingest re-parses and updates every method once.
+- **`@future` calls are matched by argument count.** `send(value, true)` is no longer reported as an async call when only `send(Id)` is `@future` and `send(Id, Boolean)` is a synchronous overload. If the arguments cannot be counted the call is still reported.
+
 ### Known limits
 
 - Async in loop: a one-line `@future public static void` declaration is not recognised (an existing `isFuture` parsing limit), so calls to that method inside a loop are missed. Otherwise direct calls only. A loop that calls a helper which enqueues is not followed, an `@future` method called through an instance variable is not matched, and class-level initialisers are not scanned.
