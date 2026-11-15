@@ -577,6 +577,27 @@ describe("detectDomInjection", () => {
       "el.innerHTML = `<b>$5 ${x}</b>`;",
       ["innerHTML:high"],
     ],
+    ["a multi-line template literal", "el.innerHTML = `<b>Hello\nworld</b>`;", ["innerHTML:low"]],
+    [
+      "a multi-line template literal joined with +",
+      "el.innerHTML = `<b>Hello` +\n`world</b>`;",
+      ["innerHTML:low"],
+    ],
+    [
+      "a multi-line template with data on a middle line",
+      "el.innerHTML = `<ul>\n<li>${x}</li>\n</ul>`;",
+      ["innerHTML:high"],
+    ],
+    [
+      "a template with nested braces then another statement",
+      "el.innerHTML = `<b>${ {a:1}.a }\nrest</b>`;\nel.insertAdjacentHTML('beforeend', '<hr>');",
+      ["innerHTML:high", "insertAdjacentHTML:low"],
+    ],
+    [
+      "a multi-line template with a nested template in an interpolation",
+      "el.innerHTML = `<b>${ `a\nb` }\n</b>`;",
+      ["innerHTML:high"],
+    ],
     ["a multi-line pure literal", "el.innerHTML = '<b>' +\n '</b>';", ["innerHTML:low"]],
     [
       "a multi-line literal in insertAdjacentHTML",
@@ -623,6 +644,14 @@ describe("detectDomInjection", () => {
     ["a block comment", "/* el.innerHTML = this.notes; */"],
   ])("does not flag %s", (_n, js) => {
     expect(kinds(js)).toEqual([]);
+  });
+  it("keeps line numbers right after a multi-line template", () => {
+    const js =
+      "const a = 1;\nel.innerHTML = `<b>\nx\n</b>`;\nconst b = 2;\nel.innerHTML = this.n;\n";
+    expect(detectDomInjection("c.js", js).map((x) => [x.line, x.severity])).toEqual([
+      [2, "low"],
+      [6, "high"],
+    ]);
   });
   it("does not locate a sink inside a string or template text", () => {
     expect(kinds('const example = "el.innerHTML = data";')).toEqual([]);

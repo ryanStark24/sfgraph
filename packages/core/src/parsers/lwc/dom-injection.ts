@@ -170,13 +170,33 @@ const isEmptyLiteral = (rhs: string): boolean => /^\s*(?:''|""|``)\s*;?\s*$/.tes
  * End index (exclusive) of the expression that starts at `from` in comment-and-string-masked
  * code: the first `;` at depth 0, an unmatched closing bracket, or a line break at depth 0
  * unless the expression visibly continues (the line ends with a binary `+`, or the next line
- * starts with one).
+ * starts with one). A line break inside a template literal (text or `${...}`) never ends it.
  */
 function expressionEnd(masked: string, from: number): number {
   let d = 0;
+  // Template literals: the mask blanks their text but keeps the backticks, `${` and the
+  // newlines, so a line break inside template text must not end the expression. `open`
+  // holds the bracket depth at each `${` still open.
+  let inTemplate = false;
+  const open: number[] = [];
   for (let j = from; j < masked.length; j++) {
     const c = masked[j];
-    if (c === "(" || c === "[" || c === "{") d += 1;
+    if (inTemplate) {
+      if (c === "`") inTemplate = false;
+      else if (c === "$" && masked[j + 1] === "{") {
+        open.push(d);
+        d += 1;
+        j += 1;
+        inTemplate = false;
+      }
+      continue;
+    }
+    if (c === "`") inTemplate = true;
+    else if (c === "}" && open.length > 0 && open[open.length - 1] === d - 1) {
+      open.pop();
+      d -= 1;
+      inTemplate = true;
+    } else if (c === "(" || c === "[" || c === "{") d += 1;
     else if (c === ")" || c === "]" || c === "}") {
       if (d === 0) return j;
       d -= 1;
