@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { detectSoqlInjectionBaseline as parentDetect } from "../soql-injection-baseline.js";
 import { detectSoqlInjection } from "../soql-injection.js";
-import { detectSoqlInjection as parentDetect } from "./_soql-injection-parent.js";
 
 /**
  * The flow-sensitive analysis may drop a finding the parent (flow-insensitive, release/1.9.0 at
@@ -176,6 +176,31 @@ const CASES: Case[] = [
   {
     name: "chained call whose argument is tainted",
     code: `\nString f = 'f';\n${q("f.trim().replace('f', term)")}`,
+  },
+  // the baseline pass and exact allow-list (Codex, 7ed1784)
+  {
+    name: "String.join separator in a collection",
+    code: fmt("new List<String>{ String.join(parts, term) }"),
+    params: ["String term", "List<String> parts"],
+  },
+  {
+    name: "String.join separator",
+    code: `\n${q("String.join(parts, term)")}`,
+    params: ["String term", "List<String> parts"],
+  },
+  {
+    name: "numeric map read followed by a chained call with a tainted argument",
+    code: fmt("new List<String>{ caps.get(k).format().replace('1', term) }"),
+    params: ["String term", "Map<String, Integer> caps", "String k"],
+  },
+  {
+    name: "numeric valueOf followed by a chained call with a tainted argument",
+    code: fmt("new List<String>{ Integer.valueOf(n).format().replace('1', term) }"),
+    params: ["String term", "String n"],
+  },
+  {
+    name: "describe chain followed by a chained call with a tainted argument",
+    code: fmt("new List<String>{ Schema.SObjectType.Account.getName().replace('A', term) }"),
   },
   // earlier review cases
   {

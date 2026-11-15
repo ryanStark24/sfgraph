@@ -1,6 +1,9 @@
-// Verbatim copy of parsers/apex/soql-injection.ts at release/1.9.0 bb00bc5 (the flow-insensitive
-// analysis), kept only so the differential test can compare against it.
-import { maskApex } from "../dynamic-soql.js";
+// Internal, frozen: the flow-insensitive analysis exactly as released in 1.9.0 (release/1.9.0 at
+// bb00bc5). `detectSoqlInjection` runs it beside the current analysis and keeps every finding
+// it reports unless a purely lexical check proves no tainted parameter text survives, so the
+// current analysis can only ever drop findings in the intended false-positive cases. Do not edit
+// (the exceptions: the depth cap in `variable` and the declaration cache).
+import { maskApex } from "./dynamic-soql.js";
 
 /**
  * SOQL / SOSL injection detector over one Apex unit's text (a method body or a
@@ -9,7 +12,7 @@ import { maskApex } from "../dynamic-soql.js";
  * node as `soqlInjection`; `analyze/code-security.ts` reads that attribute.
  */
 
-export interface InjectionSpot {
+export interface BaselineSpot {
   /** 1-based line within the unit's text. */
   line: number;
   /** The source line, trimmed and cut at 200 characters. */
@@ -157,8 +160,8 @@ class InjectionAnalyzer {
   }
 
   /** The call sites and the tainted variable of each unsafe one. */
-  run(code: string): InjectionSpot[] {
-    const out: InjectionSpot[] = [];
+  run(code: string): BaselineSpot[] {
+    const out: BaselineSpot[] = [];
     for (const m of this.masked.matchAll(DYNAMIC_CALL_RE)) {
       const open = (m.index ?? 0) + m[0].length - 1;
       const close = matchClose(this.masked, open);
@@ -286,7 +289,19 @@ class InjectionAnalyzer {
     return null;
   }
 
+  private readonly declCache = new Map<string, { type: string; index: number } | null>();
+
+  /** Cached per name (the second change to the released code: speed only, same result). */
   private declaration(name: string): { type: string; index: number } | null {
+    const key = name.toLowerCase();
+    const cached = this.declCache.get(key);
+    if (cached !== undefined) return cached;
+    const found = this.findDeclaration(name);
+    this.declCache.set(key, found);
+    return found;
+  }
+
+  private findDeclaration(name: string): { type: string; index: number } | null {
     const re = new RegExp(
       `(?<![\\w.])([A-Za-z_][\\w.]*(?:\\s*<[^;=()]*>)?(?:\\s*\\[\\s*\\])?)\\s+${name}\\s*(?=[=;,):])`,
       "gi",
@@ -309,6 +324,20 @@ class InjectionAnalyzer {
 
   /** `name` when the variable can carry unescaped text into a query, else null. */
   private variable(name: string): string | null {
+    // The one change to the released code: a depth cap, so a very long alias chain throws a
+    // catchable error instead of exhausting the stack and memory (the caller falls back).
+    if (this.depth >= 300) throw new RangeError("alias chain too deep for the baseline");
+    this.depth += 1;
+    try {
+      return this.variableInner(name);
+    } finally {
+      this.depth -= 1;
+    }
+  }
+
+  private depth = 0;
+
+  private variableInner(name: string): string | null {
     const key = name.toLowerCase();
     const decl = this.declaration(name);
     if (!decl) return null;
@@ -364,10 +393,10 @@ class InjectionAnalyzer {
  * (`helper.build(x)`) are not traced, so those are not reported (low false positives
  * over completeness). `String.format` arguments are checked by name only.
  */
-export function detectSoqlInjection(
+export function detectSoqlInjectionBaseline(
   code: string,
   opts: { params?: readonly string[] } = {},
-): InjectionSpot[] {
+): BaselineSpot[] {
   if (!code || !/\b(?:Database|Search)\s*\.\s*\w*query\w*\s*\(|getQueryLocator/i.test(code)) {
     return [];
   }

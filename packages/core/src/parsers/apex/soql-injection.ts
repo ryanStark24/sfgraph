@@ -1,4 +1,5 @@
 import { maskApex } from "./dynamic-soql.js";
+import { detectSoqlInjectionBaseline } from "./soql-injection-baseline.js";
 
 /**
  * SOQL / SOSL injection detector over one Apex unit's text (a method body or a
@@ -200,6 +201,9 @@ class InjectionAnalyzer {
     this.headerEnd = brace < 0 ? 0 : brace;
   }
 
+  /** Every dynamic-query call site found by `run`, reported or not. */
+  readonly sinks: Array<{ line: number; kind: string; at: number; a: number; b: number }> = [];
+
   /** The call sites and the tainted variable of each unsafe one. */
   run(code: string): InjectionSpot[] {
     const out: InjectionSpot[] = [];
@@ -210,12 +214,13 @@ class InjectionAnalyzer {
       if (close < 0) continue;
       const first = pieces(this.masked, open + 1, close, ",")[0];
       if (!first || first[0] >= first[1]) continue;
+      const call = (m[1] ?? "").replace(/\s+/g, "");
+      this.sinks.push({ line: lineOfIndex(code, at), kind: call, at, a: first[0], b: first[1] });
       this.solve();
       this.mode = "fixed";
       const tainted = this.expr(first[0], first[1]);
       if (!tainted) continue;
       if (this.provablySafe(at, first[0], first[1])) continue;
-      const call = (m[1] ?? "").replace(/\s+/g, "");
       out.push({
         line: lineOfIndex(code, at),
         evidence: lineText(code, at),
@@ -268,36 +273,70 @@ class InjectionAnalyzer {
     return !ordered;
   }
 
-  /** `text` with the exact allow-listed safe substrings blanked (same length). */
+  /**
+   * `text` with the exact allow-listed safe substrings blanked (same length). A substring is
+   * blanked only when it is the whole operand: an escape call, a numeric `.valueOf(...)`, a
+   * describe chain or a numeric Map read followed by nothing, or by calls without arguments.
+   * A chained call that takes arguments breaks the match and leaves the text in place.
+   */
   private stripSafe(text: string): string {
     const chars = text.split("");
     const blank = (from: number, to: number): void => {
       for (let k = from; k <= to && k < chars.length; k++) chars[k] = " ";
     };
-    for (const re of [ESCAPE_ANYWHERE_RE, NUMERIC_VALUEOF_ANYWHERE_RE]) {
-      for (const hit of text.matchAll(re)) {
-        const start = hit.index ?? 0;
-        const close = matchClose(text, start + hit[0].length - 1);
-        blank(start, close < 0 ? chars.length - 1 : close);
+    // The end of `close` plus only no-argument calls after it, or -1 when anything else follows.
+    const exactEnd = (close: number): number => {
+      let end = close;
+      for (;;) {
+        const next = /^\s*\.\s*\w+\s*\(\s*\)/.exec(text.slice(end + 1));
+        if (!next) break;
+        end += next[0].length;
       }
+      return /^\s*[.[]/.test(text.slice(end + 1)) ? -1 : end;
+    };
+    for (const hit of text.matchAll(ESCAPE_ANYWHERE_RE)) {
+      // Whatever follows an escaped call stays in the text and is scanned like any other text.
+      const start = hit.index ?? 0;
+      const close = matchClose(text, start + hit[0].length - 1);
+      blank(start, close < 0 ? chars.length - 1 : close);
     }
-    const describe =
-      /(?<![\w.])Schema\s*\.\s*[\w.]+(?:\s*\([^()]*\))?(?:\s*\.\s*\w+\s*\([^()]*\))*/gi;
+    for (const hit of text.matchAll(NUMERIC_VALUEOF_ANYWHERE_RE)) {
+      const start = hit.index ?? 0;
+      const close = matchClose(text, start + hit[0].length - 1);
+      const end = close < 0 ? -1 : exactEnd(close);
+      if (end >= 0) blank(start, end);
+    }
+    const describe = /(?<![\w.])Schema\s*\.\s*[\w.]+(?:\s*\(\s*\))?(?:\s*\.\s*\w+\s*\(\s*\))*/gi;
     for (const hit of text.matchAll(describe)) {
       const start = hit.index ?? 0;
-      blank(start, start + hit[0].length - 1);
+      const end = start + hit[0].length - 1;
+      if (!/^\s*[.[(]/.test(text.slice(end + 1))) blank(start, end);
+    }
+    for (const hit of text.matchAll(
+      /(?<![\w.])([A-Za-z_]\w*)\s*\.\s*(?:get|getOrDefault)\s*\(/gi,
+    )) {
+      const type = this.declaration(hit[1] ?? "")?.type ?? "";
+      if (!SAFE_MAP_VALUE_RE.test(type)) continue;
+      const start = hit.index ?? 0;
+      const close = matchClose(text, start + hit[0].length - 1);
+      const end = close < 0 ? -1 : exactEnd(close);
+      if (end >= 0) blank(start, end);
     }
     return chars.join("");
   }
 
   /**
    * Pure text check. Starting from the argument's text, replace each named variable by the text
-   * of its effective assignments (the last plain one before the call and every `+=` after it),
-   * strip the allow-listed safe substrings, and report whether a parameter the parent's rule
-   * leaves tainted is still named.
+   * of its assignments, strip the allow-listed safe substrings, and report whether a parameter
+   * the parent's rule leaves tainted is still named. A variable whose assignments are all
+   * straight-line, outside every loop, with the call outside every loop, is replaced by its
+   * effective assignments only (the last plain one before the call and every `+=` after it);
+   * any other variable by all of its assignments.
    */
   private taintedLeafRemains(at: number, a: number, b: number): boolean {
     const all = this.assignments ?? [];
+    const loops = this.loopRanges();
+    const callInLoop = loops.some(([ls, le]) => ls <= at && at < le);
     const todo = [this.masked.slice(a, b)];
     const seen = new Set<string>();
     for (let i = 0; i < todo.length; i++) {
@@ -309,18 +348,28 @@ class InjectionAnalyzer {
         seen.add(key);
         const decl = this.declaration(name);
         if (!decl || this.safeType(decl.type)) continue;
-        const mine = all.filter((x) => x.name.toLowerCase() === key && x.to <= at);
-        const lastPlain = mine.map((x) => x.plus).lastIndexOf(false);
+        const own = all.filter((x) => x.name.toLowerCase() === key);
+        const straight =
+          !callInLoop &&
+          own.every((x) => x.simple && !loops.some(([ls, le]) => ls <= x.at && x.at < le));
+        const mine = straight ? own.filter((x) => x.to <= at) : own;
+        const lastPlain = straight ? mine.map((x) => x.plus).lastIndexOf(false) : -1;
         // A parameter that is never replaced keeps the caller's text.
-        if (this.isParam(decl) && lastPlain < 0) {
-          if (this.fixed?.get(key) || this.variable(name)) return true;
-          continue;
-        }
+        if (this.isParam(decl) && lastPlain < 0 && (!straight || mine.every((x) => x.plus)))
+          return true;
         for (const x of mine.slice(Math.max(lastPlain, 0)))
           todo.push(this.masked.slice(x.from, x.to));
       }
     }
     return false;
+  }
+
+  /** True when a tainted parameter's text may still reach sink `i` (the lexical backstop). */
+  backstop(i: number): boolean {
+    const sink = this.sinks[i];
+    if (!sink) return true;
+    this.solve();
+    return this.taintedLeafRemains(sink.at, sink.a, sink.b);
   }
 
   /** `[start, end)` of every loop (for, while, do) from its keyword to the end of its body. */
@@ -416,10 +465,7 @@ class InjectionAnalyzer {
       const open = s + call[0].length - 1;
       const close = matchClose(m, open);
       if (close < 0 || close !== e - 1) return this.anyIdentifier(s, e);
-      if ((call[2] ?? "").toLowerCase() === "join") {
-        const arg = pieces(m, open + 1, close, ",")[0];
-        return arg ? this.operand(arg[0], arg[1]) : null;
-      }
+      // `join(list, separator)` and `format(template, args)`: every argument counts.
       return this.formatArgs(open + 1, close);
     }
     const root = /^([A-Za-z_]\w*)/.exec(raw);
@@ -437,7 +483,8 @@ class InjectionAnalyzer {
     // `numbers.get(k)` on a Map<K, Integer>: the value is a number even when the key is text.
     if (MAP_READ_RE.test(rest)) {
       const decl = this.declaration(name);
-      if (decl && SAFE_MAP_VALUE_RE.test(decl.type)) return null;
+      const open = s + name.length + rest.indexOf("(");
+      if (decl && SAFE_MAP_VALUE_RE.test(decl.type) && matchClose(m, open) === e - 1) return null;
     }
     // `var.member...` / `var.method(...)`: tainted when the variable is.
     if (/^\s*\.\s*\w+/.test(rest)) {
@@ -762,5 +809,31 @@ export function detectSoqlInjection(
   // A method's stored text has no header, so its parameters (`String term`) are put in front on
   // the first line, which keeps every line number of `code`.
   const text = opts.params ? `(${opts.params.join(", ")}) {${code}` : code;
-  return new InjectionAnalyzer(text).run(text);
+  const analyzer = new InjectionAnalyzer(text);
+  const spots = analyzer.run(text);
+  // Monotone by construction: run the released flow-insensitive analysis beside this one and keep
+  // each finding it reports unless the lexical backstop proves no tainted parameter text is left.
+  let baseline: ReturnType<typeof detectSoqlInjectionBaseline> = [];
+  try {
+    baseline = detectSoqlInjectionBaseline(code, opts);
+  } catch {
+    // A pathological unit (a very long alias chain) overflows the recursive baseline; the
+    // current analysis alone stands.
+    return spots;
+  }
+  if (baseline.length === 0) return spots;
+  const have = new Set(spots.map((x) => `${x.line}:${x.kind}`));
+  const claimed = new Set<number>();
+  const kept: InjectionSpot[] = [...spots];
+  for (const base of baseline) {
+    const key = `${base.line}:${base.kind}`;
+    if (have.has(key)) continue;
+    const i = analyzer.sinks.findIndex(
+      (x, k) => !claimed.has(k) && x.line === base.line && x.kind === base.kind,
+    );
+    if (i < 0) continue;
+    claimed.add(i);
+    if (analyzer.backstop(i)) kept.push(base);
+  }
+  return kept.sort((x, y) => x.line - y.line);
 }
