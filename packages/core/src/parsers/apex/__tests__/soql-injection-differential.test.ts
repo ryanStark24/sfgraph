@@ -233,6 +233,14 @@ const CASES: Case[] = [
     code: "\nString a = term;\nString b = a + 'x';\na = String.escapeSingleQuotes(a);\nDatabase.query('S' + b);",
   },
   {
+    name: "Codex: literal query then a format query on one line",
+    code: "\nList<String> parts = new List<String>{ 'fixed' };\nDatabase.query('SELECT Id FROM Account'); Database.query(String.format('SELECT Id FROM Account WHERE Name = {0}', new List<String>{ parts[0].replace('fixed', term) }));",
+  },
+  {
+    name: "Codex: alias copied before its source is cleared",
+    code: "\nList<String> parts = new List<String>{ 'fixed' };\nString a = term;\nString b = a;\na = '';\nDatabase.query(String.format('SELECT Id FROM Account WHERE Name = {0}', new List<String>{ parts[0].replace('fixed', b) }));",
+  },
+  {
     name: "indexed receiver with a tainted argument",
     code: `\n${q("parts[0].replace('fixed', term)")}`,
     params: ["String term", "List<String> parts"],
