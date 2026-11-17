@@ -1,6 +1,6 @@
 {
   "name": "@ryanstark24/sfgraph-models",
-  "version": "1.8.2",
+  "version": "1.9.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -47,6 +47,8 @@
     "dist",
     "!dist/**/__tests__",
     "data",
+    "NOTICE",
+    "THIRD_PARTY_LICENSES",
     "README.md"
   ],
   "keywords": [

@@ -90,7 +90,21 @@ describe("T15 I-5 governor detection", () => {
   });
 
   it("the documented order: severity first, then the risk kind, then qname and evidence", () => {
+    // 1.9.0 inserted async_in_loop and flow_dml_in_loop (both high severity) after
+    // dml_in_loop; the relative order of the kinds that existed before is unchanged.
     expect(GOVERNOR_RISK_ORDER).toEqual([
+      "soql_in_loop",
+      "sosl_in_loop",
+      "dynamic_soql_in_loop",
+      "dml_in_loop",
+      "async_in_loop",
+      "flow_dml_in_loop",
+      "no_bulk",
+      "unbounded_query",
+    ]);
+    expect(
+      GOVERNOR_RISK_ORDER.filter((k) => k !== "async_in_loop" && k !== "flow_dml_in_loop"),
+    ).toEqual([
       "soql_in_loop",
       "sosl_in_loop",
       "dynamic_soql_in_loop",

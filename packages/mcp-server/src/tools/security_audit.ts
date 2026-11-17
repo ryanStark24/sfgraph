@@ -1,7 +1,7 @@
 import { METADATA_CATEGORY, REL_TYPES, analyze } from "@ryanstark24/sfgraph-core";
 import { getToolContext } from "../context.js";
 import { defineTool, numeric, z } from "./_define.js";
-import { type Piece, code, countNoun, nameOf, renderReport } from "./_report.js";
+import { type Piece, code, countNoun, nameOf, renderReport, tableCell } from "./_report.js";
 
 const inputSchema = z.object({
   org: z.string().min(1),
@@ -72,7 +72,7 @@ function fieldSecurityAudit(
 defineTool({
   name: "security_audit",
   description:
-    "Use for FLS, access and sharing: Edit-access sharing rules, FLS gaps on PII-like fields, and the profile/permission set access matrix.",
+    "Use for FLS, access and sharing: Edit-access sharing rules, FLS gaps on PII-like fields, access matrix. Also SOQL injection, innerHTML.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
@@ -106,6 +106,31 @@ defineTool({
         /* table may not exist */
       }
     }
+    // Source-code checks (SOQL injection in Apex, DOM injection in LWC and Aura): only when the
+    // audit is not narrowed to one field or object, since they are not about either.
+    const codeScan =
+      input.field === undefined && input.object === undefined
+        ? analyze.scanCodeSecurity(ctx.graphStore, ctx.orgId)
+        : null;
+    const codeFindings = codeScan?.findings ?? [];
+    const codeMd = codeFindings.length
+      ? [
+          "",
+          `**Code security findings (injection):** ${codeFindings.length}`,
+          "",
+          "| rule | severity | where | line | evidence |",
+          "|---|---|---|---|---|",
+          ...codeFindings
+            .slice(0, input.limit)
+            .map(
+              (f) =>
+                `| ${f.ruleId} | ${f.severity} | \`${f.qualifiedName}\` | ${f.line ?? ""} | ${tableCell(f.evidence)} |`,
+            ),
+          ...(codeFindings.length > input.limit
+            ? [`_…${codeFindings.length - input.limit} more (raise \`limit\`)_`]
+            : []),
+        ].join("\n")
+      : "";
     const excludedNote =
       audit.flsGapsExcluded && audit.flsGapsExcluded > 0
         ? ` _(+${audit.flsGapsExcluded} CMDT/system fields hidden — pass \`include_non_fls_fields: true\`)_`
@@ -220,6 +245,16 @@ defineTool({
             ? `${countNoun(rules, "sharing rule")} (who else can see records) ${rules === 1 ? "gives" : "give"} ${grantPhrase} (record sharing only; it says nothing about object or field permissions).`
             : "No sharing rule gives edit access to records.",
           `Checked: ${scope}${excluded ? `; ${countNoun(excluded, "system or settings field")} ${excluded === 1 ? "was" : "were"} left out` : ""}.`,
+          ...(codeFindings.length
+            ? [
+                `${countNoun(codeFindings.length, "code security finding")} (injection in Apex queries or component JavaScript), listed under Technical details.`,
+              ]
+            : []),
+          ...(codeScan && !codeScan.coverage.complete
+            ? [
+                `The code scan was incomplete: it inspected ${codeScan.coverage.scanned} of ${codeScan.coverage.total} units.`,
+              ]
+            : []),
           ...(audit.truncated
             ? [
                 "The scan hit its row limit, so these counts may be low; narrow it with `object` or `field`.",
@@ -242,11 +277,13 @@ defineTool({
       ? ` — results capped at ${analyze.SECURITY_PER_LABEL_CAP}/label; narrow with object/field`
       : "";
     return {
-      summary: `${audit.flsGaps.length} FLS gaps, ${audit.sharingEditAccess.length} sharing rules with record Edit or All access${truncationNote}`,
+      summary: `${audit.flsGaps.length} FLS gaps, ${audit.sharingEditAccess.length} sharing rules with record Edit or All access${truncationNote}${codeFindings.length ? `, ${codeFindings.length} code security findings` : ""}`,
       markdown: report(
-        audit.truncated
-          ? `${md}\n\n> _Note: at least one label hit the ${analyze.SECURITY_PER_LABEL_CAP}-row cap. Results are incomplete — pass \`object\` or \`field\` to narrow._`
-          : md,
+        `${
+          audit.truncated
+            ? `${md}\n\n> _Note: at least one label hit the ${analyze.SECURITY_PER_LABEL_CAP}-row cap. Results are incomplete — pass \`object\` or \`field\` to narrow._`
+            : md
+        }${codeMd ? `\n${codeMd}` : ""}`,
       ),
       data: {
         ...audit,
@@ -263,13 +300,24 @@ defineTool({
         flsGapsTotal: audit.flsGaps.length,
         fieldAccessMatrix: audit.fieldAccessMatrix.slice(0, input.limit),
         fieldAccessMatrixTotal: audit.fieldAccessMatrix.length,
+        // Additive: source-code injection findings (rule id, severity, file, line, evidence).
+        // Present only when the code scan found something or did not finish, so an audit with
+        // nothing to add returns the same `data` as before 1.9.0.
+        ...(codeFindings.length > 0 || (codeScan && !codeScan.coverage.complete)
+          ? {
+              codeFindings: codeFindings.slice(0, input.limit),
+              codeFindingsTotal: codeFindings.length,
+              codeScan: codeScan?.coverage,
+            }
+          : {}),
         cachedFindings: cachedFindings.slice(0, input.limit),
         cachedFindingsTotal: cachedFindings.length,
         limited:
           audit.sharingEditAccess.length > input.limit ||
           audit.flsGaps.length > input.limit ||
           audit.fieldAccessMatrix.length > input.limit ||
-          cachedFindings.length > input.limit,
+          cachedFindings.length > input.limit ||
+          codeFindings.length > input.limit,
         truncated: audit.truncated ?? false,
       },
       follow_up_tools: ["analyze_field", "trace_upstream"],

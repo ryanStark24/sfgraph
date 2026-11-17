@@ -24,7 +24,7 @@
       ],
       "total": 3,
       "truncated": false,
-      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
+      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, async_in_loop, flow_dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
       "cached": false,
       "scan": {
         "scanned": 3,
@@ -50,7 +50,7 @@
       ],
       "total": 3,
       "truncated": true,
-      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
+      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, async_in_loop, flow_dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
       "cached": false,
       "scan": {
         "scanned": 3,
@@ -70,7 +70,7 @@
       "risks": [],
       "total": 0,
       "truncated": false,
-      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
+      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, async_in_loop, flow_dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
       "cached": false,
       "scan": {
         "scanned": 0,

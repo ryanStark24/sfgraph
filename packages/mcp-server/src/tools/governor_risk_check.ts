@@ -32,6 +32,11 @@ const RISK_PLAIN: Readonly<Record<Risk["risk"], [string, string]>> = {
     "triggers that handle one record at a time",
   ],
   unbounded_query: ["query with no row limit", "queries with no row limit"],
+  async_in_loop: [
+    "background job, event or email started inside a loop",
+    "background jobs, events or emails started inside a loop",
+  ],
+  flow_dml_in_loop: ["flow record save inside a loop", "flow record saves inside a loop"],
 };
 type Severity = "high" | "medium" | "low";
 const SEVERITY_RANK: Readonly<Record<Severity, number>> = { high: 3, medium: 2, low: 1 };
@@ -82,14 +87,17 @@ const DETAILS_NAMES_MAX = 50;
 const byName = (a: string, b: string): number =>
   nameOf(a).toLowerCase().localeCompare(nameOf(b).toLowerCase()) || a.localeCompare(b);
 const CHECKED =
-  "Checked: Apex methods and triggers, direct only (a loop that calls another method which queries is not counted)";
+  "Checked: Apex methods and triggers, direct only (a loop that calls another method which queries is not counted), and flows (record create, update and delete elements inside a loop)";
 /** How the two source checks decide (Technical details). */
 const DEFINITIONS =
   "_unbounded_query: an inline query with no LIMIT and no WHERE in its own clause (COUNT() and Custom Metadata Type queries are not flagged). no_bulk: a trigger that reads Trigger.new[0] / Trigger.old[0] (or .get(0)), never loops over the trigger's records and does not pass them on._";
+/** How the two loop checks added in 1.9.0 decide (Technical details). */
+const DEFINITIONS_LOOPS =
+  "_async_in_loop: System.enqueueJob, Database.executeBatch, EventBus.publish, Messaging.sendEmail or a call to an @future method inside a for, while or do loop. flow_dml_in_loop: a Create, Update or Delete Records element on a Loop's iteration path in a flow._";
 
 /** The documented sort applied before `limit` (T15 I-5). */
 const ORDER =
-  "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence";
+  "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, async_in_loop, flow_dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence";
 
 const inputSchema = z.object({
   org: z.string().min(1),
@@ -106,7 +114,7 @@ const inputSchema = z.object({
 defineTool({
   name: "governor_risk_check",
   description:
-    "Use for 'SOQL in loop / governor limits'. Lists SOQL, SOSL or DML in loops, unbounded queries and unbulkified triggers, worst first.",
+    "Use for 'SOQL in loop / governor limits'. Lists SOQL, SOSL, DML, async, flow DML in loops, unbounded queries, unbulkified triggers.",
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
@@ -187,6 +195,8 @@ defineTool({
               ? "_no governor risks surfaced_"
               : `_no governor risks surfaced in the ${cov.scanned} of ${cov.total} inspected (scan incomplete)_`,
             ...(testDetails ? ["", testDetails] : []),
+            "",
+            DEFINITIONS_LOOPS,
           ].join("\n"),
           next: ["Use `explain_code` on a class to read its code.", ...scanNotes],
         }),
@@ -217,7 +227,10 @@ defineTool({
           "",
           "| qname | risk | evidence |",
           "|---|---|---|",
-          ...rs.map((r) => `| \`${r.qualifiedName}\` | ${r.risk} | ${tableCell(r.evidence)} |`),
+          ...rs.map(
+            (r) =>
+              `| \`${r.qualifiedName}\` | ${r.risk} | ${tableCell(r.evidence)}${r.line ? ` (line ${r.line})` : ""} |`,
+          ),
         ]),
       ...(truncated
         ? [
@@ -228,6 +241,8 @@ defineTool({
       "",
       `_source: ${describeSource(source, cache)}${excludedTests > 0 ? `; ${excludedTests} test-code risks excluded (includeTests: true to show)` : ""}_`,
       ...(testDetails ? ["", testDetails] : []),
+      "",
+      DEFINITIONS_LOOPS,
     ].join("\n");
     // Group by the class or trigger each spot is in, in priority order (the risks are sorted).
     const owners = new Map<string, { label: string; risks: Risk[] }>();

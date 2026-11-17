@@ -131,4 +131,60 @@ describe("W3-01/W3-02: SARIF 2.1.0 emitter", () => {
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.some((e) => e.includes("governor.soql-in-loop"))).toBe(true);
   });
+
+  it("percent-encodes each path segment of artifactLocation.uri (spaces, #, %, non-ASCII)", () => {
+    const finding = (sourceUri: string): Finding => ({
+      ruleId: "governor.soql-in-loop",
+      message: "Foo: SOQL inside loop",
+      level: "error",
+      location: { qualifiedName: "ApexClass:Foo", sourceUri, line: 3 },
+    });
+    const report = emitSarif({
+      version: "1.9.0",
+      findings: [
+        finding("file:///home/u/project with spaces/force-app/Foo.cls"),
+        finding("file:///home/u/a#b/100%/café/Foo.cls"),
+        finding("file://C:\\Users\\x y\\proj\\Foo.cls"),
+      ],
+    });
+    const uris = report.runs[0]?.results.map(
+      (r) => r.locations[0]?.physicalLocation?.artifactLocation.uri,
+    );
+    expect(uris).toEqual([
+      "file:///home/u/project%20with%20spaces/force-app/Foo.cls",
+      "file:///home/u/a%23b/100%25/caf%C3%A9/Foo.cls",
+      "file:///C:/Users/x%20y/proj/Foo.cls",
+    ]);
+    expect(lintSarifReport(report)).toEqual([]);
+  });
+
+  it("lintSarifReport flags an artifactLocation.uri that is not a valid URI reference", () => {
+    const report = emitSarif({
+      version: "1.9.0",
+      findings: [
+        {
+          ruleId: "governor.soql-in-loop",
+          message: "x",
+          level: "error",
+          location: { qualifiedName: "ApexClass:Foo", sourceUri: "file:///a/b.cls" },
+        },
+      ],
+    });
+    const loc = report.runs[0]?.results[0]?.locations[0]?.physicalLocation;
+    if (!loc) throw new Error("no physical location");
+    for (const bad of [
+      "file:///a b/Foo.cls",
+      "file:///caf\u00e9/Foo.cls",
+      "file:///100%/Foo.cls",
+    ]) {
+      loc.artifactLocation.uri = bad;
+      const errors = lintSarifReport(report);
+      expect(
+        errors.some((e) => e.includes("not a valid URI reference")),
+        bad,
+      ).toBe(true);
+    }
+    loc.artifactLocation.uri = "file:///a%20b/Foo.cls";
+    expect(lintSarifReport(report)).toEqual([]);
+  });
 });

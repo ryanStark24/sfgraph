@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.9.0 — 2026-11-15
+
+Four new static checks, added after a blind comparison with Salesforce Code Analyzer on a fixture of 15 planted defects, where sfgraph 1.8.2 caught one and Code Analyzer caught the four below. Nothing here was run against a real Salesforce org; the tests use synthetic fixtures. All output changes are additive: existing fields, risk kinds and their order are unchanged.
+
+### Added
+
+- **`governor.async-in-loop` (`governor_risk_check`, risk `async_in_loop`, severity high).** `System.enqueueJob`, `Database.executeBatch`, `EventBus.publish`, `Messaging.sendEmail` and calls to `@future` methods inside a `for`, `while` or `do` loop body of an Apex method or trigger.
+- **`governor.flow-dml-in-loop` (`governor_risk_check`, risk `flow_dml_in_loop`).** A Record Create, Update or Delete element on a Flow Loop element's iteration path, reported against the Flow with the element name. Works on graphs ingested before 1.9.0, because it reads the stored Flow XML.
+- **`security.soql-injection` (`security_audit`, `codeFindings`).** `Database.query`, `queryWithBinds`, `countQuery`, `getQueryLocator` and `Search.query` whose query string is built by concatenating a method parameter that was not escaped (`String.escapeSingleQuotes`) or bound.
+- **`security.dom-injection` (`security_audit`, `codeFindings`).** Assignment to `innerHTML` or `outerHTML` and `insertAdjacentHTML(...)` in LWC and Aura component JavaScript. Severity high, or low when the value is a plain string literal.
+- **`export_sarif` has rule entries for the four new rule ids.** `security_audit` gains optional `codeFindings`, `codeFindingsTotal` and `codeScan`, present only when the code scan found something or did not finish.
+
+### Changed
+
+- DOM injection: a `+` inside a string literal (`'<button>+</button>'`) no longer makes a literal-only value high, and a value continued on the next line (`el.innerHTML = ''\n + userInput;`) is read to the end of the statement instead of being cut at the line break.
+- **Re-ingest once after upgrading.** The Apex, LWC and Aura parsers now record extra attributes, so their content hashes changed and the first ingest after upgrading re-parses every Apex class, trigger, LWC and Aura component. Existing graphs keep working but do not show the new security findings until then.
+- `governor_risk_check` documents the two new risk kinds in its `order` text (after `dml_in_loop`, before `no_bulk`); the order of the older kinds is unchanged.
+
+### Fixed (outside review of 1.9.0)
+
+- **`export_sarif` writes valid URI references.** A finding in a path with spaces, `#`, `%` or non-ASCII characters (`project with spaces/force-app/...`) is now written percent-encoded per path segment, and `lintErrors` flags any `artifactLocation.uri` that is not a valid URI reference. Before, the file failed the SARIF 2.1.0 `uri-reference` check while `lintErrors` was empty. Findings in the tool output (`file`) keep the plain path.
+- **A safe edit to a method signature clears its injection finding.** The Apex method content hash covered only the body, so changing `run(String term)` to `run(Id term)` kept the stored `soqlInjection` attribute and `security_audit` still reported it. The hash now covers the name, return type, parameter types and names, modifiers, annotations, the raw and stripped body and the body's start line. A full ingest re-parses and updates every method once.
+- **`@future` calls are matched by argument count.** `send(value, true)` is no longer reported as an async call when only `send(Id)` is `@future` and `send(Id, Boolean)` is a synchronous overload. If the arguments cannot be counted the call is still reported.
+- **A straight-line sanitizer reassignment clears the finding.** When every assignment to a variable is a straight-line statement and the last one before the query is safe, the injection finding is dropped; a branch or loop keeps the conservative report.
+- **A 2000-alias chain no longer overflows the stack.** The analysis finishes and the class is never dropped from the report.
+- **`String.format` with typed or numeric arguments.** Integer, Long, Decimal, Double, Boolean, Id, Date, Datetime and Time arguments stay safe through `String.format`; a text argument still carries taint.
+- **DOM injection across lines.** `el.innerHTML = ''` followed on the next line by `.concat(userInput)`, `?.concat(...)`, a ternary or a trailing `+` is read as one expression and reported; a clear followed by a new statement is still a clear, and a fixed-string chain is not promoted.
+
+### Known limits
+
+- Async in loop: a one-line `@future public static void` declaration is not recognised (an existing `isFuture` parsing limit), so calls to that method inside a loop are missed. Otherwise direct calls only. A loop that calls a helper which enqueues is not followed, an `@future` method called through an instance variable is not matched, and class-level initialisers are not scanned.
+- SOQL injection: per method, straight-line code only (branches and loops keep the conservative behaviour); `String.valueOf(x)` and `+=` keep x's taint when x is text; an Integer, Long, Decimal, Double, Boolean, Id, Date, Datetime or Time x (and a `Map<K, Integer>` value) stays safe through `String.valueOf`, `+` and `String.format`. A tainted argument passed to any method call taints its result, and the 1.8 rule runs underneath as a safety net. Class fields, values returned by another method (when no argument is tainted) and for-each variables are not traced, so they are not reported (fewer false positives, less coverage).
+- DOM injection: sinks named inside string literals are ignored (a simple lexer, regex literals with quotes are not understood); no data-flow check of whether the value is user-controlled. `aura:unescapedHtml`, `document.write`, `eval` and `lwc:dom="manual"` without an `innerHTML` assignment are not checked.
+- Flow DML in loop: subflows and Apex actions inside a loop are not followed. The analysis is linear in elements and connectors (a 16,000-element loop body took about 14 s before, under a second now).
+- On the one blind project the checks were built against they caught D02, D08, D13 and D15 as well as D04; that shows they work, not what they find on unseen code. No calibration against real org code.
+
 ## 1.8.2 — 2026-11-14
 
 Fixes from an independent audit of 1.8.1. Nothing here was run against a real Salesforce org; the tests use mock responses, recorded transports and temporary stores.

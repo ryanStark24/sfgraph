@@ -37,9 +37,9 @@ follows the same rule.
 | `impact_from_git_diff`            | Map a code diff to graph blast-radius.                   |
 | `test_gap_intelligence_from_git_diff` | Suggest tests for changed code.                       |
 | `what_broke`                      | Recent changes correlated to a regression.               |
-| `governor_risk_check`             | SOQL/DML-in-loop, unbounded query.                       |
+| `governor_risk_check`             | SOQL/DML/async-in-loop, Flow DML in a loop, unbounded query. |
 | `dead_code_audit`                 | Components with no captured incoming references; age grades confidence; external entry points listed apart. |
-| `security_audit`                  | Sharing, FLS, security findings.                         |
+| `security_audit`                  | Sharing, FLS, SOQL injection, LWC/Aura innerHTML.        |
 | `export_sarif`                    | All audit findings as one SARIF 2.1.0 report.            |
 | `deployment_manifest_gen`         | package.xml + destructiveChanges.xml from cross-org diff.|
 | `list_orgs`                       | List ingested orgs with last-sync timestamps.            |
@@ -305,6 +305,9 @@ helper (`changeUnitOf`), so an LWC bundle is its LWC on both sides.
 // output.data
 {
   "risks": [{ "qualifiedName": "ApexClass:Foo", "risk": "soql_in_loop", "evidence": "..." }],
+  // async_in_loop and flow_dml_in_loop risks also carry (all optional, additive):
+  //   "ruleId": "governor.async-in-loop", "severity": "high", "file": "file:///.../Foo.cls",
+  //   "line": 34, "message": "...", and for flows "element": "Update_Task", "loop": "Loop_Tasks"
   "total": 1, "truncated": false,
   "source": "live" | "live+cache", "cache": "absent" | "fresh" | "stale" | "unknown",
   "cacheReason": "...",   // when the cache is not fresh
@@ -326,6 +329,23 @@ the live scan missed. A stale or unverifiable cache is ignored, and the
 markdown says so. Test code (TestMethod / `@isTest`) is excluded unless
 `includeTests: true`.
 
+Two more risk kinds (1.9.0), both severity high (SARIF `error`):
+
+- `async_in_loop` (`governor.async-in-loop`): `System.enqueueJob`,
+  `Database.executeBatch`, `EventBus.publish`, `Messaging.sendEmail` or a call to an
+  `@future` method inside a `for`, `while` or `do` loop of a method or trigger, from the
+  stored source snippet. Direct only; an `@future` method called on an instance
+  variable is not matched. An `@future` call matches by name and number of arguments
+  (nested commas, strings and generics are not counted), so a synchronous overload with
+  another parameter count is not reported; when the arguments cannot be counted the call
+  is reported.
+- `flow_dml_in_loop` (`governor.flow-dml-in-loop`): a Create, Update or Delete Records
+  element on a Loop element's iteration path in Flow XML (from the loop's next-value
+  connector, back to the loop; never through its "after last" connector). The risk's
+  `qualifiedName` is the Flow; `element` and `loop` name the elements and `line` is the
+  element's line in the Flow file. Time is linear in the Flow's elements and connectors
+  (a 16,000-element loop body takes well under a second).
+
 ### `export_sarif`
 
 ```jsonc
@@ -334,7 +354,7 @@ markdown says so. Test code (TestMethod / `@isTest`) is excluded unless
 //                scanCoverage: { governor: { scanned, total, complete }, "dead-code": {...} } }
 ```
 
-One SARIF 2.1.0 report for the selected audits. The run carries
+One SARIF 2.1.0 report for the selected audits. Each `artifactLocation.uri` is a percent-encoded URI reference (spaces, `#`, `%` and non-ASCII characters in a path are encoded per segment), and `lintErrors` lists any uri that is not a valid URI reference. The run carries
 `properties.sfgraphScanCoverage` (per audit: scanned, total, complete) and
 `sfgraphScanComplete`; an incomplete scan also adds a warning tool-execution
 notification. Dead-code results say "no captured incoming references" and carry
@@ -410,9 +430,35 @@ unscored-label paths. Unscored labels have `score: null` and `confidence: null`.
   "fieldAccessMatrix": [...],                      "fieldAccessMatrixTotal": 0,
   "cachedFindings": [{ "qname": "...", "rule": "sharing.full_access", "message": "..." }],
   "cachedFindingsTotal": 1,
-  "limited": false   // true when any list was cut
+  "limited": false,  // true when any list was cut
+  // 1.9.0, additive: source-code findings (left out when `object` or `field` narrows the audit)
+  "codeFindings": [{ "ruleId": "security.soql-injection", "severity": "high",
+                     "qualifiedName": "ApexMethod:Search.find(1)", "file": "file:///.../Search.cls",
+                     "line": 12, "message": "...", "evidence": "return Database.query(soql);",
+                     "variable": "term" }],
+  "codeFindingsTotal": 1,
+  "codeScan": { "scanned": 20, "total": 20, "complete": true }
 }
 ```
+
+Two code checks (1.9.0), read from attributes the parsers stamp, so a graph ingested
+before 1.9.0 needs a re-ingest to show them:
+
+- `security.soql-injection`: `Database.query`, `queryWithBinds`, `countQuery`,
+  `getQueryLocator` or `Search.query` whose string is built by concatenating a method
+  parameter (or a variable assigned from one) that did not pass through
+  `String.escapeSingleQuotes` and is not a bind (`:var`). Not flagged: literals, numbers,
+  Id/Boolean/Date/Integer-typed values (also through `String.valueOf`, `+` and
+  `String.format` arguments), values read from a `Map<K, Integer>`, escaped values,
+  `Integer.valueOf`-style conversions, Schema describe names, ALL_CAPS constants.
+  `String.valueOf(x)` of a String parameter is still flagged. Class fields, another method's return value and instance calls are
+  not traced, so those are not reported. Test code is skipped.
+- `security.dom-injection`: in LWC and Aura JavaScript, an assignment to `innerHTML` or
+  `outerHTML`, or `insertAdjacentHTML(...)`. High when the value is not a plain string
+  literal (a `+` inside a string is text, only a `+` operator joins literals; the value is
+  read across line breaks up to its `;`), low (SARIF note) when it is; clearing (`innerHTML = ''`), reading and
+  `textContent` are not reported. In an LWC whose template has `lwc:dom="manual"` the
+  finding says so. Aura `aura:unescapedHtml` is not checked.
 
 ### `deployment_manifest_gen`
 

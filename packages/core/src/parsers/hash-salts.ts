@@ -41,8 +41,9 @@ export const OBJECT_NODE_HASH_SALT = "custom-object-attrs:v2";
  * to its object (EXECUTES_SOQL `{dynamic: true}`).
  * v11: `apexFieldNameLiterals` (custom field names passed as text).
  * v13: new edges only (instance calls, DML objects, labels, forName, TYPEOF, ...): `--delta` re-parses.
+ * v14: `soqlInjection` on methods and triggers.
  */
-export const APEX_NODE_HASH_SALT = "apex-attrs:v13";
+export const APEX_NODE_HASH_SALT = "apex-attrs:v14";
 
 // vlocity/data-raptor.ts
 /**
@@ -61,7 +62,7 @@ export const VLOCITY_ELEMENT_HASH_SALT = "vlocity-elements:v3";
 /** Folded into the AuraComponent node hash. Bump it when the parser emits new
  *  output for an unchanged bundle so `--delta` re-parses it. v2: server-action
  *  IMPORTS_APEX edges, empApi / lightning:messageChannel event edges. */
-export const AURA_NODE_HASH_SALT = "aura-attrs:v2";
+export const AURA_NODE_HASH_SALT = "aura-attrs:v3";
 
 // lwc/bundle.ts
 /**
@@ -70,9 +71,9 @@ export const AURA_NODE_HASH_SALT = "aura-attrs:v2";
  * v3: recordObjects (static object context for the field-key resolver).
  * v4: a lightning record form's literal `object-api-name` links to its object.
  * v5: `'Object.Field'` string fields (uiRecordApi, record forms) link to their
- * field; empApi / Lightning Message Service event edges.
+ * field; empApi / Lightning Message Service event edges. v6: `domInjection`.
  */
-export const LWC_NODE_HASH_SALT = "lwc-attrs:v5";
+export const LWC_NODE_HASH_SALT = "lwc-attrs:v6";
 
 // generic/opaque-node-parser.ts
 export const OPAQUE_DATAPACK_HASH_SALT = "vlocity-datapack-refs:v2";

@@ -3,6 +3,12 @@ import { type EdgeFact, METADATA_CATEGORY, type NodeFact, REL_TYPES } from "../.
 import { makeEdge, makeNode, stripNs } from "../common.js";
 import type { ParseContext, ParseResult, Parser } from "../contract.js";
 import { LWC_NODE_HASH_SALT } from "../hash-salts.js";
+import {
+  DOM_SPOTS_MAX,
+  type DomInjectionSpot,
+  detectDomInjection,
+  hasLwcDomManual,
+} from "./dom-injection.js";
 import { extractHtmlEdges } from "./html-visitor.js";
 import { type LwcBindings, extractJsEdges } from "./js-visitor.js";
 import { isOmnidefChunkFile, isOmnidefFile, omnidefEdges, readOmnidef } from "./omnidef.js";
@@ -70,6 +76,7 @@ export class LwcBundleParser implements Parser<LwcBundleInput> {
       propertyValues: new Map(),
     };
     const recordFieldKeys = new Set<string>();
+    const domSpots: DomInjectionSpot[] = [];
     for (const [fname, source] of Object.entries(input.files)) {
       if (fname.endsWith(".js")) {
         // Compiled-OmniScript definition: classify its elements instead of
@@ -82,6 +89,7 @@ export class LwcBundleParser implements Parser<LwcBundleInput> {
             continue;
           }
         }
+        domSpots.push(...detectDomInjection(fname, source));
         const {
           extraEdges,
           extraNodes,
@@ -115,6 +123,14 @@ export class LwcBundleParser implements Parser<LwcBundleInput> {
         edges.push(...extraEdges);
         nodes.push(...extraNodes);
       }
+    }
+    if (domSpots.length > 0) {
+      const manual = Object.entries(input.files).some(
+        ([f, src]) => f.endsWith(".html") && hasLwcDomManual(src),
+      );
+      lwcNode.attributes.domInjection = domSpots
+        .slice(0, DOM_SPOTS_MAX)
+        .map((d) => (manual ? { ...d, lwcDomManual: true } : d));
     }
     void sha256;
     return { nodes, edges };

@@ -202,6 +202,10 @@ defineTool({
     }
     if (audits.has("security")) {
       collectArgs.security = analyze.securityAudit(ctx.graphStore, ctx.orgId);
+      const code = analyze.scanCodeSecurity(ctx.graphStore, ctx.orgId);
+      collectArgs.codeSecurity = code.findings;
+      // Named in the SARIF run only when the scan stopped early (a complete scan adds nothing).
+      if (!code.coverage.complete) scanCoverage.security = code.coverage;
       sources.security = "live";
     }
     if (audits.has("dead-code")) {
