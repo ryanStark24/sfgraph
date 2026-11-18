@@ -16,6 +16,8 @@ import {
   liveIngest,
   multiOrgIngest,
   resolveEmbedModelId,
+  safeGitConfig,
+  safeGitEnv,
   snapshotCountInFile,
 } from "@ryanstark24/sfgraph-core";
 import type { IngestLock, LiveIngestOpts, MultiOrgIngestEntry } from "@ryanstark24/sfgraph-core";
@@ -409,9 +411,13 @@ function gitRevision(
   root: string,
 ): { gitBranch: string; gitCommit: string; capturedAt: string } | undefined {
   try {
+    // The checkout may be untrusted: same hardening as the wip git calls.
+    const cfg = safeGitConfig(root);
+    if (!cfg) return undefined;
     const git = (...args: string[]) =>
-      execFileSync("git", args, {
+      execFileSync("git", [...cfg, ...args], {
         cwd: root,
+        env: safeGitEnv(),
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       }).trim();
