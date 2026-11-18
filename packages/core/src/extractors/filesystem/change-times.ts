@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { safeGitConfig } from "../../analyze/wip-changed-files.js";
+import { safeGitConfig, safeGitEnv } from "../../analyze/wip-changed-files.js";
 
 /**
  * When each source file last changed, for `lastModifiedAt` (and so for
@@ -45,6 +45,7 @@ export const execGit: GitRunner = (args, cwd) =>
       args,
       {
         cwd,
+        env: safeGitEnv(),
         encoding: "utf8",
         timeout: GIT_TIMEOUT_MS,
         maxBuffer: GIT_MAX_BYTES,
