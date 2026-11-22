@@ -189,6 +189,26 @@ describe.skipIf(process.platform === "win32")("alias call during a rebuild", () 
   });
 });
 
+/**
+ * Release the SQLite handles of a cached context (the cache entry and the alias binding stay).
+ * Windows cannot rename or delete a file another handle holds open, so the file moves a rebuild
+ * makes are simulated only once the handles are closed (the real rebuild runs in another process
+ * that waits for the file to be free).
+ */
+async function releaseHandles(ctx: {
+  graphStore: { close(): Promise<void> };
+  snapshotStore?: { close(): Promise<void> } | null;
+  vectorStore?: { close(): Promise<void> } | null;
+}): Promise<void> {
+  for (const st of [ctx.vectorStore, ctx.snapshotStore, ctx.graphStore]) {
+    try {
+      await st?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
 describe("alias on two graph files while one cannot be read", () => {
   it("refuses the alias instead of resolving to the other org (0-byte holder)", async () => {
     await seedIngestedOrgDb(workDir, ORG_B, "uat");
@@ -217,12 +237,13 @@ describe("alias on two graph files while one cannot be read", () => {
       "../context.js"
     );
     setToolContextFactory(null);
-    await getToolContext({ orgId: "uat" });
+    const bound = await getToolContext({ orgId: "uat" });
+    await releaseHandles(bound as never);
     for (const sfx of ["", "-wal", "-shm"]) {
       try {
         renameSync(path.join(workDir, `${ORG_A}.sqlite${sfx}`), path.join(workDir, `a.bak${sfx}`));
-      } catch {
-        /* absent */
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       }
     }
     await realignAlias(ORG_B, "uat");
