@@ -195,6 +195,15 @@ export interface LiveIngestOpts {
    */
   disableOmnistudioRetrieve?: boolean;
   /**
+   * Read and store custom setting ROW values (default **off**; CLI
+   * `--store-setting-rows`, env `SFGRAPH_STORE_SETTING_ROWS=1`). Setting rows
+   * often hold endpoints, keys and per-user values. When off, only the
+   * setting's name and schema link are ingested, and every ingest purges row
+   * values an earlier version stored for the org (graph, search index, vectors,
+   * snapshot history in the same database). Backup files are not rewritten.
+   */
+  storeCustomSettingRows?: boolean;
+  /**
    * Skip the reflection-based generic walker (post-merge). Default
    * **on** — scans every node's attributes for string values that
    * match an existing qname's bare name and emits low-confidence
@@ -658,6 +667,29 @@ function stringifyConfigVal(v: unknown): string {
   return String(v);
 }
 
+/**
+ * Remove stored custom setting row values for an org (see
+ * LiveIngestOpts.storeCustomSettingRows). Returns how many settings held rows.
+ * Also used by `sfgraph purge-setting-rows`.
+ */
+export function purgeStoredCustomSettingRows(
+  graph: GraphStore,
+  orgId: OrgId,
+  vectors?: Pick<VectorSink, "deleteNodeVector">,
+): number {
+  const purge = (
+    graph as {
+      purgeCustomSettingRows?: (o: OrgId, f: typeof buildEmbedText) => QualifiedName[];
+    }
+  ).purgeCustomSettingRows;
+  if (typeof purge !== "function") return 0;
+  const changed = purge.call(graph, orgId, buildEmbedText);
+  // Their vectors were embedded from the rows; drop them so the next embed
+  // pass rebuilds them from the stripped text.
+  for (const q of changed) vectors?.deleteNodeVector?.(orgId, q);
+  return changed.length;
+}
+
 export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult> {
   const logger = opts.logger ?? NOOP_LOG;
   // Load declarative rule parsers (idempotent).
@@ -693,6 +725,20 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     graph.markSyncStarted(resolved.orgId, ingestStartedIso);
   } catch (e) {
     logger.warn("live-ingest: markSyncStarted failed", { err: (e as Error).message });
+  }
+
+  const storeSettingRows =
+    opts.storeCustomSettingRows ?? process.env.SFGRAPH_STORE_SETTING_ROWS === "1";
+  if (!storeSettingRows) {
+    // Before the pre-sync snapshot, so no snapshot copies stored rows.
+    try {
+      const purged = purgeStoredCustomSettingRows(graph, resolved.orgId, opts.vectorStore);
+      if (purged > 0) {
+        logger.info("live-ingest: removed stored custom setting row values", { settings: purged });
+      }
+    } catch (e) {
+      logger.warn("live-ingest: custom setting row purge failed", { err: (e as Error).message });
+    }
   }
 
   // Opt-in profiling (SFGRAPH_INGEST_PROFILE=<file>); no-op otherwise.
@@ -1516,6 +1562,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
                   // retrieve()" which is now on by default. Caller-side disable
                   // routes through this same boolean inverted.
                   ...(opts.disableOmnistudioRetrieve ? {} : { enableOmnistudioRetrieve: true }),
+                  ...(storeSettingRows ? { storeCustomSettingRows: true } : {}),
                   // jsforce attaches the version it negotiated on conn.version; fall
                   // back to a sensible recent release if absent (mocks, etc.)
                   apiVersion: (resolved.conn as { version?: string }).version ?? "60.0",

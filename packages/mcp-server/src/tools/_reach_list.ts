@@ -459,3 +459,33 @@ export function traceReport(o: TraceReportOpts): string {
     next,
   });
 }
+
+/**
+ * What a trace puts in its structured data about the nodes and edges it walked: names and
+ * relationship types only. A stored node's attributes (record values, setting rows, query text,
+ * source paths) never leave the graph through here. Lists stop at {@link REACH_LIST_CAP}, the
+ * same cap as the text body; `nodeTotal` and `edgeTotal` say how many there were when a list was cut.
+ */
+export function traceRefs(
+  nodes: ReadonlyArray<{ qualifiedName: unknown; label: string }>,
+  edges: ReadonlyArray<{ srcQualifiedName: unknown; dstQualifiedName: unknown; relType: unknown }>,
+): {
+  nodes: Array<{ qualifiedName: string; label: string }>;
+  edges: Array<{ srcQualifiedName: string; dstQualifiedName: string; relType: string }>;
+  /** Present only when a list was cut: the full sizes. */
+  nodeTotal?: number;
+  edgeTotal?: number;
+} {
+  const cut = nodes.length > REACH_LIST_CAP || edges.length > REACH_LIST_CAP;
+  return {
+    nodes: nodes
+      .slice(0, REACH_LIST_CAP)
+      .map((n) => ({ qualifiedName: String(n.qualifiedName), label: n.label })),
+    edges: edges.slice(0, REACH_LIST_CAP).map((e) => ({
+      srcQualifiedName: String(e.srcQualifiedName),
+      dstQualifiedName: String(e.dstQualifiedName),
+      relType: String(e.relType),
+    })),
+    ...(cut ? { nodeTotal: nodes.length, edgeTotal: edges.length } : {}),
+  };
+}

@@ -51,6 +51,7 @@ Commands:
 | `--data-pool <n>` | `10` | Max concurrent SObject/Bulk SOQL queries. Also reads `SFGRAPH_DATA_POOL`. |
 | `--debug` | `false` | Verbose tracing for diagnosing silent ingest deaths: heartbeat every 10s with heap/RSS/last-source label, per-record parse and graph-merge phase logs, SIGTERM/SIGINT stack traces, per-source enter/finalise markers. Also sets `SFGRAPH_DEBUG_INGEST=1`. |
 | `--no-auto-retry-skipped` | (auto-retry on) | Disable the post-ingest auto-retry. By default, if more than 10 sources were skipped with transient errors (`rate_limit`, `network`, `unknown`), sfgraph waits briefly and re-ingests just those sources. Tune the threshold with `SFGRAPH_AUTO_RETRY_THRESHOLD=N`; disable entirely with this flag or `SFGRAPH_NO_AUTO_RETRY=1`. |
+| `--store-setting-rows` | off | Also read and store custom setting **row values**. Off by default: rows often hold endpoints, keys and per-user values, so only each setting's name (and its link to the object) is kept. Also reads `SFGRAPH_STORE_SETTING_ROWS=1`. Without this flag every ingest removes row values an earlier version stored (see [`PRIVACY.md`](PRIVACY.md#custom-setting-rows)). |
 | `--db <path>` | `<data-dir>/<orgId>.sqlite` (platform-specific via env-paths; see [`DATA_LOCATIONS.md`](DATA_LOCATIONS.md)) | Override SQLite database path |
 
 Auto-detects default org from `sf config`. Auto-snapshot taken before every sync.
@@ -179,6 +180,17 @@ sfgraph ingest --org my-prod
 ```
 
 The model must produce 384-dimensional vectors to match the existing `vec0` schema unless you override the dim. Checksum verification is skipped for user-supplied models.
+
+## `sfgraph purge-setting-rows`
+
+Removes custom setting row values that an earlier sfgraph stored for an org: the graph rows, the search-index entry, the vectors built from them and the snapshot history in the same database. Setting names and links stay. Nothing is contacted; it edits the local database only. Every ingest without `--store-setting-rows` does the same, so this is for removing them without re-ingesting.
+
+```bash
+sfgraph purge-setting-rows --org my-sandbox          # shows what it will do
+sfgraph purge-setting-rows --org my-sandbox --yes    # does it
+```
+
+Backup files (`.sfgraph-backups/`, the `--rebuild` backup) and any snapshot you exported are separate copies and are not rewritten; delete those yourself if they matter.
 
 ## `sfgraph link` + `sfgraph wip`
 

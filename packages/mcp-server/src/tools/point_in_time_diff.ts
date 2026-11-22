@@ -14,6 +14,20 @@ const inputSchema = z.object({
   limit: numeric(z.number().int().min(1).max(1000).default(100)),
 });
 
+const nodeRef = (n: { qualifiedName: unknown; label: string }) => ({
+  qualifiedName: String(n.qualifiedName),
+  label: n.label,
+});
+const edgeRef = (e: {
+  srcQualifiedName: unknown;
+  dstQualifiedName: unknown;
+  relType: unknown;
+}) => ({
+  srcQualifiedName: String(e.srcQualifiedName),
+  dstQualifiedName: String(e.dstQualifiedName),
+  relType: String(e.relType),
+});
+
 defineTool({
   name: "point_in_time_diff",
   description:
@@ -221,13 +235,17 @@ defineTool({
         componentDiff: cut(scoped.component),
         // Record/config units, kept visible apart from the components.
         nonComponentChanges: { ...cut(scoped.nonComponent), counts: counts.nonComponent },
-        // Raw node-level diff, every label.
+        // Raw node-level diff, every label: names, labels and the kind of change only. A node's
+        // attributes (record values, setting rows, query text) never leave the graph here.
         nodeDiff: {
-          added: nodeDiff.added.slice(0, n),
-          removed: nodeDiff.removed.slice(0, n),
-          changed: nodeDiff.changed.slice(0, n),
+          added: nodeDiff.added.slice(0, n).map(nodeRef),
+          removed: nodeDiff.removed.slice(0, n).map(nodeRef),
+          changed: nodeDiff.changed.slice(0, n).map((c) => nodeRef(c.after)),
         },
-        edgeDiff: { added: [...edgeDiff.added], removed: [...edgeDiff.removed] },
+        edgeDiff: {
+          added: [...edgeDiff.added].slice(0, n).map(edgeRef),
+          removed: [...edgeDiff.removed].slice(0, n).map(edgeRef),
+        },
         counts,
         truncated,
         baselineEmpty,

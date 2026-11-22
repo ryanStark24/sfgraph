@@ -901,6 +901,63 @@ export class SqliteGraphStore implements GraphStore {
     apply();
   }
 
+  /**
+   * Remove stored custom setting ROW values for one org: the `customSettingRows`
+   * attribute of every CustomSetting node, the same attribute in this
+   * database's snapshot version rows, and the search document (rewritten from
+   * `embedText` of the stripped node). Returns the qualified names changed so
+   * the caller can drop their vectors. Names, row counts and edges stay.
+   * Backup files and exported snapshots are separate copies and are not touched.
+   */
+  purgeCustomSettingRows(
+    orgId: OrgId,
+    embedText: (label: string, qname: string, attrs: Record<string, unknown>) => string,
+  ): QualifiedName[] {
+    this.syncCaches();
+    const label = "CustomSetting";
+    const tbl = this.nodeLabelCache.get(label);
+    const changed: QualifiedName[] = [];
+    this.db.transaction(() => {
+      if (tbl) {
+        const rows = this.db
+          .prepare(
+            `SELECT qualified_name AS q, attributes AS a FROM ${tbl}
+              WHERE org_id = ? AND json_type(attributes, '$.customSettingRows') IS NOT NULL`,
+          )
+          .all(orgId) as Array<{ q: string; a: string }>;
+        for (const r of rows) {
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = JSON.parse(r.a) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          const { customSettingRows: _rows, ...attrs } = parsed;
+          this.db
+            .prepare(`UPDATE ${tbl} SET attributes = ? WHERE org_id = ? AND qualified_name = ?`)
+            .run(JSON.stringify(attrs), orgId, r.q);
+          this.upsertNodeFts(orgId, r.q as QualifiedName, label, embedText(label, r.q, attrs));
+          changed.push(r.q as QualifiedName);
+        }
+      }
+      // Snapshot history in this database (versioned rows and any legacy full copies).
+      for (const t of ["_sfgraph_snap_nodes", "_sfgraph_node_snapshots"]) {
+        const isTable = this.db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+          .get(t);
+        if (!isTable) continue;
+        this.db
+          .prepare(
+            `UPDATE ${t} SET attributes = json_remove(attributes, '$.customSettingRows')
+              WHERE org_id = ? AND label = ?
+                AND json_type(attributes, '$.customSettingRows') IS NOT NULL`,
+          )
+          .run(orgId, label);
+      }
+    })();
+    return changed;
+  }
+
   deleteEdgesFor(orgId: OrgId, qname: QualifiedName): void {
     this.syncCaches();
     const apply = this.db.transaction(() => {

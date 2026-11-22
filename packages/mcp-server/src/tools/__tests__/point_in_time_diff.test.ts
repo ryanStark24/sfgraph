@@ -107,10 +107,20 @@ describe("point_in_time_diff edge output pin", () => {
             counts: { edges: { added: number; removed: number } };
             truncated: boolean;
           };
+          // Same rows, same order, as names and relationship types (no edge attributes).
+          const ref = (e: {
+            srcQualifiedName: unknown;
+            dstQualifiedName: unknown;
+            relType: unknown;
+          }) => ({
+            srcQualifiedName: String(e.srcQualifiedName),
+            dstQualifiedName: String(e.dstQualifiedName),
+            relType: String(e.relType),
+          });
           expect(JSON.stringify(d.edgeDiff)).toBe(
             JSON.stringify({
-              added: full.added.slice(0, limit),
-              removed: full.removed.slice(0, limit),
+              added: full.added.slice(0, limit).map(ref),
+              removed: full.removed.slice(0, limit).map(ref),
             }),
           );
           expect(d.counts.edges).toEqual({
