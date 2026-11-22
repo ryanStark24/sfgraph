@@ -33,6 +33,10 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 - **Stored names and saved notes are shown as text.** Snapshot names, step names and component names are kept on one line in tool reports, and an `explain_code` saved explanation is labelled as user-provided text.
 - **Private file modes.** On macOS and Linux sfgraph creates its data folder owner-only (0700), and its graph, backup and org-list files owner-only (0600).
 
+### Security
+
+- **A project folder's git settings can no longer start a fetch or run a command.** When sfgraph reads git history in a project folder (the wip tools, `sfgraph ingest --project`), git is now told to use no network transport or lazy fetch and to refuse a bare repository tucked inside a folder, whatever the folder's own git config says.
+
 ### Known limits
 
 - Async in loop: a one-line `@future public static void` declaration is not recognised (an existing `isFuture` parsing limit), so calls to that method inside a loop are missed. Otherwise direct calls only. A loop that calls a helper which enqueues is not followed, an `@future` method called through an instance variable is not matched, and class-level initialisers are not scanned.
