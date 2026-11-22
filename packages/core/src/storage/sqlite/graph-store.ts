@@ -52,6 +52,10 @@ const DERIVED_QNAME_TABLES = [
 
 /** Node attribute: row-derived vectors of a purged custom setting are not yet deleted. */
 const VECTORS_PENDING = "customSettingRowsVectorsPending";
+/** Nodes whose row-derived vector still has to be deleted (kept outside node attributes). */
+const PENDING_TABLE = "_sfgraph_pending_vector_deletes";
+/** Orgs whose purge changed the file and whose compaction has not yet succeeded. */
+const COMPACT_TABLE = "_sfgraph_compaction_needed";
 
 /** How long a write waits for another connection's lock (rel-05). */
 export const BUSY_TIMEOUT_MS = 5000;
@@ -920,8 +924,8 @@ export class SqliteGraphStore implements GraphStore {
    * database's snapshot version rows, and the search document (rewritten from
    * `embedText` of the stripped node). Names, row counts and edges stay.
    *
-   * Each stripped node gets the durable marker `customSettingRowsVectorsPending`
-   * in the same transaction, because its vector was embedded from the rows and
+   * Each stripped node is entered in the `_sfgraph_pending_vector_deletes` table
+   * (not in its attributes, which a later merge replaces) in the same transaction, because its vector was embedded from the rows and
    * the vector store is a separate step that can be unavailable or fail. Returns
    * every node that still carries the marker (these now, and any left by an
    * earlier purge) so the caller can delete their vectors, then call
@@ -933,41 +937,58 @@ export class SqliteGraphStore implements GraphStore {
     embedText: (label: string, qname: string, attrs: Record<string, unknown>) => string,
   ): QualifiedName[] {
     this.syncCaches();
+    this.ensurePendingVectorTable();
     const label = "CustomSetting";
     const tbl = this.nodeLabelCache.get(label);
-    const pending: QualifiedName[] = [];
+    let changed = 0;
     this.db.transaction(() => {
+      const addPending = this.db.prepare(
+        `INSERT OR IGNORE INTO ${PENDING_TABLE}(org_id, qualified_name) VALUES (?, ?)`,
+      );
       if (tbl) {
+        // Text match first, never json_type on the column: one malformed stored value must not
+        // make the whole purge throw (json_type raises on invalid JSON).
         const rows = this.db
           .prepare(
             `SELECT qualified_name AS q, attributes AS a FROM ${tbl}
-              WHERE org_id = ?
-                AND (json_type(attributes, '$.customSettingRows') NOT IN ('null')
-                  OR json_type(attributes, '$.${VECTORS_PENDING}') IS NOT NULL)`,
+              WHERE org_id = ? AND attributes LIKE '%customSettingRows%'`,
           )
           .all(orgId) as Array<{ q: string; a: string }>;
         for (const r of rows) {
-          let parsed: Record<string, unknown>;
+          let parsed: Record<string, unknown> | null = null;
           try {
-            parsed = JSON.parse(r.a) as Record<string, unknown>;
+            const v: unknown = JSON.parse(r.a);
+            if (v && typeof v === "object" && !Array.isArray(v)) {
+              parsed = v as Record<string, unknown>;
+            }
           } catch {
-            continue;
+            parsed = null;
           }
-          if (parsed.customSettingRows != null) {
-            const { customSettingRows: _rows, ...attrs } = parsed;
-            const marked = { ...attrs, [VECTORS_PENDING]: true };
-            // The stored source_hash is invalidated too: a later opt-in ingest of unchanged
-            // settings must see a different hash and rewrite the attributes, or the node would
-            // keep the stripped attributes while search text is rebuilt from the parsed rows.
-            this.db
-              .prepare(
-                `UPDATE ${tbl} SET attributes = ?, source_hash = 'purged-custom-setting-rows'
-                  WHERE org_id = ? AND qualified_name = ?`,
-              )
-              .run(JSON.stringify(marked), orgId, r.q);
+          // Legacy attribute marker (before the pending table): moved into the table.
+          const legacy = parsed?.[VECTORS_PENDING] != null;
+          const hadRows = !parsed || parsed.customSettingRows != null;
+          if (!hadRows && !legacy) continue;
+          // A value that cannot be read is dropped as a whole: its attributes go, the name stays,
+          // and the changed hash makes the next ingest rewrite the node.
+          const attrs: Record<string, unknown> = {};
+          if (parsed) {
+            for (const [k, v] of Object.entries(parsed)) {
+              if (k !== "customSettingRows" && k !== VECTORS_PENDING) attrs[k] = v;
+            }
+          }
+          // The stored source_hash is invalidated too (when rows were removed): a later opt-in
+          // ingest of unchanged settings must see a different hash and rewrite the attributes.
+          this.db
+            .prepare(
+              `UPDATE ${tbl} SET attributes = ?${hadRows ? ", source_hash = 'purged-custom-setting-rows'" : ""}
+                WHERE org_id = ? AND qualified_name = ?`,
+            )
+            .run(JSON.stringify(attrs), orgId, r.q);
+          changed++;
+          if (hadRows) {
             this.upsertNodeFts(orgId, r.q as QualifiedName, label, embedText(label, r.q, attrs));
           }
-          pending.push(r.q as QualifiedName);
+          addPending.run(orgId, r.q);
         }
       }
       // Snapshot history in this database (versioned rows and any legacy full copies).
@@ -976,31 +997,93 @@ export class SqliteGraphStore implements GraphStore {
           .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
           .get(t);
         if (!isTable) continue;
-        this.db
+        const res = this.db
           .prepare(
-            `UPDATE ${t} SET attributes = json_remove(attributes, '$.customSettingRows')
+            `UPDATE ${t}
+                SET attributes = CASE WHEN json_valid(attributes)
+                      THEN json_remove(attributes, '$.customSettingRows') ELSE '{}' END
               WHERE org_id = ? AND label = ?
-                AND json_type(attributes, '$.customSettingRows') NOT IN ('null')`,
+                AND CASE WHEN json_valid(attributes)
+                      THEN COALESCE(json_type(attributes, '$.customSettingRows'), 'null') <> 'null'
+                      ELSE attributes LIKE '%customSettingRows%' END`,
           )
           .run(orgId, label);
+        changed += res.changes;
+      }
+      if (changed > 0) {
+        this.db.prepare(`INSERT OR IGNORE INTO ${COMPACT_TABLE}(org_id) VALUES (?)`).run(orgId);
       }
     })();
-    return pending;
+    this.lastPurgeChanges = changed;
+    return (
+      this.db
+        .prepare(`SELECT qualified_name AS q FROM ${PENDING_TABLE} WHERE org_id = ?`)
+        .all(orgId) as Array<{ q: string }>
+    ).map((r) => r.q as QualifiedName);
   }
 
-  /** Clear the marker set by {@link purgeCustomSettingRows} once these nodes' vectors are gone. */
+  /** Rows changed by the last {@link purgeCustomSettingRows} (nodes and snapshot rows). */
+  lastPurgeChanges = 0;
+
+  /**
+   * Make a purge final on disk: merge the search index's deleted segments, flush and truncate
+   * the WAL, VACUUM (so freed pages no longer hold old values), then truncate the WAL again
+   * (VACUUM itself goes through it). Must run outside a transaction and needs no other open
+   * reader on this database. Throws when a step fails; the caller reports a warning.
+   */
+  compactAfterPurge(): void {
+    if (this.db.inTransaction) throw new Error("cannot compact inside a transaction");
+    const truncate = (): void => {
+      const r = this.db.pragma("wal_checkpoint(TRUNCATE)") as Array<{ busy?: number }>;
+      if (r[0]?.busy) throw new Error("another connection holds the database open (WAL busy)");
+    };
+    try {
+      this.db.exec("INSERT INTO _sfgraph_node_fts(_sfgraph_node_fts) VALUES('optimize')");
+    } catch {
+      /* no search index table: nothing to merge */
+    }
+    truncate();
+    this.db.exec("VACUUM");
+    truncate();
+    // Only now is the purge final on disk; VACUUM rewrote the whole file, so every org is done.
+    this.db.exec(`DELETE FROM ${COMPACT_TABLE}`);
+  }
+
+  /** True while a purge for this org changed the file and no compaction has succeeded since. */
+  compactionNeeded(orgId: OrgId): boolean {
+    this.ensurePendingVectorTable();
+    return (
+      this.db.prepare(`SELECT 1 FROM ${COMPACT_TABLE} WHERE org_id = ?`).get(orgId) !== undefined
+    );
+  }
+
+  private ensurePendingVectorTable(): void {
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS ${PENDING_TABLE}(
+         org_id TEXT NOT NULL, qualified_name TEXT NOT NULL,
+         PRIMARY KEY(org_id, qualified_name)) WITHOUT ROWID`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS ${COMPACT_TABLE}(org_id TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID`,
+    );
+  }
+
+  /**
+   * Clear the pending entries of {@link purgeCustomSettingRows} once these nodes' vectors are
+   * gone. The entries live in their own table, not in node attributes, because a later merge
+   * in the same ingest replaces a node's whole attribute object.
+   */
   clearCustomSettingVectorsPending(orgId: OrgId, qnames: readonly QualifiedName[]): void {
-    this.syncCaches();
-    const tbl = this.nodeLabelCache.get("CustomSetting");
-    if (!tbl) return;
+    this.ensurePendingVectorTable();
     this.db.transaction(() => {
       for (const q of qnames) {
         this.db
-          .prepare(
-            `UPDATE ${tbl} SET attributes = json_remove(attributes, '$.${VECTORS_PENDING}')
-              WHERE org_id = ? AND qualified_name = ?`,
-          )
+          .prepare(`DELETE FROM ${PENDING_TABLE} WHERE org_id = ? AND qualified_name = ?`)
           .run(orgId, q);
+      }
+      // A vector delete changes the file too: compaction is owed until it succeeds.
+      if (qnames.length > 0) {
+        this.db.prepare(`INSERT OR IGNORE INTO ${COMPACT_TABLE}(org_id) VALUES (?)`).run(orgId);
       }
     })();
   }

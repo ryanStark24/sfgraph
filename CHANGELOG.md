@@ -23,6 +23,8 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 
 ### Fixed (outside review of 1.9.0)
 
+- **Removing stored custom setting row values now reaches the database file.** After a purge, sfgraph compacts the database (search index merge, WAL checkpoint, `VACUUM`) so old values no longer sit in free space; if that cannot run it says so (`purge-setting-rows` exits 1). A damaged stored value no longer stops the purge, an ingest whose purge fails skips its pre-sync snapshot, and a search vector that could not be deleted yet is remembered until it is. Backups, exported snapshots and the embedding cache are not rewritten; `PRIVACY.md` and `CLI.md` list them.
+- **`explain_code` stays fast on very long whitespace lines.** The check that keeps stored text from posing as a report heading no longer slows down on lines of tens of thousands of spaces.
 - **An alias is no longer resolved to another org while a graph file that may hold it is unreadable or being rebuilt.** The call now fails with a try-again message (an alias already bound keeps serving its own graph through a rebuild), and `ingest` refuses an alias that another org's graph already holds.
 - **A default ingest no longer re-purges name-only custom settings.** The row purge treated a stored JSON null as "rows present", so every default ingest deleted the vectors of name-only settings and invalidated their hash; it now selects only settings with real stored rows or a pending-vector marker.
 - **Parenthesized static values in DOM injection checks.** `el.innerHTML = ('<p>Hello</p>')` and the same inside `insertAdjacentHTML` are low, `el.innerHTML = ('')` is a clear, and `('a') + (userInput)` and `('<p>' + name + '</p>')` stay high.

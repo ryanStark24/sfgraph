@@ -190,7 +190,7 @@ sfgraph purge-setting-rows --org my-sandbox          # shows what it will do
 sfgraph purge-setting-rows --org my-sandbox --yes    # does it
 ```
 
-Backup files (`.sfgraph-backups/`, the `--rebuild` backup) and any snapshot you exported are separate copies and are not rewritten; delete those yourself if they matter.
+After the purge the database file is compacted (search-index merge, WAL checkpoint, `VACUUM`) so removed values no longer sit in free pages or the `-wal` file; this needs no other sfgraph process (MCP server, ingest) using the database, and if it cannot run the command says so and exits 1. Vectors that could not be deleted yet are remembered in a small table in the database and deleted by the next purge or default ingest. **Still holding old values, not rewritten:** backup files (`.sfgraph-backups/`, the `--rebuild` backup), snapshots you exported, and the embedding cache (`embedding-cache/` in the data folder: SHA-256 hashes and vectors of embedded texts, no text; entries made from row values stay). Delete those yourself if they matter; the cache is rebuilt by the next ingest.
 
 ## `sfgraph link` + `sfgraph wip`
 

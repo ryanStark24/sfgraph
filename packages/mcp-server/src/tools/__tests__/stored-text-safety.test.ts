@@ -35,6 +35,35 @@ describe("report details", () => {
     expect(guardDetails(d)).toBe(d);
   });
 
+  it("guardDetails is linear on long whitespace lines and unchanged for normal input", () => {
+    const heading = "**What to check next**";
+    const cases = [
+      `${"a"}${" ".repeat(200_000)}b`,
+      `#${" ".repeat(200_000)}x`,
+      `${" ".repeat(200_000)}`,
+      `**${" ".repeat(100_000)}**${" ".repeat(100_000)}x`,
+      `x${"\t ".repeat(100_000)}y\n${heading}`,
+    ];
+    for (const c of cases) {
+      const t0 = performance.now();
+      guardDetails(c);
+      expect(performance.now() - t0).toBeLessThan(200);
+    }
+    // Headings are still quoted in every form the old check caught; other lines are unchanged.
+    for (const h of [
+      heading,
+      "## In short",
+      "  **Technical details**:  ",
+      "__Picture__",
+      "What each piece does",
+      "### what to check next:",
+    ]) {
+      expect(guardDetails(h)).toBe(`(quoted text) ${h.trim()}`.replace(/\*/g, ""));
+    }
+    const plain = "Changed: 1\n  - indented *x*  \n**bold** text\n# Title\n\n> What to check next";
+    expect(guardDetails(plain)).toBe(plain);
+  });
+
   it("linkLines keeps each link on one line", () => {
     const lines = linkLines([{ from: "A:x", to: FORGED, rel: "CALLS" }]);
     expect(lines).toHaveLength(1);
