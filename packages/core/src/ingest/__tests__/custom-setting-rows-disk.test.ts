@@ -270,4 +270,39 @@ describe("custom setting row purge reaches the file", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+  it("a failed search-index optimize is a failed compaction (marker stays); a missing index table is not", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sfg-purge-"));
+    try {
+      const { store } = await openFile(dir);
+      await liveIngest({
+        ...base,
+        graphStore: store,
+        preResolved: resolved(),
+        skipSnapshot: true,
+        storeCustomSettingRows: true,
+      });
+      const db = store.db as unknown as { exec: (sql: string) => unknown };
+      const realExec = db.exec.bind(db);
+      const failWith = (message: string): void => {
+        db.exec = (sql: string) => {
+          if (sql.includes("'optimize'")) throw new Error(message);
+          return realExec(sql);
+        };
+      };
+      failWith("database disk image is malformed");
+      const first = purgeStoredCustomSettingRows(store, ORG, { deleteNodeVector: () => true });
+      expect(first.compactError).toMatch(/malformed/);
+      expect(store.compactionNeeded(ORG)).toBe(true);
+
+      // No search index table: nothing to merge, compaction still succeeds and clears the marker.
+      failWith("no such table: _sfgraph_node_fts");
+      const second = purgeStoredCustomSettingRows(store, ORG, { deleteNodeVector: () => true });
+      expect(second.compactError).toBeUndefined();
+      expect(store.compactionNeeded(ORG)).toBe(false);
+      db.exec = realExec;
+      await store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

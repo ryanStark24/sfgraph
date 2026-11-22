@@ -431,6 +431,24 @@ it("refuses to stamp an alias that another org's graph file already claims", asy
   ).rejects.toThrow(/already used by another org's graph/);
 });
 
+it("refuses an alias that differs only in case from one another org's graph holds", async () => {
+  const other = "00DBB0000000002AAA";
+  const g = new SqliteGraphStore({ dbPath: path.join(data, `${other}.sqlite`) });
+  await g.init();
+  g.upsertOrg({
+    id: other as never,
+    alias: "UAT",
+    instanceUrl: "https://example.my.salesforce.com",
+    apiVersion: "62.0",
+    createdAt: Date.now(),
+  });
+  await g.close();
+  expect(() => assertAliasNotClaimedElsewhere(data, "00DAA0000000001AAA", "uat")).toThrow(
+    /already used by another org's graph/,
+  );
+  expect(() => assertAliasNotClaimedElsewhere(data, other, "uat")).not.toThrow();
+});
+
 it("errors, instead of passing, when the SQLite driver cannot load for the alias check", () => {
   expect(() =>
     assertAliasNotClaimedElsewhere(data, "00DAA0000000001AAA", "uat", () => {

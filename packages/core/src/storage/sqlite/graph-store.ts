@@ -1039,8 +1039,10 @@ export class SqliteGraphStore implements GraphStore {
     };
     try {
       this.db.exec("INSERT INTO _sfgraph_node_fts(_sfgraph_node_fts) VALUES('optimize')");
-    } catch {
-      /* no search index table: nothing to merge */
+    } catch (e) {
+      // Only a database with no search index table has nothing to merge. Any other failure is a
+      // failed compaction: rethrow so the marker stays and the caller reports it.
+      if (!/no such table/i.test(e instanceof Error ? e.message : String(e))) throw e;
     }
     truncate();
     this.db.exec("VACUUM");

@@ -183,7 +183,15 @@ export function assertAliasNotClaimedElsewhere(
           id: string;
           alias: string | null;
         }>;
-        if (rows.some((r) => r.alias === alias && String(r.id) !== orgId)) claimedBy.push(f);
+        if (
+          rows.some(
+            (r) =>
+              r.alias !== null &&
+              r.alias.toLowerCase() === alias.toLowerCase() &&
+              String(r.id) !== orgId,
+          )
+        )
+          claimedBy.push(f);
       } finally {
         db.close();
       }

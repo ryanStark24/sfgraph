@@ -511,18 +511,20 @@ function matchAlias(registry: RegisteredOrg[], alias: string): string | null {
       `ambiguous org alias '${alias}': two graph files hold it (${files.join(" and ")}; orgIds ${exactIds.join(", ")}). Pass the orgId instead, then re-ingest or remove the file that should not carry this alias.`,
     );
   }
-  if (exact[0]) return exact[0].orgId;
   const lower = alias.toLowerCase();
+  // Case-insensitive holders decide ambiguity, exact match included: `UAT` on org A and `uat` on
+  // org B must not let an exact-case lookup quietly pick one of them.
   const ci = [
     ...new Set(registry.filter((r) => r.alias?.toLowerCase() === lower).map((r) => r.orgId)),
   ];
-  if (ci.length === 1) return ci[0] ?? null;
   if (ci.length > 1) {
     throw new SfgraphError(
       ErrorCode.E_INVALID_ORG_IDENTIFIER,
-      `ambiguous org alias '${alias}': it matches several ingested orgs case-insensitively (${ci.join(", ")}). Pass the exact alias or the orgId.`,
+      `ambiguous org alias '${alias}': it matches several ingested orgs case-insensitively (${ci.join(", ")}). Pass the orgId, then re-ingest or remove the file that should not carry this alias.`,
     );
   }
+  if (exact[0]) return exact[0].orgId;
+  if (ci.length === 1) return ci[0] ?? null;
   return null;
 }
 

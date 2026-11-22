@@ -87,6 +87,35 @@ describe("alias on two graph files", () => {
   });
 });
 
+describe("aliases that differ only in case", () => {
+  it("reports ambiguity for an exact-case lookup too, naming both orgs", async () => {
+    await seedIngestedOrgDb(workDir, ORG_A, "UAT");
+    await seedIngestedOrgDb(workDir, ORG_B, "uat");
+    const { getToolContext, setToolContextFactory } = await import("../context.js");
+    setToolContextFactory(null);
+    for (const asked of ["uat", "UAT", "Uat"]) {
+      const err = await getToolContext({ orgId: asked }).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err?.message).toMatch(/ambiguous org alias/);
+      expect(err?.message).toContain(ORG_A);
+      expect(err?.message).toContain(ORG_B);
+    }
+  });
+
+  it("still resolves a single holder by exact or other-case alias, and by orgId", async () => {
+    await seedIngestedOrgDb(workDir, ORG_A, "UAT");
+    const { getToolContext, closeAllContexts, setToolContextFactory } = await import(
+      "../context.js"
+    );
+    setToolContextFactory(null);
+    expect(String((await getToolContext({ orgId: "UAT" })).orgId)).toBe(ORG_A);
+    expect(String((await getToolContext({ orgId: "uat" })).orgId)).toBe(ORG_A);
+    await closeAllContexts();
+  });
+});
+
 describe("alias binding is not cached for the server's lifetime", () => {
   it("answers for the org the alias names now, after it is moved", async () => {
     await seedIngestedOrgDb(workDir, ORG_A, "uat");
