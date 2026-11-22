@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { constants as osConstants } from "node:os";
 import path from "node:path";
 import {
@@ -14,6 +15,7 @@ import {
   embeddingCachePath,
   listAllAuthenticatedOrgs,
   liveIngest,
+  loadBetterSqlite3,
   multiOrgIngest,
   resolveEmbedModelId,
   safeGitConfig,
@@ -23,6 +25,7 @@ import {
 import type { IngestLock, LiveIngestOpts, MultiOrgIngestEntry } from "@ryanstark24/sfgraph-core";
 import {
   ConsoleLogger,
+  ErrorCode,
   SfgraphError,
   ensurePrivateDir,
   getSfgraphPaths,
@@ -138,6 +141,54 @@ function validateDbPath(rawDbPath: string, dataDir: string): string {
   return abs;
 }
 
+/**
+ * One alias, one graph: refuse to stamp `alias` into the graph of `orgId` while another org's
+ * graph file already claims it (the read side would then refuse the alias for both). Files that
+ * cannot be read are skipped here; the server refuses an alias while one is unreadable.
+ */
+export function assertAliasNotClaimedElsewhere(
+  dataDir: string,
+  orgId: string,
+  alias: string,
+): void {
+  if (!existsSync(dataDir)) return;
+  const nodeRequire = createRequire(import.meta.url);
+  const claimedBy: string[] = [];
+  for (const f of readdirSync(dataDir)) {
+    if (!f.endsWith(".sqlite") || f.startsWith("backups")) continue;
+    if (f === `${orgId}.sqlite`) continue;
+    const dbPath = path.join(dataDir, f);
+    try {
+      if (statSync(dbPath).size === 0) continue;
+      const Ctor = loadBetterSqlite3(nodeRequire) as unknown as new (
+        p: string,
+        o?: unknown,
+      ) => {
+        prepare: (s: string) => { all: (...a: unknown[]) => unknown[] };
+        close: () => void;
+      };
+      const db = new Ctor(dbPath, { readonly: true, fileMustExist: true });
+      try {
+        const rows = db.prepare("SELECT id, alias FROM _sfgraph_orgs").all() as Array<{
+          id: string;
+          alias: string | null;
+        }>;
+        if (rows.some((r) => r.alias === alias && String(r.id) !== orgId)) claimedBy.push(f);
+      } finally {
+        db.close();
+      }
+    } catch {
+      // unreadable or not a graph: not a claim we can see
+    }
+  }
+  if (claimedBy.length > 0) {
+    throw new SfgraphError(
+      ErrorCode.E_INVALID_ORG_IDENTIFIER,
+      `ingest: the alias '${alias}' is already used by another org's graph (${claimedBy.sort().join(", ")}). Refusing to write it into ${orgId}.sqlite: one alias must name one graph. Use a different --org name, or remove or rename the alias on the other graph (delete that file, or re-ingest that org under another alias), then run this again.`,
+    );
+  }
+}
+
 async function buildSingleIngestOpts(
   alias: string,
   opts: IngestOpts,
@@ -152,6 +203,7 @@ async function buildSingleIngestOpts(
   const resolved = await deps.resolveOrg(alias);
   deps.onResolved?.(String(resolved.orgId), alias);
   const dataDir = getSfgraphPaths().data;
+  assertAliasNotClaimedElsewhere(dataDir, String(resolved.orgId), String(resolved.alias ?? alias));
   const dbPath = opts.db
     ? validateDbPath(opts.db, dataDir)
     : safeOrgDbPath(dataDir, String(resolved.orgId));

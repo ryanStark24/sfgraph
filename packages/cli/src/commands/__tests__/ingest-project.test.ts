@@ -20,6 +20,7 @@ import { ConsoleLogger } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type IngestOpts,
+  assertAliasNotClaimedElsewhere,
   buildProjectIngestOpts as buildProjectIngestOptsRaw,
   ingestCmd,
   ingestLocks,
@@ -405,4 +406,27 @@ describe("project ingest stays inside the project folder", () => {
       rmSync(outside, { recursive: true, force: true });
     }
   });
+});
+
+it("refuses to stamp an alias that another org's graph file already claims", async () => {
+  const other = "00DBB0000000002AAA";
+  const g = new SqliteGraphStore({ dbPath: path.join(data, `${other}.sqlite`) });
+  await g.init();
+  g.upsertOrg({
+    id: other as never,
+    alias: "uat",
+    instanceUrl: "https://example.my.salesforce.com",
+    apiVersion: "62.0",
+    createdAt: Date.now(),
+  });
+  await g.close();
+  expect(() => assertAliasNotClaimedElsewhere(data, "00DAA0000000001AAA", "uat")).toThrow(
+    /already used by another org's graph/,
+  );
+  // The org's own file, and a different alias, are fine.
+  expect(() => assertAliasNotClaimedElsewhere(data, other, "uat")).not.toThrow();
+  expect(() => assertAliasNotClaimedElsewhere(data, "00DAA0000000001AAA", "dev")).not.toThrow();
+  await expect(
+    buildProjectIngestOpts({ project: proj, org: "uat" }, new ConsoleLogger("error")),
+  ).rejects.toThrow(/already used by another org's graph/);
 });

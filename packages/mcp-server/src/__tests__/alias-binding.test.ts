@@ -1,4 +1,4 @@
-import { mkdtempSync, renameSync, rmSync } from "node:fs";
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -168,9 +168,67 @@ describe.skipIf(process.platform === "win32")("alias call during a rebuild", () 
     setToolContextFactory(null);
     await getToolContext({ orgId: "uat" });
     moveAside(path.join(workDir, `${ORG_A}.sqlite`));
+    // The rebuild finished: A's new file carries another alias, and B now holds "uat".
+    await seedIngestedOrgDb(workDir, ORG_A, "uat-old");
+    {
+      const { SqliteGraphStore } = await import("@ryanstark24/sfgraph-core");
+      const g = new SqliteGraphStore({
+        dbPath: path.join(workDir, `${ORG_A}.sqlite`),
+        backupDir: path.join(workDir, "bkp"),
+      });
+      await g.init();
+      (g as unknown as { db: { prepare(s: string): { run(...a: unknown[]): void } } }).db
+        .prepare("UPDATE _sfgraph_orgs SET last_synced_at = ?")
+        .run(Date.now());
+      await g.close();
+    }
     await seedIngestedOrgDb(workDir, ORG_B, "uat");
     const after = await getToolContext({ orgId: "uat" });
     expect(String(after.orgId)).toBe(ORG_B);
+    await closeAllContexts();
+  });
+});
+
+describe("alias on two graph files while one cannot be read", () => {
+  it("refuses the alias instead of resolving to the other org (0-byte holder)", async () => {
+    await seedIngestedOrgDb(workDir, ORG_B, "uat");
+    writeFileSync(path.join(workDir, `${ORG_A}.sqlite`), "");
+    const { getToolContext, closeAllContexts, setToolContextFactory } = await import(
+      "../context.js"
+    );
+    setToolContextFactory(null);
+    const err = await getToolContext({ orgId: "uat" }).then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/rebuilt or is unreadable/);
+    expect(err?.message).toContain(`${ORG_A}.sqlite`);
+    // By orgId the readable org still answers.
+    const byId = await getToolContext({ orgId: ORG_B });
+    expect(String(byId.orgId)).toBe(ORG_B);
+    await closeAllContexts();
+  });
+
+  it("refuses a bound alias when its graph is mid-rebuild and another org now claims it", async () => {
+    await seedIngestedOrgDb(workDir, ORG_A, "uat");
+    await seedIngestedOrgDb(workDir, ORG_B, "uat2");
+    const { getToolContext, closeAllContexts, setToolContextFactory } = await import(
+      "../context.js"
+    );
+    setToolContextFactory(null);
+    await getToolContext({ orgId: "uat" });
+    for (const sfx of ["", "-wal", "-shm"]) {
+      try {
+        renameSync(path.join(workDir, `${ORG_A}.sqlite${sfx}`), path.join(workDir, `a.bak${sfx}`));
+      } catch {
+        /* absent */
+      }
+    }
+    await realignAlias(ORG_B, "uat");
+    await expect(getToolContext({ orgId: "uat" })).rejects.toThrow(
+      /rebuilt or is unreadable|being rebuilt/,
+    );
     await closeAllContexts();
   });
 });
