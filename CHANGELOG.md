@@ -28,6 +28,10 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 - **`String.format` with typed or numeric arguments.** Integer, Long, Decimal, Double, Boolean, Id, Date, Datetime and Time arguments stay safe through `String.format`; a text argument still carries taint.
 - **DOM injection across lines.** `el.innerHTML = ''` followed on the next line by `.concat(userInput)`, `?.concat(...)`, a ternary or a trailing `+` is read as one expression and reported; a clear followed by a new statement is still a clear, and a fixed-string chain is not promoted.
 
+### Security
+
+- **A project folder's git settings can no longer start a fetch or run a command.** When sfgraph reads git history in a project folder (the wip tools, `sfgraph ingest --project`), git is now told to use no network transport or lazy fetch and to refuse a bare repository tucked inside a folder, whatever the folder's own git config says.
+
 ### Known limits
 
 - Async in loop: a one-line `@future public static void` declaration is not recognised (an existing `isFuture` parsing limit), so calls to that method inside a loop are missed. Otherwise direct calls only. A loop that calls a helper which enqueues is not followed, an `@future` method called through an instance variable is not matched, and class-level initialisers are not scanned.

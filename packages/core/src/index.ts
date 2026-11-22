@@ -9,6 +9,7 @@ export type {
   MemberRef,
   RawMember,
 } from "./extractors/interfaces/metadata-source.js";
+export { safeGitConfig, safeGitEnv } from "./analyze/wip-changed-files.js";
 export { FilesystemMetadataSource } from "./extractors/filesystem/index.js";
 export * as render from "./render/mermaid/index.js";
 export { emitSarif, lintSarifReport, type SarifReport } from "./render/sarif.js";
