@@ -201,6 +201,8 @@ export class ChangeTimes {
       [
         ...cfg,
         "log",
+        // Never verify signatures: that runs a program the repo config names.
+        "--no-show-signature",
         "--format=%x01%ct %H",
         "--name-only",
         // Combined diff for merges: a file changed while resolving a conflict

@@ -58,6 +58,29 @@ export function safeGitConfig(root: string): string[] | null {
     // clone) is refused, not discovered.
     "-c",
     "safe.bareRepository=explicit",
+    // `log.showSignature=true` in a repo config makes `git log` verify each
+    // commit's signature by running `gpg.program` (or the ssh/x509 one), a
+    // program the repo names. Switch the verification off, and point every
+    // signature program at `false` (harmless) in case something still asks.
+    "-c",
+    "log.showSignature=false",
+    "-c",
+    "gpg.program=false",
+    "-c",
+    "gpg.ssh.program=false",
+    "-c",
+    "gpg.x509.program=false",
+    // Read commands never need these, but each names a program the repo could
+    // set: the ssh command of a transport, a credential helper, an askpass
+    // helper, and a pager (never used off a terminal, pinned regardless).
+    "-c",
+    "core.sshCommand=false",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "core.askPass=false",
+    "-c",
+    "core.pager=cat",
   ];
   let names: string;
   try {
