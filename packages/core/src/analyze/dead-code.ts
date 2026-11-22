@@ -18,6 +18,7 @@ import {
   scanLabel,
   sumCoverage,
 } from "./scan.js";
+import { normalizeSourceUri } from "./source-uri.js";
 
 /** The LWC parser (filesystem and live-org ingest alike) labels component
  *  nodes "LWC"; `METADATA_CATEGORY.LWC` is the member type
@@ -124,6 +125,30 @@ function isCompileEdge(e: EdgeLike): boolean {
 export type TestSourceCheck = (src: QualifiedName) => boolean;
 
 /**
+ * A member is test code through its owner only when the owner is defined in the
+ * member's own file. Class nodes are keyed by name, so a second file declaring
+ * `@isTest class Prod {}` leaves one `Prod` node tagged test while the real
+ * `Prod` file's methods still point at it; that decoy must not make the real
+ * class's methods test code. A node without a source URI cannot be told apart,
+ * and keeps the owner's answer.
+ */
+function sameFile(
+  store: GraphStore,
+  orgId: OrgId,
+  member: QualifiedName,
+  owner: QualifiedName,
+): boolean {
+  const uri = (q: QualifiedName): string | null => {
+    const u = (store.getNode(orgId, q)?.attributes as Record<string, unknown> | undefined)
+      ?.sourceUri;
+    return typeof u === "string" && u !== "" ? normalizeSourceUri(u) : null;
+  };
+  const a = uri(member);
+  const b = uri(owner);
+  return a === null || b === null || a === b;
+}
+
+/**
  * A source is test code when its node is `@isTest` (an @isTest class, a
  * TestMethod) or it is a member of an @isTest class (an untagged helper method
  * inside a test class).
@@ -163,7 +188,7 @@ export function makeTestSourceCheck(store: GraphStore, orgId: OrgId): TestSource
     let v = memo.get(key);
     if (v === undefined) {
       const owner = tagged(src) ? null : ownerOf(store, orgId, src);
-      v = owner === null ? tagged(src) : tagged(owner);
+      v = owner === null ? tagged(src) : tagged(owner) && sameFile(store, orgId, src, owner);
       memo.set(key, v);
     }
     return v;
