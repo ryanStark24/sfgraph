@@ -23,6 +23,7 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 
 ### Fixed (outside review of 1.9.0)
 
+- **An alias is no longer resolved to another org while a graph file that may hold it is unreadable or being rebuilt.** The call now fails with a try-again message (an alias already bound keeps serving its own graph through a rebuild), and `ingest` refuses an alias that another org's graph already holds.
 - **A default ingest no longer re-purges name-only custom settings.** The row purge treated a stored JSON null as "rows present", so every default ingest deleted the vectors of name-only settings and invalidated their hash; it now selects only settings with real stored rows or a pending-vector marker.
 - **Parenthesized static values in DOM injection checks.** `el.innerHTML = ('<p>Hello</p>')` and the same inside `insertAdjacentHTML` are low, `el.innerHTML = ('')` is a clear, and `('a') + (userInput)` and `('<p>' + name + '</p>')` stay high.
 - **`export_sarif` writes valid URI references.** A finding in a path with spaces, `#`, `%` or non-ASCII characters (`project with spaces/force-app/...`) is now written percent-encoded per path segment, and `lintErrors` flags any `artifactLocation.uri` that is not a valid URI reference. Before, the file failed the SARIF 2.1.0 `uri-reference` check while `lintErrors` was empty. Findings in the tool output (`file`) keep the plain path.
