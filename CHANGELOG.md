@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.3 — unreleased
+
+One security fix on top of 1.8.2. Run on Linux with git 2.43 only; not run on macOS or Windows.
+
+### Security
+
+- **A project folder's git settings can no longer start a fetch or run a command.** When sfgraph reads git history in a project folder (the wip tools, `sfgraph ingest --project`), git is now told to use no network transport or lazy fetch and to refuse a bare repository tucked inside a folder, whatever the folder's own git config says.
+- **Git signature checks no longer run programs a project names.** Reading git history in a project folder never verifies commit signatures, and the signature programs and a few other helper programs a repository can configure are switched off for those reads.
+
 ## 1.8.2 — 2026-11-14
 
 Fixes from an independent audit of 1.8.1. Nothing here was run against a real Salesforce org; the tests use mock responses, recorded transports and temporary stores.
