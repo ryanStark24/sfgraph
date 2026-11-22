@@ -537,6 +537,28 @@ function hasCount(text: string): boolean {
 }
 
 /**
+ * A line reduced to its bare heading text, in one linear pass (no regex that can backtrack on
+ * long runs of whitespace): trim, leading `#`s and spaces, leading `*`/`_`, trailing
+ * `*`/`_`/`:`/whitespace, every `*` removed, lower case.
+ */
+function bareHeading(line: string): string {
+  let a = 0;
+  let b = line.length;
+  const ws = (c: string): boolean => /\s/.test(c);
+  while (a < b && ws(line[a]!)) a++;
+  while (b > a && ws(line[b - 1]!)) b--;
+  while (a < b && line[a] === "#") a++;
+  while (a < b && ws(line[a]!)) a++;
+  while (a < b && (line[a] === "*" || line[a] === "_")) a++;
+  while (
+    b > a &&
+    (line[b - 1] === "*" || line[b - 1] === "_" || line[b - 1] === ":" || ws(line[b - 1]!))
+  )
+    b--;
+  return line.slice(a, b).replace(/\*/g, "").toLowerCase();
+}
+
+/**
  * The details text with any line that would read as one of the report's own section headings
  * turned into plain text. The details legitimately span many lines, so a stored name that smuggled
  * in a heading line (for example a second "What to check next") is shown, but cannot pass for a
@@ -549,12 +571,7 @@ export function guardDetails(details: string): string {
     .map((line) => {
       // Only a line that is the heading itself (optionally bold, a markdown heading or with a
       // colon); a quoted line (`> ...`) is already visibly someone else's text.
-      const bare = line
-        .trim()
-        .replace(/^#+\s*/, "")
-        .replace(/^[*_]+|[*_:\s]+$/g, "")
-        .replace(/\*/g, "")
-        .toLowerCase();
+      const bare = bareHeading(line);
       return headings.has(bare) ? `(quoted text) ${line.trim()}`.replace(/\*/g, "") : line;
     })
     .join("\n");

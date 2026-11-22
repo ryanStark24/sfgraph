@@ -679,10 +679,12 @@ export function purgeStoredCustomSettingRows(
   graph: GraphStore,
   orgId: OrgId,
   vectors?: Pick<VectorSink, "deleteNodeVector">,
-): { settings: number; vectorsPending: number } {
+): { settings: number; vectorsPending: number; compactError?: string } {
   const g = graph as {
     purgeCustomSettingRows?: (o: OrgId, f: typeof buildEmbedText) => QualifiedName[];
     clearCustomSettingVectorsPending?: (o: OrgId, q: readonly QualifiedName[]) => void;
+    compactAfterPurge?: () => void;
+    lastPurgeChanges?: number;
   };
   if (typeof g.purgeCustomSettingRows !== "function") return { settings: 0, vectorsPending: 0 };
   // Every setting whose row-derived vector is not yet deleted: those stripped now and any an
@@ -701,7 +703,20 @@ export function purgeStoredCustomSettingRows(
     }
   }
   if (done.length > 0) g.clearCustomSettingVectorsPending?.(orgId, done);
-  return { settings: pending.length, vectorsPending: pending.length - done.length };
+  const out: { settings: number; vectorsPending: number; compactError?: string } = {
+    settings: pending.length,
+    vectorsPending: pending.length - done.length,
+  };
+  // Old values also sit in free pages, the WAL and dead search-index segments: compact after a
+  // purge that changed rows (or deleted vectors), outside any transaction.
+  if ((g.lastPurgeChanges ?? 0) > 0 || done.length > 0) {
+    try {
+      g.compactAfterPurge?.();
+    } catch (e) {
+      out.compactError = (e as Error).message;
+    }
+  }
+  return out;
 }
 
 export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult> {
@@ -743,6 +758,8 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
 
   const storeSettingRows =
     opts.storeCustomSettingRows ?? process.env.SFGRAPH_STORE_SETTING_ROWS === "1";
+  // Set when the purge could not finish: the pre-sync snapshot would copy the rows still stored.
+  let settingRowPurgeFailed = false;
   if (!storeSettingRows) {
     // Before the pre-sync snapshot, so no snapshot copies stored rows.
     try {
@@ -758,8 +775,18 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
           { settings: purged.vectorsPending },
         );
       }
+      if (purged.compactError) {
+        logger.warn(
+          "live-ingest: custom setting row values are removed, but the database file could not be compacted, so old values may remain in its free pages; run `sfgraph purge-setting-rows` when no other sfgraph process is running",
+          { err: purged.compactError },
+        );
+      }
     } catch (e) {
-      logger.warn("live-ingest: custom setting row purge failed", { err: (e as Error).message });
+      settingRowPurgeFailed = true;
+      logger.warn(
+        "live-ingest: custom setting row purge failed; the pre-sync snapshot is skipped so it does not copy stored row values",
+        { err: (e as Error).message },
+      );
     }
   }
 
@@ -858,7 +885,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       );
     }
 
-    if (!opts.skipSnapshot && opts.snapshotStore) {
+    if (!opts.skipSnapshot && opts.snapshotStore && !settingRowPurgeFailed) {
       try {
         opts.snapshotStore.createSnapshot(
           resolved.orgId,

@@ -38,15 +38,22 @@ async function resolveOrgId(opts: PurgeSettingRowsOpts): Promise<string> {
 
 /** What `purge-setting-rows` tells the user: the count of settings, and a warning with exit code 1 when vectors are pending. */
 export function purgeReport(
-  r: { settings: number; vectorsPending: number },
+  r: { settings: number; vectorsPending: number; compactError?: string },
   orgId: string,
   vectorStoreAvailable: boolean,
 ): { message: string; warning?: string; exitCode: number } {
   const message = `purge-setting-rows: removed row values from ${r.settings} custom setting(s) for org=${orgId}`;
-  if (r.vectorsPending === 0) return { message, exitCode: 0 };
+  const notCompacted = r.compactError
+    ? `purge-setting-rows: NOT finished: the database file could not be compacted (${r.compactError}), so old values may remain in its free pages and WAL. Stop other sfgraph processes (MCP server, ingest) and run this command again. `
+    : "";
+  if (r.vectorsPending === 0) {
+    return notCompacted
+      ? { message, warning: notCompacted.trim(), exitCode: 1 }
+      : { message, exitCode: 0 };
+  }
   return {
     message,
-    warning: `purge-setting-rows: NOT finished: the search vectors of ${r.vectorsPending} setting(s) were not deleted (${vectorStoreAvailable ? "a delete failed" : "the vector store is unavailable"}). The row values are gone from the graph; run this command again, or ingest, to finish.`,
+    warning: `${notCompacted}purge-setting-rows: NOT finished: the search vectors of ${r.vectorsPending} setting(s) were not deleted (${vectorStoreAvailable ? "a delete failed" : "the vector store is unavailable"}). The row values are gone from the graph; run this command again, or ingest, to finish.`,
     exitCode: 1,
   };
 }
@@ -54,8 +61,9 @@ export function purgeReport(
 /**
  * Remove custom setting row values stored by an earlier sfgraph: the graph
  * rows, the search index entry, the vectors built from them and the snapshot
- * history in the same database. Setting names and schema links stay. Backup
- * files and snapshot exports are separate copies and are not rewritten.
+ * history in the same database, then compacts the file (WAL checkpoint, VACUUM) so no old
+ * value stays in free pages. Setting names and schema links stay. Backup files, snapshot
+ * exports and the embedding cache are separate files and are not rewritten (listed below).
  */
 export async function purgeSettingRows(opts: PurgeSettingRowsOpts): Promise<void> {
   const orgId = await resolveOrgId(opts);
@@ -63,8 +71,16 @@ export async function purgeSettingRows(opts: PurgeSettingRowsOpts): Promise<void
   if (!opts.yes) {
     console.log(`Will remove stored custom setting row values for org=${orgId}`);
     console.log(`  Database: ${dbPath}`);
-    console.log("  Setting names and schema links stay. Backups of this database and exported");
-    console.log("  snapshots are separate copies; delete them yourself if they hold rows.");
+    console.log(
+      "  Setting names and schema links stay. The database file is compacted afterwards.",
+    );
+    console.log("  NOT touched, and may still hold old values: backups of this database");
+    console.log(
+      "  (.sfgraph-backups/, the --rebuild backup), exported snapshots and the embedding",
+    );
+    console.log("  cache (embedding-cache/ in the data folder: only SHA-256 hashes and vectors of");
+    console.log("  texts, no text, but entries made from row values stay). Delete those yourself;");
+    console.log("  the cache is rebuilt by the next ingest.");
     console.log("  Re-run with --yes to confirm.");
     return;
   }

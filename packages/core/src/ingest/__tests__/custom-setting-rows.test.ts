@@ -158,9 +158,9 @@ describe("custom setting rows are opt-in", () => {
     expect(first).toEqual({ settings: 1, vectorsPending: 1 });
     expect(dump(store)).not.toContain(SECRET);
     // The rows are gone, so only the marker can find this node again.
-    expect(JSON.stringify(store.getNode(ORG, Q as never)?.attributes)).toContain(
-      "customSettingRowsVectorsPending",
-    );
+    expect(
+      store.db.prepare("SELECT qualified_name AS q FROM _sfgraph_pending_vector_deletes").all(),
+    ).toEqual([{ q: Q }]);
     const dropped: string[] = [];
     const second = purgeStoredCustomSettingRows(store, ORG, {
       deleteNodeVector: (_o, q) => {
@@ -194,4 +194,22 @@ describe("custom setting rows are opt-in", () => {
     expect(rerun).toEqual({ settings: 1, vectorsPending: 0 });
     expect(dropped).toEqual([Q]);
   });
+
+  it("a default ingest with no vector store keeps the pending vector delete; a rerun with a store deletes it", async () => {
+    const store = await withRows();
+    // Default ingest, no vector store: the purge cannot delete the row-derived vector, and the
+    // same ingest then rewrites the node's attributes (the old marker would be lost).
+    await liveIngest({ ...base, graphStore: store, preResolved: resolved(), skipSnapshot: true });
+    expect(dump(store)).not.toContain(SECRET);
+    const dropped: string[] = [];
+    const r = purgeStoredCustomSettingRows(store, ORG, {
+      deleteNodeVector: (_o, q) => {
+        dropped.push(String(q));
+        return true;
+      },
+    });
+    expect(dropped).toEqual([Q]);
+    expect(r.vectorsPending).toBe(0);
+    expect(purgeStoredCustomSettingRows(store, ORG)).toEqual({ settings: 0, vectorsPending: 0 });
+  }, 30_000);
 });

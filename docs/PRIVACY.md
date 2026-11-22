@@ -63,7 +63,9 @@ What 1.9.0 does about rows an older version stored:
 
 - Every ingest of an org that is not run with `--store-setting-rows` removes them first: from the graph, from the search index, from the vectors built from them (which are rebuilt without them), and from the snapshot history kept in the same database.
 - `sfgraph purge-setting-rows --org <alias> --yes` does the same without an ingest.
-- **Not removed:** backup files (`.sfgraph-backups/` next to the database, and the backup a `--rebuild` makes) and snapshots you exported. They are separate copies of the old database. Delete them yourself if they matter.
+- After removing them, sfgraph compacts the database file (merges the search index, truncates the `-wal` file, runs `VACUUM`) so the old values are not left in free pages. If that cannot run (another sfgraph process has the database open) it warns, and `purge-setting-rows` exits 1; run it again with nothing else using the database.
+- If the purge itself cannot finish, an ingest skips its pre-sync snapshot instead of copying the stored rows.
+- **Not removed:** backup files (`.sfgraph-backups/` next to the database, and the backup a `--rebuild` makes), snapshots you exported, and the embedding cache (`embedding-cache/` in the data folder, which holds SHA-256 hashes and vectors of embedded texts, not the text; entries made from row values stay). Delete them yourself if they matter; the cache is rebuilt by the next ingest.
 
 The tools' structured output (`trace_upstream`, `trace_downstream`, `point_in_time_diff`) lists names, labels and change kinds, not stored values, and every tool's structured output is capped in size.
 
