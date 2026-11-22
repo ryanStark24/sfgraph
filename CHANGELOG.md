@@ -25,6 +25,7 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 
 - **Removing stored custom setting row values now reaches the database file.** After a purge, sfgraph compacts the database (search index merge, WAL checkpoint, `VACUUM`) so old values no longer sit in free space; if that cannot run it says so (`purge-setting-rows` exits 1). A damaged stored value no longer stops the purge, an ingest whose purge fails skips its pre-sync snapshot, and a search vector that could not be deleted yet is remembered until it is. Backups, exported snapshots and the embedding cache are not rewritten; `PRIVACY.md` and `CLI.md` list them.
 - **`explain_code` stays fast on very long whitespace lines.** The check that keeps stored text from posing as a report heading no longer slows down on lines of tens of thousands of spaces.
+- **An alias is no longer resolved to another org while a graph file that may hold it is unreadable or being rebuilt.** The call now fails with a try-again message (an alias already bound keeps serving its own graph through a rebuild), and `ingest` refuses an alias that another org's graph already holds.
 - **A default ingest no longer re-purges name-only custom settings.** The row purge treated a stored JSON null as "rows present", so every default ingest deleted the vectors of name-only settings and invalidated their hash; it now selects only settings with real stored rows or a pending-vector marker.
 - **Parenthesized static values in DOM injection checks.** `el.innerHTML = ('<p>Hello</p>')` and the same inside `insertAdjacentHTML` are low, `el.innerHTML = ('')` is a clear, and `('a') + (userInput)` and `('<p>' + name + '</p>')` stay high.
 - **`export_sarif` writes valid URI references.** A finding in a path with spaces, `#`, `%` or non-ASCII characters (`project with spaces/force-app/...`) is now written percent-encoded per path segment, and `lintErrors` flags any `artifactLocation.uri` that is not a valid URI reference. Before, the file failed the SARIF 2.1.0 `uri-reference` check while `lintErrors` was empty. Findings in the tool output (`file`) keep the plain path.
@@ -40,10 +41,12 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 - **Safer playbook steps.** The installed playbooks now ask the user before any `sf` command touches an org, name the org with `--target-org`, avoid production without explicit confirmation, and never suggest write or deploy commands without approval.
 - **Stored names and saved notes are shown as text.** Snapshot names, step names and component names are kept on one line in tool reports, and an `explain_code` saved explanation is labelled as user-provided text.
 - **Private file modes.** On macOS and Linux sfgraph creates its data folder owner-only (0700), and its graph, backup and org-list files owner-only (0600).
+- **A same-named test class no longer hides a real class's SOQL injection findings.** A method counts as test code through its class only when that class is defined in the method's own file.
 
 ### Security
 
 - **A project folder's git settings can no longer start a fetch or run a command.** When sfgraph reads git history in a project folder (the wip tools, `sfgraph ingest --project`), git is now told to use no network transport or lazy fetch and to refuse a bare repository tucked inside a folder, whatever the folder's own git config says.
+- **Git signature checks no longer run programs a project names.** Reading git history in a project folder never verifies commit signatures, and the signature programs and a few other helper programs a repository can configure are switched off for those reads.
 
 ### Known limits
 
