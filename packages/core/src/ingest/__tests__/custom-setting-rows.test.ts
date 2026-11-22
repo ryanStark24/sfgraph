@@ -123,7 +123,7 @@ describe("custom setting rows are opt-in", () => {
     expect(store.getNode(ORG, "CustomSetting:Acme_Settings__c" as never)).not.toBeNull();
   });
 
-  it("purgeStoredCustomSettingRows removes rows without an ingest and drops their vectors", async () => {
+  async function withRows() {
     const { store } = await newStore();
     await liveIngest({
       ...base,
@@ -132,17 +132,66 @@ describe("custom setting rows are opt-in", () => {
       skipSnapshot: true,
       storeCustomSettingRows: true,
     });
+    return store;
+  }
+  const Q = "CustomSetting:Acme_Settings__c";
+
+  it("purgeStoredCustomSettingRows removes rows without an ingest and drops their vectors", async () => {
+    const store = await withRows();
     const dropped: string[] = [];
-    const n = purgeStoredCustomSettingRows(store, ORG, {
+    const r = purgeStoredCustomSettingRows(store, ORG, {
       deleteNodeVector: (_o, q) => {
         dropped.push(String(q));
         return true;
       },
     });
-    expect(n).toBe(1);
-    expect(dropped).toEqual(["CustomSetting:Acme_Settings__c"]);
+    expect(r).toEqual({ settings: 1, vectorsPending: 0 });
+    expect(dropped).toEqual([Q]);
     expect(dump(store)).not.toContain(SECRET);
     // Nothing left to purge.
-    expect(purgeStoredCustomSettingRows(store, ORG)).toBe(0);
+    expect(purgeStoredCustomSettingRows(store, ORG)).toEqual({ settings: 0, vectorsPending: 0 });
+  });
+
+  it("with no vector store the vectors stay pending (marker kept); a rerun with a store deletes them", async () => {
+    const store = await withRows();
+    const first = purgeStoredCustomSettingRows(store, ORG);
+    expect(first).toEqual({ settings: 1, vectorsPending: 1 });
+    expect(dump(store)).not.toContain(SECRET);
+    // The rows are gone, so only the marker can find this node again.
+    expect(JSON.stringify(store.getNode(ORG, Q as never)?.attributes)).toContain(
+      "customSettingRowsVectorsPending",
+    );
+    const dropped: string[] = [];
+    const second = purgeStoredCustomSettingRows(store, ORG, {
+      deleteNodeVector: (_o, q) => {
+        dropped.push(String(q));
+        return true;
+      },
+    });
+    expect(second).toEqual({ settings: 1, vectorsPending: 0 });
+    expect(dropped).toEqual([Q]);
+    expect(JSON.stringify(store.getNode(ORG, Q as never)?.attributes)).not.toContain(
+      "customSettingRowsVectorsPending",
+    );
+    expect(purgeStoredCustomSettingRows(store, ORG)).toEqual({ settings: 0, vectorsPending: 0 });
+  });
+
+  it("a failing vector delete leaves the marker; the rerun completes", async () => {
+    const store = await withRows();
+    const failing = purgeStoredCustomSettingRows(store, ORG, {
+      deleteNodeVector: () => {
+        throw new Error("vec table locked");
+      },
+    });
+    expect(failing).toEqual({ settings: 1, vectorsPending: 1 });
+    const dropped: string[] = [];
+    const rerun = purgeStoredCustomSettingRows(store, ORG, {
+      deleteNodeVector: (_o, q) => {
+        dropped.push(String(q));
+        return true;
+      },
+    });
+    expect(rerun).toEqual({ settings: 1, vectorsPending: 0 });
+    expect(dropped).toEqual([Q]);
   });
 });

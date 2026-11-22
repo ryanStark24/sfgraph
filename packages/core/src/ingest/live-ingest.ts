@@ -669,25 +669,39 @@ function stringifyConfigVal(v: unknown): string {
 
 /**
  * Remove stored custom setting row values for an org (see
- * LiveIngestOpts.storeCustomSettingRows). Returns how many settings held rows.
+ * LiveIngestOpts.storeCustomSettingRows). `settings` is how many settings were stripped or
+ * still marked; `vectorsPending` is how many of them still have a row-derived vector that
+ * could not be deleted (no vector store, or a failed delete). The marker is durable, so a
+ * later purge or default ingest finishes the job.
  * Also used by `sfgraph purge-setting-rows`.
  */
 export function purgeStoredCustomSettingRows(
   graph: GraphStore,
   orgId: OrgId,
   vectors?: Pick<VectorSink, "deleteNodeVector">,
-): number {
-  const purge = (
-    graph as {
-      purgeCustomSettingRows?: (o: OrgId, f: typeof buildEmbedText) => QualifiedName[];
+): { settings: number; vectorsPending: number } {
+  const g = graph as {
+    purgeCustomSettingRows?: (o: OrgId, f: typeof buildEmbedText) => QualifiedName[];
+    clearCustomSettingVectorsPending?: (o: OrgId, q: readonly QualifiedName[]) => void;
+  };
+  if (typeof g.purgeCustomSettingRows !== "function") return { settings: 0, vectorsPending: 0 };
+  // Every setting whose row-derived vector is not yet deleted: those stripped now and any an
+  // earlier purge left marked (vector store missing or a delete failed then).
+  const pending = g.purgeCustomSettingRows(orgId, buildEmbedText);
+  const done: QualifiedName[] = [];
+  const del = vectors?.deleteNodeVector;
+  if (typeof del === "function") {
+    for (const q of pending) {
+      try {
+        del.call(vectors, orgId, q);
+        done.push(q);
+      } catch {
+        /* stays marked; the next purge retries */
+      }
     }
-  ).purgeCustomSettingRows;
-  if (typeof purge !== "function") return 0;
-  const changed = purge.call(graph, orgId, buildEmbedText);
-  // Their vectors were embedded from the rows; drop them so the next embed
-  // pass rebuilds them from the stripped text.
-  for (const q of changed) vectors?.deleteNodeVector?.(orgId, q);
-  return changed.length;
+  }
+  if (done.length > 0) g.clearCustomSettingVectorsPending?.(orgId, done);
+  return { settings: pending.length, vectorsPending: pending.length - done.length };
 }
 
 export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult> {
@@ -733,8 +747,16 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     // Before the pre-sync snapshot, so no snapshot copies stored rows.
     try {
       const purged = purgeStoredCustomSettingRows(graph, resolved.orgId, opts.vectorStore);
-      if (purged > 0) {
-        logger.info("live-ingest: removed stored custom setting row values", { settings: purged });
+      if (purged.settings > 0) {
+        logger.info("live-ingest: removed stored custom setting row values", {
+          settings: purged.settings,
+        });
+      }
+      if (purged.vectorsPending > 0) {
+        logger.warn(
+          "live-ingest: custom setting row values are removed but their search vectors could not be deleted yet; the next ingest or `sfgraph purge-setting-rows` will finish it",
+          { settings: purged.vectorsPending },
+        );
       }
     } catch (e) {
       logger.warn("live-ingest: custom setting row purge failed", { err: (e as Error).message });
