@@ -16,13 +16,17 @@ import {
   liveIngest,
   multiOrgIngest,
   resolveEmbedModelId,
+  safeGitConfig,
+  safeGitEnv,
   snapshotCountInFile,
 } from "@ryanstark24/sfgraph-core";
 import type { IngestLock, LiveIngestOpts, MultiOrgIngestEntry } from "@ryanstark24/sfgraph-core";
 import {
   ConsoleLogger,
   SfgraphError,
+  ensurePrivateDir,
   getSfgraphPaths,
+  restrictDbFiles,
   safeOrgDbPath,
 } from "@ryanstark24/sfgraph-shared";
 import { retrySkippedLabels } from "./skip-labels.js";
@@ -407,14 +411,25 @@ export async function buildProjectIngestOpts(
   }
 }
 
+/** Print the paths a project walk refused because they resolve outside the project folder. */
+function reportOutsideRoot(source: unknown): void {
+  const warnings = (source as { warnings?: () => string[] } | undefined)?.warnings?.() ?? [];
+  for (const w of warnings.slice(0, 20)) console.warn(`warning: ${w}`);
+  if (warnings.length > 20) console.warn(`warning: ... and ${warnings.length - 20} more skipped`);
+}
+
 /** Read a checkout's immutable identity without making Git a project-ingest prerequisite. */
 function gitRevision(
   root: string,
 ): { gitBranch: string; gitCommit: string; capturedAt: string } | undefined {
   try {
+    // The checkout may be untrusted: same hardening as the wip git calls.
+    const cfg = safeGitConfig(root);
+    if (!cfg) return undefined;
     const git = (...args: string[]) =>
-      execFileSync("git", args, {
+      execFileSync("git", [...cfg, ...args], {
         cwd: root,
+        env: safeGitEnv(),
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       }).trim();
@@ -525,7 +540,7 @@ async function applyRebuild(
   noBackup: boolean,
   logger: ConsoleLogger,
 ): Promise<string | undefined> {
-  const { existsSync, mkdirSync, renameSync, unlinkSync } = await import("node:fs");
+  const { existsSync, renameSync, unlinkSync } = await import("node:fs");
   if (!existsSync(dbPath)) {
     logger.info(`rebuild: no existing graph at ${dbPath}; starting fresh`);
     return undefined;
@@ -546,10 +561,11 @@ async function applyRebuild(
     return undefined;
   }
   const backupDir = path.join(getSfgraphPaths().data, "backups");
-  mkdirSync(backupDir, { recursive: true });
+  ensurePrivateDir(backupDir);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(backupDir, `${orgId}.rebuild-${stamp}.sqlite`);
   onGraphFile(dbPath, () => renameSync(dbPath, backupPath));
+  restrictDbFiles(backupPath);
   for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
     const sidecar = `${dbPath}${suffix}`;
     if (existsSync(sidecar)) {
@@ -656,6 +672,7 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
       console.log(
         `ingest --project: ${result.membersProcessed} members, ${result.parseErrors} parse errors -> ${built.preResolved?.orgId}`,
       );
+      reportOutsideRoot(built.metadataSource);
       const dp = (
         built.metadataSource as
           | {
@@ -907,6 +924,7 @@ async function projectDelta(
       },
     });
     if (r.result) reportEmbeddingOutcome(r.result);
+    reportOutsideRoot(built.metadataSource);
   } finally {
     if (open) await store.close();
   }

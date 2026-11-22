@@ -1,6 +1,6 @@
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
-import { withInShort } from "./_report.js";
+import { foldName, withInShort } from "./_report.js";
 
 const inputSchema = z.object({
   org: z.string().min(1),
@@ -14,7 +14,8 @@ defineTool({
   inputSchema,
   async execute(input) {
     const ctx = await getToolContext({ orgId: input.org });
-    const label = input.name ?? `${input.kind}-${new Date().toISOString()}`;
+    // A snapshot name is shown back in later reports: keep it on one line.
+    const label = foldName(input.name ?? "") || `${input.kind}-${new Date().toISOString()}`;
     // Honour the caller's `kind`: "scheduled" → auto snapshot, "manual" → not.
     // (Was hardcoded `false`, silently discarding the argument.)
     const snap = ctx.snapshotStore.createSnapshot(ctx.orgId, label, input.kind === "scheduled");

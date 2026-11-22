@@ -2,6 +2,7 @@ import { analyze } from "@ryanstark24/sfgraph-core";
 import {
   andList,
   code,
+  foldName,
   kindCounts,
   linkFacts,
   methodCountNote,
@@ -136,7 +137,7 @@ export function renderReachList(opts: RenderReachListOpts): string {
       const owner = isMethodRow(e) ? ` (in ${owningClass(e.qualifiedName)})` : "";
       const state = statusSuffix(e);
       lines.push(
-        `- ${e.qualifiedName}${owner}${rolled}${folded}${state} — hop ${e.hop} via ${via}${e.hasNode ? "" : " (no node)"}`,
+        `- ${foldName(e.qualifiedName)}${owner}${rolled}${folded}${state} — hop ${e.hop} via ${via}${e.hasNode ? "" : " (no node)"}`,
       );
     }
   }
@@ -218,9 +219,9 @@ export function statusSuffix(e: {
   events?: string[] | undefined;
 }): string {
   const parts: string[] = [];
-  if (e.status) parts.push(e.status);
+  if (e.status) parts.push(foldName(e.status));
   if (e.active === false) parts.push("inactive");
-  if (e.events && e.events.length > 0) parts.push(e.events.join(", "));
+  if (e.events && e.events.length > 0) parts.push(foldName(e.events.join(", ")));
   return parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
 }
 

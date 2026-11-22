@@ -4,6 +4,7 @@ import {
   NOTES,
   andList,
   code,
+  foldName,
   kindCounts,
   linkFacts,
   linkLines,
@@ -54,6 +55,17 @@ function seedPieces(r: Pick<Result, "addedQnames" | "changedQnames" | "removedQn
   ];
 }
 
+/** Details lines for paths the project walk refused because they lead outside the project folder. */
+function outsideNote(r: Pick<Result, "warnings">): string {
+  return r.warnings?.length
+    ? [
+        "",
+        "### Skipped (outside the project folder)",
+        ...r.warnings.map((w) => `- ${foldName(w)}`),
+      ].join("\n")
+    : "";
+}
+
 export function wipDiffReport(r: Result, mode: string, details: string): string {
   const any = r.addedQnames.length + r.changedQnames.length + r.removedQnames.length > 0;
   const inShort = [
@@ -67,7 +79,7 @@ export function wipDiffReport(r: Result, mode: string, details: string): string 
     title: "How your local source differs from the org",
     inShort,
     pieces: seedPieces(r).map(({ q, said }) => ({ name: q, kind: labelOfQname(q), role: said })),
-    details,
+    details: details + outsideNote(r),
     next: [
       "Run `wip_impact` to see what relies on these changes.",
       "Run `wip_test_gap` to find changes no tests cover.",
@@ -80,7 +92,7 @@ export function wipDiffReport(r: Result, mode: string, details: string): string 
 
 export function wipImpactDetails(r: Result): string {
   const list = (head: string, qs: readonly string[]) =>
-    qs.length ? ["", `### ${head} (${qs.length})`, ...qs.map((q) => `- ${q}`)] : [];
+    qs.length ? ["", `### ${head} (${qs.length})`, ...qs.map((q) => `- ${foldName(q)}`)] : [];
   const lines = [
     `Changed: ${r.changedQnames.length}, Added: ${r.addedQnames.length}, Removed: ${r.removedQnames.length}, Dependents: ${r.dependents.length}`,
     ...list("Changed", r.changedQnames),
@@ -93,7 +105,7 @@ export function wipImpactDetails(r: Result): string {
       `### Dependents (${r.dependents.length})`,
       ...r.dependents.map(
         (d) =>
-          `- ${d.qname} (${d.label}, depth=${d.depth}${d.viaRelType ? `, via=${d.viaRelType}` : ""}, ${d.coveredByTest ? "covered by a test" : "no test"})`,
+          `- ${foldName(d.qname)} (${d.label}, depth=${d.depth}${d.viaRelType ? `, via=${d.viaRelType}` : ""}, ${d.coveredByTest ? "covered by a test" : "no test"})`,
       ),
     );
   const links = r.graph.edges.map((e) => ({
@@ -104,7 +116,7 @@ export function wipImpactDetails(r: Result): string {
   const shown = linkLines(links);
   if (shown.length) lines.push("", `### Links (${shown.length})`, ...shown);
   if (r.truncated) lines.push("", "_truncated_ — removed-member detection hit its per-label cap.");
-  return lines.join("\n");
+  return lines.join("\n") + outsideNote(r);
 }
 
 const ROLE_OF_VERDICT = {
@@ -252,7 +264,7 @@ export function gapReport(o: {
       "Triggers always show as not covered, because tests that reach a trigger by saving records are not tracked.",
     );
   const list = (head: string, qs: readonly string[]) =>
-    qs.length ? ["", `### ${head} (${qs.length})`, ...qs.map((q) => `- ${q}`)] : [];
+    qs.length ? ["", `### ${head} (${qs.length})`, ...qs.map((q) => `- ${foldName(q)}`)] : [];
   const details = [
     o.details,
     ...list("Covered", o.covered),
@@ -291,7 +303,7 @@ export function wipTestGapReport(r: Result, details: string): string {
     covered: g.covered,
     tests: g.tests,
     notApplicable: g.notApplicable,
-    details,
+    details: details + outsideNote(r),
     next: [
       "Run `wip_impact` to see everything the changes could affect.",
       "Raise `depth` to check pieces further from the changes.",

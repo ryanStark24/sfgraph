@@ -17,6 +17,25 @@ import type { MemberRef } from "../extractors/interfaces/metadata-source.js";
 const SKIP_DIR_NAMES = new Set(["node_modules", ".git", "dist", "coverage", ".sfdx", ".sf"]);
 
 /**
+ * Environment for every git child. The project may be an untrusted clone, and
+ * its config can name a promisor remote (`extensions.partialClone`) whose
+ * `uploadpack` command or `ext::` URL git runs to lazy-fetch a missing
+ * object. `-c protocol.allow=never` is not enough (a repo config that sets
+ * `protocol.<name>.allow=always` wins over it); GIT_ALLOW_PROTOCOL is an
+ * allow-list that replaces all protocol.* config, and "none" names no
+ * transport, so every one is denied. GIT_NO_LAZY_FETCH (newer git) is a
+ * second layer.
+ */
+export function safeGitEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_ALLOW_PROTOCOL: "none",
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+}
+
+/**
  * Config overrides so git never runs a command the repo configures: the
  * project may be an untrusted clone, and its `.git/config` (or one it
  * includes) can name a fsmonitor, hooks, an external diff or textconv, and
@@ -35,6 +54,10 @@ export function safeGitConfig(root: string): string[] | null {
     "diff.external=",
     "-c",
     "core.attributesFile=/dev/null",
+    // An embedded bare repository (HEAD, config, objects/ in a subfolder of a
+    // clone) is refused, not discovered.
+    "-c",
+    "safe.bareRepository=explicit",
   ];
   let names: string;
   try {
@@ -51,7 +74,7 @@ export function safeGitConfig(root: string): string[] | null {
         "--get-regexp",
         "^filter\\..*\\.(clean|smudge|process)$",
       ],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      { encoding: "utf8", env: safeGitEnv(), stdio: ["ignore", "pipe", "ignore"] },
     );
   } catch (e) {
     // Exit status 1: no filter driver configured.
@@ -77,6 +100,7 @@ function git(root: string, config: string[], args: string[]): string | null {
   try {
     return execFileSync("git", ["-C", root, ...config, ...args], {
       encoding: "utf8",
+      env: safeGitEnv(),
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 256 * 1024 * 1024,
     });
