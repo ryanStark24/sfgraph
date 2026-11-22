@@ -87,6 +87,35 @@ describe("alias on two graph files", () => {
   });
 });
 
+describe("aliases that differ only in case", () => {
+  it("reports ambiguity for an exact-case lookup too, naming both orgs", async () => {
+    await seedIngestedOrgDb(workDir, ORG_A, "UAT");
+    await seedIngestedOrgDb(workDir, ORG_B, "uat");
+    const { getToolContext, setToolContextFactory } = await import("../context.js");
+    setToolContextFactory(null);
+    for (const asked of ["uat", "UAT", "Uat"]) {
+      const err = await getToolContext({ orgId: asked }).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err?.message).toMatch(/ambiguous org alias/);
+      expect(err?.message).toContain(ORG_A);
+      expect(err?.message).toContain(ORG_B);
+    }
+  });
+
+  it("still resolves a single holder by exact or other-case alias, and by orgId", async () => {
+    await seedIngestedOrgDb(workDir, ORG_A, "UAT");
+    const { getToolContext, closeAllContexts, setToolContextFactory } = await import(
+      "../context.js"
+    );
+    setToolContextFactory(null);
+    expect(String((await getToolContext({ orgId: "UAT" })).orgId)).toBe(ORG_A);
+    expect(String((await getToolContext({ orgId: "uat" })).orgId)).toBe(ORG_A);
+    await closeAllContexts();
+  });
+});
+
 describe("alias binding is not cached for the server's lifetime", () => {
   it("answers for the org the alias names now, after it is moved", async () => {
     await seedIngestedOrgDb(workDir, ORG_A, "uat");
@@ -189,6 +218,26 @@ describe.skipIf(process.platform === "win32")("alias call during a rebuild", () 
   });
 });
 
+/**
+ * Release the SQLite handles of a cached context (the cache entry and the alias binding stay).
+ * Windows cannot rename or delete a file another handle holds open, so the file moves a rebuild
+ * makes are simulated only once the handles are closed (the real rebuild runs in another process
+ * that waits for the file to be free).
+ */
+async function releaseHandles(ctx: {
+  graphStore: { close(): Promise<void> };
+  snapshotStore?: { close(): Promise<void> } | null;
+  vectorStore?: { close(): Promise<void> } | null;
+}): Promise<void> {
+  for (const st of [ctx.vectorStore, ctx.snapshotStore, ctx.graphStore]) {
+    try {
+      await st?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
 describe("alias on two graph files while one cannot be read", () => {
   it("refuses the alias instead of resolving to the other org (0-byte holder)", async () => {
     await seedIngestedOrgDb(workDir, ORG_B, "uat");
@@ -217,12 +266,13 @@ describe("alias on two graph files while one cannot be read", () => {
       "../context.js"
     );
     setToolContextFactory(null);
-    await getToolContext({ orgId: "uat" });
+    const bound = await getToolContext({ orgId: "uat" });
+    await releaseHandles(bound as never);
     for (const sfx of ["", "-wal", "-shm"]) {
       try {
         renameSync(path.join(workDir, `${ORG_A}.sqlite${sfx}`), path.join(workDir, `a.bak${sfx}`));
-      } catch {
-        /* absent */
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       }
     }
     await realignAlias(ORG_B, "uat");
