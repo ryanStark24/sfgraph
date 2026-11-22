@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -130,6 +130,47 @@ describe("alias binding is not cached for the server's lifetime", () => {
     const a = await getToolContext({ orgId: "uat" });
     const b = await getToolContext({ orgId: "uat" });
     expect(b).toBe(a);
+    await closeAllContexts();
+  });
+});
+
+describe.skipIf(process.platform === "win32")("alias call during a rebuild", () => {
+  const moveAside = (db: string): void => {
+    for (const s of ["", "-wal", "-shm"]) {
+      try {
+        renameSync(db + s, `${db}.bak${s}`);
+      } catch {
+        /* absent */
+      }
+    }
+  };
+
+  it("is still served from the old graph while the file is moved aside", async () => {
+    await seedIngestedOrgDb(workDir, ORG_A, "uat");
+    const { getToolContext, closeAllContexts, setToolContextFactory } = await import(
+      "../context.js"
+    );
+    setToolContextFactory(null);
+    const first = await getToolContext({ orgId: "uat" });
+    // `ingest --rebuild`: the old file is renamed away, the new one does not exist yet.
+    moveAside(path.join(workDir, `${ORG_A}.sqlite`));
+    const mid = await getToolContext({ orgId: "uat" });
+    expect(String(mid.orgId)).toBe(ORG_A);
+    expect(mid).toBe(first);
+    await closeAllContexts();
+  });
+
+  it("drops the binding once the finished replacement maps the alias elsewhere", async () => {
+    await seedIngestedOrgDb(workDir, ORG_A, "uat");
+    const { getToolContext, closeAllContexts, setToolContextFactory } = await import(
+      "../context.js"
+    );
+    setToolContextFactory(null);
+    await getToolContext({ orgId: "uat" });
+    moveAside(path.join(workDir, `${ORG_A}.sqlite`));
+    await seedIngestedOrgDb(workDir, ORG_B, "uat");
+    const after = await getToolContext({ orgId: "uat" });
+    expect(String(after.orgId)).toBe(ORG_B);
     await closeAllContexts();
   });
 });

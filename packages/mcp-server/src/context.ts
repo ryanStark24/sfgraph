@@ -169,6 +169,16 @@ function newFileReady(entry: CacheEntry): boolean {
   return graphFileReadiness(entry.dbFile.path, String(entry.ctx.orgId)).ready;
 }
 
+/**
+ * The entry's graph file is being replaced (a rebuild moved the old file aside and the new one is
+ * missing or not finished). While it is, the registry may not list the file's alias at all.
+ */
+function replacementInProgress(entry: CacheEntry): boolean {
+  if (!entry.dbFile) return false;
+  if (fileId(entry.dbFile.path) === null) return true;
+  return fileSwapped(entry) && !newFileReady(entry);
+}
+
 function lease(entry: CacheEntry): void {
   const scope = leaseScope.getStore();
   if (!scope || scope.has(entry)) return;
@@ -270,7 +280,15 @@ export async function getToolContext(opts: { orgId?: string } = {}): Promise<Too
     const bound = keyIndex.get(rawKey);
     if (bound !== undefined) {
       const now = currentAliasTarget(rawKey);
-      if (now === null ? !sfAliasFallbackEnabled() : now !== bound) keyIndex.delete(rawKey);
+      // A missing entry while the bound graph is being replaced (rebuild) is not a move: keep
+      // serving the old graph. Drop only when another file claims the alias, the alias names a
+      // different org, or it is gone and nothing is being replaced.
+      const swapping = (() => {
+        const e = contextCache.get(bound);
+        return e !== undefined && replacementInProgress(e);
+      })();
+      const stale = now === null ? !sfAliasFallbackEnabled() && !swapping : now !== bound;
+      if (stale) keyIndex.delete(rawKey);
     }
   }
   const cachedKey = keyIndex.get(rawKey) ?? rawKey;
