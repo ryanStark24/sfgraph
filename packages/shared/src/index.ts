@@ -4,3 +4,4 @@ export * from "./logger.js";
 export * from "./paths.js";
 export * from "./types.js";
 export * from "./workspace.js";
+export * from "./private-files.js";

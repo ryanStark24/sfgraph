@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readSync } from "node:fs";
+import { closeSync, openSync, readSync } from "node:fs";
 import path from "node:path";
-import { StorageError, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
+import {
+  StorageError,
+  asOrgId,
+  asQualifiedName,
+  asSha256,
+  ensurePrivateDir,
+  restrictDbFiles,
+} from "@ryanstark24/sfgraph-shared";
 import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, RelType, Snapshot } from "../../domain/index.js";
@@ -193,7 +200,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     } else {
       if (opts.dbPath !== ":memory:") {
         const dir = path.dirname(opts.dbPath);
-        if (dir && dir !== ".") mkdirSync(dir, { recursive: true });
+        if (dir && dir !== ".") ensurePrivateDir(dir);
       }
       try {
         this.db = new Database(opts.dbPath);
@@ -203,6 +210,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
         throw e;
       }
       this.ownsDb = true;
+      if (opts.dbPath !== ":memory:") restrictDbFiles(opts.dbPath);
     }
   }
 

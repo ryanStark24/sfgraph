@@ -74,6 +74,8 @@ export interface WipImpactResult {
   truncated?: boolean;
   /** Present when `testGaps` was requested. */
   testGaps?: WipTestGapResult;
+  /** Paths skipped because they resolve outside the project folder (never read). */
+  warnings?: string[];
 }
 
 export const WIP_REMOVED_SCAN_CAP = 10000;
@@ -193,10 +195,12 @@ export async function analyzeLocalImpact(opts: AnalyzeLocalImpactOpts): Promise<
   // mtime after the last sync). The tree is indexed once (directory listings
   // and stats, no reads) and only the members that can own a changed file, or
   // decide who owns one, are load()ed (`selectOwningMembers`).
+  // Only folders that really lie inside the project: a ../ or absolute packageDirectories entry
+  // is never walked, so a changed file out there cannot map to a removed component either.
   const sourceDirs = [
     ...source.packageDirs.map((d) => path.resolve(source.rootDir, d)),
     path.resolve(source.rootDir, "vlocity", "datapacks"),
-  ];
+  ].filter((d) => source.isInside(d));
   const changedFiles =
     mode === "changed-only"
       ? localChangedFiles({
@@ -424,6 +428,7 @@ export async function analyzeLocalImpact(opts: AnalyzeLocalImpactOpts): Promise<
     graph: { nodes: Array.from(nodeMap.values()), edges: edgeList },
     truncated,
     ...(testGaps ? { testGaps } : {}),
+    ...(source.warnings().length > 0 ? { warnings: source.warnings() } : {}),
   };
 }
 

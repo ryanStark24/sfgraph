@@ -1,6 +1,13 @@
-import { mkdirSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import path from "node:path";
-import { StorageError, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
+import {
+  StorageError,
+  asOrgId,
+  asQualifiedName,
+  asSha256,
+  ensurePrivateDir,
+  restrictDbFiles,
+} from "@ryanstark24/sfgraph-shared";
 import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, Org, RelType } from "../../domain/index.js";
@@ -419,7 +426,7 @@ export class SqliteGraphStore implements GraphStore {
     } else {
       if (opts.dbPath !== ":memory:") {
         const dir = path.dirname(opts.dbPath);
-        if (dir && dir !== ".") mkdirSync(dir, { recursive: true });
+        if (dir && dir !== ".") ensurePrivateDir(dir);
       }
       try {
         this.conn = new Database(opts.dbPath);
@@ -429,6 +436,7 @@ export class SqliteGraphStore implements GraphStore {
         throw e;
       }
       this.ownsDb = true;
+      if (opts.dbPath !== ":memory:") restrictDbFiles(opts.dbPath);
     }
   }
 
@@ -440,6 +448,8 @@ export class SqliteGraphStore implements GraphStore {
     if (this.initialized) return;
     this.fileId = this.readFileId();
     this.setupConnection();
+    // The -wal and -shm files exist once the connection has switched journal mode.
+    if (this.ownsDb && this.opts.dbPath !== ":memory:") restrictDbFiles(this.opts.dbPath);
     this.loadCaches();
     this.healBulkWindow();
     this.initialized = true;

@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { MigrationError } from "@ryanstark24/sfgraph-shared";
@@ -101,6 +101,22 @@ describe("MigrationRunner", () => {
     const files = readdirSync(backupDir).filter((f) => f.endsWith(".sqlite"));
     expect(files.length).toBeGreaterThanOrEqual(1);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "writes the backup folder 0700 and each backup 0600",
+    () => {
+      new MigrationRunner(
+        db,
+        MIGRATIONS.filter((m) => m.version === 1),
+        { backupDir, retainBackups: 5 },
+      ).applyPending();
+      new MigrationRunner(db, MIGRATIONS, { backupDir, retainBackups: 5 }).applyPending();
+      expect(statSync(backupDir).mode & 0o777).toBe(0o700);
+      for (const f of readdirSync(backupDir).filter((x) => x.endsWith(".sqlite"))) {
+        expect(statSync(path.join(backupDir, f)).mode & 0o777).toBe(0o600);
+      }
+    },
+  );
 
   it("rotates old backups beyond retainBackups", () => {
     // Apply v1 first.
