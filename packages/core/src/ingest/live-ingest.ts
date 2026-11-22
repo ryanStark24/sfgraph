@@ -679,12 +679,14 @@ export function purgeStoredCustomSettingRows(
   graph: GraphStore,
   orgId: OrgId,
   vectors?: Pick<VectorSink, "deleteNodeVector">,
+  opts: { forceCompact?: boolean } = {},
 ): { settings: number; vectorsPending: number; compactError?: string } {
   const g = graph as {
     purgeCustomSettingRows?: (o: OrgId, f: typeof buildEmbedText) => QualifiedName[];
     clearCustomSettingVectorsPending?: (o: OrgId, q: readonly QualifiedName[]) => void;
     compactAfterPurge?: () => void;
     lastPurgeChanges?: number;
+    compactionNeeded?: (o: OrgId) => boolean;
   };
   if (typeof g.purgeCustomSettingRows !== "function") return { settings: 0, vectorsPending: 0 };
   // Every setting whose row-derived vector is not yet deleted: those stripped now and any an
@@ -709,7 +711,14 @@ export function purgeStoredCustomSettingRows(
   };
   // Old values also sit in free pages, the WAL and dead search-index segments: compact after a
   // purge that changed rows (or deleted vectors), outside any transaction.
-  if ((g.lastPurgeChanges ?? 0) > 0 || done.length > 0) {
+  // A persisted marker keeps this going after an earlier compaction failed or the process
+  // stopped between the purge commit and the compaction; the explicit command always compacts.
+  if (
+    opts.forceCompact ||
+    (g.lastPurgeChanges ?? 0) > 0 ||
+    done.length > 0 ||
+    g.compactionNeeded?.(orgId)
+  ) {
     try {
       g.compactAfterPurge?.();
     } catch (e) {

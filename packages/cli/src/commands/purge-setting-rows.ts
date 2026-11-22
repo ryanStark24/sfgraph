@@ -95,7 +95,9 @@ export async function purgeSettingRows(opts: PurgeSettingRowsOpts): Promise<void
     } catch {
       vectors = undefined;
     }
-    const r = purgeStoredCustomSettingRows(store, asOrgId(orgId), vectors);
+    const r = purgeStoredCustomSettingRows(store, asOrgId(orgId), vectors, {
+      forceCompact: true,
+    });
     const out = purgeReport(r, orgId, vectors !== undefined);
     console.log(out.message);
     if (out.warning) console.error(out.warning);

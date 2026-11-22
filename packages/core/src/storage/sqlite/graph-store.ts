@@ -54,6 +54,8 @@ const DERIVED_QNAME_TABLES = [
 const VECTORS_PENDING = "customSettingRowsVectorsPending";
 /** Nodes whose row-derived vector still has to be deleted (kept outside node attributes). */
 const PENDING_TABLE = "_sfgraph_pending_vector_deletes";
+/** Orgs whose purge changed the file and whose compaction has not yet succeeded. */
+const COMPACT_TABLE = "_sfgraph_compaction_needed";
 
 /** How long a write waits for another connection's lock (rel-05). */
 export const BUSY_TIMEOUT_MS = 5000;
@@ -1008,6 +1010,9 @@ export class SqliteGraphStore implements GraphStore {
           .run(orgId, label);
         changed += res.changes;
       }
+      if (changed > 0) {
+        this.db.prepare(`INSERT OR IGNORE INTO ${COMPACT_TABLE}(org_id) VALUES (?)`).run(orgId);
+      }
     })();
     this.lastPurgeChanges = changed;
     return (
@@ -1040,6 +1045,16 @@ export class SqliteGraphStore implements GraphStore {
     truncate();
     this.db.exec("VACUUM");
     truncate();
+    // Only now is the purge final on disk; VACUUM rewrote the whole file, so every org is done.
+    this.db.exec(`DELETE FROM ${COMPACT_TABLE}`);
+  }
+
+  /** True while a purge for this org changed the file and no compaction has succeeded since. */
+  compactionNeeded(orgId: OrgId): boolean {
+    this.ensurePendingVectorTable();
+    return (
+      this.db.prepare(`SELECT 1 FROM ${COMPACT_TABLE} WHERE org_id = ?`).get(orgId) !== undefined
+    );
   }
 
   private ensurePendingVectorTable(): void {
@@ -1047,6 +1062,9 @@ export class SqliteGraphStore implements GraphStore {
       `CREATE TABLE IF NOT EXISTS ${PENDING_TABLE}(
          org_id TEXT NOT NULL, qualified_name TEXT NOT NULL,
          PRIMARY KEY(org_id, qualified_name)) WITHOUT ROWID`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS ${COMPACT_TABLE}(org_id TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID`,
     );
   }
 
@@ -1062,6 +1080,10 @@ export class SqliteGraphStore implements GraphStore {
         this.db
           .prepare(`DELETE FROM ${PENDING_TABLE} WHERE org_id = ? AND qualified_name = ?`)
           .run(orgId, q);
+      }
+      // A vector delete changes the file too: compaction is owed until it succeeds.
+      if (qnames.length > 0) {
+        this.db.prepare(`INSERT OR IGNORE INTO ${COMPACT_TABLE}(org_id) VALUES (?)`).run(orgId);
       }
     })();
   }

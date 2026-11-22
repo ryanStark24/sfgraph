@@ -227,4 +227,47 @@ describe("custom setting row purge reaches the file", () => {
     });
     expect(count()).toBe(before);
   }, 60_000);
+
+  it("a failed compaction is remembered: a rerun compacts and clears the marker, and the command always compacts", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sfg-purge-"));
+    try {
+      const { store, dbPath } = await openFile(dir);
+      await liveIngest({
+        ...base,
+        graphStore: store,
+        preResolved: resolved(),
+        skipSnapshot: true,
+        storeCustomSettingRows: true,
+      });
+      const real = store.compactAfterPurge.bind(store);
+      store.compactAfterPurge = () => {
+        throw new Error("busy");
+      };
+      const first = purgeStoredCustomSettingRows(store, ORG, { deleteNodeVector: () => true });
+      expect(first.compactError).toBe("busy");
+      expect(store.compactionNeeded(ORG)).toBe(true);
+      store.compactAfterPurge = real;
+
+      // Nothing left to purge, yet the marker alone makes the rerun compact.
+      const second = purgeStoredCustomSettingRows(store, ORG, { deleteNodeVector: () => true });
+      expect(second.compactError).toBeUndefined();
+      expect(store.compactionNeeded(ORG)).toBe(false);
+      store.db.pragma("wal_checkpoint(TRUNCATE)");
+      expect(raw(dbPath)).not.toContain(SECRET);
+
+      // With no marker, the explicit command still compacts.
+      let calls = 0;
+      store.compactAfterPurge = () => {
+        calls++;
+        real();
+      };
+      purgeStoredCustomSettingRows(store, ORG, undefined, { forceCompact: true });
+      expect(calls).toBe(1);
+      purgeStoredCustomSettingRows(store, ORG);
+      expect(calls).toBe(1);
+      await store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
