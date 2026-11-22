@@ -2,6 +2,7 @@ import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import { METADATA_CATEGORY } from "../domain/metadata-category.js";
 import type { DomInjectionSpot } from "../parsers/lwc/dom-injection.js";
 import type { GraphStore } from "../storage/interfaces.js";
+import { makeTestSourceCheck } from "./dead-code.js";
 import { type ScanCoverage, scanLabel, sumCoverage } from "./scan.js";
 import { normalizeSourceUri } from "./source-uri.js";
 
@@ -56,12 +57,15 @@ function bundleFileUri(sourceUri: unknown, file: string): string | undefined {
 export function scanCodeSecurity(store: GraphStore, orgId: OrgId): CodeSecurityScan {
   const findings: CodeSecurityFinding[] = [];
   const parts: ScanCoverage[] = [];
+  // ApexClassParser copies a test class's status onto its static methods only, so an
+  // instance helper in an @isTest class has isTest false; its owner says it is test code.
+  const isTestSource = makeTestSourceCheck(store, orgId);
   for (const label of ["ApexMethod", METADATA_CATEGORY.APEX_TRIGGER]) {
     const scan = scanLabel(store, orgId, label);
     for (const page of scan.pages) {
       for (const n of page) {
         const attrs = n.attributes as Record<string, unknown>;
-        if (attrs.isTest === true) continue;
+        if (attrs.isTest === true || isTestSource(n.qualifiedName)) continue;
         const spots = attrs.soqlInjection;
         if (!Array.isArray(spots)) continue;
         for (const spot of spots as Array<{
