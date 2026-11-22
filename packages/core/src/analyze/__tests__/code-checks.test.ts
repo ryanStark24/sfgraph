@@ -587,6 +587,28 @@ describe("detectDomInjection", () => {
       ["insertAdjacentHTML:high"],
     ],
     ["a fixed string", "el.innerHTML = '<b>Hi</b>';", ["innerHTML:low"]],
+    ["a parenthesized fixed string", "el.innerHTML = ('<p>Hello</p>');", ["innerHTML:low"]],
+    [
+      "a doubly parenthesized fixed string",
+      "el.innerHTML = (('<p>Hello</p>'));",
+      ["innerHTML:low"],
+    ],
+    [
+      "a parenthesized literal in insertAdjacentHTML",
+      "el.insertAdjacentHTML('beforeend', ('<p>Hello</p>'));",
+      ["insertAdjacentHTML:low"],
+    ],
+    ["a parenthesized empty clear", "el.innerHTML = ('');", []],
+    [
+      "a parenthesized concatenation with data",
+      "el.innerHTML = ('<p>' + name + '</p>');",
+      ["innerHTML:high"],
+    ],
+    [
+      "parenthesized literal plus parenthesized data",
+      "el.innerHTML = ('a') + (userInput);",
+      ["innerHTML:high"],
+    ],
     ["a literal with a plus sign", "el.innerHTML = '<button>+</button>';", ["innerHTML:low"]],
     [
       "an insertAdjacentHTML literal with a plus sign",
