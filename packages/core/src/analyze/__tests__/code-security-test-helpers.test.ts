@@ -70,4 +70,36 @@ describe("scanCodeSecurity and test-class helper methods", () => {
     expect(found[0]?.qualifiedName).toContain("ProdHelper");
     expect(found.some((f) => f.qualifiedName.includes("TestHelperTest"))).toBe(false);
   });
+
+  it("a same-named @isTest decoy class does not hide a production class's finding", async () => {
+    const decoyDir = path.join(proj, "decoy-app/main/default/classes");
+    mkdirSync(decoyDir, { recursive: true });
+    writeFileSync(
+      path.join(proj, "sfdx-project.json"),
+      '{ "packageDirectories": [{ "path": "force-app" }, { "path": "decoy-app" }] }',
+    );
+    writeFileSync(path.join(decoyDir, "Prod.cls"), "@isTest public class Prod {}\n");
+    writeFileSync(
+      path.join(proj, "force-app/main/default/classes/Prod.cls"),
+      `public class Prod {\n    ${helper}\n}\n`,
+    );
+    const org = offlineResolvedOrg(proj, "fixture");
+    await liveIngest({
+      alias: "fixture",
+      graphStore: store,
+      mode: "full",
+      rebuild: true,
+      preResolved: org,
+      metadataSource: FilesystemMetadataSource.fromProjectRoot(proj),
+      logger: new ConsoleLogger("error"),
+      skipSnapshot: true,
+      analysisDb: store.db,
+    });
+    const found = scanCodeSecurity(store, org.orgId).findings.filter((f) =>
+      f.qualifiedName.includes("Prod."),
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0]?.severity).toBe("high");
+    expect(found[0]?.file).toContain("classes/Prod.cls");
+  });
 });
