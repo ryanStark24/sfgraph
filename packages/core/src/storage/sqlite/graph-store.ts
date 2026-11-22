@@ -1,6 +1,13 @@
-import { mkdirSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import path from "node:path";
-import { StorageError, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
+import {
+  StorageError,
+  asOrgId,
+  asQualifiedName,
+  asSha256,
+  ensurePrivateDir,
+  restrictDbFiles,
+} from "@ryanstark24/sfgraph-shared";
 import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, Org, RelType } from "../../domain/index.js";
@@ -42,6 +49,9 @@ const DERIVED_QNAME_TABLES = [
 // _sfgraph_node_fts is also derived per-qname, but its key columns are FTS5
 // UNINDEXED (a WHERE on them scans the whole table), so it is purged by rowid
 // through _sfgraph_node_fts_rowid instead — see deleteNodeFts.
+
+/** Node attribute: row-derived vectors of a purged custom setting are not yet deleted. */
+const VECTORS_PENDING = "customSettingRowsVectorsPending";
 
 /** How long a write waits for another connection's lock (rel-05). */
 export const BUSY_TIMEOUT_MS = 5000;
@@ -419,7 +429,7 @@ export class SqliteGraphStore implements GraphStore {
     } else {
       if (opts.dbPath !== ":memory:") {
         const dir = path.dirname(opts.dbPath);
-        if (dir && dir !== ".") mkdirSync(dir, { recursive: true });
+        if (dir && dir !== ".") ensurePrivateDir(dir);
       }
       try {
         this.conn = new Database(opts.dbPath);
@@ -429,6 +439,7 @@ export class SqliteGraphStore implements GraphStore {
         throw e;
       }
       this.ownsDb = true;
+      if (opts.dbPath !== ":memory:") restrictDbFiles(opts.dbPath);
     }
   }
 
@@ -440,6 +451,8 @@ export class SqliteGraphStore implements GraphStore {
     if (this.initialized) return;
     this.fileId = this.readFileId();
     this.setupConnection();
+    // The -wal and -shm files exist once the connection has switched journal mode.
+    if (this.ownsDb && this.opts.dbPath !== ":memory:") restrictDbFiles(this.opts.dbPath);
     this.loadCaches();
     this.healBulkWindow();
     this.initialized = true;
@@ -899,6 +912,97 @@ export class SqliteGraphStore implements GraphStore {
       this.deleteNodeFts(String(orgId), String(qname));
     });
     apply();
+  }
+
+  /**
+   * Remove stored custom setting ROW values for one org: the `customSettingRows`
+   * attribute of every CustomSetting node, the same attribute in this
+   * database's snapshot version rows, and the search document (rewritten from
+   * `embedText` of the stripped node). Names, row counts and edges stay.
+   *
+   * Each stripped node gets the durable marker `customSettingRowsVectorsPending`
+   * in the same transaction, because its vector was embedded from the rows and
+   * the vector store is a separate step that can be unavailable or fail. Returns
+   * every node that still carries the marker (these now, and any left by an
+   * earlier purge) so the caller can delete their vectors, then call
+   * {@link clearCustomSettingVectorsPending}. Backup files and exported
+   * snapshots are separate copies and are not touched.
+   */
+  purgeCustomSettingRows(
+    orgId: OrgId,
+    embedText: (label: string, qname: string, attrs: Record<string, unknown>) => string,
+  ): QualifiedName[] {
+    this.syncCaches();
+    const label = "CustomSetting";
+    const tbl = this.nodeLabelCache.get(label);
+    const pending: QualifiedName[] = [];
+    this.db.transaction(() => {
+      if (tbl) {
+        const rows = this.db
+          .prepare(
+            `SELECT qualified_name AS q, attributes AS a FROM ${tbl}
+              WHERE org_id = ?
+                AND (json_type(attributes, '$.customSettingRows') IS NOT NULL
+                  OR json_type(attributes, '$.${VECTORS_PENDING}') IS NOT NULL)`,
+          )
+          .all(orgId) as Array<{ q: string; a: string }>;
+        for (const r of rows) {
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = JSON.parse(r.a) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          if ("customSettingRows" in parsed) {
+            const { customSettingRows: _rows, ...attrs } = parsed;
+            const marked = { ...attrs, [VECTORS_PENDING]: true };
+            // The stored source_hash is invalidated too: a later opt-in ingest of unchanged
+            // settings must see a different hash and rewrite the attributes, or the node would
+            // keep the stripped attributes while search text is rebuilt from the parsed rows.
+            this.db
+              .prepare(
+                `UPDATE ${tbl} SET attributes = ?, source_hash = 'purged-custom-setting-rows'
+                  WHERE org_id = ? AND qualified_name = ?`,
+              )
+              .run(JSON.stringify(marked), orgId, r.q);
+            this.upsertNodeFts(orgId, r.q as QualifiedName, label, embedText(label, r.q, attrs));
+          }
+          pending.push(r.q as QualifiedName);
+        }
+      }
+      // Snapshot history in this database (versioned rows and any legacy full copies).
+      for (const t of ["_sfgraph_snap_nodes", "_sfgraph_node_snapshots"]) {
+        const isTable = this.db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+          .get(t);
+        if (!isTable) continue;
+        this.db
+          .prepare(
+            `UPDATE ${t} SET attributes = json_remove(attributes, '$.customSettingRows')
+              WHERE org_id = ? AND label = ?
+                AND json_type(attributes, '$.customSettingRows') IS NOT NULL`,
+          )
+          .run(orgId, label);
+      }
+    })();
+    return pending;
+  }
+
+  /** Clear the marker set by {@link purgeCustomSettingRows} once these nodes' vectors are gone. */
+  clearCustomSettingVectorsPending(orgId: OrgId, qnames: readonly QualifiedName[]): void {
+    this.syncCaches();
+    const tbl = this.nodeLabelCache.get("CustomSetting");
+    if (!tbl) return;
+    this.db.transaction(() => {
+      for (const q of qnames) {
+        this.db
+          .prepare(
+            `UPDATE ${tbl} SET attributes = json_remove(attributes, '$.${VECTORS_PENDING}')
+              WHERE org_id = ? AND qualified_name = ?`,
+          )
+          .run(orgId, q);
+      }
+    })();
   }
 
   deleteEdgesFor(orgId: OrgId, qname: QualifiedName): void {

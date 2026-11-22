@@ -195,6 +195,15 @@ export interface LiveIngestOpts {
    */
   disableOmnistudioRetrieve?: boolean;
   /**
+   * Read and store custom setting ROW values (default **off**; CLI
+   * `--store-setting-rows`, env `SFGRAPH_STORE_SETTING_ROWS=1`). Setting rows
+   * often hold endpoints, keys and per-user values. When off, only the
+   * setting's name and schema link are ingested, and every ingest purges row
+   * values an earlier version stored for the org (graph, search index, vectors,
+   * snapshot history in the same database). Backup files are not rewritten.
+   */
+  storeCustomSettingRows?: boolean;
+  /**
    * Skip the reflection-based generic walker (post-merge). Default
    * **on** — scans every node's attributes for string values that
    * match an existing qname's bare name and emits low-confidence
@@ -658,6 +667,43 @@ function stringifyConfigVal(v: unknown): string {
   return String(v);
 }
 
+/**
+ * Remove stored custom setting row values for an org (see
+ * LiveIngestOpts.storeCustomSettingRows). `settings` is how many settings were stripped or
+ * still marked; `vectorsPending` is how many of them still have a row-derived vector that
+ * could not be deleted (no vector store, or a failed delete). The marker is durable, so a
+ * later purge or default ingest finishes the job.
+ * Also used by `sfgraph purge-setting-rows`.
+ */
+export function purgeStoredCustomSettingRows(
+  graph: GraphStore,
+  orgId: OrgId,
+  vectors?: Pick<VectorSink, "deleteNodeVector">,
+): { settings: number; vectorsPending: number } {
+  const g = graph as {
+    purgeCustomSettingRows?: (o: OrgId, f: typeof buildEmbedText) => QualifiedName[];
+    clearCustomSettingVectorsPending?: (o: OrgId, q: readonly QualifiedName[]) => void;
+  };
+  if (typeof g.purgeCustomSettingRows !== "function") return { settings: 0, vectorsPending: 0 };
+  // Every setting whose row-derived vector is not yet deleted: those stripped now and any an
+  // earlier purge left marked (vector store missing or a delete failed then).
+  const pending = g.purgeCustomSettingRows(orgId, buildEmbedText);
+  const done: QualifiedName[] = [];
+  const del = vectors?.deleteNodeVector;
+  if (typeof del === "function") {
+    for (const q of pending) {
+      try {
+        del.call(vectors, orgId, q);
+        done.push(q);
+      } catch {
+        /* stays marked; the next purge retries */
+      }
+    }
+  }
+  if (done.length > 0) g.clearCustomSettingVectorsPending?.(orgId, done);
+  return { settings: pending.length, vectorsPending: pending.length - done.length };
+}
+
 export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult> {
   const logger = opts.logger ?? NOOP_LOG;
   // Load declarative rule parsers (idempotent).
@@ -693,6 +739,28 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     graph.markSyncStarted(resolved.orgId, ingestStartedIso);
   } catch (e) {
     logger.warn("live-ingest: markSyncStarted failed", { err: (e as Error).message });
+  }
+
+  const storeSettingRows =
+    opts.storeCustomSettingRows ?? process.env.SFGRAPH_STORE_SETTING_ROWS === "1";
+  if (!storeSettingRows) {
+    // Before the pre-sync snapshot, so no snapshot copies stored rows.
+    try {
+      const purged = purgeStoredCustomSettingRows(graph, resolved.orgId, opts.vectorStore);
+      if (purged.settings > 0) {
+        logger.info("live-ingest: removed stored custom setting row values", {
+          settings: purged.settings,
+        });
+      }
+      if (purged.vectorsPending > 0) {
+        logger.warn(
+          "live-ingest: custom setting row values are removed but their search vectors could not be deleted yet; the next ingest or `sfgraph purge-setting-rows` will finish it",
+          { settings: purged.vectorsPending },
+        );
+      }
+    } catch (e) {
+      logger.warn("live-ingest: custom setting row purge failed", { err: (e as Error).message });
+    }
   }
 
   // Opt-in profiling (SFGRAPH_INGEST_PROFILE=<file>); no-op otherwise.
@@ -1516,6 +1584,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
                   // retrieve()" which is now on by default. Caller-side disable
                   // routes through this same boolean inverted.
                   ...(opts.disableOmnistudioRetrieve ? {} : { enableOmnistudioRetrieve: true }),
+                  ...(storeSettingRows ? { storeCustomSettingRows: true } : {}),
                   // jsforce attaches the version it negotiated on conn.version; fall
                   // back to a sensible recent release if absent (mocks, etc.)
                   apiVersion: (resolved.conn as { version?: string }).version ?? "60.0",

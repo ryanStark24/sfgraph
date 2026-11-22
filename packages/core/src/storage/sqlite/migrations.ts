@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
-import { MigrationError } from "@ryanstark24/sfgraph-shared";
+import { MigrationError, ensurePrivateDir, restrictFile } from "@ryanstark24/sfgraph-shared";
 import * as sqliteVec from "sqlite-vec";
 import type { BetterSqlite3Database, Migration } from "../interfaces.js";
 import { ensureSnapshotEdgeIndexes, migrateFullCopySnapshots } from "./snapshot-versions.js";
@@ -553,13 +553,14 @@ export class MigrationRunner {
     const dbName = this.db.name;
     if (!dbName || dbName === ":memory:" || dbName === "") return undefined;
     if (!existsSync(this.opts.backupDir)) {
-      mkdirSync(this.opts.backupDir, { recursive: true });
+      ensurePrivateDir(this.opts.backupDir);
     }
     const ts = Date.now();
     const base = path.basename(dbName);
     const dest = path.join(this.opts.backupDir, `${base}.v${currentVersion}.${ts}.sqlite`);
     // better-sqlite3 backup is async; use VACUUM INTO for a sync snapshot.
     this.db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+    restrictFile(dest);
     this.rotateBackups();
     return dest;
   }

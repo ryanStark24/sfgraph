@@ -1,4 +1,4 @@
-export { liveIngest } from "./live-ingest.js";
+export { liveIngest, purgeStoredCustomSettingRows } from "./live-ingest.js";
 export type {
   LiveIngestOpts,
   LiveIngestResult,

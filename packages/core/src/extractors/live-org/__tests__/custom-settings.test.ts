@@ -39,7 +39,7 @@ describe("iterCustomSettings", () => {
         return { records: [], done: true };
       },
     };
-    const members = await collect(iterCustomSettings(conn, "00Dtest"));
+    const members = await collect(iterCustomSettings(conn, "00Dtest", {}, { captureRows: true }));
     expect(members).toHaveLength(1);
     const m = members[0]!;
     expect(m.ref.memberType).toBe("CustomSetting");
@@ -54,6 +54,34 @@ describe("iterCustomSettings", () => {
     expect(parsed.rows[0]).not.toHaveProperty("Id");
     expect(parsed.rows[0]).not.toHaveProperty("SystemModstamp");
     expect(parsed.rows[0]?.Service_Url__c).toBe("https://api.example.com/orders");
+  });
+
+  it("by default emits the setting's name only and never queries its rows", async () => {
+    const conn = {
+      tooling: {
+        query: async () => ({ records: [{ QualifiedApiName: "Acme_Settings__c" }], done: true }),
+      },
+      query: async (soql: string) => {
+        throw new Error(`rows must not be read by default: ${soql}`);
+      },
+    };
+    const members = await collect(iterCustomSettings(conn, "00Dtest"));
+    expect(members).toHaveLength(1);
+    expect(members[0]?.ref.memberName).toBe("Acme_Settings__c");
+    expect(JSON.parse(members[0]?.content ?? "{}")).toEqual({ name: "Acme_Settings__c" });
+  });
+
+  it("a name-only member still becomes a CustomSetting node linked to its schema, with no rows", async () => {
+    await loadAllRules();
+    const result = await parserRegistry
+      .for("CustomSetting")!
+      .parse({ name: "Acme_Settings__c" } as never, makeTestCtx());
+    const node = result.nodes.find((n) => n.label === "CustomSetting");
+    expect(String(node?.qualifiedName)).toBe("CustomSetting:Acme_Settings__c");
+    expect(node?.attributes.customSettingRows ?? null).toBeNull();
+    expect(
+      result.edges.some((e) => String(e.dstQualifiedName) === "CustomObject:Acme_Settings__c"),
+    ).toBe(true);
   });
 
   it("yields nothing when the org has no custom settings", async () => {

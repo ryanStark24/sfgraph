@@ -14,6 +14,9 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 
 ### Changed
 
+- **Custom setting row values are no longer stored by default.** An ingest keeps each custom setting's name and its link to the object and does not read its rows. `sfgraph ingest --store-setting-rows` (or `SFGRAPH_STORE_SETTING_ROWS=1`) opts back in. The next ingest without the flag removes row values an earlier version stored (graph, search index, vectors, snapshot history in the same database), and the new `sfgraph purge-setting-rows` command does the same without an ingest. Backups and exported snapshots made earlier are separate copies and may still hold them. See `docs/PRIVACY.md`.
+- **`trace_upstream`, `trace_downstream` and `point_in_time_diff` return names, not stored values, in their structured data.** Nodes and edges are listed by name, label and relationship or change kind. Trace lists stop at 300 entries, the same as the text, with the full totals alongside. The text output is unchanged.
+- **Every tool's structured data is capped at 64,000 characters.** Past that, the fields that fit are kept and the rest are replaced by a note with the item count and `dataCut: true`.
 - DOM injection: a `+` inside a string literal (`'<button>+</button>'`) no longer makes a literal-only value high, and a value continued on the next line (`el.innerHTML = ''\n + userInput;`) is read to the end of the statement instead of being cut at the line break.
 - **Re-ingest once after upgrading.** The Apex, LWC and Aura parsers now record extra attributes, so their content hashes changed and the first ingest after upgrading re-parses every Apex class, trigger, LWC and Aura component. Existing graphs keep working but do not show the new security findings until then.
 - `governor_risk_check` documents the two new risk kinds in its `order` text (after `dml_in_loop`, before `no_bulk`); the order of the older kinds is unchanged.
@@ -28,6 +31,11 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 - **`String.format` with typed or numeric arguments.** Integer, Long, Decimal, Double, Boolean, Id, Date, Datetime and Time arguments stay safe through `String.format`; a text argument still carries taint.
 - **DOM injection across lines.** `el.innerHTML = ''` followed on the next line by `.concat(userInput)`, `?.concat(...)`, a ternary or a trailing `+` is read as one expression and reported; a clear followed by a new statement is still a clear, and a fixed-string chain is not promoted.
 - **Test-class helpers are not reported as SOQL injection.** An instance (non-static) helper method inside an `@isTest` class that concatenated a String into `Database.query` was reported as a high finding by `security_audit` and `export_sarif`; methods of test classes are now skipped, as the static ones already were.
+- **Project reads stay inside the project folder.** `sfgraph ingest --project` and the `wip_*` tools skip package directories and symlinks that resolve outside the project folder, and say which were skipped. Links that point inside the project keep working.
+- **One alias, one graph.** When two graph files carry the same alias, tools refuse and name both files instead of answering from one. A running server also re-checks which org an alias names on every call, so an alias moved to another org answers for the org it names now.
+- **Safer playbook steps.** The installed playbooks now ask the user before any `sf` command touches an org, name the org with `--target-org`, avoid production without explicit confirmation, and never suggest write or deploy commands without approval.
+- **Stored names and saved notes are shown as text.** Snapshot names, step names and component names are kept on one line in tool reports, and an `explain_code` saved explanation is labelled as user-provided text.
+- **Private file modes.** On macOS and Linux sfgraph creates its data folder owner-only (0700), and its graph, backup and org-list files owner-only (0600).
 
 ### Security
 

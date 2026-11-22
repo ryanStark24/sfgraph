@@ -1,5 +1,6 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ensurePrivateDir, restrictFile } from "@ryanstark24/sfgraph-shared";
 import { type SkillTarget, install as installSkills } from "@ryanstark24/sfgraph-skills";
 import { type McpTarget, writeMcpConfig } from "./_mcp-config.js";
 
@@ -120,8 +121,10 @@ export async function writeOrgSnapshot(dataDir: string): Promise<void> {
     aliases,
     authorizations,
   };
-  mkdirSync(dataDir, { recursive: true });
-  writeFileSync(join(dataDir, ORG_SNAPSHOT_FILENAME), JSON.stringify(snapshot, null, 2), "utf8");
+  ensurePrivateDir(dataDir);
+  const file = join(dataDir, ORG_SNAPSHOT_FILENAME);
+  writeFileSync(file, JSON.stringify(snapshot, null, 2), { encoding: "utf8", mode: 0o600 });
+  restrictFile(file); // an existing file keeps its old mode through writeFileSync
 }
 
 export interface InstallCmdOpts {

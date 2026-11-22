@@ -23,6 +23,6 @@ Override either by setting `SFGRAPH_DATA_DIR` / `SFGRAPH_CONFIG_DIR` / `SFGRAPH_
 | `~/.cursor/rules/sf-*.mdc` | Same, Cursor flavor |
 | `<MCP-config>.json` | MCP server entry (per editor) |
 
-What `sfgraph` **never** stores locally: passwords, access tokens (they stay in `~/.sfdx/` owned by `sf`), or your codebase content (telemetry events are field-allowlisted).
+What `sfgraph` **never** stores locally: passwords, access tokens (they stay in `~/.sfdx/` owned by `sf`), or your codebase content (telemetry events are field-allowlisted). Custom setting row values are not stored either, unless you ingest with `--store-setting-rows`; see [`PRIVACY.md`](PRIVACY.md#custom-setting-rows). Custom metadata record values and the Apex, LWC and Flow source that a project or org ingest reads are stored in the graph, as the ingest is for.
 
 For the full privacy threat model — read-only enforcement, sanitizer behavior, telemetry payload structure — see [`PRIVACY.md`](PRIVACY.md).

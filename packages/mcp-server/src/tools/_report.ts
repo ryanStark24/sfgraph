@@ -49,8 +49,32 @@ const NAMES_MAX = 3;
  *  out of What each piece does is a component the reader misses (cycle 3 T9 fix 2). */
 const MERGED_NAMES_MAX = PIECES_MAX;
 
+/**
+ * A stored name (a component, a step, a snapshot) kept on one line: every line break (CR, LF, NEL,
+ * U+2028, U+2029) and every other control character becomes a space, and runs collapse. Names come
+ * from ingested content or from earlier tool calls, so a name must never start a new line of a
+ * report, where it could pass for a section the tool wrote.
+ */
+export function foldName(t: string): string {
+  let out = "";
+  let gap = false;
+  for (const ch of t) {
+    const c = ch.codePointAt(0) ?? 0;
+    const control = c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029;
+    if (control || ch === " ") {
+      gap = out.length > 0;
+      continue;
+    }
+    if (gap) out += " ";
+    gap = false;
+    out += ch;
+  }
+  return out;
+}
+
 /** `Foo` for `ApexClass:Foo`; a name with no `Label:` prefix is kept. */
-export function nameOf(qnameOrName: string): string {
+export function nameOf(rawQnameOrName: string): string {
+  const qnameOrName = foldName(rawQnameOrName);
   const m = /^([A-Za-z][A-Za-z0-9_]*):(.+)$/.exec(qnameOrName);
   // A known label, or a label-shaped (PascalCase) prefix such as an opaque `EntityFilter:`; a
   // lowercase namespace such as `c:myCmp` or `lightning:card` is part of the name.
@@ -59,14 +83,14 @@ export function nameOf(qnameOrName: string): string {
 }
 
 /** One line: any run of whitespace holding a newline becomes one space. */
-export const oneLine = (t: string): string => t.replace(/\s*\n\s*/g, " ");
+export const oneLine = (t: string): string => foldName(t.replace(/\s*\n\s*/g, " "));
 
 /** Free text safe in a markdown table cell: one line, `|` escaped, backticks made quotes. */
 export const tableCell = (t: string): string =>
-  t.replace(/\s+/g, " ").trim().replace(/`/g, "'").replace(/\|/g, "\\|");
+  foldName(t).replace(/\s+/g, " ").trim().replace(/`/g, "'").replace(/\|/g, "\\|");
 
 /** An API name in code style; a backtick inside it becomes a quote so the span stays closed. */
-export const code = (name: string): string => `\`${name.replace(/`/g, "'")}\``;
+export const code = (name: string): string => `\`${foldName(name).replace(/`/g, "'")}\``;
 
 /** "`A`, `B`, `C` and 2 others". */
 function nameList(names: readonly string[], max = NAMES_MAX): string {
@@ -395,7 +419,7 @@ export function linkLines(
   const seen = new Set<string>();
   const lines: string[] = [];
   for (const e of edges) {
-    const line = `- ${e.from} -> ${e.to}${e.rel ? ` (${e.rel})` : ""}`;
+    const line = `- ${foldName(e.from)} -> ${foldName(e.to)}${e.rel ? ` (${foldName(e.rel)})` : ""}`;
     if (seen.has(line)) continue;
     seen.add(line);
     lines.push(line);
@@ -512,6 +536,30 @@ function hasCount(text: string): boolean {
   return /(?:^|[\s(])\d+(?=[\s.,;:)]|$)/.test(text.replace(/`[^`]*`/g, ""));
 }
 
+/**
+ * The details text with any line that would read as one of the report's own section headings
+ * turned into plain text. The details legitimately span many lines, so a stored name that smuggled
+ * in a heading line (for example a second "What to check next") is shown, but cannot pass for a
+ * section the tool wrote.
+ */
+export function guardDetails(details: string): string {
+  const headings = new Set(Object.values(HEADINGS).map((h) => h.replace(/\*/g, "").toLowerCase()));
+  return details
+    .split(/\r\n|[\r\u0085\u2028\u2029]|\n/)
+    .map((line) => {
+      // Only a line that is the heading itself (optionally bold, a markdown heading or with a
+      // colon); a quoted line (`> ...`) is already visibly someone else's text.
+      const bare = line
+        .trim()
+        .replace(/^#+\s*/, "")
+        .replace(/^[*_]+|[*_:\s]+$/g, "")
+        .replace(/\*/g, "")
+        .toLowerCase();
+      return headings.has(bare) ? `(quoted text) ${line.trim()}`.replace(/\*/g, "") : line;
+    })
+    .join("\n");
+}
+
 /** The report as markdown, sections in the fixed order. */
 export function renderReport(r: HumanReport): string {
   // Pieces of one kind whose sentence is the same are one line ("`a`, `b` and `c`: Lightning web
@@ -559,7 +607,7 @@ export function renderReport(r: HumanReport): string {
     if (pieces.length > PIECES_MAX)
       out.push(`- and ${pieces.length - PIECES_MAX} more, listed under Technical details`);
   }
-  out.push("", HEADINGS.details, "", r.details);
+  out.push("", HEADINGS.details, "", guardDetails(r.details));
   const next = r.next ?? [];
   if (next.length) out.push("", HEADINGS.next, ...next.map((n) => `- ${oneLine(n)}`));
   return out.join("\n");

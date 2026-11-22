@@ -161,7 +161,9 @@ describe("custom settings — discovery and row fetches", () => {
 
   it("names a setting whose rows could not be fetched", async () => {
     const { names, error } = await drain(
-      iterCustomSettings(csConn({ rowsFail: (o) => o === "B__c" }), "00D1", NO_BACKOFF),
+      iterCustomSettings(csConn({ rowsFail: (o) => o === "B__c" }), "00D1", NO_BACKOFF, {
+        captureRows: true,
+      }),
     );
     expect(names).toEqual(["A__c"]);
     expect(failureNames(error)).toEqual(["B__c"]);

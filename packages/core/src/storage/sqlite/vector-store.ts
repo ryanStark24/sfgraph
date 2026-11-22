@@ -1,5 +1,5 @@
-import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { ensurePrivateDir } from "@ryanstark24/sfgraph-shared";
 import {
   ErrorCode,
   SfgraphError,
@@ -46,7 +46,7 @@ export class SqliteVectorStore implements VectorStore {
     } else {
       if (opts.dbPath !== ":memory:") {
         const dir = path.dirname(opts.dbPath);
-        if (dir && dir !== ".") mkdirSync(dir, { recursive: true });
+        if (dir && dir !== ".") ensurePrivateDir(dir);
       }
       try {
         this.db = new Database(opts.dbPath);

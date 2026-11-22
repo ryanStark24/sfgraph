@@ -293,6 +293,7 @@ Authoritative inventory — every `SFGRAPH_*` env var read at runtime, sorted al
 | `SFGRAPH_METADATA_READ_CHUNK_SIZE` | int | `10` | `metadata.read` composite batch size. | 1.0 |
 | `SFGRAPH_NO_AUTO_RETRY` | bool (`1`) | unset | Disable automatic retry on watchdog wedge / skip cascade. | 1.0 |
 | `SFGRAPH_NO_LIVENESS_PROBE` | bool (`1`) | unset | Skip the pre-ingest liveness probe. | 1.0 |
+| `SFGRAPH_STORE_SETTING_ROWS` | bool (`1`) | unset | Same as `sfgraph ingest --store-setting-rows`: also store custom setting row values (default: names only). | 1.9 |
 | `SFGRAPH_SEQUENTIAL_SOURCES` | bool (`1`) | unset | Force serial source execution (debug aid; bypasses the sliding-window merger). | 1.0 |
 | `SFGRAPH_SKIP_LWC` | csv | unset | Skip specific LWC bundle `DeveloperName`s (also accepts `1` to skip the source entirely). | 1.0 |
 | `SFGRAPH_SKIP_SOBJECT` | csv | unset | Skip specific SObjects by `QualifiedApiName` (escape hatch for `describe()`-crashing tables). | 1.0 |
@@ -313,6 +314,7 @@ Authoritative inventory — every `SFGRAPH_*` env var read at runtime, sorted al
 
 sfgraph aims to be honest about gaps. Read this section before relying on it for security or compliance audits.
 
+- **Custom setting rows are not stored (1.9.0).** A custom setting's name and its link to the object are ingested; its row values are not read, because settings often hold endpoints, keys and per-user values. `sfgraph ingest --store-setting-rows` (or `SFGRAPH_STORE_SETTING_ROWS=1`) opts in. Each ingest without it removes row values an older version stored, and `sfgraph purge-setting-rows` does so without an ingest. Backups and exported snapshots made earlier may still hold them. See [`docs/PRIVACY.md`](docs/PRIVACY.md#custom-setting-rows).
 - **Security model gaps.** Profile / PermissionSet / SharingRules are ingested as first-class nodes with `GRANTS_*` edges. However, **PermissionSetGroup, MutingPermissionSet, ProfileSessionSetting, ProfilePasswordPolicy** are ingested as opaque generic nodes WITHOUT `GRANTS_*` or `DENIES_*` edges — they exist as nodes but their security semantics are not modeled. Audits that rely on these edges will not surface findings for those types until a future Security phase.
 - **Security analysis caps.** The analysis layer caps results at 5000 per label (`SECURITY_PER_LABEL_CAP`). On orgs with more than 5k Profiles or PermissionSets, analysis is truncated with a `truncated: true` flag — **but graph storage is complete**.
 - **Generic-type whitelist.** sfgraph dispatches ~80 of the ~327 metadata types Salesforce returns from `describeMetadata()` to the parsed extractor path. The rest are recorded only as opaque generic nodes when matched by the whitelist; everything else is filtered out. Set `SFGRAPH_INCLUDE_ALL_GENERIC=1` to override (every discovered type runs through the generic extractor — longer ingest, more opaque nodes). The full type list is documented in [`docs/COVERAGE.md`](docs/COVERAGE.md).
