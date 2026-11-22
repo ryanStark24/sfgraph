@@ -430,3 +430,11 @@ it("refuses to stamp an alias that another org's graph file already claims", asy
     buildProjectIngestOpts({ project: proj, org: "uat" }, new ConsoleLogger("error")),
   ).rejects.toThrow(/already used by another org's graph/);
 });
+
+it("errors, instead of passing, when the SQLite driver cannot load for the alias check", () => {
+  expect(() =>
+    assertAliasNotClaimedElsewhere(data, "00DAA0000000001AAA", "uat", () => {
+      throw new Error("Cannot find module 'better-sqlite3'");
+    }),
+  ).toThrow(/SQLite driver could not be loaded/);
+});

@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { createRequire } from "node:module";
 import { constants as osConstants } from "node:os";
 import path from "node:path";
 import {
@@ -150,9 +149,27 @@ export function assertAliasNotClaimedElsewhere(
   dataDir: string,
   orgId: string,
   alias: string,
+  loadDriver: () => unknown = () => loadBetterSqlite3(),
 ): void {
   if (!existsSync(dataDir)) return;
-  const nodeRequire = createRequire(import.meta.url);
+  // Load the driver once, through core (which declares it; the CLI package does not). A driver
+  // that cannot load is an error, never "no claims": only a single unreadable file is skipped.
+  let Ctor: new (
+    p: string,
+    o?: unknown,
+  ) => {
+    prepare: (s: string) => { all: (...a: unknown[]) => unknown[] };
+    close: () => void;
+  };
+  try {
+    Ctor = loadDriver() as typeof Ctor;
+  } catch (e) {
+    throw new SfgraphError(
+      ErrorCode.E_INVALID_ORG_IDENTIFIER,
+      `ingest: cannot check whether the alias '${alias}' is already used by another graph, because the SQLite driver could not be loaded (${(e as Error).message}). Fix the install (reinstall sfgraph, or run 'sfgraph doctor') and run this again.`,
+      { cause: e },
+    );
+  }
   const claimedBy: string[] = [];
   for (const f of readdirSync(dataDir)) {
     if (!f.endsWith(".sqlite") || f.startsWith("backups")) continue;
@@ -160,13 +177,6 @@ export function assertAliasNotClaimedElsewhere(
     const dbPath = path.join(dataDir, f);
     try {
       if (statSync(dbPath).size === 0) continue;
-      const Ctor = loadBetterSqlite3(nodeRequire) as unknown as new (
-        p: string,
-        o?: unknown,
-      ) => {
-        prepare: (s: string) => { all: (...a: unknown[]) => unknown[] };
-        close: () => void;
-      };
       const db = new Ctor(dbPath, { readonly: true, fileMustExist: true });
       try {
         const rows = db.prepare("SELECT id, alias FROM _sfgraph_orgs").all() as Array<{
