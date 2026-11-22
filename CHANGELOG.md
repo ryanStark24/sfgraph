@@ -36,10 +36,12 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 - **Safer playbook steps.** The installed playbooks now ask the user before any `sf` command touches an org, name the org with `--target-org`, avoid production without explicit confirmation, and never suggest write or deploy commands without approval.
 - **Stored names and saved notes are shown as text.** Snapshot names, step names and component names are kept on one line in tool reports, and an `explain_code` saved explanation is labelled as user-provided text.
 - **Private file modes.** On macOS and Linux sfgraph creates its data folder owner-only (0700), and its graph, backup and org-list files owner-only (0600).
+- **A same-named test class no longer hides a real class's SOQL injection findings.** A method counts as test code through its class only when that class is defined in the method's own file.
 
 ### Security
 
 - **A project folder's git settings can no longer start a fetch or run a command.** When sfgraph reads git history in a project folder (the wip tools, `sfgraph ingest --project`), git is now told to use no network transport or lazy fetch and to refuse a bare repository tucked inside a folder, whatever the folder's own git config says.
+- **Git signature checks no longer run programs a project names.** Reading git history in a project folder never verifies commit signatures, and the signature programs and a few other helper programs a repository can configure are switched off for those reads.
 
 ### Known limits
 
