@@ -172,6 +172,11 @@ export function buildProgram(): Command {
     .option("--no-flow-resolve", "skip the post-merge Flow→Apex invocable-method resolver.")
     .option("--no-audit", "skip the post-merge dangling-edge audit summary printed at end of run.")
     .option(
+      "--store-setting-rows",
+      "also read and store custom setting ROW values (off by default: rows often hold endpoints, keys and per-user values, so only the setting's name is kept). Env: SFGRAPH_STORE_SETTING_ROWS=1. Without this flag every ingest removes row values an earlier version stored.",
+      false,
+    )
+    .option(
       "--no-wait-embeddings",
       "exit at 'graph ready' instead of waiting for embeddings. Cached vectors are still written; texts that need the model stay pending, and find_similar uses text search until an ingest that waits for embeddings fills them.",
     )
@@ -207,6 +212,7 @@ export function buildProgram(): Command {
         arityResolve?: boolean; // commander inverts --no-arity-resolve
         flowResolve?: boolean; // commander inverts --no-flow-resolve
         audit?: boolean; // commander inverts --no-audit
+        storeSettingRows?: boolean;
         waitEmbeddings?: boolean; // commander inverts --no-wait-embeddings
         skipThreshold?: number;
         rulesDir?: string;
@@ -240,6 +246,7 @@ export function buildProgram(): Command {
           noArityResolve: opts.arityResolve === false,
           noFlowResolve: opts.flowResolve === false,
           noAudit: opts.audit === false,
+          storeSettingRows: opts.storeSettingRows,
           noWaitEmbeddings: opts.waitEmbeddings === false,
           skipThreshold: opts.skipThreshold,
         });
@@ -396,6 +403,19 @@ export function buildProgram(): Command {
     .action(async (opts: { org?: string; project?: string; yes?: boolean }) => {
       const { resetElemIdMap } = await import("./commands/reset-elemid-map.js");
       await resetElemIdMap({ org: opts.org, project: opts.project, yes: opts.yes });
+    });
+
+  program
+    .command("purge-setting-rows")
+    .description(
+      "remove custom setting ROW values that an earlier sfgraph stored for an org (graph, search index, vectors, snapshot history in the same database). Names and schema links stay. Backup files and exported snapshots are separate copies: delete them yourself. Every ingest without --store-setting-rows does the same.",
+    )
+    .option("--org <alias>", "Salesforce alias (defaults to workspace binding or `sf` default)")
+    .option("--project <path>", "override project root (defaults to CWD)")
+    .option("--yes", "confirmation flag required to actually remove", false)
+    .action(async (opts: { org?: string; project?: string; yes?: boolean }) => {
+      const { purgeSettingRows } = await import("./commands/purge-setting-rows.js");
+      await purgeSettingRows({ org: opts.org, project: opts.project, yes: opts.yes });
     });
 
   program

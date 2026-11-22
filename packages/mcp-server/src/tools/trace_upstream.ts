@@ -3,7 +3,13 @@ import { asQualifiedName } from "@ryanstark24/sfgraph-shared";
 import { getToolContext } from "../context.js";
 import { defineTool, numeric, relTypes, z } from "./_define.js";
 import { findNodesSuggestion, notFoundReport } from "./_not-found.js";
-import { keepByStatus, renderReachList, shapeTrace, traceReport } from "./_reach_list.js";
+import {
+  keepByStatus,
+  renderReachList,
+  shapeTrace,
+  traceRefs,
+  traceReport,
+} from "./_reach_list.js";
 import { nameOf } from "./_report.js";
 
 const inputSchema = z.object({
@@ -144,8 +150,10 @@ defineTool({
       }),
       data: {
         found: true,
-        nodes: r.nodes.filter((n) => !dropped.has(String(n.qualifiedName))),
-        edges: r.edges.filter(live),
+        ...traceRefs(
+          r.nodes.filter((n) => !dropped.has(String(n.qualifiedName))),
+          r.edges.filter(live),
+        ),
         reached,
         pseudo,
         truncated,

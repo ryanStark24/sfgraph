@@ -80,6 +80,8 @@ export interface IngestOpts {
   noFlowResolve?: boolean | undefined;
   /** Skip the post-merge dangling-edge audit summary. */
   noAudit?: boolean | undefined;
+  /** Read and store custom setting row values (`--store-setting-rows`; default off). */
+  storeSettingRows?: boolean | undefined;
   /** Exit non-zero when ≥N transient sources skipped in a single-org ingest.
    *  Env: SFGRAPH_SKIP_THRESHOLD. Default 5. */
   skipThreshold?: number | undefined;
@@ -288,6 +290,7 @@ async function buildOnStore(
     disableArityResolve: Boolean(opts.noArityResolve),
     disableFlowInvocableResolve: Boolean(opts.noFlowResolve),
     disableAudit: Boolean(opts.noAudit),
+    ...(opts.storeSettingRows ? { storeCustomSettingRows: true } : {}),
     // A snapshot of the still-empty rebuilt graph adds nothing to the carried
     // history; the next ingest's snapshot records the rebuilt state.
     ...(carried > 0 ? { skipSnapshot: true } : {}),
