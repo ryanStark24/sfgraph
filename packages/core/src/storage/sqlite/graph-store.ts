@@ -946,8 +946,14 @@ export class SqliteGraphStore implements GraphStore {
           if ("customSettingRows" in parsed) {
             const { customSettingRows: _rows, ...attrs } = parsed;
             const marked = { ...attrs, [VECTORS_PENDING]: true };
+            // The stored source_hash is invalidated too: a later opt-in ingest of unchanged
+            // settings must see a different hash and rewrite the attributes, or the node would
+            // keep the stripped attributes while search text is rebuilt from the parsed rows.
             this.db
-              .prepare(`UPDATE ${tbl} SET attributes = ? WHERE org_id = ? AND qualified_name = ?`)
+              .prepare(
+                `UPDATE ${tbl} SET attributes = ?, source_hash = 'purged-custom-setting-rows'
+                  WHERE org_id = ? AND qualified_name = ?`,
+              )
               .run(JSON.stringify(marked), orgId, r.q);
             this.upsertNodeFts(orgId, r.q as QualifiedName, label, embedText(label, r.q, attrs));
           }

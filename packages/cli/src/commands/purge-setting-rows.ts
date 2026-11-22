@@ -36,6 +36,21 @@ async function resolveOrgId(opts: PurgeSettingRowsOpts): Promise<string> {
   return String((await resolveOrg(alias)).orgId);
 }
 
+/** What `purge-setting-rows` tells the user: the count of settings, and a warning with exit code 1 when vectors are pending. */
+export function purgeReport(
+  r: { settings: number; vectorsPending: number },
+  orgId: string,
+  vectorStoreAvailable: boolean,
+): { message: string; warning?: string; exitCode: number } {
+  const message = `purge-setting-rows: removed row values from ${r.settings} custom setting(s) for org=${orgId}`;
+  if (r.vectorsPending === 0) return { message, exitCode: 0 };
+  return {
+    message,
+    warning: `purge-setting-rows: NOT finished: the search vectors of ${r.vectorsPending} setting(s) were not deleted (${vectorStoreAvailable ? "a delete failed" : "the vector store is unavailable"}). The row values are gone from the graph; run this command again, or ingest, to finish.`,
+    exitCode: 1,
+  };
+}
+
 /**
  * Remove custom setting row values stored by an earlier sfgraph: the graph
  * rows, the search index entry, the vectors built from them and the snapshot
@@ -64,10 +79,11 @@ export async function purgeSettingRows(opts: PurgeSettingRowsOpts): Promise<void
     } catch {
       vectors = undefined;
     }
-    const n = purgeStoredCustomSettingRows(store, asOrgId(orgId), vectors);
-    console.log(
-      `purge-setting-rows: removed row values from ${n} custom setting(s) for org=${orgId}`,
-    );
+    const r = purgeStoredCustomSettingRows(store, asOrgId(orgId), vectors);
+    const out = purgeReport(r, orgId, vectors !== undefined);
+    console.log(out.message);
+    if (out.warning) console.error(out.warning);
+    if (out.exitCode) process.exitCode = out.exitCode;
   } finally {
     await store.close();
   }
