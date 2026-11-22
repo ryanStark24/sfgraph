@@ -27,6 +27,11 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 - **A 2000-alias chain no longer overflows the stack.** The analysis finishes and the class is never dropped from the report.
 - **`String.format` with typed or numeric arguments.** Integer, Long, Decimal, Double, Boolean, Id, Date, Datetime and Time arguments stay safe through `String.format`; a text argument still carries taint.
 - **DOM injection across lines.** `el.innerHTML = ''` followed on the next line by `.concat(userInput)`, `?.concat(...)`, a ternary or a trailing `+` is read as one expression and reported; a clear followed by a new statement is still a clear, and a fixed-string chain is not promoted.
+- **Project reads stay inside the project folder.** `sfgraph ingest --project` and the `wip_*` tools skip package directories and symlinks that resolve outside the project folder, and say which were skipped. Links that point inside the project keep working.
+- **One alias, one graph.** When two graph files carry the same alias, tools refuse and name both files instead of answering from one. A running server also re-checks which org an alias names on every call, so an alias moved to another org answers for the org it names now.
+- **Safer playbook steps.** The installed playbooks now ask the user before any `sf` command touches an org, name the org with `--target-org`, avoid production without explicit confirmation, and never suggest write or deploy commands without approval.
+- **Stored names and saved notes are shown as text.** Snapshot names, step names and component names are kept on one line in tool reports, and an `explain_code` saved explanation is labelled as user-provided text.
+- **Private file modes.** On macOS and Linux sfgraph creates its data folder owner-only (0700), and its graph, backup and org-list files owner-only (0600).
 
 ### Known limits
 

@@ -9,6 +9,7 @@ import type {
 } from "../interfaces/metadata-source.js";
 import { VLOCITY_NAMESPACE_CANDIDATES } from "../live-org/capabilities.js";
 import { ChangeTimes, type GitRunner } from "./change-times.js";
+import { Containment } from "./contain.js";
 import { type DataPackReport, indexDataPacks } from "./vlocity-datapacks.js";
 
 const SKIP_DIR_NAMES = new Set(["node_modules", ".git", "dist", "coverage", ".sfdx", ".sf"]);
@@ -26,12 +27,19 @@ export class FilesystemMetadataSource implements MetadataSource {
   /** Populated while iter() walks vlocity/datapacks (type counts + skipped packs). */
   readonly dataPackReport: DataPackReport = { skipped: [], types: {} };
 
+  /**
+   * Every path the walk may touch is checked against the project root's real
+   * path; what resolves outside is skipped and listed in `warnings()`.
+   */
+  private readonly contain: Containment;
+
   /** Runs the VCS for change times; tests inject a counting fake. */
   private readonly gitRunner: GitRunner | undefined;
 
   constructor(rootDir: string, packageDirs?: string[], opts: { git?: GitRunner } = {}) {
     this.gitRunner = opts.git;
     this.rootDir = rootDir;
+    this.contain = new Containment(rootDir);
     this.packageDirs = packageDirs && packageDirs.length > 0 ? packageDirs : ["force-app"];
   }
 
@@ -56,6 +64,18 @@ export class FilesystemMetadataSource implements MetadataSource {
       dirs = undefined;
     }
     return new FilesystemMetadataSource(root, dirs);
+  }
+
+  /** True when `p` really lies inside the project folder (realpath), recording nothing. */
+  isInside(p: string): boolean {
+    return this.contain.inside(p);
+  }
+
+  /** Paths the walk refused because they resolve outside the project folder. */
+  warnings(): string[] {
+    // A package directory that leads outside is refused even when nothing was walked yet.
+    for (const p of this.packageDirs) this.contain.allow(path.resolve(this.rootDir, p));
+    return this.contain.warnings();
   }
 
   private unloaded = new Set<string>();
@@ -84,18 +104,24 @@ export class FilesystemMetadataSource implements MetadataSource {
     const objectNames = new Set<string>();
     // One batched pass over history for every member's change time (never per file).
     const dp = path.join(this.rootDir, "vlocity", "datapacks");
+    const g = this.contain;
+    // A package directory (or the DataPack folder) that resolves outside the
+    // project is dropped before anything lists or reads it.
+    const pkgRoots = this.packageDirs
+      .map((p) => path.resolve(this.rootDir, p))
+      .filter((p) => g.allow(p));
     const times = await ChangeTimes.load(
       this.rootDir,
-      [...this.packageDirs.map((p) => path.resolve(this.rootDir, p)), dp],
+      [...pkgRoots, ...(g.inside(dp) ? [dp] : [])],
       this.gitRunner,
     );
-    for (const pkg of this.packageDirs) {
-      const pkgRoot = path.resolve(this.rootDir, pkg);
-      if (!safeIsDir(pkgRoot)) continue;
-      yield* walkPackage(pkgRoot, objectNames, times);
+    for (const pkgRoot of pkgRoots) {
+      if (!safeIsDir(pkgRoot, g)) continue;
+      yield* walkPackage(pkgRoot, objectNames, times, g);
     }
-    if (safeIsDir(dp)) {
+    if (safeIsDir(dp, g)) {
       const packs = indexDataPacks(dp, this.dataPackReport, {
+        contain: g,
         vlocityNamespace: detectVlocityNamespace(objectNames),
       });
       for await (const e of packs) {
@@ -191,9 +217,9 @@ export function detectVlocityNamespace(objectNames: Iterable<string>): string | 
   return best;
 }
 
-function safeIsDir(p: string): boolean {
+function safeIsDir(p: string, g: Containment): boolean {
   try {
-    return fs.statSync(p).isDirectory();
+    return fs.statSync(p).isDirectory() && g.allow(p);
   } catch {
     return false;
   }
@@ -202,8 +228,9 @@ function safeIsDir(p: string): boolean {
 /** Reads that failed for a reason other than the file being absent. */
 let readFailures = 0;
 
-function safeReadFile(p: string): string {
+function safeReadFile(p: string, g: Containment): string {
   try {
+    if (!g.allow(p)) return "";
     return fs.readFileSync(p, "utf8");
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") readFailures += 1;
@@ -578,11 +605,12 @@ const HANDLED_SEGMENTS: ReadonlySet<string> = new Set([
 const MAX_WALK_DEPTH = 6;
 
 /** A directory entry that is a file, following a symlink to a file (never to a folder). */
-function isFileEntry(dir: string, e: fs.Dirent): boolean {
+function isFileEntry(dir: string, e: fs.Dirent, g: Containment): boolean {
   if (e.isFile()) return true;
   if (!e.isSymbolicLink()) return false;
   try {
-    return fs.statSync(path.join(dir, e.name)).isFile();
+    const p = path.join(dir, e.name);
+    return fs.statSync(p).isFile() && g.allow(p);
   } catch {
     return false;
   }
@@ -608,6 +636,7 @@ function* walkMetaFolders(
   root: string,
   allRoots: readonly string[],
   times: ChangeTimes,
+  g: Containment,
 ): Iterable<IndexedMember> {
   // A folder that is, or holds, another metadata root is walked as that root.
   const holdsRoot = (d: string): boolean =>
@@ -650,7 +679,7 @@ function* walkMetaFolders(
           });
           continue;
         }
-        if (!isFileEntry(cur.dir, e)) continue;
+        if (!isFileEntry(cur.dir, e, g)) continue;
         const parts = splitMetaName(e.name);
         if (!parts || CLAIMED_SUFFIXES.has(parts.suffix)) continue;
         const lowerSuffix = parts.suffix.toLowerCase();
@@ -662,7 +691,7 @@ function* walkMetaFolders(
         const full = path.join(cur.dir, e.name);
         yield indexed(`file://${full}`, memberType, fileStamp(full), () => ({
           ref: makeRef(METADATA_CATEGORY.OPAQUE, memberType, memberName, full, times),
-          content: safeReadFile(full),
+          content: safeReadFile(full, g),
         }));
       }
     }
@@ -674,9 +703,10 @@ function* walkPackage(
   pkgRoot: string,
   objectNames: Set<string> | undefined,
   times: ChangeTimes,
+  g: Containment,
 ): Iterable<IndexedMember> {
   const seen = new Set<string>();
-  for (const m of walkPackageRoots(pkgRoot, objectNames, times)) {
+  for (const m of walkPackageRoots(pkgRoot, objectNames, times, g)) {
     if (seen.has(m.key)) continue;
     seen.add(m.key);
     yield m;
@@ -687,6 +717,7 @@ function* walkPackageRoots(
   pkgRoot: string,
   objectNames: Set<string> | undefined,
   times: ChangeTimes,
+  g: Containment,
 ): Iterable<IndexedMember> {
   // sfdx source-format usually has `main/default` (and sometimes other subroots).
   // We walk every subdirectory of pkgRoot (besides skip-list) looking for
@@ -766,7 +797,7 @@ function* walkPackageRoots(
     // Walk leaf specs
     for (const spec of LEAF_SPECS) {
       const dir = path.join(root, spec.segment);
-      if (!safeIsDir(dir)) continue;
+      if (!safeIsDir(dir, g)) continue;
       let files: fs.Dirent[];
       try {
         files = fs.readdirSync(dir, { withFileTypes: true });
@@ -774,13 +805,13 @@ function* walkPackageRoots(
         continue;
       }
       for (const f of files) {
-        if (!isFileEntry(dir, f)) continue;
+        if (!isFileEntry(dir, f, g)) continue;
         if (!f.name.endsWith(spec.suffix)) continue;
         const full = path.join(dir, f.name);
         const memberName = f.name.slice(0, -spec.suffix.length);
         yield indexed(`file://${full}`, spec.memberType, fileStamp(full), () => ({
           ref: makeRef(spec.category, spec.memberType, memberName, full, times),
-          content: safeReadFile(full),
+          content: safeReadFile(full, g),
         }));
       }
     }
@@ -789,7 +820,7 @@ function* walkPackageRoots(
     // per member folder (bots, genAiFunctions, genAiPlannerBundles).
     for (const spec of FOLDER_SPECS) {
       const segDir = path.join(root, spec.segment);
-      if (!safeIsDir(segDir)) continue;
+      if (!safeIsDir(segDir, g)) continue;
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(segDir, { withFileTypes: true });
@@ -803,7 +834,7 @@ function* walkPackageRoots(
           const full = path.join(segDir, ent.name);
           yield indexed(`file://${full}`, spec.memberType, fileStamp(full), () => ({
             ref: makeRef(spec.category, spec.memberType, name, full, times),
-            content: safeReadFile(full),
+            content: safeReadFile(full, g),
           }));
           continue;
         }
@@ -825,7 +856,7 @@ function* walkPackageRoots(
             // The member is named for its folder (the Metadata API fullName).
             yield indexed(`file://${full}`, spec.memberType, fileStamp(full), () => ({
               ref: makeRef(spec.category, spec.memberType, ent.name, full, times),
-              content: safeReadFile(full),
+              content: safeReadFile(full, g),
             }));
             continue;
           }
@@ -841,7 +872,7 @@ function* walkPackageRoots(
                   full,
                   times,
                 ),
-                content: safeReadFile(full),
+                content: safeReadFile(full, g),
               }));
             }
           }
@@ -851,13 +882,13 @@ function* walkPackageRoots(
 
     // Everyday folders with no dedicated parser, and the suffix fallback for
     // any other `<folder>/**/*.<type>-meta.xml` (opaque members, S-1.8.1-001).
-    yield* walkMetaFolders(root, mdRoots, times);
+    yield* walkMetaFolders(root, mdRoots, times, g);
 
     // Component bundles (folder per bundle): LWC, and Aura (corecorr-08: Aura
     // bundles were recognised as a metadata folder but never yielded).
     for (const bundleSpec of BUNDLE_SPECS) {
       const bundlesDir = path.join(root, bundleSpec.segment);
-      if (!safeIsDir(bundlesDir)) continue;
+      if (!safeIsDir(bundlesDir, g)) continue;
       let bundles: fs.Dirent[];
       try {
         bundles = fs.readdirSync(bundlesDir, { withFileTypes: true });
@@ -882,7 +913,7 @@ function* walkPackageRoots(
           .join("|");
         yield indexed(`file://${bundleDir}`, bundleSpec.memberType, fp, () => {
           const files: Record<string, string> = {};
-          for (const n of names) files[n] = safeReadFile(path.join(bundleDir, n));
+          for (const n of names) files[n] = safeReadFile(path.join(bundleDir, n), g);
           return {
             ref: makeRef(bundleSpec.category, bundleSpec.memberType, b.name, bundleDir, times),
             content: JSON.stringify({ bundleName: b.name, files }),
@@ -893,7 +924,7 @@ function* walkPackageRoots(
 
     // CustomObject bundles (folder per object)
     const objectsDir = path.join(root, "objects");
-    if (safeIsDir(objectsDir)) {
+    if (safeIsDir(objectsDir, g)) {
       let objs: fs.Dirent[];
       try {
         objs = fs.readdirSync(objectsDir, { withFileTypes: true });
@@ -939,18 +970,23 @@ function* walkPackageRoots(
           `recordTypes=${recordTypeStamps}`,
           `validationRules=${validationRuleStamps}`,
         ].join("\n");
-        const uriPath = stub ? (safeIsDir(fieldsDir) ? fieldsDir : objDir) : objectXmlPath;
+        const uriPath = stub ? (safeIsDir(fieldsDir, g) ? fieldsDir : objDir) : objectXmlPath;
         yield indexed(`file://${uriPath}`, "CustomObject", fp, () => {
           // `fields/` wins over a same-named field placed directly in the folder.
           const fields = {
-            ...readSubMap(objDir, ".field-meta.xml"),
-            ...readSubMap(fieldsDir, ".field-meta.xml"),
+            ...readSubMap(objDir, ".field-meta.xml", g),
+            ...readSubMap(fieldsDir, ".field-meta.xml", g),
           };
-          const objectXml = stub ? "" : safeReadFile(objectXmlPath);
-          const recordTypes = readSubMap(path.join(objDir, "recordTypes"), ".recordType-meta.xml");
+          const objectXml = stub ? "" : safeReadFile(objectXmlPath, g);
+          const recordTypes = readSubMap(
+            path.join(objDir, "recordTypes"),
+            ".recordType-meta.xml",
+            g,
+          );
           const validationRules = readSubMap(
             path.join(objDir, "validationRules"),
             ".validationRule-meta.xml",
+            g,
           );
           const content = JSON.stringify({
             apiName: o.name,
@@ -970,9 +1006,9 @@ function* walkPackageRoots(
   }
 }
 
-function readSubMap(dir: string, suffix: string): Record<string, string> {
+function readSubMap(dir: string, suffix: string, g: Containment): Record<string, string> {
   const out: Record<string, string> = {};
-  if (!safeIsDir(dir)) return out;
+  if (!safeIsDir(dir, g)) return out;
   let files: fs.Dirent[];
   try {
     files = fs.readdirSync(dir, { withFileTypes: true });
@@ -983,7 +1019,7 @@ function readSubMap(dir: string, suffix: string): Record<string, string> {
     if (!f.isFile()) continue;
     if (!f.name.endsWith(suffix)) continue;
     const apiName = f.name.slice(0, -suffix.length);
-    out[apiName] = safeReadFile(path.join(dir, f.name));
+    out[apiName] = safeReadFile(path.join(dir, f.name), g);
   }
   return out;
 }

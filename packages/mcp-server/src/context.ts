@@ -246,6 +246,7 @@ export function setToolContextFactory(fn: ToolContextFactory | null): void {
   contextCache.clear();
   keyIndex.clear();
   inFlight.clear();
+  aliasMemo.clear();
 }
 
 /**
@@ -262,6 +263,16 @@ export async function getToolContext(opts: { orgId?: string } = {}): Promise<Too
   // Always validate the user-supplied identifier at the entry point — even
   // when a test factory is installed — so security checks aren't bypassed.
   validateOrgIdentifier(rawKey);
+  // An alias is bound to the org it named when first resolved. If the mapping has changed since
+  // (alias moved to another org, a second graph file now holds it), do not trust the binding: drop
+  // it so the factory resolves the alias again. The old org's store stays cached under its id.
+  if (factory === defaultFactory && !isSalesforceOrgId(rawKey)) {
+    const bound = keyIndex.get(rawKey);
+    if (bound !== undefined) {
+      const now = currentAliasTarget(rawKey);
+      if (now === null ? !sfAliasFallbackEnabled() : now !== bound) keyIndex.delete(rawKey);
+    }
+  }
   const cachedKey = keyIndex.get(rawKey) ?? rawKey;
   const cached = contextCache.get(cachedKey);
   if (cached && fileSwapped(cached) && newFileReady(cached)) {
@@ -368,6 +379,8 @@ function invalidGraphReason(dbPath: string): string | null {
 interface RegisteredOrg {
   orgId: string;
   alias: string | null;
+  /** The graph file the row was read from (registry rows only). */
+  file?: string;
 }
 
 /**
@@ -401,7 +414,8 @@ function readOrgRegistry(dataDir: string): RegisteredOrg[] {
         alias: string | null;
       }>;
       for (const r of rows) {
-        if (r?.id) out.push({ orgId: String(r.id), alias: r.alias ? String(r.alias) : null });
+        if (r?.id)
+          out.push({ orgId: String(r.id), alias: r.alias ? String(r.alias) : null, file: f });
       }
     } catch {
       // ignore unreadable / non-sfgraph dbs
@@ -423,8 +437,18 @@ function readOrgRegistry(dataDir: string): RegisteredOrg[] {
  * ambiguous across different orgs.
  */
 function matchAlias(registry: RegisteredOrg[], alias: string): string | null {
-  const exact = registry.find((r) => r.alias === alias);
-  if (exact) return exact.orgId;
+  // One alias, one graph: when two graph files hold the same alias, refuse and name both rather
+  // than let whichever file the directory lists first answer.
+  const exact = registry.filter((r) => r.alias === alias);
+  const exactIds = [...new Set(exact.map((r) => r.orgId))];
+  if (exactIds.length > 1) {
+    const files = [...new Set(exact.map((r) => r.file ?? `${r.orgId}.sqlite`))].sort();
+    throw new SfgraphError(
+      ErrorCode.E_INVALID_ORG_IDENTIFIER,
+      `ambiguous org alias '${alias}': two graph files hold it (${files.join(" and ")}; orgIds ${exactIds.join(", ")}). Pass the orgId instead, then re-ingest or remove the file that should not carry this alias.`,
+    );
+  }
+  if (exact[0]) return exact[0].orgId;
   const lower = alias.toLowerCase();
   const ci = [
     ...new Set(registry.filter((r) => r.alias?.toLowerCase() === lower).map((r) => r.orgId)),
@@ -535,6 +559,47 @@ async function resolveAliasViaSfCli(alias: string): Promise<string | null> {
     );
   }
   return out;
+}
+
+/**
+ * What the local alias mapping is made of, cheaply: name, size and mtime of every graph file (and
+ * its write-ahead log, where an alias update lands first) and of orgs-snapshot.json. When it is
+ * unchanged the last resolution still holds.
+ */
+function aliasMappingStamp(dataDir: string): string {
+  const parts: string[] = [];
+  try {
+    for (const f of readdirSync(dataDir).sort()) {
+      if (!(f.endsWith(".sqlite") || f.endsWith(".sqlite-wal") || f === "orgs-snapshot.json"))
+        continue;
+      try {
+        const st = statSync(path.join(dataDir, f));
+        parts.push(`${f}:${st.size}:${st.mtimeMs}`);
+      } catch {
+        // vanished between listing and stat
+      }
+    }
+  } catch {
+    return "";
+  }
+  return parts.join("|");
+}
+
+const aliasMemo = new Map<string, { stamp: string; orgId: string | null }>();
+
+/**
+ * The org an alias names now, from the local registry and snapshot only (never the sf CLI), as
+ * last settled for the current mapping stamp. Throws the ambiguity error like the factory does.
+ */
+function currentAliasTarget(alias: string): string | null {
+  const dataDir = getSfgraphPaths().data;
+  const stamp = aliasMappingStamp(dataDir);
+  const memo = aliasMemo.get(alias);
+  if (memo && memo.stamp === stamp) return memo.orgId;
+  const orgId =
+    matchAlias(readOrgRegistry(dataDir), alias) ?? matchAlias(readSnapshotAliases(dataDir), alias);
+  aliasMemo.set(alias, { stamp, orgId });
+  return orgId;
 }
 
 async function defaultFactory(opts: { orgId?: string }): Promise<ToolContext> {

@@ -1,6 +1,6 @@
 import { getToolContext } from "../context.js";
 import { defineTool, z } from "./_define.js";
-import { countNoun, withInShort } from "./_report.js";
+import { countNoun, tableCell, withInShort } from "./_report.js";
 
 const inputSchema = z.object({ org: z.string().min(1) });
 
@@ -14,7 +14,7 @@ defineTool({
     const rows = snaps
       .map(
         (s) =>
-          `| \`${s.id}\` | ${s.label} | ${new Date(s.createdAt).toISOString()} | ${s.isAuto ? "auto" : "manual"} |`,
+          `| \`${s.id}\` | ${tableCell(s.label)} | ${new Date(s.createdAt).toISOString()} | ${s.isAuto ? "auto" : "manual"} |`,
       )
       .join("\n");
     const md = `| id | label | createdAt | kind |\n|---|---|---|---|\n${rows}`;

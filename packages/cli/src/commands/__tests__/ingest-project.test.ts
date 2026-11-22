@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -352,6 +360,49 @@ describe("Task 11c M-5: ingest locks and signals", () => {
       exit.mockRestore();
       kill.mockRestore();
       process.off("SIGINT", other);
+    }
+  });
+});
+
+describe("project ingest stays inside the project folder", () => {
+  it("skips a ../ package directory and an outside symlink and reports them", async () => {
+    const outside = mkdtempSync(path.join(tmpdir(), "sfg-outside-"));
+    try {
+      mkdirSync(path.join(outside, "force-app/main/default/classes"), { recursive: true });
+      writeFileSync(
+        path.join(outside, "force-app/main/default/classes/Theirs.cls"),
+        "public class Theirs {}",
+      );
+      writeFileSync(path.join(outside, "Link.cls"), "public class Link {}");
+      symlinkSync(
+        path.join(outside, "Link.cls"),
+        path.join(proj, "force-app/main/default/classes/Link.cls"),
+      );
+      writeFileSync(
+        path.join(proj, "sfdx-project.json"),
+        JSON.stringify({
+          packageDirectories: [
+            { path: "force-app" },
+            { path: path.relative(proj, path.join(outside, "force-app")) },
+          ],
+        }),
+      );
+      const o = await buildProjectIngestOpts(
+        { project: proj, org: "acme-repo" },
+        new ConsoleLogger(),
+      );
+      const src = o.metadataSource as unknown as {
+        iter(): AsyncIterable<{ ref: { memberName: string } }>;
+        warnings(): string[];
+      };
+      const names: string[] = [];
+      for await (const m of src.iter()) names.push(m.ref.memberName);
+      expect(names).toEqual(["Foo"]);
+      const w = src.warnings().join("\n");
+      expect(w).toContain("Link.cls");
+      expect(w).toContain("outside the project folder");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 });
