@@ -27,6 +27,7 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 - **A 2000-alias chain no longer overflows the stack.** The analysis finishes and the class is never dropped from the report.
 - **`String.format` with typed or numeric arguments.** Integer, Long, Decimal, Double, Boolean, Id, Date, Datetime and Time arguments stay safe through `String.format`; a text argument still carries taint.
 - **DOM injection across lines.** `el.innerHTML = ''` followed on the next line by `.concat(userInput)`, `?.concat(...)`, a ternary or a trailing `+` is read as one expression and reported; a clear followed by a new statement is still a clear, and a fixed-string chain is not promoted.
+- **Test-class helpers are not reported as SOQL injection.** An instance (non-static) helper method inside an `@isTest` class that concatenated a String into `Database.query` was reported as a high finding by `security_audit` and `export_sarif`; methods of test classes are now skipped, as the static ones already were.
 
 ### Security
 
