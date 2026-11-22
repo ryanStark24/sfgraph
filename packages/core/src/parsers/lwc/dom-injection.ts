@@ -142,7 +142,8 @@ const INSERT_RE = /\.\s*insertAdjacentHTML\s*\(/g;
  * `masked` is the same text as `rhs` with string contents blanked, so only a `+` operator
  * outside a string literal splits it.
  */
-function isLiteralOnly(rhsIn: string, maskedIn: string): boolean {
+function isLiteralOnly(rhsRaw: string, maskedRaw: string): boolean {
+  const [rhsIn, maskedIn] = stripOuterParens(rhsRaw, maskedRaw);
   // `'a'.concat('b', 'c')` with literal receiver and arguments reads as `'a' + 'b' + 'c'`.
   // `rhsIn` and `maskedIn` have the same length, so the same span is rewritten in both.
   let rhs = rhsIn.replace(/[\s;]+$/, "");
@@ -182,7 +183,38 @@ function isLiteralOnly(rhsIn: string, maskedIn: string): boolean {
   });
 }
 
-const isEmptyLiteral = (rhs: string): boolean => /^\s*(?:''|""|``)\s*;?\s*$/.test(rhs);
+/**
+ * Strips balanced parentheses that enclose the whole expression (`('a')`, `(('a'))`), not
+ * `('a') + (b)` whose first `(` closes before the end. `masked` is the same text with string
+ * contents blanked, so a bracket inside a string never counts. Both strings are cut alike.
+ */
+function stripOuterParens(rhs: string, masked: string): [string, string] {
+  let r = rhs.replace(/[\s;]+$/, "");
+  let m = masked.slice(0, r.length);
+  for (;;) {
+    const lead = r.length - r.trimStart().length;
+    if (r[lead] !== "(" || r[r.length - 1] !== ")") break;
+    let d = 0;
+    let closeAt = -1;
+    for (let k = lead; k < m.length; k++) {
+      if (m[k] === "(") d += 1;
+      else if (m[k] === ")") {
+        d -= 1;
+        if (d === 0) {
+          closeAt = k;
+          break;
+        }
+      }
+    }
+    if (closeAt !== r.length - 1) break;
+    r = r.slice(lead + 1, -1);
+    m = m.slice(lead + 1, -1);
+  }
+  return [r, m];
+}
+
+const isEmptyLiteral = (rhs: string): boolean =>
+  /^\s*(?:''|""|``)\s*;?\s*$/.test(stripOuterParens(rhs, rhs)[0]);
 
 /** Operators (longest first) that join two operands, so a line starting with one continues the expression. */
 const CONTINUE_START_RE =

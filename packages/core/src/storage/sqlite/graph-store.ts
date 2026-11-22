@@ -942,7 +942,7 @@ export class SqliteGraphStore implements GraphStore {
           .prepare(
             `SELECT qualified_name AS q, attributes AS a FROM ${tbl}
               WHERE org_id = ?
-                AND (json_type(attributes, '$.customSettingRows') IS NOT NULL
+                AND (json_type(attributes, '$.customSettingRows') NOT IN ('null')
                   OR json_type(attributes, '$.${VECTORS_PENDING}') IS NOT NULL)`,
           )
           .all(orgId) as Array<{ q: string; a: string }>;
@@ -953,7 +953,7 @@ export class SqliteGraphStore implements GraphStore {
           } catch {
             continue;
           }
-          if ("customSettingRows" in parsed) {
+          if (parsed.customSettingRows != null) {
             const { customSettingRows: _rows, ...attrs } = parsed;
             const marked = { ...attrs, [VECTORS_PENDING]: true };
             // The stored source_hash is invalidated too: a later opt-in ingest of unchanged
@@ -980,7 +980,7 @@ export class SqliteGraphStore implements GraphStore {
           .prepare(
             `UPDATE ${t} SET attributes = json_remove(attributes, '$.customSettingRows')
               WHERE org_id = ? AND label = ?
-                AND json_type(attributes, '$.customSettingRows') IS NOT NULL`,
+                AND json_type(attributes, '$.customSettingRows') NOT IN ('null')`,
           )
           .run(orgId, label);
       }
