@@ -133,7 +133,7 @@ export interface LiveIngestOpts {
   /** Auto snapshots kept per org, newest first. Default `SFGRAPH_SNAPSHOTS_KEPT` (5). */
   snapshotsKept?: number;
   /** Auto snapshots beyond the newest `snapshotsKept` go once older than this many days.
-   *  Default `SFGRAPH_SNAPSHOT_RETAIN_DAYS` (30); 0 removes all of them. */
+   *  Default `SFGRAPH_SNAPSHOT_RETAIN_DAYS` (0: all of them go). */
   snapshotRetentionDays?: number;
   /** Override @salesforce/core for tests. */
   resolveDeps?: ResolveOrgDeps;

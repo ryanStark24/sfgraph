@@ -231,7 +231,7 @@ children and CI runs where you can't pass flags.
 |---|---|---|
 | `SFGRAPH_REBUILD_BACKUPS_KEPT` | `1` | Rebuild backups kept per org. Pruned after a `--rebuild` sync completes, for every org. `0` keeps none. |
 | `SFGRAPH_SNAPSHOTS_KEPT` | `5` | Auto snapshots kept per org (newest N). Manual snapshots are never pruned. |
-| `SFGRAPH_SNAPSHOT_RETAIN_DAYS` | `30` | Auto snapshots beyond the newest N go once older than this; `0` removes all beyond N. |
+| `SFGRAPH_SNAPSHOT_RETAIN_DAYS` | `0` | Optional age floor: auto snapshots beyond the newest N stay until older than this many days. `0` = pure keep-newest-N. |
 
 See [`docs/CLI.md`](CLI.md#sfgraph-storage) for `sfgraph storage`.
 

@@ -9,6 +9,8 @@ import {
   envNonNegativeInt,
   freeBytesOf,
   reclaimableNotice,
+  snapshotRetainDays,
+  snapshotsKept,
 } from "../retention.js";
 import { SqliteGraphStore } from "../sqlite/graph-store.js";
 import { SqliteSnapshotStore } from "../sqlite/snapshot-store.js";
@@ -216,6 +218,29 @@ describe("auto snapshot retention", () => {
 });
 
 describe("retention settings", () => {
+  it("defaults to pure keep-newest-N: 10 recent auto snapshots become 5", () => {
+    const saved = [process.env.SFGRAPH_SNAPSHOTS_KEPT, process.env.SFGRAPH_SNAPSHOT_RETAIN_DAYS];
+    process.env.SFGRAPH_SNAPSHOTS_KEPT = "";
+    process.env.SFGRAPH_SNAPSHOT_RETAIN_DAYS = "";
+    try {
+      // an empty value is not a number: the defaults apply
+      expect([snapshotsKept(), snapshotRetainDays()]).toEqual([5, 0]);
+      for (let i = 0; i < 10; i++) step(i, true, 10 - i); // all within the last 10 days
+      expect(snap.pruneAuto(ORG, { keep: snapshotsKept(), retainDays: snapshotRetainDays() })).toBe(
+        5,
+      );
+      expect(snap.listSnapshots(ORG)).toHaveLength(5);
+    } finally {
+      for (const [k, v] of [
+        ["SFGRAPH_SNAPSHOTS_KEPT", saved[0]],
+        ["SFGRAPH_SNAPSHOT_RETAIN_DAYS", saved[1]],
+      ] as const) {
+        if (v === undefined) Reflect.deleteProperty(process.env, k);
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it("reads a non-negative integer from the environment and falls back otherwise", () => {
     const k = "SFGRAPH_TEST_RETENTION_KNOB";
     try {

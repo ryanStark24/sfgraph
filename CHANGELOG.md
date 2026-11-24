@@ -6,7 +6,7 @@
 
 - **Disk use no longer grows without bound.** A data dir reached 53 GB: 42 rebuild backups (~30 GB, an old org's 12 backups were never pruned because pruning only ran for the org being rebuilt), ~6 GB of auto pre-sync snapshots in one graph (only the manual `snapshot prune` ever removed them), and ~1 GB of free pages never given back.
   - Rebuild backups: the newest 1 per org is kept (`SFGRAPH_REBUILD_BACKUPS_KEPT`, was 2), pruned only after the rebuilt graph's sync completed, for every org's backups (an org whose ingest lock is held is skipped; files that are not rebuild backups are never touched). A failed rebuild and its retry can no longer delete the last good backup: the backup of a graph whose rebuild never finished is marked incomplete and never counts toward the ones kept.
-  - Auto snapshots: after each sync the newest `SFGRAPH_SNAPSHOTS_KEPT` (5) per org stay and older ones beyond those go once past `SFGRAPH_SNAPSHOT_RETAIN_DAYS` (30; 0 = all beyond N). Manual snapshots are never pruned. Deleting several snapshots now scans the version tables once instead of once per snapshot.
+  - Auto snapshots: after each sync the newest `SFGRAPH_SNAPSHOTS_KEPT` (5) per org stay and every older auto snapshot goes (optional age floor: `SFGRAPH_SNAPSHOT_RETAIN_DAYS`, default 0). Manual snapshots are never pruned. Deleting several snapshots now scans the version tables once instead of once per snapshot.
   - A sync prints `reclaimable <X> GB in <orgId>: run "sfgraph storage clean --vacuum"` when free pages exceed 256 MB.
 
 ### Added

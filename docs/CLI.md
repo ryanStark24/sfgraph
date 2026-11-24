@@ -220,7 +220,7 @@ sfgraph snapshot delete <snapshotId> [--org <alias>]
 
 Pre-sync auto-snapshots are created automatically by `sfgraph ingest`; these commands are for manual/scheduled snapshots.
 
-**Retention.** After every sync, auto snapshots (`is_auto`: the pre-sync snapshots, and `snapshot_create` with `kind: "scheduled"`) are pruned: the newest `SFGRAPH_SNAPSHOTS_KEPT` (default 5) per org always stay; older ones beyond those go once they are more than `SFGRAPH_SNAPSHOT_RETAIN_DAYS` (default 30) old (`0` = no age grace, all beyond N go). Manual snapshots (`sfgraph snapshot create`, `snapshot_create` with `kind: "manual"`) are never pruned automatically. Comparisons between the snapshots that stay (`point_in_time_diff`) give the same result as before. `sfgraph snapshot prune --retain-days <n>` still removes auto snapshots older than `n` days on demand.
+**Retention.** After every sync, auto snapshots (`is_auto`: the pre-sync snapshots, and `snapshot_create` with `kind: "scheduled"`) are pruned: the newest `SFGRAPH_SNAPSHOTS_KEPT` (default 5) per org always stay; every older one goes. `SFGRAPH_SNAPSHOT_RETAIN_DAYS` (default `0`) is an optional age floor: with a value above 0, snapshots beyond the newest N stay until they are older than that many days. Manual snapshots (`sfgraph snapshot create`, `snapshot_create` with `kind: "manual"`) are never pruned automatically. Comparisons between the snapshots that stay (`point_in_time_diff`) give the same result as before. `sfgraph snapshot prune --retain-days <n>` still removes auto snapshots older than `n` days on demand.
 
 ## `sfgraph storage`
 

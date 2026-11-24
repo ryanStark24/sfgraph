@@ -10,8 +10,8 @@ import type { BetterSqlite3Database } from "./interfaces.js";
 export const DEFAULT_REBUILD_BACKUPS_KEPT = 1;
 /** Auto snapshots kept per org, newest first. */
 export const DEFAULT_SNAPSHOTS_KEPT = 5;
-/** Auto snapshots beyond the newest N are removed once older than this many days. 0 = no age grace. */
-export const DEFAULT_SNAPSHOT_RETAIN_DAYS = 30;
+/** Age floor in days: auto snapshots beyond the newest N stay until older than this. Default 0 = no floor, pure keep-newest-N. */
+export const DEFAULT_SNAPSHOT_RETAIN_DAYS = 0;
 /** Free pages above this many bytes are worth a `sfgraph storage clean --vacuum`. */
 export const RECLAIMABLE_NOTICE_BYTES = 256 * 1024 * 1024;
 
@@ -33,7 +33,7 @@ export const rebuildBackupsKept = (): number =>
 export const snapshotsKept = (): number =>
   envNonNegativeInt("SFGRAPH_SNAPSHOTS_KEPT", DEFAULT_SNAPSHOTS_KEPT);
 
-/** `SFGRAPH_SNAPSHOT_RETAIN_DAYS` (default 30; 0 = no age grace). */
+/** `SFGRAPH_SNAPSHOT_RETAIN_DAYS` (default 0: no age floor, only the newest N stay). */
 export const snapshotRetainDays = (): number =>
   envNonNegativeInt("SFGRAPH_SNAPSHOT_RETAIN_DAYS", DEFAULT_SNAPSHOT_RETAIN_DAYS);
 
