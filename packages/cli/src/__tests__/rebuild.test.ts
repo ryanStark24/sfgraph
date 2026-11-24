@@ -208,7 +208,7 @@ describe("pruneRebuildBackups keeps the snapshot history", () => {
   it("two history-less backups in a row do not delete the only one with snapshots", async () => {
     const { SqliteGraphStore, SqliteSnapshotStore } = await import("@ryanstark24/sfgraph-core");
     const { asOrgId } = await import("@ryanstark24/sfgraph-shared");
-    const orgId = "00Dxxprune01";
+    const orgId = "00Dxxprune0001x";
     const dir = join(tmpDataDir, "backups");
     const { mkdirSync } = await import("node:fs");
     mkdirSync(dir, { recursive: true });
@@ -224,7 +224,7 @@ describe("pruneRebuildBackups keeps the snapshot history", () => {
     for (const n of [2, 3, 4]) writeFileSync(join(dir, name(n)), "stub");
 
     const { pruneRebuildBackups } = await import("../commands/ingest.js");
-    const pruned = await pruneRebuildBackups(dir, orgId);
+    const pruned = await pruneRebuildBackups(dir, orgId, { keep: 2 });
     expect(pruned).toEqual([name(2)]);
     const left = readdirSync(dir).filter((f) => f.endsWith(".sqlite"));
     expect(left.sort()).toEqual([name(1), name(3), name(4)]);
@@ -237,7 +237,7 @@ describe("pruneRebuildBackups keeps the snapshot history", () => {
     await s5.init();
     s5.createSnapshot(asOrgId(orgId), "newer", false);
     await g5.close();
-    expect((await pruneRebuildBackups(dir, orgId)).sort()).toEqual([name(1), name(3)]);
+    expect((await pruneRebuildBackups(dir, orgId, { keep: 2 })).sort()).toEqual([name(1), name(3)]);
   });
 });
 

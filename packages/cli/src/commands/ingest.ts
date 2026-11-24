@@ -16,10 +16,10 @@ import {
   liveIngest,
   loadBetterSqlite3,
   multiOrgIngest,
+  rebuildBackupsKept,
   resolveEmbedModelId,
   safeGitConfig,
   safeGitEnv,
-  snapshotCountInFile,
 } from "@ryanstark24/sfgraph-core";
 import type { IngestLock, LiveIngestOpts, MultiOrgIngestEntry } from "@ryanstark24/sfgraph-core";
 import {
@@ -31,6 +31,17 @@ import {
   restrictDbFiles,
   safeOrgDbPath,
 } from "@ryanstark24/sfgraph-shared";
+import {
+  type PruneOutcome,
+  SQLITE_SIDECAR_SUFFIXES,
+  clearRebuildPending,
+  formatBytes,
+  isRebuildPending,
+  markBackupIncomplete,
+  markRebuildPending,
+  pruneOrgBackups,
+  sweepBackups,
+} from "./rebuild-backups.js";
 import { retrySkippedLabels } from "./skip-labels.js";
 
 export interface IngestOpts {
@@ -273,6 +284,8 @@ async function buildOnStore(
   const carried = backupPath
     ? carrySnapshots(snapshotStore, backupPath, String(resolved.orgId))
     : 0;
+  const run = rebuildRuns.get(String(resolved.orgId));
+  if (run) run.carried = carried;
 
   // Wire a vector store so ingest GENERATES MiniLM embeddings — without this
   // `opts.vectorStore` is undefined, live-ingest never builds its embedding
@@ -513,15 +526,6 @@ function gitRevision(
 }
 
 /**
- * SQLite uses WAL by default in this codebase, which means alongside
- * `<file>.sqlite` you also get `<file>.sqlite-wal` and `<file>.sqlite-shm`.
- * Plain rollback journals add `<file>.sqlite-journal`. Without handling
- * these sidecars during --rebuild, the move/delete leaves orphans that
- * SQLite later reads back into the new DB, corrupting state.
- */
-const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"];
-
-/**
  * Run a move/delete of the graph file. On Windows a file another process has
  * open (`sfgraph serve`, or an MCP client's server) cannot be renamed or
  * deleted: report that plainly instead of a raw EBUSY/EPERM. Nothing has been
@@ -543,9 +547,6 @@ export function onGraphFile<T>(dbPath: string, op: () => T): T {
     throw e;
   }
 }
-
-/** Rebuild backups kept per org (each is a full copy of the graph file). */
-export const REBUILD_BACKUPS_KEPT = 2;
 
 /**
  * Copy the backup's snapshot tables into the rebuilt graph. A failure leaves
@@ -571,39 +572,108 @@ function carrySnapshots(store: SqliteSnapshotStore, backupPath: string, orgId: s
 }
 
 /**
- * Delete all but the newest {@link REBUILD_BACKUPS_KEPT} rebuild backups of
- * one org (with their sidecars). The names carry an ISO stamp, so name order
- * is time order. The newest backup that still holds snapshot history is always
- * kept too: a rebuild whose snapshot copy failed leaves a backup without
- * history, and two of those in a row must not push the real history out.
- * Best-effort.
+ * Delete all but the newest `keep` (default `SFGRAPH_REBUILD_BACKUPS_KEPT`, 1) complete
+ * rebuild backups of one org, with their sidecars; the names carry an ISO stamp, so name
+ * order is time order. Backups of an incomplete graph never count toward `keep`. With
+ * `protectHistory` (default) the newest complete backup that still holds snapshot history
+ * is kept too: a rebuild whose snapshot copy failed leaves that history only there.
+ * Returns the names removed. Best-effort. Runs only after a rebuild's sync completed
+ * (see {@link finishRebuild}), never from applyRebuild.
  */
-export async function pruneRebuildBackups(backupDir: string, orgId: string): Promise<string[]> {
-  const { readdirSync, unlinkSync } = await import("node:fs");
-  const prefix = `${orgId}.rebuild-`;
-  let names: string[];
-  try {
-    names = readdirSync(backupDir).filter((f) => f.startsWith(prefix) && f.endsWith(".sqlite"));
-  } catch {
-    return [];
-  }
-  const newestFirst = names.sort().reverse();
-  // -1 (unreadable) counts as holding history.
-  const history = newestFirst.find((f) => snapshotCountInFile(path.join(backupDir, f)) !== 0);
-  const old = newestFirst.slice(REBUILD_BACKUPS_KEPT).filter((f) => f !== history);
-  for (const f of old) {
-    for (const suffix of ["", ...SQLITE_SIDECAR_SUFFIXES]) {
-      try {
-        unlinkSync(path.join(backupDir, `${f}${suffix}`));
-      } catch {
-        /* best-effort */
-      }
-    }
-  }
-  return old;
+export async function pruneRebuildBackups(
+  backupDir: string,
+  orgId: string,
+  o: { keep?: number; protectHistory?: boolean } = {},
+): Promise<string[]> {
+  return pruneOrgBackups(backupDir, orgId, o).removed.map((b) => b.name);
 }
 
-/** Move (or delete) the org's graph file; returns the backup's path when moved. */
+/** What a --rebuild left to settle once its sync completes (keyed by org id). */
+const rebuildRuns = new Map<string, { carried: number }>();
+
+const describeFreed = formatBytes;
+
+function reportPrune(orgId: string, r: PruneOutcome, keep: number): void {
+  if (r.removed.length > 0) {
+    console.warn(
+      `REBUILD: removed ${r.removed.length} older backup${r.removed.length === 1 ? "" : "s"} for ${orgId} (keeping the newest ${keep}; freed ${describeFreed(r.freedBytes)})`,
+    );
+  }
+  for (const s of r.inUse) {
+    console.warn(
+      `REBUILD: backup ${s.name} skipped (in use); remove it later with 'sfgraph storage clean --backups --apply'`,
+    );
+  }
+}
+
+/**
+ * A --rebuild's sync finished (and its pre-sync snapshot was taken): the rebuilt graph is
+ * complete, so settle the backups. Clears the pending marker and prunes this org's backups
+ * to the newest `SFGRAPH_REBUILD_BACKUPS_KEPT` complete ones. A failed carry of the
+ * snapshot history keeps the newest backup that holds it. Returns the org id when it ran.
+ */
+export async function finishRebuild(orgId: string): Promise<boolean> {
+  const run = rebuildRuns.get(orgId);
+  if (!run) return false;
+  rebuildRuns.delete(orgId);
+  const dataDir = getSfgraphPaths().data;
+  clearRebuildPending(dataDir, orgId);
+  const keep = rebuildBackupsKept();
+  try {
+    reportPrune(
+      orgId,
+      pruneOrgBackups(path.join(dataDir, "backups"), orgId, {
+        keep,
+        protectHistory: run.carried === 0,
+      }),
+      keep,
+    );
+  } catch (e) {
+    console.warn(`REBUILD: could not prune old backups for ${orgId}: ${(e as Error).message}`);
+  }
+  return true;
+}
+
+/**
+ * After finished rebuilds: apply the same keep rule to every other org's backups, so a
+ * stale org's old copies go too. An org whose ingest lock is held is skipped, and so are
+ * files that are not rebuild backups (named, never removed).
+ */
+export function sweepOtherBackups(handled: ReadonlySet<string>): void {
+  try {
+    const r = sweepBackups(getSfgraphPaths().data, { skipOrgs: handled });
+    if (r.removed.length > 0) {
+      console.warn(
+        `REBUILD: removed ${r.removed.length} old backup${r.removed.length === 1 ? "" : "s"} of ${r.orgs.length} other org${r.orgs.length === 1 ? "" : "s"} (keeping the newest ${rebuildBackupsKept()} each; freed ${describeFreed(r.freedBytes)})`,
+      );
+    }
+    for (const s of r.inUse) {
+      console.warn(`REBUILD: backup ${s.name} skipped (in use)`);
+    }
+    for (const id of r.busyOrgs) {
+      console.warn(`REBUILD: backups of ${id} skipped (an ingest of that org is running)`);
+    }
+    if (r.other.length > 0) {
+      const bytes = r.other.reduce((n, f) => n + f.bytes, 0);
+      console.warn(
+        `REBUILD: backups/ also holds ${r.other.length} file${r.other.length === 1 ? "" : "s"} that ${r.other.length === 1 ? "is" : "are"} not rebuild backups (${describeFreed(bytes)}), not touched: ${r.other
+          .map((f) => f.name)
+          .slice(0, 5)
+          .join(", ")}${r.other.length > 5 ? ", ..." : ""}. 'sfgraph storage' lists them.`,
+      );
+    }
+  } catch (e) {
+    console.warn(`REBUILD: could not sweep old backups: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Move (or delete) the org's graph file; returns the backup's path when moved. Prunes
+ * NOTHING: older backups stay until the rebuilt graph's sync completes ({@link finishRebuild}),
+ * so a failed rebuild never costs the last good copy. A rebuild that starts while the
+ * previous one never finished is moving a half-built graph: its backup is marked incomplete
+ * and never counts toward the backups kept.
+ */
 async function applyRebuild(
   dbPath: string,
   orgId: string,
@@ -611,6 +681,11 @@ async function applyRebuild(
   logger: ConsoleLogger,
 ): Promise<string | undefined> {
   const { existsSync, renameSync, unlinkSync } = await import("node:fs");
+  const dataDir = getSfgraphPaths().data;
+  const previousUnfinished = isRebuildPending(dataDir, orgId);
+  // Until this rebuild's sync completes, the graph at dbPath is incomplete.
+  markRebuildPending(dataDir, orgId);
+  rebuildRuns.set(orgId, { carried: 0 });
   if (!existsSync(dbPath)) {
     logger.info(`rebuild: no existing graph at ${dbPath}; starting fresh`);
     return undefined;
@@ -630,12 +705,13 @@ async function applyRebuild(
     console.warn(`REBUILD: existing graph for ${orgId} DELETED (no-backup); running full sync`);
     return undefined;
   }
-  const backupDir = path.join(getSfgraphPaths().data, "backups");
+  const backupDir = path.join(dataDir, "backups");
   ensurePrivateDir(backupDir);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(backupDir, `${orgId}.rebuild-${stamp}.sqlite`);
   onGraphFile(dbPath, () => renameSync(dbPath, backupPath));
   restrictDbFiles(backupPath);
+  if (previousUnfinished) markBackupIncomplete(backupPath);
   for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
     const sidecar = `${dbPath}${suffix}`;
     if (existsSync(sidecar)) {
@@ -652,13 +728,9 @@ async function applyRebuild(
       }
     }
   }
-  console.warn(`REBUILD: existing graph for ${orgId} moved to ${backupPath}; running full sync`);
-  const pruned = await pruneRebuildBackups(backupDir, orgId);
-  if (pruned.length > 0) {
-    console.warn(
-      `REBUILD: removed ${pruned.length} older backup${pruned.length === 1 ? "" : "s"} for ${orgId} (keeping the newest ${REBUILD_BACKUPS_KEPT})`,
-    );
-  }
+  console.warn(
+    `REBUILD: existing graph for ${orgId} moved to ${backupPath}${previousUnfinished ? " (the previous rebuild never finished, so this copy is marked incomplete)" : ""}; running full sync`,
+  );
   return backupPath;
 }
 
@@ -698,9 +770,20 @@ export function ingestLocks(o: { dir?: string; onSignal?: (sig: NodeJS.Signals) 
   };
 }
 
+/**
+ * The syncs of these orgs completed: settle each --rebuild's backups ({@link finishRebuild}),
+ * then apply the keep rule to every other org's backups once.
+ */
+async function settleRebuilds(orgIds: string[]): Promise<void> {
+  const handled = new Set<string>();
+  for (const id of orgIds) if (await finishRebuild(id)) handled.add(id);
+  if (handled.size > 0) sweepOtherBackups(handled);
+}
+
 export async function ingestCmd(opts: IngestOpts): Promise<void> {
   const logger = new ConsoleLogger("info");
   const locks = ingestLocks();
+  rebuildRuns.clear();
   if (opts.embedModel) process.env.SFGRAPH_EMBED_MODEL_PATH = opts.embedModel;
   if (opts.embedModelId) process.env.SFGRAPH_EMBED_MODEL_ID = opts.embedModelId;
   if (opts.embedModelDim !== undefined) {
@@ -742,6 +825,7 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
       console.log(
         `ingest --project: ${result.membersProcessed} members, ${result.parseErrors} parse errors -> ${built.preResolved?.orgId}`,
       );
+      await settleRebuilds([String(built.preResolved?.orgId)]);
       reportOutsideRoot(built.metadataSource);
       const dp = (
         built.metadataSource as
@@ -822,6 +906,12 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
       const failed = summary.entries.filter(
         (e: MultiOrgIngestEntry) => e.status === "error",
       ).length;
+      // Only an org whose sync completed settles its rebuild backups.
+      await settleRebuilds(
+        summary.entries
+          .filter((e: MultiOrgIngestEntry) => e.status === "ok" && e.result)
+          .map((e: MultiOrgIngestEntry) => String(e.result?.orgId)),
+      );
       if (failed > 0) process.exitCode = 1;
       return;
     }
@@ -906,6 +996,7 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
       }
     }
 
+    let syncIncomplete = false;
     // Exit-code policy: signal partial failure when ≥N transient sources
     // skipped. Default threshold 5; env / flag override available. Use a
     // very high value (e.g. 9999) to preserve the prior always-exit-0
@@ -935,6 +1026,7 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
               `ingest: ${transient.length} transient source${transient.length === 1 ? "" : "s"} skipped (threshold=${threshold}). Setting exit code 1. Use --skip-threshold 9999 or SFGRAPH_SKIP_THRESHOLD=9999 to preserve exit 0.`,
             );
             process.exitCode = 1;
+            syncIncomplete = true;
           }
         } catch {
           /* malformed skip report; leave exit code alone */
@@ -942,6 +1034,8 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
       }
     }
 
+    // A sync that skipped too many sources is not a finished rebuild: keep the old backups.
+    if (!syncIncomplete) await settleRebuilds([String(built.preResolved?.orgId)]);
     await (built.graphStore as SqliteGraphStore).close();
   } catch (e) {
     if (e instanceof SfgraphError) {
@@ -988,6 +1082,7 @@ async function projectDelta(
           console.log(
             `ingest --project: ${result.membersProcessed} members, ${result.parseErrors} parse errors -> ${full.preResolved?.orgId}`,
           );
+          await settleRebuilds([String(full.preResolved?.orgId)]);
         } finally {
           await (full.graphStore as SqliteGraphStore).close();
         }
