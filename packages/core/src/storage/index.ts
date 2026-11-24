@@ -21,3 +21,4 @@ export {
   type RenameResult,
   type ServiceIdRecord,
 } from "./sqlite/rename-stability.js";
+export * from "./retention.js";

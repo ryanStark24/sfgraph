@@ -411,4 +411,6 @@ export interface SnapshotStore {
     limit: number,
   ): EdgeDiffPage;
   prune(orgId: OrgId, retainDays: number): number;
+  /** Delete auto snapshots beyond the newest `keep` (and older than `retainDays` unless 0); manual ones stay. */
+  pruneAuto(orgId: OrgId, o: { keep: number; retainDays: number }): number;
 }

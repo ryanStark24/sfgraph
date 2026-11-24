@@ -1033,10 +1033,6 @@ export class SqliteGraphStore implements GraphStore {
    */
   compactAfterPurge(): void {
     if (this.db.inTransaction) throw new Error("cannot compact inside a transaction");
-    const truncate = (): void => {
-      const r = this.db.pragma("wal_checkpoint(TRUNCATE)") as Array<{ busy?: number }>;
-      if (r[0]?.busy) throw new Error("another connection holds the database open (WAL busy)");
-    };
     try {
       this.db.exec("INSERT INTO _sfgraph_node_fts(_sfgraph_node_fts) VALUES('optimize')");
     } catch (e) {
@@ -1044,11 +1040,26 @@ export class SqliteGraphStore implements GraphStore {
       // failed compaction: rethrow so the marker stays and the caller reports it.
       if (!/no such table/i.test(e instanceof Error ? e.message : String(e))) throw e;
     }
+    this.compactFile();
+    // Only now is the purge final on disk; VACUUM rewrote the whole file, so every org is done.
+    this.db.exec(`DELETE FROM ${COMPACT_TABLE}`);
+  }
+
+  /**
+   * Rewrite the file without its free pages: WAL checkpoint (TRUNCATE), VACUUM, checkpoint
+   * again (VACUUM itself goes through the WAL). Must run outside a transaction and needs no
+   * other connection with the database open: throws "WAL busy" when one holds it, before
+   * VACUUM runs, so a busy file is left untouched. Needs about the file's size in free disk.
+   */
+  compactFile(): void {
+    if (this.db.inTransaction) throw new Error("cannot compact inside a transaction");
+    const truncate = (): void => {
+      const r = this.db.pragma("wal_checkpoint(TRUNCATE)") as Array<{ busy?: number }>;
+      if (r[0]?.busy) throw new Error("another connection holds the database open (WAL busy)");
+    };
     truncate();
     this.db.exec("VACUUM");
     truncate();
-    // Only now is the purge final on disk; VACUUM rewrote the whole file, so every org is done.
-    this.db.exec(`DELETE FROM ${COMPACT_TABLE}`);
   }
 
   /** True while a purge for this org changed the file and no compaction has succeeded since. */

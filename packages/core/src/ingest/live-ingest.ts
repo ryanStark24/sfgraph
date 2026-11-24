@@ -54,6 +54,12 @@ import type {
 } from "../storage/interfaces.js";
 import type { SnapshotStore } from "../storage/interfaces.js";
 import {
+  freeBytesOf,
+  reclaimableNotice,
+  snapshotRetainDays,
+  snapshotsKept,
+} from "../storage/retention.js";
+import {
   evaluateDeletionGuard,
   isSkipProtected,
   resolveMaxDropRatio,
@@ -124,7 +130,10 @@ export interface LiveIngestOpts {
   logger?: Logger;
   /** Skip pre-sync snapshot. Default false. */
   skipSnapshot?: boolean;
-  /** Snapshot retention in days. Default 30. */
+  /** Auto snapshots kept per org, newest first. Default `SFGRAPH_SNAPSHOTS_KEPT` (5). */
+  snapshotsKept?: number;
+  /** Auto snapshots beyond the newest `snapshotsKept` go once older than this many days.
+   *  Default `SFGRAPH_SNAPSHOT_RETAIN_DAYS` (30); 0 removes all of them. */
   snapshotRetentionDays?: number;
   /** Override @salesforce/core for tests. */
   resolveDeps?: ResolveOrgDeps;
@@ -2552,7 +2561,14 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
 
     if (opts.snapshotStore) {
       try {
-        opts.snapshotStore.prune(resolved.orgId, opts.snapshotRetentionDays ?? 30);
+        opts.snapshotStore.pruneAuto(resolved.orgId, {
+          keep: opts.snapshotsKept ?? snapshotsKept(),
+          retainDays: opts.snapshotRetentionDays ?? snapshotRetainDays(),
+        });
+        // Pruning frees pages inside the file but never shrinks it; say so once when it is a lot.
+        const db = (opts.snapshotStore as { db?: BetterSqlite3Database }).db;
+        const note = db ? reclaimableNotice(String(resolved.orgId), freeBytesOf(db)) : null;
+        if (note) console.log(note);
       } catch (e) {
         logger.warn("live-ingest: snapshot prune failed", { err: (e as Error).message });
       }
