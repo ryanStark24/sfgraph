@@ -111,6 +111,8 @@ Looks up historical CLI ingest runs from an **in-memory job store** maintained b
 // output.data: { snapshotId, createdAt }
 ```
 
+A snapshot made with `kind: "scheduled"` counts as an auto snapshot and is pruned by the next sync (the newest 5 per org stay; see `SFGRAPH_SNAPSHOTS_KEPT`). The default `kind: "manual"` is never pruned automatically.
+
 ### `snapshot_list`
 
 ```jsonc

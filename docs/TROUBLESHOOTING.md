@@ -225,6 +225,16 @@ children and CI runs where you can't pass flags.
 | `SFGRAPH_SKIP_LWC` | unset | Comma-separated DeveloperNames of LWC bundles to skip (e.g. one that crashes describe). |
 | `SFGRAPH_SKIP_SOBJECT` | unset | Comma-separated SObject names to skip. |
 
+### Disk use (retention)
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SFGRAPH_REBUILD_BACKUPS_KEPT` | `1` | Rebuild backups kept per org. Pruned after a `--rebuild` sync completes, for every org. `0` keeps none. |
+| `SFGRAPH_SNAPSHOTS_KEPT` | `5` | Auto snapshots kept per org (newest N). Manual snapshots are never pruned. |
+| `SFGRAPH_SNAPSHOT_RETAIN_DAYS` | `30` | Auto snapshots beyond the newest N go once older than this; `0` removes all beyond N. |
+
+See [`docs/CLI.md`](CLI.md#sfgraph-storage) for `sfgraph storage`.
+
 ### Embedding model overrides
 
 | Variable | Default | What it does |

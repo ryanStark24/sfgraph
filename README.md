@@ -137,6 +137,8 @@ The graph lands in `<data-dir>/<orgId>.sqlite` (macOS: `~/Library/Application Su
 
 For tuning, large-org options, multi-org ingest, and rebuild flags, see [`docs/CLI.md`](docs/CLI.md#sfgraph-ingest).
 
+**Disk use.** Graphs grow with every snapshot and every `--rebuild` backup. sfgraph keeps the newest 5 auto snapshots per org and the newest 1 rebuild backup per org on its own (settings: `SFGRAPH_SNAPSHOTS_KEPT`, `SFGRAPH_SNAPSHOT_RETAIN_DAYS`, `SFGRAPH_REBUILD_BACKUPS_KEPT`). `sfgraph storage` shows where the space is; `sfgraph storage clean` (a dry run unless `--apply`) removes backups and old snapshots and, with `--vacuum`, gives back free pages; `sfgraph storage drop <org>` deletes one stale graph. See [`docs/CLI.md`](docs/CLI.md#sfgraph-storage).
+
 ---
 
 ## Use it from your editor
@@ -293,6 +295,9 @@ Authoritative inventory — every `SFGRAPH_*` env var read at runtime, sorted al
 | `SFGRAPH_METADATA_READ_CHUNK_SIZE` | int | `10` | `metadata.read` composite batch size. | 1.0 |
 | `SFGRAPH_NO_AUTO_RETRY` | bool (`1`) | unset | Disable automatic retry on watchdog wedge / skip cascade. | 1.0 |
 | `SFGRAPH_NO_LIVENESS_PROBE` | bool (`1`) | unset | Skip the pre-ingest liveness probe. | 1.0 |
+| `SFGRAPH_REBUILD_BACKUPS_KEPT` | int ≥ 0 | `1` | Rebuild backups (`backups/<orgId>.rebuild-*.sqlite`, full graph copies) kept per org. Older ones are removed after a `--rebuild` sync completes, for every org. `0` keeps none (the snapshot history is still carried into the new graph). | 1.9.1 |
+| `SFGRAPH_SNAPSHOTS_KEPT` | int ≥ 0 | `5` | Auto snapshots (the pre-sync snapshot of each sync, and `snapshot_create` with `kind: scheduled`) kept per org; always the newest N. | 1.9.1 |
+| `SFGRAPH_SNAPSHOT_RETAIN_DAYS` | int ≥ 0 | `30` | Auto snapshots beyond the newest `SFGRAPH_SNAPSHOTS_KEPT` are removed by a sync once older than this many days. `0` = no age grace: every one beyond the newest N goes. Manual snapshots are never removed. | 1.9.1 |
 | `SFGRAPH_STORE_SETTING_ROWS` | bool (`1`) | unset | Same as `sfgraph ingest --store-setting-rows`: also store custom setting row values (default: names only). | 1.9 |
 | `SFGRAPH_SEQUENTIAL_SOURCES` | bool (`1`) | unset | Force serial source execution (debug aid; bypasses the sliding-window merger). | 1.0 |
 | `SFGRAPH_SKIP_LWC` | csv | unset | Skip specific LWC bundle `DeveloperName`s (also accepts `1` to skip the source entirely). | 1.0 |
