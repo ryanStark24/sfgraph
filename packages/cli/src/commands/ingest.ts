@@ -780,6 +780,17 @@ async function settleRebuilds(orgIds: string[]): Promise<void> {
   if (handled.size > 0) sweepOtherBackups(handled);
 }
 
+/**
+ * A plain ingest that built the whole graph (a full sync or a project delta, not --only,
+ * --retry-skipped or an incremental deletions-only run) completed: the graph is complete, so a
+ * `<orgId>.rebuild-pending.json` left by an earlier failed rebuild no longer applies, and a
+ * later rebuild must not mark its backup incomplete.
+ */
+function clearPendingAfterCompleteIngest(orgIds: string[]): void {
+  const dataDir = getSfgraphPaths().data;
+  for (const id of orgIds) clearRebuildPending(dataDir, id);
+}
+
 export async function ingestCmd(opts: IngestOpts): Promise<void> {
   const logger = new ConsoleLogger("info");
   const locks = ingestLocks();
@@ -826,6 +837,7 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
         `ingest --project: ${result.membersProcessed} members, ${result.parseErrors} parse errors -> ${built.preResolved?.orgId}`,
       );
       await settleRebuilds([String(built.preResolved?.orgId)]);
+      clearPendingAfterCompleteIngest([String(built.preResolved?.orgId)]);
       reportOutsideRoot(built.metadataSource);
       const dp = (
         built.metadataSource as
@@ -912,6 +924,13 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
           .filter((e: MultiOrgIngestEntry) => e.status === "ok" && e.result)
           .map((e: MultiOrgIngestEntry) => String(e.result?.orgId)),
       );
+      if (!opts.only && !opts.retrySkipped) {
+        clearPendingAfterCompleteIngest(
+          summary.entries
+            .filter((e: MultiOrgIngestEntry) => e.status === "ok" && e.result?.mode === "full")
+            .map((e: MultiOrgIngestEntry) => String(e.result?.orgId)),
+        );
+      }
       if (failed > 0) process.exitCode = 1;
       return;
     }
@@ -1035,7 +1054,12 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
     }
 
     // A sync that skipped too many sources is not a finished rebuild: keep the old backups.
-    if (!syncIncomplete) await settleRebuilds([String(built.preResolved?.orgId)]);
+    if (!syncIncomplete) {
+      await settleRebuilds([String(built.preResolved?.orgId)]);
+      if (!opts.only && !opts.retrySkipped && result.mode === "full") {
+        clearPendingAfterCompleteIngest([String(built.preResolved?.orgId)]);
+      }
+    }
     await (built.graphStore as SqliteGraphStore).close();
   } catch (e) {
     if (e instanceof SfgraphError) {
@@ -1089,6 +1113,7 @@ async function projectDelta(
       },
     });
     if (r.result) reportEmbeddingOutcome(r.result);
+    clearPendingAfterCompleteIngest([String(built.preResolved?.orgId)]);
     reportOutsideRoot(built.metadataSource);
   } finally {
     if (open) await store.close();

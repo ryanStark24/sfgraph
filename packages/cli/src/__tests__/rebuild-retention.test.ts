@@ -216,6 +216,41 @@ describe("rebuild keeps one backup and prunes only after a finished sync", () =>
   });
 });
 
+describe("a plain successful ingest clears the pending-rebuild marker", () => {
+  const marker = (): string => join(dataDir, `${ORG}.rebuild-pending.json`);
+
+  it("a failed rebuild, then a plain full ingest: the next rebuild's backup is complete", async () => {
+    await stubModules();
+    await makeGraph(join(dataDir, `${ORG}.sqlite`), ORG, 0);
+    liveIngestBehaviour = "fail";
+    await rebuild();
+    expect(existsSync(marker())).toBe(true);
+
+    liveIngestBehaviour = "ok";
+    const { ingestCmd } = await import("../commands/ingest.js");
+    await ingestCmd({ org: "fake", mode: "full" });
+    expect(existsSync(marker())).toBe(false);
+
+    await rebuild(); // moves a complete graph: its backup must not be marked incomplete
+    const names = backupNames();
+    expect(names.length).toBeGreaterThan(0);
+    for (const n of names) expect(existsSync(join(backupsDir(), `${n}.incomplete`))).toBe(false);
+  });
+
+  it("a targeted or failing ingest leaves the marker", async () => {
+    await stubModules();
+    await makeGraph(join(dataDir, `${ORG}.sqlite`), ORG, 0);
+    liveIngestBehaviour = "fail";
+    await rebuild();
+    const { ingestCmd } = await import("../commands/ingest.js");
+    await ingestCmd({ org: "fake", mode: "full" }); // fails: still incomplete
+    expect(existsSync(marker())).toBe(true);
+    liveIngestBehaviour = "ok";
+    await ingestCmd({ org: "fake", only: "apex" }); // not the whole graph
+    expect(existsSync(marker())).toBe(true);
+  });
+});
+
 describe("backup keep rules", () => {
   it("planBackupKeep: incomplete backups never count; history is protected when asked", async () => {
     const { planBackupKeep } = await import("../commands/rebuild-backups.js");
