@@ -49,3 +49,19 @@ export function reclaimableNotice(orgId: string, freeBytes: number): string | nu
   if (freeBytes <= RECLAIMABLE_NOTICE_BYTES) return null;
   return `reclaimable ${(freeBytes / 1024 ** 3).toFixed(1)} GB in ${orgId}: run "sfgraph storage clean --vacuum"`;
 }
+
+/**
+ * Of an org's snapshot rows, the auto ones {@link SqliteSnapshotStore.pruneAuto} deletes.
+ * Manual snapshots (`is_auto` 0) are never candidates. The newest `keep` auto snapshots
+ * (by created_at, then seq) always stay. Of the rest, those older than `retainDays` go;
+ * `retainDays` 0 means no age grace, so all of them go.
+ */
+export function selectAutoToPrune<
+  T extends { is_auto: number; created_at: number; seq?: number | null },
+>(rows: readonly T[], o: { keep: number; retainDays: number; now?: number }): T[] {
+  const auto = rows
+    .filter((r) => r.is_auto === 1)
+    .sort((a, b) => b.created_at - a.created_at || (b.seq ?? 0) - (a.seq ?? 0));
+  const cutoff = (o.now ?? Date.now()) - o.retainDays * 86_400_000;
+  return auto.slice(Math.max(0, o.keep)).filter((r) => o.retainDays === 0 || r.created_at < cutoff);
+}

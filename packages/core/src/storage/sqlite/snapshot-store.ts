@@ -19,6 +19,7 @@ import type {
   NodeDiff,
   SnapshotStore,
 } from "../interfaces.js";
+import { selectAutoToPrune } from "../retention.js";
 import { wrapAbiError } from "./load-better-sqlite3.js";
 import { MIGRATIONS, MigrationRunner } from "./migrations.js";
 import { advanceEdges, advanceNodes, visibleAt } from "./snapshot-versions.js";
@@ -876,15 +877,10 @@ export class SqliteSnapshotStore implements SnapshotStore {
   ): Snapshot[] {
     const rows = this.db
       .prepare(
-        `SELECT id, org_id, label, created_at, is_auto FROM _sfgraph_snapshots
-          WHERE org_id = ? AND is_auto = 1 ORDER BY created_at DESC, seq DESC`,
+        "SELECT id, org_id, label, created_at, is_auto, seq FROM _sfgraph_snapshots WHERE org_id = ? AND is_auto = 1",
       )
-      .all(orgId) as RawSnapshotRow[];
-    const cutoff = (o.now ?? Date.now()) - o.retainDays * 86_400_000;
-    return rows
-      .slice(Math.max(0, o.keep))
-      .filter((r) => o.retainDays === 0 || r.created_at < cutoff)
-      .map(snapshotFromRow);
+      .all(orgId) as Array<RawSnapshotRow & { seq: number }>;
+    return selectAutoToPrune(rows, o).map(snapshotFromRow);
   }
 
   /** Delete {@link autoSnapshotsToPrune} in one batch; returns how many went. */

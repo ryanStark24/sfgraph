@@ -1058,7 +1058,14 @@ export class SqliteGraphStore implements GraphStore {
       if (r[0]?.busy) throw new Error("another connection holds the database open (WAL busy)");
     };
     truncate();
-    this.db.exec("VACUUM");
+    // VACUUM builds the new file in a temporary database; this connection keeps temp data in
+    // memory (temp_store = MEMORY), which on a multi-GB graph means multi-GB of RAM.
+    this.db.pragma("temp_store = FILE");
+    try {
+      this.db.exec("VACUUM");
+    } finally {
+      this.db.pragma("temp_store = MEMORY");
+    }
     truncate();
   }
 
