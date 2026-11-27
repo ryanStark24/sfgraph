@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.9.1 — 2026-11-27
+
+**1.9.0 was never published.** Everything that was in 1.9.0 ships here, together with a fix for unbounded disk use, so 1.9.1 is the first release after 1.8.2. Upgrading from 1.8.2 you get all of it; the 1.9.0 upgrade notes (re-ingest once, custom setting rows no longer stored by default) apply to you.
 
 ### Fixed
 
@@ -9,16 +11,13 @@
   - Auto snapshots: after each sync the newest `SFGRAPH_SNAPSHOTS_KEPT` (5) per org stay and every older auto snapshot goes (optional age floor: `SFGRAPH_SNAPSHOT_RETAIN_DAYS`, default 0). Manual snapshots are never pruned. Deleting several snapshots now scans the version tables once instead of once per snapshot.
   - A sync prints `reclaimable <X> GB in <orgId>: run "sfgraph storage clean --vacuum"` when free pages exceed 256 MB.
 
-### Added
-
-- **`sfgraph storage`**: a read-only size report (`--json`, `--detail`); `sfgraph storage clean` (backups, auto snapshots, `--vacuum`; a dry run unless `--apply`; exit 3 when something was skipped busy or in use); `sfgraph storage drop <org>` (one whole graph and its backups). See `docs/CLI.md`.
-
-## 1.9.0 — 2026-11-15
+### The 1.9.0 changes, shipped in 1.9.1
 
 Four new static checks, added after a blind comparison with Salesforce Code Analyzer on a fixture of 15 planted defects, where sfgraph 1.8.2 caught one and Code Analyzer caught the four below. Nothing here was run against a real Salesforce org; the tests use synthetic fixtures. All output changes are additive: existing fields, risk kinds and their order are unchanged.
 
 ### Added
 
+- **`sfgraph storage`**: a read-only size report (`--json`, `--detail`); `sfgraph storage clean` (backups, auto snapshots, `--vacuum`; a dry run unless `--apply`; exit 3 when something was skipped busy or in use); `sfgraph storage drop <org>` (one whole graph and its backups). See `docs/CLI.md`.
 - **`governor.async-in-loop` (`governor_risk_check`, risk `async_in_loop`, severity high).** `System.enqueueJob`, `Database.executeBatch`, `EventBus.publish`, `Messaging.sendEmail` and calls to `@future` methods inside a `for`, `while` or `do` loop body of an Apex method or trigger.
 - **`governor.flow-dml-in-loop` (`governor_risk_check`, risk `flow_dml_in_loop`).** A Record Create, Update or Delete element on a Flow Loop element's iteration path, reported against the Flow with the element name. Works on graphs ingested before 1.9.0, because it reads the stored Flow XML.
 - **`security.soql-injection` (`security_audit`, `codeFindings`).** `Database.query`, `queryWithBinds`, `countQuery`, `getQueryLocator` and `Search.query` whose query string is built by concatenating a method parameter that was not escaped (`String.escapeSingleQuotes`) or bound.
@@ -34,7 +33,7 @@ Four new static checks, added after a blind comparison with Salesforce Code Anal
 - **Re-ingest once after upgrading.** The Apex, LWC and Aura parsers now record extra attributes, so their content hashes changed and the first ingest after upgrading re-parses every Apex class, trigger, LWC and Aura component. Existing graphs keep working but do not show the new security findings until then.
 - `governor_risk_check` documents the two new risk kinds in its `order` text (after `dml_in_loop`, before `no_bulk`); the order of the older kinds is unchanged.
 
-### Fixed (outside review of 1.9.0)
+### Fixed (outside review, first reported against 1.9.0)
 
 - **Removing stored custom setting row values now reaches the database file.** After a purge, sfgraph compacts the database (search index merge, WAL checkpoint, `VACUUM`) so old values no longer sit in free space; if that cannot run it says so (`purge-setting-rows` exits 1). A damaged stored value no longer stops the purge, an ingest whose purge fails skips its pre-sync snapshot, and a search vector that could not be deleted yet is remembered until it is. Backups, exported snapshots and the embedding cache are not rewritten; `PRIVACY.md` and `CLI.md` list them.
 - **`explain_code` stays fast on very long whitespace lines.** The check that keeps stored text from posing as a report heading no longer slows down on lines of tens of thousands of spaces.
