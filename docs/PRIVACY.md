@@ -55,6 +55,20 @@ sfgraph keeps its graph and vector store on your machine and is designed to only
      without revealing identity. Reset or delete it any time with
      `sfgraph telemetry reset-id` / `sfgraph telemetry purge`.
 
+## Custom setting rows
+
+A custom setting's rows are its values: endpoints, keys, per-user and per-profile settings. Since 1.9.0 `sfgraph ingest` does **not** read or store them. It keeps the setting's name and its link to the object, so the setting is still findable and traceable. Storing the rows is opt-in: `sfgraph ingest --store-setting-rows` (or `SFGRAPH_STORE_SETTING_ROWS=1`). With it, the rows are stored in plain text in the local graph and in the search index, and are part of what the tools that read nodes can show.
+
+What 1.9.0 does about rows an older version stored:
+
+- Every ingest of an org that is not run with `--store-setting-rows` removes them first: from the graph, from the search index, from the vectors built from them (which are rebuilt without them), and from the snapshot history kept in the same database.
+- `sfgraph purge-setting-rows --org <alias> --yes` does the same without an ingest.
+- After removing them, sfgraph compacts the database file (merges the search index, truncates the `-wal` file, runs `VACUUM`) so the old values are not left in free pages. If that cannot run (another sfgraph process has the database open) it warns, and `purge-setting-rows` exits 1; run it again with nothing else using the database.
+- If the purge itself cannot finish, an ingest skips its pre-sync snapshot instead of copying the stored rows.
+- **Not removed:** backup files (`.sfgraph-backups/` next to the database, and the backup a `--rebuild` makes), snapshots you exported, and the embedding cache (`embedding-cache/` in the data folder, which holds SHA-256 hashes and vectors of embedded texts, not the text; entries made from row values stay). Delete them yourself if they matter; the cache is rebuilt by the next ingest.
+
+The tools' structured output (`trace_upstream`, `trace_downstream`, `point_in_time_diff`) lists names, labels and change kinds, not stored values, and every tool's structured output is capped in size.
+
 ## What the local sink stores
 
 Failure events only. Each line is one JSON object with:

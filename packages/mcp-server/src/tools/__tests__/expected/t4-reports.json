@@ -24,7 +24,7 @@
       ],
       "total": 3,
       "truncated": false,
-      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
+      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, async_in_loop, flow_dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
       "cached": false,
       "scan": {
         "scanned": 3,
@@ -50,7 +50,7 @@
       ],
       "total": 3,
       "truncated": true,
-      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
+      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, async_in_loop, flow_dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
       "cached": false,
       "scan": {
         "scanned": 3,
@@ -70,7 +70,7 @@
       "risks": [],
       "total": 0,
       "truncated": false,
-      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
+      "order": "severity, then kind (soql_in_loop, sosl_in_loop, dynamic_soql_in_loop, dml_in_loop, async_in_loop, flow_dml_in_loop, no_bulk, unbounded_query), then qualified name, then evidence",
       "cached": false,
       "scan": {
         "scanned": 0,
@@ -339,7 +339,7 @@
         }
       ]
     },
-    "markdown": "**Top 1 nearest neighbour to ApexClass:CaseService:**\n\n| # | qname | label | similarity | via |\n| - | ----- | ----- | ---------- | --- |\n| 1 | `ApexClass:OrderService` | `ApexClass` | 0.875 | vector |\n\n_2 weaker vector match(es) hidden below the 0.4 similarity floor \u2014 lower `min_similarity` to include them._\n\n_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_"
+    "markdown": "**Top 1 nearest neighbour to ApexClass:CaseService:**\n\n| # | qname | label | similarity | via |\n| - | ----- | ----- | ---------- | --- |\n| 1 | `ApexClass:OrderService` | `ApexClass` | 0.875 | vector |\n\n_2 weaker vector match(es) hidden below the 0.4 similarity floor — lower `min_similarity` to include them._\n\n_follow_up_tools: `explain_code`, `trace_downstream`, `analyze_field`_"
   },
   "find_similar.ghost": {
     "data": {
@@ -455,39 +455,15 @@
       "nodeDiff": {
         "added": [
           {
-            "orgId": "org1",
             "qualifiedName": "ApexClass:Brand_New",
-            "label": "ApexClass",
-            "attributes": {},
-            "sourceHash": "h-ApexClass:Brand_New",
-            "firstSeenAt": 0,
-            "lastSeenAt": 0,
-            "lastModifiedAt": 0
+            "label": "ApexClass"
           }
         ],
         "removed": [],
         "changed": [
           {
-            "before": {
-              "orgId": "org1",
-              "qualifiedName": "ApexClass:CaseService",
-              "label": "ApexClass",
-              "attributes": {},
-              "sourceHash": "h-ApexClass:CaseService",
-              "firstSeenAt": 0,
-              "lastSeenAt": 0,
-              "lastModifiedAt": 0
-            },
-            "after": {
-              "orgId": "org1",
-              "qualifiedName": "ApexClass:CaseService",
-              "label": "ApexClass",
-              "attributes": {},
-              "sourceHash": "v2",
-              "firstSeenAt": 0,
-              "lastSeenAt": 0,
-              "lastModifiedAt": 0
-            }
+            "qualifiedName": "ApexClass:CaseService",
+            "label": "ApexClass"
           }
         ]
       },
@@ -519,7 +495,7 @@
       "truncated": false,
       "baselineEmpty": false
     },
-    "markdown": "**Components** \u2014 +1 / -0 / ~1\n**Records and configuration** (not components) \u2014 +0 / -0 / ~0\n**Nodes** \u2014 +1 / -0 / ~1\n**Edges** \u2014 +0 / -0\n\n```mermaid\nflowchart LR\n  n0[\"ApexClass:Brand_New\"]:::added\n  n1[\"ApexClass:CaseService\"]:::changed\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+    "markdown": "**Components** — +1 / -0 / ~1\n**Records and configuration** (not components) — +0 / -0 / ~0\n**Nodes** — +1 / -0 / ~1\n**Edges** — +0 / -0\n\n```mermaid\nflowchart LR\n  n0[\"ApexClass:Brand_New\"]:::added\n  n1[\"ApexClass:CaseService\"]:::changed\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
   },
   "point_in_time_diff.nochange": {
     "data": {
@@ -571,7 +547,7 @@
       "truncated": false,
       "baselineEmpty": false
     },
-    "markdown": "**Components** \u2014 +0 / -0 / ~0\n**Records and configuration** (not components) \u2014 +0 / -0 / ~0\n**Nodes** \u2014 +0 / -0 / ~0\n**Edges** \u2014 +0 / -0\n\n```mermaid\nflowchart LR\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
+    "markdown": "**Components** — +0 / -0 / ~0\n**Records and configuration** (not components) — +0 / -0 / ~0\n**Nodes** — +0 / -0 / ~0\n**Edges** — +0 / -0\n\n```mermaid\nflowchart LR\n  classDef added fill:#2ecc71,color:#fff,stroke:#27ae60\n  classDef removed fill:#e74c3c,color:#fff,stroke:#c0392b\n  classDef changed fill:#f1c40f,color:#000,stroke:#f39c12\n```"
   },
   "export_sarif.all": {
     "data": {
@@ -609,7 +585,7 @@
                       "text": "Apex method executes DML inside a loop."
                     },
                     "fullDescription": {
-                      "text": "Detected via the `hasDmlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 150 DML statements the platform allows per transaction \u2014 bulkify by collecting records into a list and committing once after the loop."
+                      "text": "Detected via the `hasDmlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 150 DML statements the platform allows per transaction — bulkify by collecting records into a list and committing once after the loop."
                     },
                     "defaultConfiguration": {
                       "level": "error"
@@ -625,7 +601,7 @@
                       "text": "Apex method executes SOQL inside a loop."
                     },
                     "fullDescription": {
-                      "text": "Detected via the `hasSoqlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 100 SOQL queries the platform allows per transaction \u2014 bulkify by moving the query outside the loop and consuming the results inline."
+                      "text": "Detected via the `hasSoqlInLoop` attribute set by Apex parsing. Each loop iteration consumes one of the 100 SOQL queries the platform allows per transaction — bulkify by moving the query outside the loop and consuming the results inline."
                     },
                     "defaultConfiguration": {
                       "level": "error"
@@ -1214,10 +1190,10 @@
       "lastSyncedAt": null,
       "ageDays": null,
       "stale": true,
-      "recommendation": "ingest is missing \u2014 run `sfgraph ingest --org org1` to refresh before relying on this analysis",
+      "recommendation": "ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis",
       "sourceRevision": null
     },
-    "markdown": "| org | last synced | age (days) | stale | recommendation |\n|---|---|---|---|---|\n| `org1` | _never_ | - | yes | ingest is missing \u2014 run `sfgraph ingest --org org1` to refresh before relying on this analysis |"
+    "markdown": "| org | last synced | age (days) | stale | recommendation |\n|---|---|---|---|---|\n| `org1` | _never_ | - | yes | ingest is missing — run `sfgraph ingest --org org1` to refresh before relying on this analysis |"
   },
   "freshness_report.all": {
     "data": {

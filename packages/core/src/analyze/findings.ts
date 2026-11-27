@@ -113,6 +113,40 @@ export const RULE_CATALOG: Record<string, RuleDescriptor> = {
       "Detected from the stored trigger source: it reads one record of `Trigger.new` / `Trigger.old` by a literal position (`Trigger.new[0]`, `Trigger.new.get(0)`), has no loop over the trigger's records, and does not pass the collections anywhere else. A trigger that delegates to a handler is not judged. Bulk DML produces triggers with up to 200 records in `Trigger.new`; a trigger that assumes a single record will silently mis-process the other 199 — refactor to iterate over the collection.",
     defaultLevel: "error",
   },
+  "governor.async-in-loop": {
+    id: "governor.async-in-loop",
+    name: "Async work in loop",
+    shortDescription:
+      "Apex starts a queueable, batch, future call, platform event or email inside a loop.",
+    fullDescription:
+      "Detected from the stored source of an Apex method or trigger: `System.enqueueJob`, `Database.executeBatch`, a call to an `@future` method, `EventBus.publish` or `Messaging.sendEmail` inside a for, while or do loop body. Each iteration uses part of a per-transaction limit (50 queueable jobs, 5 batch jobs queued, 50 future calls, 10 email invocations); a bulk insert past the limit throws and rolls the whole transaction back. Collect the work and start it once after the loop. Direct only: a loop that calls a helper which enqueues is not followed, and an `@future` method called on an instance variable is not matched.",
+    defaultLevel: "error",
+  },
+  "governor.flow-dml-in-loop": {
+    id: "governor.flow-dml-in-loop",
+    name: "Flow DML in loop",
+    shortDescription: "A Flow Create, Update or Delete Records element runs inside a Loop.",
+    fullDescription:
+      "Detected from the stored Flow XML: a Create Records, Update Records or Delete Records element that sits on a Loop element's iteration path (reached from the loop's next-value connector and leading back to the loop), so it runs once per record. Each run is a DML statement against the 150 per-transaction limit. Add the records to a collection variable inside the loop and save the collection once after it. A DML element reached only through the loop's 'after last' connector is not reported.",
+    defaultLevel: "error",
+  },
+  "security.soql-injection": {
+    id: "security.soql-injection",
+    name: "SOQL or SOSL injection",
+    shortDescription:
+      "Dynamic query built by concatenating a value that is not escaped and not bound.",
+    fullDescription:
+      "Detected from the stored source of an Apex method or trigger: `Database.query`, `queryWithBinds`, `countQuery`, `getQueryLocator` or `Search.query` whose query string is built by concatenating a method parameter (or a variable assigned from one) that did not pass through `String.escapeSingleQuotes`. A caller can end the string literal and add clauses. Use a bind variable (`:value`) or `String.escapeSingleQuotes`. Not reported: literals, numbers and Id/Boolean/Date typed variables, escaped values, binds, Schema describe names and ALL_CAPS constants. Class fields, other methods' return values and instance calls are not traced.",
+    defaultLevel: "error",
+  },
+  "security.dom-injection": {
+    id: "security.dom-injection",
+    name: "DOM injection in component JavaScript",
+    shortDescription: "LWC or Aura JavaScript sets innerHTML, outerHTML or insertAdjacentHTML.",
+    fullDescription:
+      "Detected from component JavaScript: an assignment to `innerHTML` or `outerHTML`, or an `insertAdjacentHTML` call. HTML in the value runs as markup, so user-entered or record data reaches the page unescaped (a stored cross-site scripting risk); in an LWC it needs `lwc:dom=\"manual\"` in the template, which is noted when present. Use template bindings or `textContent`. A fixed string literal is reported at note level and clearing (`innerHTML = ''`) is not reported. Aura `aura:unescapedHtml` is not checked.",
+    defaultLevel: "error",
+  },
   "security.fls-gap": {
     id: "security.fls-gap",
     name: "Field-level security gap",
@@ -155,6 +189,7 @@ export const RULE_CATALOG: Record<string, RuleDescriptor> = {
 import type { OrgId } from "@ryanstark24/sfgraph-shared";
 import type { NodeFact } from "../domain/index.js";
 import type { AuditResult } from "./audit-graph.js";
+import type { CodeSecurityFinding } from "./code-security.js";
 import { findDeadCode } from "./dead-code.js";
 import type { GovernorRisk } from "./governor.js";
 import type { SecurityAudit } from "./security.js";
@@ -164,8 +199,35 @@ export function governorRisksToFindings(risks: GovernorRisk[]): Finding[] {
     ruleId: `governor.${r.risk.replace(/_/g, "-")}`,
     message: `${r.qualifiedName}: ${r.evidence}`,
     level: RULE_CATALOG[`governor.${r.risk.replace(/_/g, "-")}`]?.defaultLevel ?? "warning",
-    location: { qualifiedName: r.qualifiedName },
-    properties: { evidence: r.evidence },
+    location: {
+      qualifiedName: r.qualifiedName,
+      ...(r.file ? { sourceUri: r.file } : {}),
+      ...(r.line ? { line: r.line } : {}),
+    },
+    properties: {
+      evidence: r.evidence,
+      ...(r.element ? { element: r.element } : {}),
+      ...(r.loop ? { loop: r.loop } : {}),
+    },
+  }));
+}
+
+/** Source-code security findings (injection checks) as SARIF findings. */
+export function codeSecurityToFindings(found: readonly CodeSecurityFinding[]): Finding[] {
+  return found.map((f) => ({
+    ruleId: f.ruleId,
+    message: `${f.qualifiedName}: ${f.message}`,
+    level: f.severity === "low" ? "note" : f.severity === "medium" ? "warning" : "error",
+    location: {
+      qualifiedName: f.qualifiedName,
+      ...(f.file ? { sourceUri: f.file } : {}),
+      ...(f.line ? { line: f.line } : {}),
+    },
+    properties: {
+      evidence: f.evidence,
+      ...(f.variable ? { variable: f.variable } : {}),
+      ...(f.kind ? { kind: f.kind } : {}),
+    },
   }));
 }
 
@@ -247,6 +309,8 @@ export function danglingEdgesToFindings(audit: AuditResult): Finding[] {
 export interface AllFindingsOpts {
   governor?: GovernorRisk[];
   security?: SecurityAudit;
+  /** Injection findings from source (`scanCodeSecurity`), reported with `security`. */
+  codeSecurity?: readonly CodeSecurityFinding[];
   deadCode?: NodeFact[];
   /** Known external entry points of the dead-code nodes, by qualified name. */
   deadCodeEntryPoints?: ReadonlyMap<string, readonly string[]>;
@@ -257,6 +321,7 @@ export function collectFindings(opts: AllFindingsOpts): Finding[] {
   const out: Finding[] = [];
   if (opts.governor) out.push(...governorRisksToFindings(opts.governor));
   if (opts.security) out.push(...securityAuditToFindings(opts.security));
+  if (opts.codeSecurity) out.push(...codeSecurityToFindings(opts.codeSecurity));
   if (opts.deadCode) out.push(...deadCodeToFindings(opts.deadCode, opts.deadCodeEntryPoints));
   if (opts.dangling) out.push(...danglingEdgesToFindings(opts.dangling));
   return out;

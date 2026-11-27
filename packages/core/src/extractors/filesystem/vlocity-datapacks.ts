@@ -3,6 +3,7 @@ import path from "node:path";
 import { METADATA_CATEGORY } from "../../domain/metadata-category.js";
 import type { IndexedMember, RawMember } from "../interfaces/metadata-source.js";
 import { memberNameFor, normaliseRow, tryParseJsonField } from "../vlocity-shared/row.js";
+import type { Containment } from "./contain.js";
 
 export interface DataPackReport {
   skipped: Array<{ path: string; reason: string }>;
@@ -24,7 +25,9 @@ export const EPC_SKIP = new Set([
 ]);
 const LOOKUP_TYPES = new Set(["VlocityLookupMatchingKeyObject", "VlocityMatchingKeyObject"]);
 
-async function readJson(p: string): Promise<unknown> {
+async function readJson(p: string, contain?: Containment): Promise<unknown> {
+  // A pack file or sibling that is a symlink out of the project is refused.
+  if (contain && !contain.allow(p)) throw new Error("resolves outside the project folder");
   return JSON.parse(await readFile(p, "utf8"));
 }
 
@@ -55,6 +58,8 @@ export interface DataPackOptions {
   /** Package namespace `%vlocity_namespace%` stands for (e.g. `vlocity_cmt`);
    *  null/undefined leaves the token in place. */
   vlocityNamespace?: string | null;
+  /** Project containment (set by the project walker). */
+  contain?: Containment;
 }
 
 /** Replace the `%vlocity_namespace%` token in a row's string values (object
@@ -130,7 +135,7 @@ export async function* indexDataPacks(
         key: `file://${packPath}`,
         memberType: type,
         fingerprint: parts.join("|"),
-        load: () => loadPack(type, dir, files, packName, packPath, ns, report),
+        load: () => loadPack(type, dir, files, packName, packPath, ns, report, opts.contain),
       };
     }
   }
@@ -144,10 +149,11 @@ async function loadPack(
   packPath: string,
   ns: string | null,
   report: DataPackReport,
+  contain?: Containment,
 ): Promise<RawMember | null> {
   let row: Record<string, unknown>;
   try {
-    const parsed = await readJson(packPath);
+    const parsed = await readJson(packPath, contain);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("not a JSON object");
     }
@@ -161,7 +167,7 @@ async function loadPack(
     if (typeof v === "string" && v.endsWith(".json") && v !== packName && files.has(v)) {
       inlined.add(v);
       try {
-        return await readJson(path.join(dir, v));
+        return await readJson(path.join(dir, v), contain);
       } catch {
         return v; // missing/malformed sibling: keep the filename string
       }
@@ -187,7 +193,7 @@ async function loadPack(
       const els: unknown[] = Array.isArray(out.Element) ? [...out.Element] : [];
       for (const f of orphans) {
         try {
-          const parsed = await readJson(path.join(dir, f));
+          const parsed = await readJson(path.join(dir, f), contain);
           if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
             els.push(normaliseChild(parsed));
         } catch (e) {

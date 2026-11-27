@@ -25,7 +25,7 @@ A **local, privacy-first knowledge graph for Salesforce orgs**. `sfgraph` live-s
 
 | | How |
 |---|---|
-| **Node.js ≥ 20** | [nodejs.org](https://nodejs.org) or `brew install node` |
+| **Node.js ≥ 22** | [nodejs.org](https://nodejs.org) or `brew install node` |
 | **`sf` CLI** | `npm install -g @salesforce/cli` |
 | **At least one `sf` login** | `sf org login web --alias my-org && sf config set target-org=my-org` |
 
@@ -137,6 +137,8 @@ The graph lands in `<data-dir>/<orgId>.sqlite` (macOS: `~/Library/Application Su
 
 For tuning, large-org options, multi-org ingest, and rebuild flags, see [`docs/CLI.md`](docs/CLI.md#sfgraph-ingest).
 
+**Disk use.** Graphs grow with every snapshot and every `--rebuild` backup. sfgraph keeps the newest 5 auto snapshots per org and the newest 1 rebuild backup per org on its own (settings: `SFGRAPH_SNAPSHOTS_KEPT`, optional age floor `SFGRAPH_SNAPSHOT_RETAIN_DAYS`, `SFGRAPH_REBUILD_BACKUPS_KEPT`). `sfgraph storage` shows where the space is; `sfgraph storage clean` (a dry run unless `--apply`) removes backups and old snapshots and, with `--vacuum`, gives back free pages; `sfgraph storage drop <org>` deletes one stale graph. See [`docs/CLI.md`](docs/CLI.md#sfgraph-storage).
+
 ---
 
 ## Use it from your editor
@@ -147,6 +149,8 @@ Restart your IDE so it picks up the new MCP entry. Then in any project ask the a
 - *"Who reads `Account.Status__c`?"*
 - *"What changed in prod since last week?"*
 - *"Show me how `accountTile` flows from UI to DB."*
+- *"Any SOQL injection or `innerHTML` in this project?"*
+- *"Is anything doing DML or enqueueing jobs inside a loop, including Flows?"*
 
 The agent routes to the right tool automatically via the installed skill playbooks. A short worked example:
 
@@ -291,6 +295,10 @@ Authoritative inventory — every `SFGRAPH_*` env var read at runtime, sorted al
 | `SFGRAPH_METADATA_READ_CHUNK_SIZE` | int | `10` | `metadata.read` composite batch size. | 1.0 |
 | `SFGRAPH_NO_AUTO_RETRY` | bool (`1`) | unset | Disable automatic retry on watchdog wedge / skip cascade. | 1.0 |
 | `SFGRAPH_NO_LIVENESS_PROBE` | bool (`1`) | unset | Skip the pre-ingest liveness probe. | 1.0 |
+| `SFGRAPH_REBUILD_BACKUPS_KEPT` | int ≥ 0 | `1` | Rebuild backups (`backups/<orgId>.rebuild-*.sqlite`, full graph copies) kept per org. Older ones are removed after a `--rebuild` sync completes, for every org. `0` keeps none (the snapshot history is still carried into the new graph). | 1.9.1 |
+| `SFGRAPH_SNAPSHOTS_KEPT` | int ≥ 0 | `5` | Auto snapshots (the pre-sync snapshot of each sync, and `snapshot_create` with `kind: scheduled`) kept per org; always the newest N. | 1.9.1 |
+| `SFGRAPH_SNAPSHOT_RETAIN_DAYS` | int ≥ 0 | `0` | Age floor: auto snapshots beyond the newest `SFGRAPH_SNAPSHOTS_KEPT` stay until they are older than this many days. `0` (default) = no floor, only the newest N stay. Manual snapshots are never removed. | 1.9.1 |
+| `SFGRAPH_STORE_SETTING_ROWS` | bool (`1`) | unset | Same as `sfgraph ingest --store-setting-rows`: also store custom setting row values (default: names only). | 1.9 |
 | `SFGRAPH_SEQUENTIAL_SOURCES` | bool (`1`) | unset | Force serial source execution (debug aid; bypasses the sliding-window merger). | 1.0 |
 | `SFGRAPH_SKIP_LWC` | csv | unset | Skip specific LWC bundle `DeveloperName`s (also accepts `1` to skip the source entirely). | 1.0 |
 | `SFGRAPH_SKIP_SOBJECT` | csv | unset | Skip specific SObjects by `QualifiedApiName` (escape hatch for `describe()`-crashing tables). | 1.0 |
@@ -311,11 +319,19 @@ Authoritative inventory — every `SFGRAPH_*` env var read at runtime, sorted al
 
 sfgraph aims to be honest about gaps. Read this section before relying on it for security or compliance audits.
 
+- **Custom setting rows are not stored (1.9.0).** A custom setting's name and its link to the object are ingested; its row values are not read, because settings often hold endpoints, keys and per-user values. `sfgraph ingest --store-setting-rows` (or `SFGRAPH_STORE_SETTING_ROWS=1`) opts in. Each ingest without it removes row values an older version stored, and `sfgraph purge-setting-rows` does so without an ingest. Backups and exported snapshots made earlier may still hold them. See [`docs/PRIVACY.md`](docs/PRIVACY.md#custom-setting-rows).
 - **Security model gaps.** Profile / PermissionSet / SharingRules are ingested as first-class nodes with `GRANTS_*` edges. However, **PermissionSetGroup, MutingPermissionSet, ProfileSessionSetting, ProfilePasswordPolicy** are ingested as opaque generic nodes WITHOUT `GRANTS_*` or `DENIES_*` edges — they exist as nodes but their security semantics are not modeled. Audits that rely on these edges will not surface findings for those types until a future Security phase.
 - **Security analysis caps.** The analysis layer caps results at 5000 per label (`SECURITY_PER_LABEL_CAP`). On orgs with more than 5k Profiles or PermissionSets, analysis is truncated with a `truncated: true` flag — **but graph storage is complete**.
 - **Generic-type whitelist.** sfgraph dispatches ~80 of the ~327 metadata types Salesforce returns from `describeMetadata()` to the parsed extractor path. The rest are recorded only as opaque generic nodes when matched by the whitelist; everything else is filtered out. Set `SFGRAPH_INCLUDE_ALL_GENERIC=1` to override (every discovered type runs through the generic extractor — longer ingest, more opaque nodes). The full type list is documented in [`docs/COVERAGE.md`](docs/COVERAGE.md).
 - **LWC empty-bundle behavior change (Phase 1.5).** Prior versions yielded a stub `RawMember` with `files: {}` on per-bundle resource-fetch failure, creating empty bundle nodes in the graph. Phase 1.5 emits a `wedge:lwc:bundleFetchFailed:...` warning and **no record**. Users who upgrade may see previously-recorded empty LWC bundles disappear from their graph on the next re-ingest. **This is correct.**
 - **Socket leak on wedged HTTP requests.** When the per-source watchdog fires, sfgraph releases the slot but the underlying jsforce HTTP request is NOT cancelled (no `AbortController` exposed by jsforce 3.10.15). The socket is reaped by Node's idle-timeout (~10min). Worst case: `SFGRAPH_MAX_BACKGROUND_WEDGES` (default 4) × ~1MB ≈ 4MB transient memory per ingest, GC'd at process exit. Tracked as future hardening; an upstream jsforce PR or fork is needed for true in-flight HTTP cancellation.
+- **Code checks (1.9.0).** `governor_risk_check`, `security_audit` and `export_sarif` report four static checks: `governor.async-in-loop`, `governor.flow-dml-in-loop`, `security.soql-injection` and `security.dom-injection`. They read the source stored in the local graph, never run code, and were tested on synthetic fixtures and one blind project, not calibrated against real org code. They report what they can see and stay silent on the rest, so **no finding is not a clean bill of health**. What they miss:
+  - *Async in a loop:* direct calls only. A call to an `@future` method is matched by name and by argument count, so a synchronous overload with a different number of parameters is not reported (if the arguments cannot be counted, the call is still reported). A loop that calls a helper which enqueues, an `@future` method called through an instance variable (`svc.notify(...)`), a one-line `@future public static void` declaration, and class-level initialisers are not seen. Severity is always high, and a loop bounded to one iteration is still reported.
+  - *Flow DML in a loop:* subflows and Apex actions inside the loop are not followed, so a subflow that does DML is missed.
+  - *SOQL injection:* taint is followed within one method (a parameter, or a variable assigned from one, through `+`, `+=`, `String.valueOf`, `String.format` arguments and `terms[0]` / `terms.get(0)`; a variable is tainted when any assignment to it anywhere carries taint, and a finding is dropped only when the call is outside every loop, every assignment to the variable and its copies is a straight-line statement and the last one before the call is safe; Integer, Long, Decimal, Double, Boolean, Id, Date, Datetime and Time values and `Map<K, Integer>` reads stay safe through them), not across methods. A tainted argument passed to any method call (static or instance) taints the call's result; the 1.8 rule runs underneath as a safety net. Class fields, values returned by another method (when no argument is tainted) and for-each variables are not traced, and a parameter escaped on only one branch counts as escaped (a tainted value stays tainted through a conditional assignment).
+  - *DOM injection:* only `innerHTML`, `outerHTML` and `insertAdjacentHTML` in LWC and Aura JavaScript. There is no data-flow check: any non-literal value is high. `aura:unescapedHtml`, `document.write`, `eval` and `lwc:dom="manual"` without an `innerHTML` assignment are not checked, and the string lexer does not understand regex literals that contain quotes.
+  - *SARIF paths:* `export_sarif` writes each finding's file as a percent-encoded URI reference (`project%20with%20spaces/...`), and its format check (`lintErrors`) now rejects a path that is not one.
+  - **Upgrade note:** the Apex, LWC and Aura parsers record new attributes, so the first ingest after upgrading to 1.9.0 re-parses every Apex class, trigger, LWC and Aura component (the content-hash salts changed). Until then the SOQL and DOM findings do not appear; the async-in-loop and Flow checks read stored source and work on older graphs. Full rule text: [`docs/TOOLS.md`](docs/TOOLS.md), [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -333,7 +349,7 @@ See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the full status matrix: every typ
 |---|---|
 | [`docs/CLI.md`](docs/CLI.md) | Full CLI reference — every command, every flag |
 | [`docs/TOOLS.md`](docs/TOOLS.md) | The 29 MCP tools — schemas, examples, algorithms |
-| [`docs/SKILLS.md`](docs/SKILLS.md) | The 20 skill playbooks installed into your editor |
+| [`docs/SKILLS.md`](docs/SKILLS.md) | The 21 skill playbooks installed into your editor |
 | [`docs/SAMPLES.md`](docs/SAMPLES.md) | Worked agent-conversation examples |
 | [`docs/COVERAGE.md`](docs/COVERAGE.md) | Metadata coverage matrix and SObject classification logic |
 | [`docs/WEB.md`](docs/WEB.md) | Local web visualiser |
@@ -349,4 +365,8 @@ See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the full status matrix: every typ
 
 ## License
 
-MIT
+The sfgraph package code is MIT, see [LICENSE](LICENSE). The bundled embedding
+model in `@ryanstark24/sfgraph-models` (all-MiniLM-L6-v2) is Apache-2.0; its
+license text and attribution are in
+[packages/models/THIRD_PARTY_LICENSES/all-MiniLM-L6-v2/LICENSE](packages/models/THIRD_PARTY_LICENSES/all-MiniLM-L6-v2/LICENSE)
+and [packages/models/NOTICE](packages/models/NOTICE).

@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -12,6 +20,7 @@ import { ConsoleLogger } from "@ryanstark24/sfgraph-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type IngestOpts,
+  assertAliasNotClaimedElsewhere,
   buildProjectIngestOpts as buildProjectIngestOptsRaw,
   ingestCmd,
   ingestLocks,
@@ -266,7 +275,8 @@ describe("Task 11c: ingest --project --delta and the ingest lock", () => {
       await g.close();
     }
     const backups = readdirSync(path.join(data, "backups")).filter((f) => f.endsWith(".sqlite"));
-    expect(backups).toHaveLength(2);
+    // 1.9.1: one rebuild backup is kept per org (SFGRAPH_REBUILD_BACKUPS_KEPT), pruned after the sync.
+    expect(backups).toHaveLength(1);
   });
 
   it("final review core M-3: --only and --retry-skipped are rejected with --project", async () => {
@@ -354,4 +364,96 @@ describe("Task 11c M-5: ingest locks and signals", () => {
       process.off("SIGINT", other);
     }
   });
+});
+
+describe("project ingest stays inside the project folder", () => {
+  it("skips a ../ package directory and an outside symlink and reports them", async () => {
+    const outside = mkdtempSync(path.join(tmpdir(), "sfg-outside-"));
+    try {
+      mkdirSync(path.join(outside, "force-app/main/default/classes"), { recursive: true });
+      writeFileSync(
+        path.join(outside, "force-app/main/default/classes/Theirs.cls"),
+        "public class Theirs {}",
+      );
+      writeFileSync(path.join(outside, "Link.cls"), "public class Link {}");
+      symlinkSync(
+        path.join(outside, "Link.cls"),
+        path.join(proj, "force-app/main/default/classes/Link.cls"),
+      );
+      writeFileSync(
+        path.join(proj, "sfdx-project.json"),
+        JSON.stringify({
+          packageDirectories: [
+            { path: "force-app" },
+            { path: path.relative(proj, path.join(outside, "force-app")) },
+          ],
+        }),
+      );
+      const o = await buildProjectIngestOpts(
+        { project: proj, org: "acme-repo" },
+        new ConsoleLogger(),
+      );
+      const src = o.metadataSource as unknown as {
+        iter(): AsyncIterable<{ ref: { memberName: string } }>;
+        warnings(): string[];
+      };
+      const names: string[] = [];
+      for await (const m of src.iter()) names.push(m.ref.memberName);
+      expect(names).toEqual(["Foo"]);
+      const w = src.warnings().join("\n");
+      expect(w).toContain("Link.cls");
+      expect(w).toContain("outside the project folder");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+it("refuses to stamp an alias that another org's graph file already claims", async () => {
+  const other = "00DBB0000000002AAA";
+  const g = new SqliteGraphStore({ dbPath: path.join(data, `${other}.sqlite`) });
+  await g.init();
+  g.upsertOrg({
+    id: other as never,
+    alias: "uat",
+    instanceUrl: "https://example.my.salesforce.com",
+    apiVersion: "62.0",
+    createdAt: Date.now(),
+  });
+  await g.close();
+  expect(() => assertAliasNotClaimedElsewhere(data, "00DAA0000000001AAA", "uat")).toThrow(
+    /already used by another org's graph/,
+  );
+  // The org's own file, and a different alias, are fine.
+  expect(() => assertAliasNotClaimedElsewhere(data, other, "uat")).not.toThrow();
+  expect(() => assertAliasNotClaimedElsewhere(data, "00DAA0000000001AAA", "dev")).not.toThrow();
+  await expect(
+    buildProjectIngestOpts({ project: proj, org: "uat" }, new ConsoleLogger("error")),
+  ).rejects.toThrow(/already used by another org's graph/);
+});
+
+it("refuses an alias that differs only in case from one another org's graph holds", async () => {
+  const other = "00DBB0000000002AAA";
+  const g = new SqliteGraphStore({ dbPath: path.join(data, `${other}.sqlite`) });
+  await g.init();
+  g.upsertOrg({
+    id: other as never,
+    alias: "UAT",
+    instanceUrl: "https://example.my.salesforce.com",
+    apiVersion: "62.0",
+    createdAt: Date.now(),
+  });
+  await g.close();
+  expect(() => assertAliasNotClaimedElsewhere(data, "00DAA0000000001AAA", "uat")).toThrow(
+    /already used by another org's graph/,
+  );
+  expect(() => assertAliasNotClaimedElsewhere(data, other, "uat")).not.toThrow();
+});
+
+it("errors, instead of passing, when the SQLite driver cannot load for the alias check", () => {
+  expect(() =>
+    assertAliasNotClaimedElsewhere(data, "00DAA0000000001AAA", "uat", () => {
+      throw new Error("Cannot find module 'better-sqlite3'");
+    }),
+  ).toThrow(/SQLite driver could not be loaded/);
 });

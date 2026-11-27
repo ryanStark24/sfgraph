@@ -169,6 +169,16 @@ function newFileReady(entry: CacheEntry): boolean {
   return graphFileReadiness(entry.dbFile.path, String(entry.ctx.orgId)).ready;
 }
 
+/**
+ * The entry's graph file is being replaced (a rebuild moved the old file aside and the new one is
+ * missing or not finished). While it is, the registry may not list the file's alias at all.
+ */
+function replacementInProgress(entry: CacheEntry): boolean {
+  if (!entry.dbFile) return false;
+  if (fileId(entry.dbFile.path) === null) return true;
+  return fileSwapped(entry) && !newFileReady(entry);
+}
+
 function lease(entry: CacheEntry): void {
   const scope = leaseScope.getStore();
   if (!scope || scope.has(entry)) return;
@@ -246,6 +256,7 @@ export function setToolContextFactory(fn: ToolContextFactory | null): void {
   contextCache.clear();
   keyIndex.clear();
   inFlight.clear();
+  aliasMemo.clear();
 }
 
 /**
@@ -262,6 +273,30 @@ export async function getToolContext(opts: { orgId?: string } = {}): Promise<Too
   // Always validate the user-supplied identifier at the entry point — even
   // when a test factory is installed — so security checks aren't bypassed.
   validateOrgIdentifier(rawKey);
+  // An alias is bound to the org it named when first resolved. If the mapping has changed since
+  // (alias moved to another org, a second graph file now holds it), do not trust the binding: drop
+  // it so the factory resolves the alias again. The old org's store stays cached under its id.
+  if (factory === defaultFactory && !isSalesforceOrgId(rawKey)) {
+    const bound = keyIndex.get(rawKey);
+    if (bound !== undefined) {
+      const now = currentAliasTarget(rawKey);
+      // A missing entry while the bound graph is being replaced (rebuild) is not a move: keep
+      // serving the old graph. Drop only when another file claims the alias, the alias names a
+      // different org, or it is gone and nothing is being replaced.
+      const swapping = (() => {
+        const e = contextCache.get(bound);
+        return e !== undefined && replacementInProgress(e);
+      })();
+      if (swapping && now !== null && now !== bound) {
+        throw new SfgraphError(
+          ErrorCode.E_INVALID_ORG_IDENTIFIER,
+          `org alias '${rawKey}' cannot be resolved safely right now: the graph it was bound to is being rebuilt and another org now claims the alias. Try again once the ingest has finished, or pass the orgId.`,
+        );
+      }
+      const stale = now === null ? !sfAliasFallbackEnabled() && !swapping : now !== bound;
+      if (stale) keyIndex.delete(rawKey);
+    }
+  }
   const cachedKey = keyIndex.get(rawKey) ?? rawKey;
   const cached = contextCache.get(cachedKey);
   if (cached && fileSwapped(cached) && newFileReady(cached)) {
@@ -368,6 +403,8 @@ function invalidGraphReason(dbPath: string): string | null {
 interface RegisteredOrg {
   orgId: string;
   alias: string | null;
+  /** The graph file the row was read from (registry rows only). */
+  file?: string;
 }
 
 /**
@@ -376,35 +413,53 @@ interface RegisteredOrg {
  * are skipped. Never touches the sf CLI or keychain.
  */
 function readOrgRegistry(dataDir: string): RegisteredOrg[] {
-  if (!existsSync(dataDir)) return [];
+  return readOrgRegistryDetailed(dataDir).orgs;
+}
+
+/**
+ * Like readOrgRegistry, and also names the org-id-named graph files that could not be read right
+ * now (0 bytes, not SQLite, no org row yet: an interrupted or running rebuild). Such a file may
+ * hold any alias, so alias resolution must not treat it as "not a holder".
+ */
+function readOrgRegistryDetailed(dataDir: string): { orgs: RegisteredOrg[]; unreadable: string[] } {
+  const out: RegisteredOrg[] = [];
+  const unreadable: string[] = [];
+  if (!existsSync(dataDir)) return { orgs: out, unreadable };
   let files: string[] = [];
   try {
     files = readdirSync(dataDir).filter((f) => f.endsWith(".sqlite") && !f.startsWith("backups"));
   } catch {
-    return [];
+    return { orgs: out, unreadable };
   }
-  const out: RegisteredOrg[] = [];
   for (const f of files) {
     const candidate = f.replace(/\.sqlite$/, "");
     if (!isSalesforceOrgId(candidate)) continue; // skip files whose name isn't a real orgId
     const dbPath = path.join(dataDir, f);
     try {
-      if (statSync(dbPath).size === 0) continue;
+      if (statSync(dbPath).size === 0) {
+        unreadable.push(f);
+        continue;
+      }
     } catch {
       continue;
     }
     const db = openReadonly(dbPath);
-    if (!db) continue;
+    if (!db) {
+      unreadable.push(f);
+      continue;
+    }
     try {
       const rows = db.prepare("SELECT id, alias FROM _sfgraph_orgs").all() as Array<{
         id: string;
         alias: string | null;
       }>;
+      if (rows.length === 0) unreadable.push(f);
       for (const r of rows) {
-        if (r?.id) out.push({ orgId: String(r.id), alias: r.alias ? String(r.alias) : null });
+        if (r?.id)
+          out.push({ orgId: String(r.id), alias: r.alias ? String(r.alias) : null, file: f });
       }
     } catch {
-      // ignore unreadable / non-sfgraph dbs
+      unreadable.push(f);
     } finally {
       try {
         db.close();
@@ -413,7 +468,29 @@ function readOrgRegistry(dataDir: string): RegisteredOrg[] {
       }
     }
   }
-  return out;
+  return { orgs: out, unreadable };
+}
+
+/**
+ * Fail closed (outside review of 1.9.0): a graph file that cannot be read right now may be the
+ * other holder of this alias. Resolving to the readable holder would be a silent cross-org access,
+ * so refuse, unless the alias is already bound to that same unreadable file (the old graph keeps
+ * serving through a rebuild).
+ */
+function assertNoUnreadableHolder(
+  alias: string,
+  unreadable: string[],
+  resolved: string | null,
+  bound: string | undefined,
+): void {
+  if (unreadable.length === 0) return;
+  const boundFile = bound === undefined ? null : `${bound}.sqlite`;
+  const others = unreadable.filter((f) => f !== boundFile);
+  if (others.length === 0 && (resolved === null || resolved === bound)) return;
+  throw new SfgraphError(
+    ErrorCode.E_INVALID_ORG_IDENTIFIER,
+    `org alias '${alias}' cannot be resolved safely right now: a graph file is being rebuilt or is unreadable (${unreadable.slice().sort().join(", ")}) and may hold this alias. Try again once the ingest has finished, or pass the orgId.`,
+  );
 }
 
 /**
@@ -423,19 +500,31 @@ function readOrgRegistry(dataDir: string): RegisteredOrg[] {
  * ambiguous across different orgs.
  */
 function matchAlias(registry: RegisteredOrg[], alias: string): string | null {
-  const exact = registry.find((r) => r.alias === alias);
-  if (exact) return exact.orgId;
+  // One alias, one graph: when two graph files hold the same alias, refuse and name both rather
+  // than let whichever file the directory lists first answer.
+  const exact = registry.filter((r) => r.alias === alias);
+  const exactIds = [...new Set(exact.map((r) => r.orgId))];
+  if (exactIds.length > 1) {
+    const files = [...new Set(exact.map((r) => r.file ?? `${r.orgId}.sqlite`))].sort();
+    throw new SfgraphError(
+      ErrorCode.E_INVALID_ORG_IDENTIFIER,
+      `ambiguous org alias '${alias}': two graph files hold it (${files.join(" and ")}; orgIds ${exactIds.join(", ")}). Pass the orgId instead, then re-ingest or remove the file that should not carry this alias.`,
+    );
+  }
   const lower = alias.toLowerCase();
+  // Case-insensitive holders decide ambiguity, exact match included: `UAT` on org A and `uat` on
+  // org B must not let an exact-case lookup quietly pick one of them.
   const ci = [
     ...new Set(registry.filter((r) => r.alias?.toLowerCase() === lower).map((r) => r.orgId)),
   ];
-  if (ci.length === 1) return ci[0] ?? null;
   if (ci.length > 1) {
     throw new SfgraphError(
       ErrorCode.E_INVALID_ORG_IDENTIFIER,
-      `ambiguous org alias '${alias}': it matches several ingested orgs case-insensitively (${ci.join(", ")}). Pass the exact alias or the orgId.`,
+      `ambiguous org alias '${alias}': it matches several ingested orgs case-insensitively (${ci.join(", ")}). Pass the orgId, then re-ingest or remove the file that should not carry this alias.`,
     );
   }
+  if (exact[0]) return exact[0].orgId;
+  if (ci.length === 1) return ci[0] ?? null;
   return null;
 }
 
@@ -537,6 +626,52 @@ async function resolveAliasViaSfCli(alias: string): Promise<string | null> {
   return out;
 }
 
+/**
+ * What the local alias mapping is made of, cheaply: name, size and mtime of every graph file (and
+ * its write-ahead log, where an alias update lands first) and of orgs-snapshot.json. When it is
+ * unchanged the last resolution still holds.
+ */
+function aliasMappingStamp(dataDir: string): string {
+  const parts: string[] = [];
+  try {
+    for (const f of readdirSync(dataDir).sort()) {
+      if (!(f.endsWith(".sqlite") || f.endsWith(".sqlite-wal") || f === "orgs-snapshot.json"))
+        continue;
+      try {
+        const st = statSync(path.join(dataDir, f));
+        parts.push(`${f}:${st.size}:${st.mtimeMs}`);
+      } catch {
+        // vanished between listing and stat
+      }
+    }
+  } catch {
+    return "";
+  }
+  return parts.join("|");
+}
+
+const aliasMemo = new Map<string, { stamp: string; orgId: string | null; unreadable: string[] }>();
+
+/**
+ * The org an alias names now, from the local registry and snapshot only (never the sf CLI), as
+ * last settled for the current mapping stamp. Throws the ambiguity error like the factory does.
+ */
+function currentAliasTarget(alias: string): string | null {
+  const dataDir = getSfgraphPaths().data;
+  const stamp = aliasMappingStamp(dataDir);
+  const bound = keyIndex.get(alias);
+  const memo = aliasMemo.get(alias);
+  if (memo && memo.stamp === stamp) {
+    assertNoUnreadableHolder(alias, memo.unreadable, memo.orgId, bound);
+    return memo.orgId;
+  }
+  const reg = readOrgRegistryDetailed(dataDir);
+  const orgId = matchAlias(reg.orgs, alias) ?? matchAlias(readSnapshotAliases(dataDir), alias);
+  aliasMemo.set(alias, { stamp, orgId, unreadable: reg.unreadable });
+  assertNoUnreadableHolder(alias, reg.unreadable, orgId, bound);
+  return orgId;
+}
+
 async function defaultFactory(opts: { orgId?: string }): Promise<ToolContext> {
   const orgIdOrAlias = opts.orgId ?? "default";
   // Hard-fail on malformed input BEFORE any path joinery.
@@ -549,10 +684,12 @@ async function defaultFactory(opts: { orgId?: string }): Promise<ToolContext> {
   // sf-CLI / AuthInfo / keychain access (audit tools-09).
   let resolvedOrgId = orgIdOrAlias;
   if (!isSalesforceOrgId(orgIdOrAlias)) {
-    const registry = readOrgRegistry(paths.data);
+    const detailed = readOrgRegistryDetailed(paths.data);
+    const registry = detailed.orgs;
     let found =
       matchAlias(registry, orgIdOrAlias) ??
       matchAlias(readSnapshotAliases(paths.data), orgIdOrAlias);
+    assertNoUnreadableHolder(orgIdOrAlias, detailed.unreadable, found, keyIndex.get(orgIdOrAlias));
     if (!found && sfAliasFallbackEnabled()) {
       found = await resolveAliasViaSfCli(orgIdOrAlias);
     }

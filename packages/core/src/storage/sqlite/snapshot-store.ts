@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readSync } from "node:fs";
+import { closeSync, openSync, readSync } from "node:fs";
 import path from "node:path";
-import { StorageError, asOrgId, asQualifiedName, asSha256 } from "@ryanstark24/sfgraph-shared";
+import {
+  StorageError,
+  asOrgId,
+  asQualifiedName,
+  asSha256,
+  ensurePrivateDir,
+  restrictDbFiles,
+} from "@ryanstark24/sfgraph-shared";
 import type { OrgId, QualifiedName, Sha256 } from "@ryanstark24/sfgraph-shared";
 import Database from "better-sqlite3";
 import type { EdgeFact, NodeFact, RelType, Snapshot } from "../../domain/index.js";
@@ -12,6 +19,7 @@ import type {
   NodeDiff,
   SnapshotStore,
 } from "../interfaces.js";
+import { selectAutoToPrune } from "../retention.js";
 import { wrapAbiError } from "./load-better-sqlite3.js";
 import { MIGRATIONS, MigrationRunner } from "./migrations.js";
 import { advanceEdges, advanceNodes, visibleAt } from "./snapshot-versions.js";
@@ -193,7 +201,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     } else {
       if (opts.dbPath !== ":memory:") {
         const dir = path.dirname(opts.dbPath);
-        if (dir && dir !== ".") mkdirSync(dir, { recursive: true });
+        if (dir && dir !== ".") ensurePrivateDir(dir);
       }
       try {
         this.db = new Database(opts.dbPath);
@@ -203,6 +211,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
         throw e;
       }
       this.ownsDb = true;
+      if (opts.dbPath !== ":memory:") restrictDbFiles(opts.dbPath);
     }
   }
 
@@ -416,35 +425,62 @@ export class SqliteSnapshotStore implements SnapshotStore {
    * is again that snapshot's state.
    */
   deleteSnapshot(id: string): void {
-    const apply = this.db.transaction(() => {
-      const row = this.db
-        .prepare("SELECT org_id, seq FROM _sfgraph_snapshots WHERE id = ?")
-        .get(id) as { org_id: string; seq: number } | undefined;
-      this.db.prepare("DELETE FROM _sfgraph_snapshots WHERE id = ?").run(id);
-      if (!row) return;
-      const params = { org: row.org_id, seq: row.seq };
-      for (const t of ["_sfgraph_snap_nodes", "_sfgraph_snap_edges"]) {
-        this.db
-          .prepare(
-            `DELETE FROM ${t} AS v
-              WHERE v.org_id = @org AND ${visibleAt("v", "seq")}
-                AND NOT EXISTS (SELECT 1 FROM _sfgraph_snapshots s
-                                 WHERE s.org_id = v.org_id AND s.seq >= v.from_seq
-                                   AND (v.to_seq IS NULL OR s.seq < v.to_seq))`,
-          )
-          .run(params);
-        this.db
-          .prepare(
-            `UPDATE ${t} SET to_seq = NULL
-              WHERE org_id = @org AND to_seq IS NOT NULL
-                AND to_seq > (SELECT COALESCE(MAX(seq), 0) FROM _sfgraph_snapshots WHERE org_id = @org)`,
-          )
-          .run({ org: row.org_id });
+    this.deleteSnapshots([id]);
+  }
+
+  /**
+   * {@link deleteSnapshot} for many snapshots in ONE transaction: the version
+   * tables are scanned once per org for the whole batch, not once per snapshot
+   * (each pass over a multi-GB version table is what made pruning ten snapshots
+   * slow). The result is the same as deleting them one by one: a version row
+   * goes when it was visible at a deleted snapshot and no remaining snapshot
+   * sees it, and rows closed after the org's newest remaining snapshot reopen.
+   * Unknown ids are ignored. Returns how many snapshots were deleted.
+   */
+  deleteSnapshots(ids: readonly string[]): number {
+    if (ids.length === 0) return 0;
+    const apply = this.db.transaction((): number => {
+      const byOrg = new Map<string, number[]>();
+      const find = this.db.prepare("SELECT org_id, seq FROM _sfgraph_snapshots WHERE id = ?");
+      const del = this.db.prepare("DELETE FROM _sfgraph_snapshots WHERE id = ?");
+      let deleted = 0;
+      for (const id of new Set(ids)) {
+        const row = find.get(id) as { org_id: string; seq: number } | undefined;
+        if (!row) continue;
+        del.run(id);
+        deleted++;
+        const list = byOrg.get(row.org_id) ?? [];
+        list.push(row.seq);
+        byOrg.set(row.org_id, list);
       }
+      for (const [org, seqs] of byOrg) {
+        const params = { org, seqs: JSON.stringify(seqs) };
+        for (const t of ["_sfgraph_snap_nodes", "_sfgraph_snap_edges"]) {
+          this.db
+            .prepare(
+              `DELETE FROM ${t} AS v
+                WHERE v.org_id = @org
+                  AND EXISTS (SELECT 1 FROM json_each(@seqs) d
+                               WHERE d.value >= v.from_seq AND (v.to_seq IS NULL OR d.value < v.to_seq))
+                  AND NOT EXISTS (SELECT 1 FROM _sfgraph_snapshots s
+                                   WHERE s.org_id = v.org_id AND s.seq >= v.from_seq
+                                     AND (v.to_seq IS NULL OR s.seq < v.to_seq))`,
+            )
+            .run(params);
+          this.db
+            .prepare(
+              `UPDATE ${t} SET to_seq = NULL
+                WHERE org_id = @org AND to_seq IS NOT NULL
+                  AND to_seq > (SELECT COALESCE(MAX(seq), 0) FROM _sfgraph_snapshots WHERE org_id = @org)`,
+            )
+            .run({ org });
+        }
+      }
+      return deleted;
     });
     // review minor 1: take the write lock at BEGIN (the seq read and the
     // version writes must not race another writer; a deferred upgrade can BUSY).
-    apply.immediate();
+    return apply.immediate();
   }
 
   /**
@@ -826,8 +862,30 @@ export class SqliteSnapshotStore implements SnapshotStore {
         "SELECT id FROM _sfgraph_snapshots WHERE org_id = ? AND is_auto = 1 AND created_at < ?",
       )
       .all(orgId, cutoff) as Array<{ id: string }>;
-    for (const { id } of ids) this.deleteSnapshot(id);
-    return ids.length;
+    return this.deleteSnapshots(ids.map((r) => r.id));
+  }
+
+  /**
+   * Which auto snapshots of an org {@link pruneAuto} would delete. Manual
+   * snapshots (`is_auto = 0`) are never candidates. The newest `keep` auto
+   * snapshots always stay. Of the rest, those older than `retainDays` go
+   * (`retainDays` 0 = no age grace: all of them go).
+   */
+  autoSnapshotsToPrune(
+    orgId: OrgId,
+    o: { keep: number; retainDays: number; now?: number },
+  ): Snapshot[] {
+    const rows = this.db
+      .prepare(
+        "SELECT id, org_id, label, created_at, is_auto, seq FROM _sfgraph_snapshots WHERE org_id = ? AND is_auto = 1",
+      )
+      .all(orgId) as Array<RawSnapshotRow & { seq: number }>;
+    return selectAutoToPrune(rows, o).map(snapshotFromRow);
+  }
+
+  /** Delete {@link autoSnapshotsToPrune} in one batch; returns how many went. */
+  pruneAuto(orgId: OrgId, o: { keep: number; retainDays: number; now?: number }): number {
+    return this.deleteSnapshots(this.autoSnapshotsToPrune(orgId, o).map((s) => s.id));
   }
 }
 

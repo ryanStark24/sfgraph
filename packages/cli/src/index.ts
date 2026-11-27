@@ -13,6 +13,7 @@ import {
   snapshotListCmd,
   snapshotPruneCmd,
 } from "./commands/snapshot.js";
+import { storageCleanCmd, storageCmd, storageDropCmd } from "./commands/storage.js";
 import {
   disableCmd,
   enableLocalCmd,
@@ -28,6 +29,9 @@ import { getCliVersion } from "./version.js";
 export function buildProgram(): Command {
   const program = new Command();
   program.name("sfgraph").description("sfgraph CLI").version(getCliVersion());
+  // `storage --json` and `storage clean --json` are different options: a parent's option must not
+  // be read after the subcommand's name (needs it on the root and on `storage`).
+  program.enablePositionalOptions();
 
   program
     .command("version")
@@ -172,6 +176,11 @@ export function buildProgram(): Command {
     .option("--no-flow-resolve", "skip the post-merge Flow→Apex invocable-method resolver.")
     .option("--no-audit", "skip the post-merge dangling-edge audit summary printed at end of run.")
     .option(
+      "--store-setting-rows",
+      "also read and store custom setting ROW values (off by default: rows often hold endpoints, keys and per-user values, so only the setting's name is kept). Env: SFGRAPH_STORE_SETTING_ROWS=1. Without this flag every ingest removes row values an earlier version stored.",
+      false,
+    )
+    .option(
       "--no-wait-embeddings",
       "exit at 'graph ready' instead of waiting for embeddings. Cached vectors are still written; texts that need the model stay pending, and find_similar uses text search until an ingest that waits for embeddings fills them.",
     )
@@ -207,6 +216,7 @@ export function buildProgram(): Command {
         arityResolve?: boolean; // commander inverts --no-arity-resolve
         flowResolve?: boolean; // commander inverts --no-flow-resolve
         audit?: boolean; // commander inverts --no-audit
+        storeSettingRows?: boolean;
         waitEmbeddings?: boolean; // commander inverts --no-wait-embeddings
         skipThreshold?: number;
         rulesDir?: string;
@@ -240,6 +250,7 @@ export function buildProgram(): Command {
           noArityResolve: opts.arityResolve === false,
           noFlowResolve: opts.flowResolve === false,
           noAudit: opts.audit === false,
+          storeSettingRows: opts.storeSettingRows,
           noWaitEmbeddings: opts.waitEmbeddings === false,
           skipThreshold: opts.skipThreshold,
         });
@@ -346,6 +357,65 @@ export function buildProgram(): Command {
       await snapshotDeleteCmd({ snapshotId, org: opts.org, project: opts.project });
     });
 
+  const storage = program
+    .command("storage")
+    .description(
+      "show where the data dir's disk space goes (graphs, rebuild backups, snapshots, free pages); 'storage clean' and 'storage drop' free it",
+    )
+    .enablePositionalOptions()
+    .option("--json", "print the report as JSON (schemaVersion 1)", false)
+    .option("--detail", "add the largest tables per graph (reads every page: slower)", false)
+    .action(async (opts: { json?: boolean; detail?: boolean }) => {
+      await storageCmd({ json: opts.json, detail: opts.detail });
+    });
+  storage
+    .command("clean")
+    .description(
+      "remove rebuild backups, prune auto snapshots, give back free pages. A dry run unless --apply. No category flag = --backups --snapshots (never --vacuum). Exit 3 when something was skipped because it is in use.",
+    )
+    .option(
+      "--backups",
+      "remove ALL rebuild backups (every org, or --org), and any other file in backups/",
+      false,
+    )
+    .option("--snapshots", "prune auto snapshots to --keep per org (manual snapshots stay)", false)
+    .option(
+      "--keep <n>",
+      "auto snapshots kept per org with --snapshots (default SFGRAPH_SNAPSHOTS_KEPT, 5)",
+      (v) => Number.parseInt(v, 10),
+    )
+    .option(
+      "--vacuum",
+      "rewrite graph files without their free pages (needs 2x the file's size free on disk)",
+      false,
+    )
+    .option("--org <orgId|alias>", "limit to one org (as 'sfgraph storage' lists them)")
+    .option("--apply", "do it; without this nothing changes", false)
+    .option("--json", "print the result as JSON (schemaVersion 1)", false)
+    .action(
+      async (opts: {
+        backups?: boolean;
+        snapshots?: boolean;
+        keep?: number;
+        vacuum?: boolean;
+        org?: string;
+        apply?: boolean;
+        json?: boolean;
+      }) => {
+        await storageCleanCmd(opts);
+      },
+    );
+  storage
+    .command("drop <orgId|alias>")
+    .description(
+      "delete one whole graph: its file, its rebuild backups and their sidecars. Only for the org you name. A dry run unless --apply.",
+    )
+    .option("--apply", "do it; without this nothing changes", false)
+    .option("--json", "print the result as JSON (schemaVersion 1)", false)
+    .action(async (name: string, opts: { apply?: boolean; json?: boolean }) => {
+      await storageDropCmd(name, opts);
+    });
+
   program
     .command("audit")
     .description(
@@ -396,6 +466,19 @@ export function buildProgram(): Command {
     .action(async (opts: { org?: string; project?: string; yes?: boolean }) => {
       const { resetElemIdMap } = await import("./commands/reset-elemid-map.js");
       await resetElemIdMap({ org: opts.org, project: opts.project, yes: opts.yes });
+    });
+
+  program
+    .command("purge-setting-rows")
+    .description(
+      "remove custom setting ROW values that an earlier sfgraph stored for an org (graph, search index, vectors, snapshot history in the same database). Names and schema links stay. Backup files and exported snapshots are separate copies: delete them yourself. Every ingest without --store-setting-rows does the same.",
+    )
+    .option("--org <alias>", "Salesforce alias (defaults to workspace binding or `sf` default)")
+    .option("--project <path>", "override project root (defaults to CWD)")
+    .option("--yes", "confirmation flag required to actually remove", false)
+    .action(async (opts: { org?: string; project?: string; yes?: boolean }) => {
+      const { purgeSettingRows } = await import("./commands/purge-setting-rows.js");
+      await purgeSettingRows({ org: opts.org, project: opts.project, yes: opts.yes });
     });
 
   program

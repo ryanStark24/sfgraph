@@ -54,6 +54,12 @@ import type {
 } from "../storage/interfaces.js";
 import type { SnapshotStore } from "../storage/interfaces.js";
 import {
+  freeBytesOf,
+  reclaimableNotice,
+  snapshotRetainDays,
+  snapshotsKept,
+} from "../storage/retention.js";
+import {
   evaluateDeletionGuard,
   isSkipProtected,
   resolveMaxDropRatio,
@@ -124,7 +130,10 @@ export interface LiveIngestOpts {
   logger?: Logger;
   /** Skip pre-sync snapshot. Default false. */
   skipSnapshot?: boolean;
-  /** Snapshot retention in days. Default 30. */
+  /** Auto snapshots kept per org, newest first. Default `SFGRAPH_SNAPSHOTS_KEPT` (5). */
+  snapshotsKept?: number;
+  /** Auto snapshots beyond the newest `snapshotsKept` go once older than this many days.
+   *  Default `SFGRAPH_SNAPSHOT_RETAIN_DAYS` (0: all of them go). */
   snapshotRetentionDays?: number;
   /** Override @salesforce/core for tests. */
   resolveDeps?: ResolveOrgDeps;
@@ -194,6 +203,15 @@ export interface LiveIngestOpts {
    * at >=90% utilization regardless of this flag.
    */
   disableOmnistudioRetrieve?: boolean;
+  /**
+   * Read and store custom setting ROW values (default **off**; CLI
+   * `--store-setting-rows`, env `SFGRAPH_STORE_SETTING_ROWS=1`). Setting rows
+   * often hold endpoints, keys and per-user values. When off, only the
+   * setting's name and schema link are ingested, and every ingest purges row
+   * values an earlier version stored for the org (graph, search index, vectors,
+   * snapshot history in the same database). Backup files are not rewritten.
+   */
+  storeCustomSettingRows?: boolean;
   /**
    * Skip the reflection-based generic walker (post-merge). Default
    * **on** — scans every node's attributes for string values that
@@ -658,6 +676,67 @@ function stringifyConfigVal(v: unknown): string {
   return String(v);
 }
 
+/**
+ * Remove stored custom setting row values for an org (see
+ * LiveIngestOpts.storeCustomSettingRows). `settings` is how many settings were stripped or
+ * still marked; `vectorsPending` is how many of them still have a row-derived vector that
+ * could not be deleted (no vector store, or a failed delete). The marker is durable, so a
+ * later purge or default ingest finishes the job.
+ * Also used by `sfgraph purge-setting-rows`.
+ */
+export function purgeStoredCustomSettingRows(
+  graph: GraphStore,
+  orgId: OrgId,
+  vectors?: Pick<VectorSink, "deleteNodeVector">,
+  opts: { forceCompact?: boolean } = {},
+): { settings: number; vectorsPending: number; compactError?: string } {
+  const g = graph as {
+    purgeCustomSettingRows?: (o: OrgId, f: typeof buildEmbedText) => QualifiedName[];
+    clearCustomSettingVectorsPending?: (o: OrgId, q: readonly QualifiedName[]) => void;
+    compactAfterPurge?: () => void;
+    lastPurgeChanges?: number;
+    compactionNeeded?: (o: OrgId) => boolean;
+  };
+  if (typeof g.purgeCustomSettingRows !== "function") return { settings: 0, vectorsPending: 0 };
+  // Every setting whose row-derived vector is not yet deleted: those stripped now and any an
+  // earlier purge left marked (vector store missing or a delete failed then).
+  const pending = g.purgeCustomSettingRows(orgId, buildEmbedText);
+  const done: QualifiedName[] = [];
+  const del = vectors?.deleteNodeVector;
+  if (typeof del === "function") {
+    for (const q of pending) {
+      try {
+        del.call(vectors, orgId, q);
+        done.push(q);
+      } catch {
+        /* stays marked; the next purge retries */
+      }
+    }
+  }
+  if (done.length > 0) g.clearCustomSettingVectorsPending?.(orgId, done);
+  const out: { settings: number; vectorsPending: number; compactError?: string } = {
+    settings: pending.length,
+    vectorsPending: pending.length - done.length,
+  };
+  // Old values also sit in free pages, the WAL and dead search-index segments: compact after a
+  // purge that changed rows (or deleted vectors), outside any transaction.
+  // A persisted marker keeps this going after an earlier compaction failed or the process
+  // stopped between the purge commit and the compaction; the explicit command always compacts.
+  if (
+    opts.forceCompact ||
+    (g.lastPurgeChanges ?? 0) > 0 ||
+    done.length > 0 ||
+    g.compactionNeeded?.(orgId)
+  ) {
+    try {
+      g.compactAfterPurge?.();
+    } catch (e) {
+      out.compactError = (e as Error).message;
+    }
+  }
+  return out;
+}
+
 export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult> {
   const logger = opts.logger ?? NOOP_LOG;
   // Load declarative rule parsers (idempotent).
@@ -693,6 +772,40 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
     graph.markSyncStarted(resolved.orgId, ingestStartedIso);
   } catch (e) {
     logger.warn("live-ingest: markSyncStarted failed", { err: (e as Error).message });
+  }
+
+  const storeSettingRows =
+    opts.storeCustomSettingRows ?? process.env.SFGRAPH_STORE_SETTING_ROWS === "1";
+  // Set when the purge could not finish: the pre-sync snapshot would copy the rows still stored.
+  let settingRowPurgeFailed = false;
+  if (!storeSettingRows) {
+    // Before the pre-sync snapshot, so no snapshot copies stored rows.
+    try {
+      const purged = purgeStoredCustomSettingRows(graph, resolved.orgId, opts.vectorStore);
+      if (purged.settings > 0) {
+        logger.info("live-ingest: removed stored custom setting row values", {
+          settings: purged.settings,
+        });
+      }
+      if (purged.vectorsPending > 0) {
+        logger.warn(
+          "live-ingest: custom setting row values are removed but their search vectors could not be deleted yet; the next ingest or `sfgraph purge-setting-rows` will finish it",
+          { settings: purged.vectorsPending },
+        );
+      }
+      if (purged.compactError) {
+        logger.warn(
+          "live-ingest: custom setting row values are removed, but the database file could not be compacted, so old values may remain in its free pages; run `sfgraph purge-setting-rows` when no other sfgraph process is running",
+          { err: purged.compactError },
+        );
+      }
+    } catch (e) {
+      settingRowPurgeFailed = true;
+      logger.warn(
+        "live-ingest: custom setting row purge failed; the pre-sync snapshot is skipped so it does not copy stored row values",
+        { err: (e as Error).message },
+      );
+    }
   }
 
   // Opt-in profiling (SFGRAPH_INGEST_PROFILE=<file>); no-op otherwise.
@@ -790,7 +903,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
       );
     }
 
-    if (!opts.skipSnapshot && opts.snapshotStore) {
+    if (!opts.skipSnapshot && opts.snapshotStore && !settingRowPurgeFailed) {
       try {
         opts.snapshotStore.createSnapshot(
           resolved.orgId,
@@ -1516,6 +1629,7 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
                   // retrieve()" which is now on by default. Caller-side disable
                   // routes through this same boolean inverted.
                   ...(opts.disableOmnistudioRetrieve ? {} : { enableOmnistudioRetrieve: true }),
+                  ...(storeSettingRows ? { storeCustomSettingRows: true } : {}),
                   // jsforce attaches the version it negotiated on conn.version; fall
                   // back to a sensible recent release if absent (mocks, etc.)
                   apiVersion: (resolved.conn as { version?: string }).version ?? "60.0",
@@ -2447,7 +2561,14 @@ export async function liveIngest(opts: LiveIngestOpts): Promise<LiveIngestResult
 
     if (opts.snapshotStore) {
       try {
-        opts.snapshotStore.prune(resolved.orgId, opts.snapshotRetentionDays ?? 30);
+        opts.snapshotStore.pruneAuto(resolved.orgId, {
+          keep: opts.snapshotsKept ?? snapshotsKept(),
+          retainDays: opts.snapshotRetentionDays ?? snapshotRetainDays(),
+        });
+        // Pruning frees pages inside the file but never shrinks it; say so once when it is a lot.
+        const db = (opts.snapshotStore as { db?: BetterSqlite3Database }).db;
+        const note = db ? reclaimableNotice(String(resolved.orgId), freeBytesOf(db)) : null;
+        if (note) console.log(note);
       } catch (e) {
         logger.warn("live-ingest: snapshot prune failed", { err: (e as Error).message });
       }

@@ -53,6 +53,10 @@
  *     files, and `pnpm pack` would ship those. Every file listed in
  *     packages/models/data/CHECKSUM.json must match its sha256.
  *
+ * 11. **Every tarball ships the MIT LICENSE** (identical to the repo root's),
+ *     and the models tarball also ships NOTICE and the Apache-2.0 text for
+ *     the bundled MiniLM model. Part of the tarball check in [2/10].
+ *
  * Usage:
  *
  *   node scripts/preflight-publish.mjs                # check all bumped packages
@@ -267,6 +271,42 @@ function checkPackedTarballs(toPublish, toSkip = []) {
       } catch (e) {
         fail(`${pkg.name}: cannot read package.json from tarball`, String(e?.message ?? e));
         continue;
+      }
+      // License files: npm only auto-includes a LICENSE from the package's own
+      // folder, so each tarball must carry one identical to the repo root's.
+      {
+        const missing = [];
+        try {
+          const listing = execSync(`tar -tzf "${tarballPath}"`, {
+            stdio: ["ignore", "pipe", "pipe"],
+            maxBuffer: 64 * 1024 * 1024,
+          })
+            .toString()
+            .split("\n");
+          const required = ["package/LICENSE"];
+          if (pkg.name === "@ryanstark24/sfgraph-models") {
+            required.push(
+              "package/NOTICE",
+              "package/THIRD_PARTY_LICENSES/all-MiniLM-L6-v2/LICENSE",
+            );
+          }
+          for (const f of required) if (!listing.includes(f)) missing.push(f);
+          if (!missing.includes("package/LICENSE")) {
+            const packed = execSync(`tar -xzOf "${tarballPath}" package/LICENSE`, {
+              stdio: ["ignore", "pipe", "pipe"],
+            }).toString();
+            if (packed !== readFileSync(join(REPO_ROOT, "LICENSE"), "utf8")) {
+              missing.push("package/LICENSE (differs from the repo-root LICENSE)");
+            }
+          }
+        } catch (e) {
+          missing.push(`cannot inspect tarball: ${String(e?.message ?? e)}`);
+        }
+        if (missing.length > 0) {
+          fail(`${pkg.name}@${pkg.version}: license files missing from tarball`, missing.join("\n"));
+        } else {
+          pass(`${pkg.name}@${pkg.version}: LICENSE in tarball`);
+        }
       }
       const depFields = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
       const leaked = [];

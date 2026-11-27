@@ -20,6 +20,52 @@ import { getServerVersion } from "./version.js";
 export const TEXT_MAX = 16000;
 
 /**
+ * The most characters of structured data (`_meta.data`) one tool call returns. The text is cut at
+ * {@link TEXT_MAX}; the data gets four times that, because it is JSON, and a tool's data must not
+ * grow with the size of the graph. Every tool's data passes through {@link capData}.
+ */
+export const DATA_MAX = 64000;
+
+/**
+ * `data` if its JSON fits in `max` characters. Otherwise the top-level fields that fit, smallest
+ * first, and for each field left out a stub that says how many items it held, plus `dataCut: true`.
+ * A tool's own list caps still apply first; this is the backstop every tool passes through.
+ */
+export function capData(data: unknown, max = DATA_MAX): unknown {
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(data);
+  } catch {
+    return { dataCut: true, reason: "not serializable" };
+  }
+  if (json === undefined || json.length <= max) return data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return {
+      dataCut: true,
+      ...(Array.isArray(data) ? { omittedItems: data.length } : { omitted: true }),
+    };
+  }
+  const sized = Object.entries(data as Record<string, unknown>).map(([k, v]) => ({
+    k,
+    v,
+    n: (JSON.stringify(v) ?? "").length,
+  }));
+  const keep = new Set<string>();
+  let used = 64;
+  for (const f of [...sized].sort((a, b) => a.n - b.n)) {
+    if (used + f.n + f.k.length + 8 > max) break;
+    used += f.n + f.k.length + 8;
+    keep.add(f.k);
+  }
+  const out: Record<string, unknown> = {};
+  for (const { k, v } of sized) {
+    out[k] = keep.has(k) ? v : { omitted: true, ...(Array.isArray(v) ? { items: v.length } : {}) };
+  }
+  out.dataCut = true;
+  return out;
+}
+
+/**
  * Cut `text` to at most `max` characters at a line boundary and end it with a line saying how many
  * lines were left out. A cut inside a ``` fence drops the whole fenced block when text comes before
  * it; when the fenced block is the first content, its lines that fit are kept and the fence is
@@ -383,7 +429,7 @@ export class SfgraphMcpServer {
         ],
         _meta: {
           summary: result.summary,
-          data: result.data,
+          data: capData(result.data),
           follow_up_tools: result.follow_up_tools,
           staleness,
           ...(warnings.length > 0 ? { warnings } : {}),

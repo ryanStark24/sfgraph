@@ -1,0 +1,4 @@
+<aura:component implements="flexipage:availableForAllPageTypes">
+    <aura:attribute name="message" type="String"/>
+    <div aura:id="out"></div>
+</aura:component>

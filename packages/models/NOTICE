@@ -1,0 +1,38 @@
+@ryanstark24/sfgraph-models
+Copyright (c) 2026 ryanStark24 (package code, MIT; see LICENSE)
+
+This package redistributes third-party model files under the Apache License,
+Version 2.0. The full license text is in
+THIRD_PARTY_LICENSES/all-MiniLM-L6-v2/LICENSE.
+
+Model:       all-MiniLM-L6-v2 (384-dimension sentence embeddings)
+Upstream:    https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+             (sentence-transformers, Apache-2.0)
+Packaged as: https://huggingface.co/Xenova/all-MiniLM-L6-v2, the ONNX
+             conversion of the model above (its config.json records
+             "_name_or_path": "sentence-transformers/all-MiniLM-L6-v2").
+             sfgraph downloads it from there with `pnpm models:refresh`
+             (scripts/refresh-vendored-model.ts).
+
+Files redistributed (data/Xenova/all-MiniLM-L6-v2/):
+  onnx/model_quantized.onnx
+  config.json
+  tokenizer.json
+  tokenizer_config.json
+  special_tokens_map.json
+
+Modifications: sfgraph does not modify these files. They are the bytes
+published in the Xenova repository, pinned by SHA-256 in data/CHECKSUM.json.
+Relative to the original sentence-transformers PyTorch checkpoint, the
+Xenova repository's conversion to ONNX and its quantised weights
+(model_quantized.onnx) were made by that repository's author, not by sfgraph.
+The tokenizer and config files are the BERT tokenizer and model configuration
+files shipped with the model.
+
+Lineage (as stated on the upstream model card, not redistributed here):
+all-MiniLM-L6-v2 was fine-tuned from nreimers/MiniLM-L6-H384-uncased, which
+derives from Microsoft's MiniLM. No files from those base models are included
+in this package.
+
+Apache-2.0 licensing of the files above does not extend to the rest of sfgraph,
+which is MIT (see LICENSE).

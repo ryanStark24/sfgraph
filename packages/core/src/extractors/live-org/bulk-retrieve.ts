@@ -1010,6 +1010,9 @@ export interface BulkRetrieveOpts {
    *  API quota (10k/24h) and is slower; only enable when the higher-fidelity
    *  XML envelope is actually needed by a downstream parser. */
   enableOmnistudioRetrieve?: boolean;
+  /** Opt-in: read and store custom setting ROW values (see custom-settings.ts).
+   *  Default off: only each setting's name is ingested. */
+  storeCustomSettingRows?: boolean;
   /** API version string for the retrieve() request envelope. */
   apiVersion?: string;
   /**
@@ -1215,7 +1218,16 @@ export async function* bulkRetrieve(
   }
   // Custom Setting ROW capture — self-guards (yields nothing if the org has no
   // custom settings or EntityDefinition is unavailable), so invoke always.
-  invoke("custom-settings", () => iterCustomSettings(conn, String(orgId)));
+  invoke("custom-settings", () =>
+    iterCustomSettings(
+      conn,
+      String(orgId),
+      {},
+      {
+        captureRows: normalized.storeCustomSettingRows === true,
+      },
+    ),
+  );
   if (caps.omnistudioOncore) {
     // When the Metadata-API retrieve path is enabled it covers
     // OmniDataTransform and OmniUiCard with higher fidelity — skip them on

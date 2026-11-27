@@ -51,6 +51,7 @@ Commands:
 | `--data-pool <n>` | `10` | Max concurrent SObject/Bulk SOQL queries. Also reads `SFGRAPH_DATA_POOL`. |
 | `--debug` | `false` | Verbose tracing for diagnosing silent ingest deaths: heartbeat every 10s with heap/RSS/last-source label, per-record parse and graph-merge phase logs, SIGTERM/SIGINT stack traces, per-source enter/finalise markers. Also sets `SFGRAPH_DEBUG_INGEST=1`. |
 | `--no-auto-retry-skipped` | (auto-retry on) | Disable the post-ingest auto-retry. By default, if more than 10 sources were skipped with transient errors (`rate_limit`, `network`, `unknown`), sfgraph waits briefly and re-ingests just those sources. Tune the threshold with `SFGRAPH_AUTO_RETRY_THRESHOLD=N`; disable entirely with this flag or `SFGRAPH_NO_AUTO_RETRY=1`. |
+| `--store-setting-rows` | off | Also read and store custom setting **row values**. Off by default: rows often hold endpoints, keys and per-user values, so only each setting's name (and its link to the object) is kept. Also reads `SFGRAPH_STORE_SETTING_ROWS=1`. Without this flag every ingest removes row values an earlier version stored (see [`PRIVACY.md`](PRIVACY.md#custom-setting-rows)). |
 | `--db <path>` | `<data-dir>/<orgId>.sqlite` (platform-specific via env-paths; see [`DATA_LOCATIONS.md`](DATA_LOCATIONS.md)) | Override SQLite database path |
 
 Auto-detects default org from `sf config`. Auto-snapshot taken before every sync.
@@ -120,6 +121,8 @@ sfgraph ingest --rebuild --no-backup --org prod
 
 `--rebuild` forces `mode=full` regardless of Source Tracking and starts from an empty DB. Useful when parser logic has changed or when you suspect the graph has drifted from reality.
 
+Backups are pruned only after the rebuilt graph's sync has completed and its pre-sync snapshot was taken: the newest `SFGRAPH_REBUILD_BACKUPS_KEPT` (default 1) complete backups of each org stay, and the same rule is applied to every other org's backups in `backups/` (an org whose ingest lock is held is skipped; files that are not rebuild backups are reported and left alone). If a rebuild's sync fails and you run `--rebuild` again, the half-built graph's backup is marked incomplete and never counts toward the backups kept, so the last good copy is not deleted. The snapshot history is carried into the rebuilt graph first; if that fails the newest backup holding the history is kept whatever the setting.
+
 ### Detect deletions
 
 ```bash
@@ -180,6 +183,17 @@ sfgraph ingest --org my-prod
 
 The model must produce 384-dimensional vectors to match the existing `vec0` schema unless you override the dim. Checksum verification is skipped for user-supplied models.
 
+## `sfgraph purge-setting-rows`
+
+Removes custom setting row values that an earlier sfgraph stored for an org: the graph rows, the search-index entry, the vectors built from them and the snapshot history in the same database. Setting names and links stay. Nothing is contacted; it edits the local database only. Every ingest without `--store-setting-rows` does the same, so this is for removing them without re-ingesting.
+
+```bash
+sfgraph purge-setting-rows --org my-sandbox          # shows what it will do
+sfgraph purge-setting-rows --org my-sandbox --yes    # does it
+```
+
+After the purge the database file is compacted (search-index merge, WAL checkpoint, `VACUUM`) so removed values no longer sit in free pages or the `-wal` file; this needs no other sfgraph process (MCP server, ingest) using the database, and if it cannot run the command says so and exits 1. Vectors that could not be deleted yet are remembered in a small table in the database and deleted by the next purge or default ingest. **Still holding old values, not rewritten:** backup files (`.sfgraph-backups/`, the `--rebuild` backup), snapshots you exported, and the embedding cache (`embedding-cache/` in the data folder: SHA-256 hashes and vectors of embedded texts, no text; entries made from row values stay). Delete those yourself if they matter; the cache is rebuilt by the next ingest.
+
 ## `sfgraph link` + `sfgraph wip`
 
 WIP local-impact analysis against an org's graph without committing or pushing.
@@ -205,6 +219,33 @@ sfgraph snapshot delete <snapshotId> [--org <alias>]
 ```
 
 Pre-sync auto-snapshots are created automatically by `sfgraph ingest`; these commands are for manual/scheduled snapshots.
+
+**Retention.** After every sync, auto snapshots (`is_auto`: the pre-sync snapshots, and `snapshot_create` with `kind: "scheduled"`) are pruned: the newest `SFGRAPH_SNAPSHOTS_KEPT` (default 5) per org always stay; every older one goes. `SFGRAPH_SNAPSHOT_RETAIN_DAYS` (default `0`) is an optional age floor: with a value above 0, snapshots beyond the newest N stay until they are older than that many days. Manual snapshots (`sfgraph snapshot create`, `snapshot_create` with `kind: "manual"`) are never pruned automatically. Comparisons between the snapshots that stay (`point_in_time_diff`) give the same result as before. `sfgraph snapshot prune --retain-days <n>` still removes auto snapshots older than `n` days on demand.
+
+## `sfgraph storage`
+
+```bash
+sfgraph storage [--json] [--detail]
+sfgraph storage clean [--backups] [--snapshots] [--keep <n>] [--vacuum] [--org <orgId|alias>] [--apply] [--json]
+sfgraph storage drop <orgId|alias> [--apply] [--json]
+```
+
+`sfgraph storage` is a read-only, fast report of the data dir: for each graph its size, WAL size, free pages inside the file, auto/manual snapshot counts, last sync and staleness (7 or more days, or never); the rebuild backups per org (count, bytes, newest) and the other files in `backups/`; the embedding cache; and everything else. `--json` prints `{ schemaVersion: 1, dataDir, totalBytes, graphs[], backups, embeddingCache, otherBytes }`. A graph another process holds, or that cannot be read, still reports its file sizes, with `snapshots: { auto: null, manual: null }` and `freeBytes: 0`. `--detail` adds the largest tables per graph (`tables`, from `dbstat`); it reads every page, so it is slower.
+
+`sfgraph storage clean` is a **dry run unless `--apply`**: it lists what it would do and changes nothing. With no category flag it does `--backups --snapshots` (never `--vacuum`).
+
+| Flag | What it does |
+|---|---|
+| `--backups` | Removes **all** rebuild backups (every org, or `--org`), with their sidecars. Files in `backups/` that are not rebuild backups are listed always, and removed only with `--backups --apply`. |
+| `--snapshots` | Prunes auto snapshots to the newest `--keep` per org (default `SFGRAPH_SNAPSHOTS_KEPT`, 5), ignoring age. Manual snapshots stay. |
+| `--vacuum` | Rewrites each graph file without its free pages (WAL checkpoint, `VACUUM`, checkpoint). Refused (`skipped-low-disk`) when the disk has less than twice the file's size free, and skipped (`skipped-busy`) when another process holds the graph open. |
+| `--org` | Limits to one org, by id or by the alias stored in its graph. An unknown name is an error. |
+
+Each org is worked on under its ingest lock: an org whose lock is held is skipped (`skipped-busy`). On Windows a file another process has open cannot be deleted: it is reported `skipped-in-use` and not counted as freed. `clean` never deletes a live graph. Exit code: `0` done (or a dry run), `3` something was skipped busy or in use, `1` on an error. `--json` prints `{ schemaVersion: 1, applied, actions: [{ kind: "backup"|"other-file"|"snapshots"|"vacuum", orgId, path?, bytes, status: "planned"|"done"|"skipped-in-use"|"skipped-busy"|"skipped-low-disk"|"failed", detail? }], freedBytes }`; `freedBytes` comes from before/after file sizes.
+
+`sfgraph storage drop <orgId|alias>` deletes one whole graph (its file, `-wal`/`-shm`/`-journal` and its rebuild backups), and only the one you name; an unknown name is refused. A dry run unless `--apply`; it takes the org's ingest lock. Its actions use `kind: "graph"` for the graph file. Stop `sfgraph serve` and any MCP client using the graph first: on macOS and Linux a file that is open can still be deleted.
+
+A sync prints `reclaimable <X> GB in <orgId>: run "sfgraph storage clean --vacuum"` once when an org's free pages exceed 256 MB after pruning. Ingest never runs `VACUUM` itself.
 
 ## `sfgraph refresh-orgs`
 

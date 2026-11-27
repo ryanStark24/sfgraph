@@ -4,167 +4,83 @@
       "found": true,
       "nodes": [
         {
-          "orgId": "org1",
           "qualifiedName": "ApexMethod:CaseService.run(0)",
-          "label": "ApexMethod",
-          "attributes": {},
-          "sourceHash": "h-ApexMethod:CaseService.run(0)",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901089
+          "label": "ApexMethod"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "ApexClass:CaseService",
-          "label": "ApexClass",
-          "attributes": {},
-          "sourceHash": "h-ApexClass:CaseService",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901089
+          "label": "ApexClass"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "CustomObject:Case",
-          "label": "CustomObject",
-          "attributes": {},
-          "sourceHash": "h-CustomObject:Case",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901090
+          "label": "CustomObject"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "ApexMethod:CaseHelper.apply(1)",
-          "label": "ApexMethod",
-          "attributes": {},
-          "sourceHash": "h-ApexMethod:CaseHelper.apply(1)",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901089
+          "label": "ApexMethod"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "ApexClass:CaseHelper",
-          "label": "ApexClass",
-          "attributes": {},
-          "sourceHash": "h-ApexClass:CaseHelper",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901089
+          "label": "ApexClass"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "CustomField:Case.Priority__c",
-          "label": "CustomField",
-          "attributes": {},
-          "sourceHash": "h-CustomField:Case.Priority__c",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901091
+          "label": "CustomField"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "CustomField:Account.Name",
-          "label": "CustomField",
-          "attributes": {},
-          "sourceHash": "h-CustomField:Account.Name",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901091
+          "label": "CustomField"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "CustomField:Account.Tier__c",
-          "label": "CustomField",
-          "attributes": {},
-          "sourceHash": "h-CustomField:Account.Tier__c",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901091
+          "label": "CustomField"
         }
       ],
       "edges": [
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexTrigger:CaseTrigger",
           "dstQualifiedName": "ApexMethod:CaseService.run(0)",
-          "relType": "CALLS",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "CALLS"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexTrigger:CaseTrigger",
           "dstQualifiedName": "CustomObject:Case",
-          "relType": "TRIGGERS_ON",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "TRIGGERS_ON"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexMethod:CaseService.run(0)",
           "dstQualifiedName": "ApexMethod:CaseHelper.apply(1)",
-          "relType": "CALLS",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "CALLS"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexMethod:CaseService.run(0)",
           "dstQualifiedName": "CustomField:Case.Priority__c",
-          "relType": "READS_FIELD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "READS_FIELD"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexClass:CaseService",
           "dstQualifiedName": "ApexMethod:CaseService.run(0)",
-          "relType": "CONTAINS_METHOD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "CONTAINS_METHOD"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexMethod:CaseHelper.apply(1)",
           "dstQualifiedName": "ApexMethod:System.debug(1)",
-          "relType": "CALLS",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "CALLS"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexMethod:CaseHelper.apply(1)",
           "dstQualifiedName": "CustomField:Account.Name",
-          "relType": "READS_FIELD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "READS_FIELD"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexMethod:CaseHelper.apply(1)",
           "dstQualifiedName": "CustomField:Account.Tier__c",
-          "relType": "WRITES_FIELD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "WRITES_FIELD"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexClass:CaseHelper",
           "dstQualifiedName": "ApexMethod:CaseHelper.apply(1)",
-          "relType": "CONTAINS_METHOD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "CONTAINS_METHOD"
         }
       ],
       "reached": [
@@ -249,73 +165,37 @@
       "found": true,
       "nodes": [
         {
-          "orgId": "org1",
           "qualifiedName": "ApexMethod:CaseService.run(0)",
-          "label": "ApexMethod",
-          "attributes": {},
-          "sourceHash": "h-ApexMethod:CaseService.run(0)",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901120
+          "label": "ApexMethod"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "ApexMethod:CaseHelper.apply(1)",
-          "label": "ApexMethod",
-          "attributes": {},
-          "sourceHash": "h-ApexMethod:CaseHelper.apply(1)",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901120
+          "label": "ApexMethod"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "ApexClass:CaseHelper",
-          "label": "ApexClass",
-          "attributes": {},
-          "sourceHash": "h-ApexClass:CaseHelper",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901120
+          "label": "ApexClass"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "CustomField:Case.Priority__c",
-          "label": "CustomField",
-          "attributes": {},
-          "sourceHash": "h-CustomField:Case.Priority__c",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901121
+          "label": "CustomField"
         }
       ],
       "edges": [
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexClass:CaseService",
           "dstQualifiedName": "ApexMethod:CaseService.run(0)",
-          "relType": "CONTAINS_METHOD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "CONTAINS_METHOD"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexMethod:CaseService.run(0)",
           "dstQualifiedName": "ApexMethod:CaseHelper.apply(1)",
-          "relType": "CALLS",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "CALLS"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexMethod:CaseService.run(0)",
           "dstQualifiedName": "CustomField:Case.Priority__c",
-          "relType": "READS_FIELD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "READS_FIELD"
         }
       ],
       "reached": [
@@ -362,44 +242,24 @@
       "found": true,
       "nodes": [
         {
-          "orgId": "org1",
           "qualifiedName": "CustomField:Account.Name",
-          "label": "CustomField",
-          "attributes": {},
-          "sourceHash": "h-CustomField:Account.Name",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901145
+          "label": "CustomField"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "CustomField:Account.Tier__c",
-          "label": "CustomField",
-          "attributes": {},
-          "sourceHash": "h-CustomField:Account.Tier__c",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901145
+          "label": "CustomField"
         }
       ],
       "edges": [
         {
-          "orgId": "org1",
           "srcQualifiedName": "CustomObject:Account",
           "dstQualifiedName": "CustomField:Account.Name",
-          "relType": "DEFINES_FIELD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "DEFINES_FIELD"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "CustomObject:Account",
           "dstQualifiedName": "CustomField:Account.Tier__c",
-          "relType": "DEFINES_FIELD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "DEFINES_FIELD"
         }
       ],
       "reached": [
@@ -442,101 +302,51 @@
       "found": true,
       "nodes": [
         {
-          "orgId": "org1",
           "qualifiedName": "ApexMethod:CaseService.run(0)",
-          "label": "ApexMethod",
-          "attributes": {},
-          "sourceHash": "h-ApexMethod:CaseService.run(0)",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901182
+          "label": "ApexMethod"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "ApexTrigger:CaseTrigger",
-          "label": "ApexTrigger",
-          "attributes": {},
-          "sourceHash": "h-ApexTrigger:CaseTrigger",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901182
+          "label": "ApexTrigger"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "LWC:caseCard",
-          "label": "LWC",
-          "attributes": {},
-          "sourceHash": "h-LWC:caseCard",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901183
+          "label": "LWC"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "Flow:Case_Flow",
-          "label": "Flow",
-          "attributes": {},
-          "sourceHash": "h-Flow:Case_Flow",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901183
+          "label": "Flow"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "ApexClass:CaseServiceTest",
-          "label": "ApexClass",
-          "attributes": {},
-          "sourceHash": "h-ApexClass:CaseServiceTest",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901183
+          "label": "ApexClass"
         }
       ],
       "edges": [
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexMethod:CaseService.run(0)",
           "dstQualifiedName": "ApexMethod:CaseHelper.apply(1)",
-          "relType": "CALLS",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "CALLS"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexTrigger:CaseTrigger",
           "dstQualifiedName": "ApexMethod:CaseService.run(0)",
-          "relType": "CALLS",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "CALLS"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "LWC:caseCard",
           "dstQualifiedName": "ApexMethod:CaseService.run(0)",
-          "relType": "CALLS_APEX_FROM_LWC",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "CALLS_APEX_FROM_LWC"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "Flow:Case_Flow",
           "dstQualifiedName": "ApexClass:CaseService",
-          "relType": "FLOW_INVOKES_APEX",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "FLOW_INVOKES_APEX"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexClass:CaseServiceTest",
           "dstQualifiedName": "ApexClass:CaseService",
-          "relType": "IS_TEST_FOR",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "IS_TEST_FOR"
         }
       ],
       "reached": [
@@ -591,44 +401,24 @@
       "found": true,
       "nodes": [
         {
-          "orgId": "org1",
           "qualifiedName": "ApexMethod:CaseHelper.apply(1)",
-          "label": "ApexMethod",
-          "attributes": {},
-          "sourceHash": "h-ApexMethod:CaseHelper.apply(1)",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901204
+          "label": "ApexMethod"
         },
         {
-          "orgId": "org1",
           "qualifiedName": "CustomObject:Account",
-          "label": "CustomObject",
-          "attributes": {},
-          "sourceHash": "h-CustomObject:Account",
-          "firstSeenAt": 1,
-          "lastSeenAt": 1,
-          "lastModifiedAt": 1791808901204
+          "label": "CustomObject"
         }
       ],
       "edges": [
         {
-          "orgId": "org1",
           "srcQualifiedName": "ApexMethod:CaseHelper.apply(1)",
           "dstQualifiedName": "CustomField:Account.Tier__c",
-          "relType": "WRITES_FIELD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "WRITES_FIELD"
         },
         {
-          "orgId": "org1",
           "srcQualifiedName": "CustomObject:Account",
           "dstQualifiedName": "CustomField:Account.Tier__c",
-          "relType": "DEFINES_FIELD",
-          "attributes": {},
-          "firstSeenAt": 1,
-          "lastSeenAt": 1
+          "relType": "DEFINES_FIELD"
         }
       ],
       "reached": [

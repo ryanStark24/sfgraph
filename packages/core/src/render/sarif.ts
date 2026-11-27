@@ -1,5 +1,6 @@
 import type { Finding, RuleDescriptor } from "../analyze/findings.js";
 import { RULE_CATALOG } from "../analyze/findings.js";
+import { toUriReference, uriReferenceProblem } from "../analyze/source-uri.js";
 
 /**
  * SARIF 2.1.0 emitter. Output validates against the OASIS schema
@@ -96,7 +97,7 @@ function findingToSarifResult(f: Finding): SarifResult {
   const physical: SarifLocation = {};
   if (f.location.sourceUri) {
     physical.physicalLocation = {
-      artifactLocation: { uri: f.location.sourceUri },
+      artifactLocation: { uri: toUriReference(f.location.sourceUri) },
     };
     if (f.location.line != null) {
       physical.physicalLocation.region = {
@@ -231,6 +232,16 @@ export function lintSarifReport(report: SarifReport): string[] {
       }
       if (!r.locations || r.locations.length === 0) {
         errors.push(`runs[${i}].results[${j}] has no locations`);
+      }
+      for (const [k, loc] of (r.locations ?? []).entries()) {
+        const uri = loc.physicalLocation?.artifactLocation?.uri;
+        if (uri === undefined) continue;
+        const problem = uriReferenceProblem(uri);
+        if (problem) {
+          errors.push(
+            `runs[${i}].results[${j}].locations[${k}].physicalLocation.artifactLocation.uri '${uri}' is not a valid URI reference: ${problem}`,
+          );
+        }
       }
     }
   }

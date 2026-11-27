@@ -21,9 +21,16 @@ import {
  * attribute is folded into the embedding (buildEmbedText), making setting
  * values semantically searchable, plus a link to the CustomObject schema node.
  *
- * Treated as CONFIG metadata, not business record data — custom settings are
- * deploy-time/admin config, distinct from transactional records (out of scope).
+ * Row VALUES are opt-in (`captureRows`, `--store-setting-rows`): a custom
+ * setting commonly holds endpoints, keys and per-user values. By default only
+ * the setting's name is emitted (the schema node comes from the object
+ * extractor) and no row is queried, so no row value reaches the graph.
  */
+
+export interface CustomSettingsOpts {
+  /** Read and store the rows' values. Default false. */
+  captureRows?: boolean;
+}
 
 interface EntityRow {
   QualifiedApiName?: string;
@@ -48,7 +55,9 @@ export async function* iterCustomSettings(
   conn: any,
   orgId: string,
   retryOpts: RetryOptions = {},
+  opts: CustomSettingsOpts = {},
 ): AsyncIterable<RawMember> {
+  const captureRows = opts.captureRows === true;
   let entities: EntityRow[] = [];
   try {
     // Drain every page and retry: a truncated discovery silently loses
@@ -71,6 +80,21 @@ export async function* iterCustomSettings(
   for (const ent of entities) {
     const obj = ent.QualifiedApiName;
     if (!obj) continue;
+    if (!captureRows) {
+      // Name only: the setting stays findable and linked to its schema node.
+      yield {
+        ref: {
+          category: METADATA_CATEGORY.CUSTOM_SETTING,
+          memberType: "CustomSetting",
+          memberName: obj,
+          lastModifiedAt: null,
+          sourceUri: `sf://${orgId}/CustomSetting/${obj}`,
+          namespace: null,
+        },
+        content: JSON.stringify({ name: obj }),
+      };
+      continue;
+    }
     let rows: Array<Record<string, unknown>> = [];
     try {
       // LIMIT ROW_CAP (200) fits in one page, so no queryMore needed.
