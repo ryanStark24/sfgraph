@@ -216,6 +216,31 @@ describe("rebuild keeps one backup and prunes only after a finished sync", () =>
   });
 });
 
+describe("a finished or failed ingest releases the graph's SQLite handle", () => {
+  // Windows cannot rename or delete a file another handle holds open, so a failed sync must not
+  // leave its connection open for the retry rebuild in the same process to trip over.
+  it.each(["fail", "ok"] as const)(
+    "single org, sync %s: the connection is closed",
+    async (mode) => {
+      await stubModules();
+      await makeGraph(join(dataDir, `${ORG}.sqlite`), ORG, 0);
+      const core = await import("@ryanstark24/sfgraph-core");
+      const opened: Array<{ db: { open: boolean } }> = [];
+      const init = core.SqliteGraphStore.prototype.init;
+      vi.spyOn(core.SqliteGraphStore.prototype, "init").mockImplementation(async function (
+        this: InstanceType<typeof core.SqliteGraphStore>,
+      ) {
+        opened.push(this as never);
+        return init.call(this);
+      });
+      liveIngestBehaviour = mode;
+      await rebuild();
+      expect(opened.length).toBeGreaterThan(0);
+      for (const g of opened) expect(g.db.open).toBe(false);
+    },
+  );
+});
+
 describe("a plain successful ingest clears the pending-rebuild marker", () => {
   const marker = (): string => join(dataDir, `${ORG}.rebuild-pending.json`);
 
