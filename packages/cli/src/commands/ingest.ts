@@ -794,6 +794,14 @@ function clearPendingAfterCompleteIngest(orgIds: string[]): void {
 export async function ingestCmd(opts: IngestOpts): Promise<void> {
   const logger = new ConsoleLogger("info");
   const locks = ingestLocks();
+  // Every graph store this run opened. liveIngest does not close the store it is handed, so a
+  // failed sync (or a throw after it) used to leave the SQLite handle open until process exit:
+  // on Windows an open handle blocks the next rebuild's rename/unlink of the same file.
+  const opened: SqliteGraphStore[] = [];
+  const track = <T extends { graphStore?: unknown }>(b: T): T => {
+    if (b.graphStore) opened.push(b.graphStore as SqliteGraphStore);
+    return b;
+  };
   rebuildRuns.clear();
   if (opts.embedModel) process.env.SFGRAPH_EMBED_MODEL_PATH = opts.embedModel;
   if (opts.embedModelId) process.env.SFGRAPH_EMBED_MODEL_ID = opts.embedModelId;
@@ -830,7 +838,7 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
       return;
     }
     if (opts.project) {
-      const built = await buildProjectIngestOpts(opts, logger, { onResolved: locks.take });
+      const built = track(await buildProjectIngestOpts(opts, logger, { onResolved: locks.take }));
       const result = await liveIngest(built);
       reportEmbeddingOutcome(result);
       console.log(
@@ -889,8 +897,10 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
 
     if (aliases !== null && aliases.length > 0) {
       const list = aliases;
-      const build = (alias: string) =>
-        buildSingleIngestOpts(alias, opts, logger, { resolveOrg, onResolved: locks.take });
+      const build = async (alias: string) =>
+        track(
+          await buildSingleIngestOpts(alias, opts, logger, { resolveOrg, onResolved: locks.take }),
+        );
       // One embedding worker (one model, one ORT arena) shared by every org.
       const workerUrl = defaultEmbeddingWorkerUrl();
       const sharedPool = workerUrl ? new EmbeddingPool({ workerUrl }) : null;
@@ -952,10 +962,12 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
       logger.info(`ingest: using default org from sf config: ${alias}`);
     }
 
-    const built = await buildSingleIngestOpts(alias, opts, logger, {
-      resolveOrg,
-      onResolved: locks.take,
-    });
+    const built = track(
+      await buildSingleIngestOpts(alias, opts, logger, {
+        resolveOrg,
+        onResolved: locks.take,
+      }),
+    );
     const startedAt = Date.now();
     logger.info(`ingest: starting alias=${alias}`);
     const result = await liveIngest(built);
@@ -1069,6 +1081,9 @@ export async function ingestCmd(opts: IngestOpts): Promise<void> {
     }
     process.exitCode = 1;
   } finally {
+    // Close before the lock is released: the next process (or an in-process retry rebuild)
+    // may move or delete these files as soon as the lock is free.
+    for (const store of opened) await store.close().catch(() => {});
     locks.releaseAll();
   }
 }
