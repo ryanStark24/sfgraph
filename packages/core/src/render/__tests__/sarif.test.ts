@@ -140,7 +140,7 @@ describe("W3-01/W3-02: SARIF 2.1.0 emitter", () => {
       location: { qualifiedName: "ApexClass:Foo", sourceUri, line: 3 },
     });
     const report = emitSarif({
-      version: "1.9.0",
+      version: "1.9.1",
       findings: [
         finding("file:///home/u/project with spaces/force-app/Foo.cls"),
         finding("file:///home/u/a#b/100%/café/Foo.cls"),
@@ -160,7 +160,7 @@ describe("W3-01/W3-02: SARIF 2.1.0 emitter", () => {
 
   it("lintSarifReport flags an artifactLocation.uri that is not a valid URI reference", () => {
     const report = emitSarif({
-      version: "1.9.0",
+      version: "1.9.1",
       findings: [
         {
           ruleId: "governor.soql-in-loop",

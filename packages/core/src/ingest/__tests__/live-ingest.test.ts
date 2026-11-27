@@ -127,6 +127,64 @@ describe("liveIngest", () => {
     expect(snaps[0]?.isAuto).toBe(true);
   });
 
+  it("prunes auto snapshots to the newest N after the sync; manual ones stay (1.9.1)", async () => {
+    const empty = { records: [], done: true };
+    const conn = buildJsforceMock({
+      toolingQueryResults: {
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status FROM ApexClass":
+          empty,
+        "SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate, ApiVersion, Status, TableEnumOrId FROM ApexTrigger":
+          empty,
+        "SELECT Id, DeveloperName, NamespacePrefix, LastModifiedDate FROM LightningComponentBundle":
+          empty,
+        "SELECT QualifiedApiName, NamespacePrefix, LastModifiedDate FROM EntityDefinition WHERE IsCustomSetting=false AND IsCustomizable=true":
+          empty,
+      },
+      metadataList: {
+        Flow: [],
+        Profile: [],
+        PermissionSet: [],
+        SharingRules: [],
+        NamedCredential: [],
+        ExternalServiceRegistration: [],
+      },
+    });
+    const graphStore = new SqliteGraphStore({ dbPath: ":memory:" });
+    await graphStore.init();
+    const snapshotStore = new SqliteSnapshotStore({
+      dbPath: ":memory:",
+      db: graphStore.db,
+      skipMigrations: true,
+    });
+    await snapshotStore.init();
+    const resolved = makeResolved(conn);
+    for (let i = 0; i < 6; i++) {
+      const s = snapshotStore.createSnapshot(resolved.orgId, `old-auto-${i}`, true);
+      graphStore.db
+        .prepare("UPDATE _sfgraph_snapshots SET created_at = ? WHERE id = ?")
+        .run(Date.now() - (10 - i) * 3_600_000, s.id);
+    }
+    snapshotStore.createSnapshot(resolved.orgId, "keep-me-manual", false);
+
+    await liveIngest({
+      alias: "test",
+      graphStore,
+      snapshotStore,
+      mode: "full",
+      preResolved: resolved,
+      logger: new ConsoleLogger("error"),
+      snapshotsKept: 2,
+      snapshotRetentionDays: 0,
+    });
+
+    const labels = snapshotStore.listSnapshots(resolved.orgId).map((x) => x.label);
+    expect(labels).toHaveLength(3);
+    expect(labels).toContain("keep-me-manual");
+    // the new pre-sync snapshot and the newest old one are the two auto snapshots kept
+    expect(labels.filter((l) => l.startsWith("pre-sync-"))).toHaveLength(1);
+    expect(labels).toContain("old-auto-5");
+  });
+
   it("upserts snippets from the apex parser", async () => {
     const conn = buildJsforceMock({
       toolingQueryResults: {

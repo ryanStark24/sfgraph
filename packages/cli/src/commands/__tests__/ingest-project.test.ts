@@ -275,7 +275,8 @@ describe("Task 11c: ingest --project --delta and the ingest lock", () => {
       await g.close();
     }
     const backups = readdirSync(path.join(data, "backups")).filter((f) => f.endsWith(".sqlite"));
-    expect(backups).toHaveLength(2);
+    // 1.9.1: one rebuild backup is kept per org (SFGRAPH_REBUILD_BACKUPS_KEPT), pruned after the sync.
+    expect(backups).toHaveLength(1);
   });
 
   it("final review core M-3: --only and --retry-skipped are rejected with --project", async () => {
